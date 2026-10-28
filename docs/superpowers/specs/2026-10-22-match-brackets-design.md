@@ -140,7 +140,7 @@ and `%` don't change.
     line is a row of its own, so the body's area already stops above it
     and the painters walk to the area's bottom.)
   - A cell the Visual span, a search hit or the selection already paints
-    keeps that paint. (Since #189 a selection lights nothing at all, §7.)
+    keeps that paint. (Since #189 an arrows selection lights nothing at all, §7.)
   - The caret's cell is not painted, so it keeps the caret's look (R8).
     The cell is the one edtui reports drawing the caret on
     (`cursor_screen_position`), read after the render like the viewport,
@@ -210,7 +210,7 @@ in both profiles, as Vim's cursor covers its own bracket under MatchParen.
 The partner still lights, and so does the bracket before a caret between
 chars (R2), since that is not the caret's cell. Under a selection that
 doesn't cover the caret, the draw hides the caret, so that cell lights as
-before. (Since #189 no pair lights under a selection, §7.) The response draws no caret (a tinted cursor row only), so its
+before. (Since #189 that holds in the vim profile only; arrows lights no pair under a selection, §7.) The response draws no caret (a tinted cursor row only), so its
 pair is unchanged.
 
 What is kept from Vim is the outcome, not the paint. Vim's matchparen
@@ -233,7 +233,7 @@ lights.
   - arrows caret on `{` lights its partner, and a caret just after `}` lights both (R1, R2);
   - the caret's own cell keeps the caret's look, in arrows and vim Normal, and
     lights when the draw hides the caret under a selection (R8, #187;
-    removed by #189, §7);
+    the vim profile's since #189, §7);
   - an unfocused body lights nothing (R7);
   - a partner outside the view lights nothing (R5);
   - Visual and a search match paint over the bracket style (R8);
@@ -390,15 +390,15 @@ profile, the user said:
   `body.selection` is set. The editor's per-frame profile copy, which
   #129 named `prompt_row`, is renamed `vim_profile`, since it now decides
   this too.
-- That leaves no draw that paints the pair with `body.selection` set: the
-  vim engine turns edtui's selection into Visual or drops it when it
-  settles each event (`settle`), and Visual is an overlay. So R8's two
-  selection cases from #187 are removed with the cases themselves: a
-  selected cell keeping its fill over the pair, and a caret hidden under
-  a selection lighting its own bracket (the painter's `caret_shown`
-  argument). R8 now reads: Visual and search hits paint over the pair,
-  and the caret's cell keeps the caret's look. Review round 2 found the
-  code for them close to dead once arrows stopped there.
+- The vim profile can still draw with `body.selection` set, so R8's two
+  selection cases from #187 stay for it: a selected cell keeps its fill
+  over the pair, and a caret hidden under a selection lights its own
+  bracket (the painter's `caret_shown` argument). The path: a selection
+  made in arrows outlives a switch to vim until the engine settles it at
+  the next key or click routed to the body; the session that opens on
+  return does not settle. Review round 2 removed these cases as
+  unreachable, and round 3 found the path. The user, asked whether to
+  put them back: "189 back to round 1."
 - Response: `ReadyView::lit_pair` answers `None` first in arrows while
   `sel` is set, before its memo, so the rule sits where the pair comes
   from, as the body's does.
@@ -406,6 +406,8 @@ profile, the user said:
 **Tests.** Editor: an arrows selection from keys or a drag lights nothing,
 and the pair is back once it goes; vim Visual keeps the partner lit, and
 an edtui selection stops only the arrows draw. The #187 hidden-caret and
-covered-caret tests are gone with their cases. Response: an arrows drag
+covered-caret tests run in the vim profile, and an app test switches an
+arrows selection to vim and checks the selected bracket keeps its fill
+and the partner lights. Response: an arrows drag
 and shift+↓ light nothing, and clearing the selection brings the clicked
 pair back; vim's `V` keeps the pair.
