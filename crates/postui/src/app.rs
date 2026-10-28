@@ -1664,33 +1664,32 @@ impl App {
         }
     }
 
+    /// A click on grid row `row`'s radio, copy or trash: the grid cursor
+    /// goes there (column `col`), and the keyboard with it.
+    fn vm_point_grid(&mut self, row: usize, col: usize) {
+        let Self { project, varmanager, .. } = self;
+        if let Some(p) = project {
+            varmanager.point_grid(p, row, col);
+            varmanager.focus = crate::components::varmanager::VmFocus::Grid;
+        }
+    }
+
     /// Hands the Manage screen's shared state over to `tab`, for both
     /// spellings of a tab switch (`OpenManage` with a tab, and the strip's
-    /// `SelectManageTab`). Each list tab keeps its own cursor; a parked
-    /// cursor past the end of a list that shrank while away clamps here.
+    /// `SelectManageTab`). Each list tab keeps its own cursor, by name; one
+    /// whose item went while it was away settles on the first item here
+    /// (spec 2026-10-27 N6).
     /// The screen's open inputs close first, saved (`close_open_inputs`): a
     /// Settings field or a Variables input points at something the new tab
     /// does not show. The request editor's are not the screen's and stay
     /// as they are. `false`, with no switch, when one refuses to.
     fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
-        use crate::components::manage::ManageTab;
         if !self.close_inputs_or_stop(false) {
             return false;
         }
         self.manage.switch_list(tab);
-        if matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
-            self.clamp_list(tab);
-        }
+        self.settle_list(tab);
         true
-    }
-
-    /// Moves the Manage screen's list cursor onto `name` in the open tab.
-    fn manage_select_name(&mut self, name: &str) {
-        let Self { project, manage, .. } = self;
-        if let Some(p) = project {
-            let tab = manage.tab;
-            manage.list_for_mut(tab).select_name(tab, p, name);
-        }
     }
 
     /// Puts `tab`'s own list cursor (live or parked) on `name`.
@@ -1701,13 +1700,30 @@ impl App {
         }
     }
 
-    /// Clamps `tab`'s own list cursor to the list's current length.
-    fn clamp_list(&mut self, tab: crate::components::manage::ManageTab) {
+    /// Settles `tab`'s own list cursor on the first item when it is on
+    /// nothing, as the list comes on screen (spec 2026-10-27 N6). A no-op
+    /// for the tabs with no list (Variables, Settings): `list_for_mut`
+    /// would hand back the live list, which is another tab's.
+    fn settle_list(&mut self, tab: crate::components::manage::ManageTab) {
+        use crate::components::manage::ManageTab;
+        if !matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
+            return;
+        }
         let Self { project, manage, .. } = self;
         if let Some(p) = project {
-            let len = crate::components::manage_list::ManageList::items(tab, p).len();
-            manage.list_for_mut(tab).clamp(len);
+            manage.list_for_mut(tab).settle(tab, p);
         }
+    }
+
+    /// The neighbour a delete of `name` from `tab`'s list hands the cursor
+    /// to, read before the delete (spec N7, `ManageList::neighbour`).
+    fn list_neighbour(
+        &self,
+        tab: crate::components::manage::ManageTab,
+        name: &str,
+    ) -> Option<String> {
+        self.project()
+            .and_then(|p| crate::components::manage_list::ManageList::neighbour(tab, p, name))
     }
 
     /// Re-reads the project's own documents, without the app-level
@@ -5548,6 +5564,14 @@ impl App {
                 if self.screen == Screen::Manage {
                     self.sync_varmanager();
                 }
+                // The same for the Environments and Spaces lists: their
+                // cursors hold the old project's slugs (task #83), which
+                // must not land on a same-named item here. With Manage up on
+                // one of them, it settles on the new project's first item now.
+                self.manage.reset_lists();
+                if self.screen == Screen::Manage {
+                    self.settle_list(self.manage.tab);
+                }
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.
@@ -5749,6 +5773,7 @@ impl App {
                 }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.create_environment(&name) {
@@ -6888,6 +6913,12 @@ impl App {
                 // left lifted on a tab nobody is looking at.
                 self.settings.focused = target == crate::components::manage::ManageTab::Settings;
                 if self.screen != Screen::Manage {
+                    // The list tab coming up settles its cursor on its
+                    // first item when it is on nothing (spec 2026-10-27
+                    // N6): the first open, or its item went while the
+                    // screen was down. (A tab switch above settled it
+                    // already; settling is idempotent.)
+                    self.settle_list(target);
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
                     // A freshly opened screen snaps its underline onto
@@ -7248,7 +7279,10 @@ impl App {
                         if let VarStructOp::NewVar { name, .. }
                         | VarStructOp::NewSelector { name, .. } = &op
                         {
-                            self.varmanager.select_name(name);
+                            let Self { project, varmanager, .. } = self;
+                            if let Some(p) = project {
+                                varmanager.select_name(p, name);
+                            }
                         }
                         self.record_project_step(t, label);
                         // Deletes act without a confirm gate, so their
@@ -7722,6 +7756,7 @@ impl App {
                 }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.create_space(&name) {
@@ -7762,15 +7797,25 @@ impl App {
                 if to.trim() == self.env_name(&from) {
                     return true;
                 }
-                let t = self.begin_op();
+                // A list op: the rename moves the Environments list's own
+                // cursor, live or parked, so both undo views record it
+                // (spec 2026-10-27 N3, N8).
+                let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.rename_environment(&from, &to) {
                     Ok(to) => {
+                        let envs = crate::components::manage::ManageTab::Environments;
+                        self.manage.list_for_mut(envs).renamed(&from, &to);
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
-                            self.manage_select_name(&to);
+                            // With its tab on screen, the list jumps onto
+                            // the renamed environment, wherever it was.
+                            if self.manage.tab == envs {
+                                self.select_list_row(envs, &to);
+                            }
                         }
                         self.toasts.push(
                             format!("Renamed environment to {}", self.env_name(&to)),
@@ -7837,8 +7882,13 @@ impl App {
             }
             Action::ForceDeleteEnv(name) => {
                 let display = self.env_name(&name);
-                let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
+                let envs = crate::components::manage::ManageTab::Environments;
+                let t = self.begin_list_op(envs);
+                // Named before the delete, which re-reads the list from
+                // disk: the cursor's neighbour (spec 2026-10-27 N7).
+                let next = self.list_neighbour(envs, &name);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 // Core drops the table, the secrets and the selections,
@@ -7855,7 +7905,7 @@ impl App {
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
                         }
-                        self.clamp_list(crate::components::manage::ManageTab::Environments);
+                        self.manage.list_for_mut(envs).removed(&name, next);
                         self.record_project_step(t, crate::undo::StepLabel::delete_env(&display));
                     }
                     Err(e) => {
@@ -7881,13 +7931,18 @@ impl App {
                     return true;
                 }
                 let cursor = self.sidebar.selected_key();
-                let t = self.begin_op();
+                // A list op: the rename moves the Spaces list's own cursor,
+                // live or parked, so both undo views record it (spec
+                // 2026-10-27 N3, N8).
+                let spaces = crate::components::manage::ManageTab::Spaces;
+                let t = self.begin_list_op(spaces);
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
                     return true;
                 };
                 match p.rename_space(&from, &to) {
                     Ok(to) => {
+                        self.manage.list_for_mut(spaces).renamed(&from, &to);
                         self.follow_space(&from, &to);
                         let from_prefix = format!("{from}/");
                         let rekey = |s: &str| {
@@ -7915,7 +7970,11 @@ impl App {
                         );
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
-                            self.manage_select_name(&to);
+                            // With its tab on screen, the list jumps onto
+                            // the renamed space, wherever it was.
+                            if self.manage.tab == spaces {
+                                self.select_list_row(spaces, &to);
+                            }
                         }
                         self.record_project_step(
                             t,
@@ -7959,8 +8018,13 @@ impl App {
                 if was_active || self.open_in_space(&name) {
                     self.commit_table_edit();
                 }
-                let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
+                let spaces = crate::components::manage::ManageTab::Spaces;
+                let t = self.begin_list_op(spaces);
+                // Named before the delete, which re-reads the list from
+                // disk: the cursor's neighbour (spec 2026-10-27 N7).
+                let next = self.list_neighbour(spaces, &name);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.delete_space(&name) {
@@ -7978,7 +8042,7 @@ impl App {
                         } else {
                             self.land(Landing::default());
                         }
-                        self.clamp_list(crate::components::manage::ManageTab::Spaces);
+                        self.manage.list_for_mut(spaces).removed(&name, next);
                         self.record_project_step(t, crate::undo::StepLabel::delete_space(&display));
                     }
                     Err(e) => {
@@ -7995,11 +8059,12 @@ impl App {
                 };
                 match p.move_space(&name, delta) {
                     Ok(_) => {
-                        // The Manage screen's list cursor follows the space
-                        // that just moved, rather than staying on the row
-                        // index the reorder swapped something else into.
-                        if self.screen == Screen::Manage {
-                            self.manage_select_name(&name);
+                        // The Spaces list on screen lands on the space that
+                        // just moved and scrolls it into view, so a row
+                        // moved past the edge of the list stays in sight.
+                        let spaces = crate::components::manage::ManageTab::Spaces;
+                        if self.screen == Screen::Manage && self.manage.tab == spaces {
+                            self.select_list_row(spaces, &name);
                         }
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
@@ -8025,12 +8090,11 @@ impl App {
                 };
                 match p.move_environment(&name, delta) {
                     Ok(_) => {
-                        // The Manage screen's list cursor follows the
-                        // environment that just moved, rather than staying
-                        // on the row index the reorder swapped something
-                        // else into.
-                        if self.screen == Screen::Manage {
-                            self.manage_select_name(&name);
+                        // As `MoveSpace`: the list lands on the moved
+                        // environment and scrolls it into view.
+                        let envs = crate::components::manage::ManageTab::Environments;
+                        if self.screen == Screen::Manage && self.manage.tab == envs {
+                            self.select_list_row(envs, &name);
                         }
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
@@ -9174,6 +9238,10 @@ impl App {
             VarStructOp::PasteOption { count, .. } => (*count).max(1),
             _ => 1,
         };
+        // Where the grid cursor goes once the write lands, named now: the
+        // write re-reads the file, so only a name survives it (spec
+        // 2026-10-27 N7–N9).
+        let grid_target = self.project().and_then(|p| self.varmanager.grid_target(p, op));
         let p = self.project_mut().ok_or_else(|| NO_PROJECT.to_string())?;
         if times == 1 {
             p.apply_var_edit(&edit)
@@ -9181,6 +9249,11 @@ impl App {
             p.cascade(edit.label(), |p| (0..times).try_for_each(|_| p.apply_var_edit(&edit)))
         }
         .map_err(|e| e.to_string())?;
+        if let Some(spot) = grid_target
+            && let Self { project: Some(p), varmanager, .. } = self
+        {
+            varmanager.land_grid(p, &spot);
+        }
         if let VarStructOp::Promote { name, .. } = op {
             // The project side of the promote is durable the moment core
             // returns `Ok`. The compensating half — removing the option
@@ -9449,11 +9522,19 @@ impl App {
         match result {
             Ok(()) => {
                 self.sync_varmanager();
-                // The ghost flow keeps going left-to-right: the row that
-                // was the ghost is now a real option (appended, so it keeps
-                // its index) with its first field cell live.
-                if walk_on && ghost && !fields.is_empty() {
-                    self.vm_start_cell_edit(edit.row, 1);
+                // The ghost flow keeps going left-to-right into the new
+                // option's first field cell. Its row is read from the grid
+                // cursor, which the create left on the option by name
+                // (spec 2026-10-27 N9): the write re-read the file, so an
+                // edit another program made can have moved the option off
+                // the ghost's old index.
+                let created = self.project().and_then(|p| self.varmanager.grid_at(p));
+                if walk_on
+                    && ghost
+                    && !fields.is_empty()
+                    && let Some((row, _)) = created
+                {
+                    self.vm_start_cell_edit(row, 1);
                 }
                 self.record_project_step(t, label);
                 true
@@ -10052,11 +10133,8 @@ impl App {
         };
         let mut reordered = None;
         if commit && drag.working != drag.original && self.project.is_some() {
-            // The cursor index followed the row through the working order;
-            // read against the order on disk it names another row. Put it
-            // back on the dragged item first, so the step's before-view
-            // holds the row the drag started from.
-            self.manage_select_name(&drag.name);
+            // The cursor holds the dragged item's name from `begin_drag`
+            // on, so the step's before-view already records that row.
             let t = self.begin_op();
             let Some(p) = self.project.as_mut() else { return true };
             let (written, label) = match drag.tab {
@@ -10080,9 +10158,10 @@ impl App {
                 Err(e) => self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
-        // The list cursor follows the item that was dragged, wherever it
-        // ended up — committed or snapped back.
-        self.manage_select_name(&drag.name);
+        // The list cursor is on the dragged item by name already; this
+        // scrolls it into view wherever it ended up, committed or snapped
+        // back.
+        self.select_list_row(drag.tab, &drag.name);
         if let Some((t, label)) = reordered {
             self.record_project_step(t, label);
         }
@@ -12262,13 +12341,22 @@ impl App {
     /// A commit that failed keeps its own edit (spec §5) and this leaves it
     /// exactly where it is; a ghost-row commit that already walked the edit
     /// on into the new option's first field is likewise left alone.
+    ///
+    /// The step counts from the committed option's row *after* the commit,
+    /// read from the grid cursor, which stays on that option by name (a
+    /// rename follows it, N8): the commit's write re-reads the file, so an
+    /// edit another program made can have moved the option off the row the
+    /// cell was opened at (task #83).
     fn step_grid_edit(&mut self, dir: i32) {
-        let at = self.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+        let col = self.varmanager.grid.editing.as_ref().map(|e| e.col);
         self.commit_grid_edit(true);
-        let Some((row, col)) = at else { return };
+        let Some(col) = col else { return };
         if self.varmanager.grid.editing.is_some() {
             return;
         }
+        let Some((row, _)) = self.project().and_then(|p| self.varmanager.grid_at(p)) else {
+            return;
+        };
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
