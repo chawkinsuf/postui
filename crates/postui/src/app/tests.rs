@@ -7357,6 +7357,33 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
+/// #206: the Rename prompt and New request here name a hand-made folder
+/// whose name `slugify` would change (`old-`) by its own name, and both
+/// land in it.
+#[test]
+fn rename_and_new_request_here_keep_a_hand_made_folder() {
+    let mut app = App::new_for_test();
+    let ping =
+        postui_core::model::HttpRequest::from_toml_str("url = \"https://x/ping\"\n").unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/old-/ping", &ping).unwrap();
+    app.update(Action::RefreshSidebar);
+    // Opening it unfolds `old-`, so the cursor can sit on its row.
+    app.update(Action::ForceOpenRequest("main/old-/ping".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/old-/ping"));
+    app.update(Action::PromptRenameRequest);
+    assert_eq!(app.modals.focused_input().unwrap().text(), "old-/ping");
+    type_str(&mut app, "2");
+    submit_prompt(&mut app);
+    assert!(app.proj().request_exists("main/old-/ping2"), "{:?}", app.toasts.messages());
+    assert!(!app.proj().root().join("requests/main/old").exists());
+
+    app.update(Action::PromptNewRequestIn("main/old-".into()));
+    assert_eq!(app.modals.focused_input().unwrap().text(), "old-/");
+    type_str(&mut app, "Fresh");
+    submit_prompt(&mut app);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/old-/fresh"));
+}
+
 #[test]
 fn delete_and_duplicate_toasts_show_display_names() {
     let mut app = App::new_for_test();

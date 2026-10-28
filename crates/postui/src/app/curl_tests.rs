@@ -1089,6 +1089,33 @@ fn a_folder_in_the_name_comment_reads_from_the_space_top() {
     assert!(app.toasts.last_message().unwrap().starts_with("Replaced ping from curl \u{2014}"));
 }
 
+/// #206: in a hand-made folder whose name `slugify` would change (`old-`,
+/// `-wip`), the request's own name renames nothing and a new name stays in
+/// that folder. (A hand-made space is the core's
+/// `a_hand_made_space_keeps_its_creates_and_renames`.)
+#[test]
+fn a_name_comment_keeps_a_hand_made_folder() {
+    for slug in ["main/old-/ping", "main/-wip/ping"] {
+        let folder = slug.rsplit_once('/').unwrap().0;
+        let mut app = app_with_clip("# @name ping\ncurl https://x/new");
+        postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/old"))
+            .unwrap();
+        app.update(Action::RefreshSidebar);
+        replace(&mut app, Some(slug));
+        assert_eq!(app.editor.slug.as_deref(), Some(slug), "{:?}", app.toasts.messages());
+        let msg = app.toasts.last_message().unwrap();
+        assert!(msg.starts_with("Replaced ping from curl \u{2014}"), "{slug}: {msg}");
+
+        let mut app = app_with_clip("# @name Pong\ncurl https://x/new");
+        postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/old"))
+            .unwrap();
+        app.update(Action::RefreshSidebar);
+        replace(&mut app, Some(slug));
+        let want = format!("{folder}/pong");
+        assert_eq!(app.editor.slug.as_deref(), Some(want.as_str()), "{:?}", app.toasts.messages());
+    }
+}
+
 /// N3 (amended): a bare name keeps the request in its folder.
 #[test]
 fn a_bare_name_comment_keeps_the_request_folder() {

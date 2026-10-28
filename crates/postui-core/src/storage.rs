@@ -116,9 +116,16 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
 }
 
 /// Splits a typed display path into `(folder_slug_prefix, leaf_display)`:
-/// `/` still means folders, each folder segment is slugified, and the
-/// last segment — trimmed — is the free-form display name. `None` when
-/// the leaf is empty.
+/// `/` still means folders, and the last segment — trimmed — is the
+/// free-form display name. `None` when the leaf is empty.
+///
+/// A folder segment is trimmed and lowercased, and used as it stands when
+/// that is already a valid slug segment; only the rest are slugified.
+/// The prompts prefill a folder by its on-disk name, and `slugify` is not
+/// the identity on every valid name (it trims a leading or trailing `-`),
+/// so slugifying every segment moved a request out of a hand-made `old-`
+/// into `old` (#206). The cost: a typed new folder keeps a dash at either
+/// end (`x-/Name` makes `x-/`, `-/Name` makes `-/`).
 pub fn split_display_path(input: &str) -> Option<(String, String)> {
     let (folders, leaf) = match input.rsplit_once('/') {
         Some((f, l)) => (f, l),
@@ -130,8 +137,9 @@ pub fn split_display_path(input: &str) -> Option<(String, String)> {
     }
     let folder = folders
         .split('/')
-        .filter(|s| !s.trim().is_empty())
-        .map(slugify)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .map(|s| if validate_slug(&s).is_ok() { s } else { slugify(&s) })
         .collect::<Vec<_>>()
         .join("/");
     Some((folder, leaf.to_string()))
@@ -171,6 +179,31 @@ mod tests {
         );
         assert_eq!(split_display_path("folder/   "), None, "empty leaf");
         assert_eq!(split_display_path(""), None);
+    }
+
+    /// #206: a folder segment that is already a valid on-disk name, once
+    /// lowercased, is used as typed; only the rest are slugified.
+    #[test]
+    fn split_display_path_keeps_a_folder_that_is_already_a_slug() {
+        assert_eq!(split_display_path("old-/Ping"), Some(("old-".into(), "Ping".into())));
+        assert_eq!(split_display_path("-wip/Ping"), Some(("-wip".into(), "Ping".into())));
+        assert_eq!(split_display_path("Old-/Ping"), Some(("old-".into(), "Ping".into())));
+        assert_eq!(
+            split_display_path("main/old-/x-/Ping"),
+            Some(("main/old-/x-".into(), "Ping".into()))
+        );
+        assert_eq!(split_display_path("-/Ping"), Some(("-".into(), "Ping".into())));
+        assert_eq!(
+            split_display_path(" old- /Ping"),
+            Some(("old-".into(), "Ping".into())),
+            "surrounding spaces are not part of the name"
+        );
+        assert_eq!(
+            split_display_path("Old Stuff-/Ping"),
+            Some(("old-stuff".into(), "Ping".into())),
+            "a segment that is not a slug is slugified as before"
+        );
+        assert_eq!(split_display_path("../Ping"), Some(("request".into(), "Ping".into())));
     }
 
     #[test]

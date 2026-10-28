@@ -1005,6 +1005,54 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
+    /// #206: a hand-made folder whose name `slugify` would change (`old-`,
+    /// `-wip`) is still the folder a rename that names it lands in.
+    #[test]
+    fn rename_in_a_hand_made_folder_keeps_the_folder() {
+        let (dir, mut p) = fixture();
+        for folder in ["old-", "-wip"] {
+            std::fs::create_dir_all(dir.path().join(format!("requests/main/{folder}"))).unwrap();
+            std::fs::write(
+                dir.path().join(format!("requests/main/{folder}/ping.toml")),
+                "name = \"ping\"\nmethod = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+        }
+        p.relist();
+        for folder in ["old-", "-wip"] {
+            let from = format!("main/{folder}/ping");
+            let (slug, leaf) = p.rename_request(&from, &format!("main/{folder}/Ping2")).unwrap();
+            assert_eq!(
+                (slug.as_str(), leaf.as_str()),
+                (format!("main/{folder}/ping2").as_str(), "Ping2")
+            );
+            assert!(dir.path().join(format!("requests/main/{folder}/ping2.toml")).is_file());
+        }
+        let (slug, _) = p.create_request("main/old-/Fresh", req("u")).unwrap();
+        assert_eq!(slug, "main/old-/fresh", "a create names the folder the same way");
+    }
+
+    /// #206: in a hand-made space whose name `slugify` would change, a
+    /// rename stays in the space and a create lands in it, never in a new
+    /// `requests/old/` beside it.
+    #[test]
+    fn a_hand_made_space_keeps_its_creates_and_renames() {
+        let (dir, _p) = fixture();
+        std::fs::create_dir_all(dir.path().join("requests/old-")).unwrap();
+        std::fs::write(
+            dir.path().join("requests/old-/ping.toml"),
+            "name = \"ping\"\nmethod = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let (slug, _) = p.rename_request("old-/ping", "old-/Ping2").unwrap();
+        assert_eq!(slug, "old-/ping2");
+        let (slug, _) = p.create_request("old-/Fresh", req("u")).unwrap();
+        assert_eq!(slug, "old-/fresh");
+        assert!(dir.path().join("requests/old-/fresh.toml").is_file());
+        assert!(!dir.path().join("requests/old").exists());
+    }
+
     #[test]
     fn move_all_refuses_whole_when_a_source_is_missing() {
         let (dir, mut p) = fixture();
