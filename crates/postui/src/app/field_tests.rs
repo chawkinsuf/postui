@@ -1735,6 +1735,9 @@ fn a_selection_left_by_a_switch_to_vim_keeps_its_fill() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("{"));
     app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    // The end of the switch's event: the engine takes the body, settling
+    // nothing.
+    app.vim_catch_up();
     let buf = draw_buffer(&mut app);
     assert!(app.editor.body.selection.is_some(), "the switch leaves it");
     let area = app.editor.last_body_area.unwrap();

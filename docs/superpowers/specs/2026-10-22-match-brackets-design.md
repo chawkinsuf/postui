@@ -382,7 +382,7 @@ profile, the user said:
 
 | # | Rule | From |
 |---|---|---|
-| R21 | Arrows, body and response: while text is selected (a drag, a double click, shift+arrows, select-all, the response's shift+↑/↓ lines), no pair lights, whether or not the selection is in view (it is still what a copy takes). Once the selection goes, the pair lights again by R1/R10 (the response's click is kept, not forgotten). The vim profile keeps the pair in Visual and under a drag, as Vim does. | you; in-view-or-not and the kept click are mine |
+| R21 | Arrows, body and response: while text is selected (a drag, a double click, shift+arrows, select-all, the response's shift+↑/↓ lines), no pair lights, whether or not the selection is in view (it is still what a copy takes). A drag back onto its own anchor selects nothing, so the pair shows there until the drag moves on. Once the selection goes, the pair lights again by R1/R10 (the response's click is kept, not forgotten). The vim profile keeps the pair in Visual and under a drag, as Vim does. | you; in-view-or-not, the drag back onto its anchor and the kept click are mine |
 
 **Design.**
 
