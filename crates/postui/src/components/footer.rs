@@ -197,6 +197,21 @@ pub(crate) fn footer_chips(
         ],
         PaneId::Editor => {
             let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
+            // The field's own key leads the row: an open field's Esc closes
+            // it (the field rule).
+            if field_open {
+                chips.push((Key::Named("esc"), "done", Some(Action::CloseField)));
+            } else if url_selected {
+                // Selected, not open: the field rule's other half — Enter
+                // opens it, matching every other surface (spec
+                // 2026-09-16). `Action::FocusUrl` both focuses the bar and
+                // opens it (`Editor::open_url_from_app`), so it is the
+                // right action here too, not just for a jump from another
+                // pane. Gated on `url_selected`, not `url_focused`: the
+                // method badge's Enter opens the method dropdown, not
+                // this action.
+                chips.push((Key::Named("enter"), "edit", Some(Action::FocusUrl)));
+            }
             if url_focused {
                 // "tls" leans on context (the padlock sits in the focused
                 // bar); labels stay tight so the vars chip survives the
@@ -269,21 +284,6 @@ pub(crate) fn footer_chips(
                     "send",
                     Some(Action::Send),
                 )),
-            }
-            if field_open {
-                // Inserted last so the row/address-bar chips above land
-                // where they mean to; it leads the row all the same.
-                chips.insert(0, (Key::Named("esc"), "done", Some(Action::CloseField)));
-            } else if url_selected {
-                // Selected, not open: the field rule's other half — Enter
-                // opens it, matching every other surface (spec
-                // 2026-09-16). `Action::FocusUrl` both focuses the bar and
-                // opens it (`Editor::open_url_from_app`), so it is the
-                // right action here too, not just for a jump from another
-                // pane. Gated on `url_selected`, not `url_focused`: the
-                // method badge's Enter opens the method dropdown, not
-                // this action.
-                chips.insert(0, (Key::Named("enter"), "edit", Some(Action::FocusUrl)));
             }
             chips
         }
