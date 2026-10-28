@@ -1409,10 +1409,11 @@ impl Editor {
     /// counts. (A caret on such a line's cut-off rows stays hidden; that
     /// is edtui's rule on every frame, and not this one's to change.) One
     /// wrap walk of the lines in view, the one edtui's render does too.
+    /// `None` also when no line is in view (a top past the text).
     fn fit_body_rows(&mut self, area: Rect) -> Option<usize> {
         let view = self.body_view(area, usize::MAX)?;
         self.body.set_viewport_height(view.rows.len());
-        (view.top + view.rows.len()).checked_sub(1)
+        view.rows.len().checked_sub(1).map(|n| view.top + n)
     }
 
     /// Where the body's text rows sit in `area` from edtui's viewport top.
@@ -1805,16 +1806,24 @@ impl Editor {
         // wheel would stop there. Its pull again, with the count from the
         // new top (which also tells the next notch, and `handle_scroll`'s
         // notches arrive with no render between them).
+        //
+        // Why only here: the wheel is the one move that sets the top and
+        // lets the caret follow. Every other move (keys, the vim engine's
+        // scrolls, a restored caret) places the caret, and the render then
+        // brings it into view, which is what it should do. Here that
+        // scroll undid the wheel's top.
         if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
             && let Some(last) = self.fit_body_rows(area)
             && self.body.cursor.row > last
         {
             // edtui's column clamp: on a char in Normal, after one
             // otherwise.
-            let len = self.body.lines.len_col(last).unwrap_or(0);
-            let max =
-                if self.body.mode == EditorMode::Normal { len.saturating_sub(1) } else { len };
-            self.body.cursor = edtui::Index2::new(last, self.body.cursor.col.min(max));
+            let at = edtui::Index2::new(last, self.body.cursor.col);
+            self.body.cursor = if self.body.mode == EditorMode::Normal {
+                self.clamp_to_cell(at)
+            } else {
+                edtui::Index2::new(last, at.col.min(self.body.lines.len_col(last).unwrap_or(0)))
+            };
         }
         // edtui 0.11.6 gets the caret wrong on a plain click: its own
         // click→cursor mapping clamps the column to `len - 1` (so a click
