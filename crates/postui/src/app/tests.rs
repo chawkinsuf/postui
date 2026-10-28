@@ -19243,9 +19243,7 @@ fn tab_skips_a_description_column_the_narrow_grid_does_not_draw() {
 /// commit of a grid edit the draw left off screen (task #199).
 fn main_loop_frame_at(app: &mut App, w: u16, h: u16) {
     rendered_text_at(app, w, h);
-    if app.commit_grid_edit_off_screen() {
-        app.vim_catch_up();
-    }
+    app.commit_grid_edit_off_screen();
 }
 
 /// Task #199 (the user: "198 a."): a resize that drops the column of an

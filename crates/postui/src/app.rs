@@ -9566,8 +9566,9 @@ impl App {
     /// and the write happens here, at the event boundary right after it.
     /// It ends as the grid's own keys do (`handle_grid_key`), through
     /// `update(Action::Render)`, so the commit gets the same event tail
-    /// as any input. Returns whether it acted (the caller repaints and
-    /// catches the vim session up, as for an async action).
+    /// as any input, then catches the vim session up, as the main loop
+    /// does after an async action. Returns whether it acted (the caller
+    /// repaints).
     ///
     /// A dialog over the screen doesn't stop it: the commit saves what was
     /// typed into the cell and nothing else, as a click away would, and a
@@ -9601,6 +9602,7 @@ impl App {
         }
         self.commit_grid_edit(false);
         self.update(Action::Render);
+        self.vim_catch_up();
         true
     }
 

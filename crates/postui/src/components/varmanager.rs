@@ -1075,7 +1075,10 @@ impl VarManager {
     /// an edit opened since then has to be on screen first. The flags say
     /// whether an edit was painted, not which one: an edit that replaced
     /// a painted one within one event (the Tab walk) and isn't painted
-    /// counts too, and committing it, untouched, writes nothing.
+    /// counts too, and committing it, untouched, writes nothing. Not
+    /// keeping which one is deliberate: an edit the draw didn't paint is
+    /// live off screen, the state this exists to end, so a check that
+    /// matched the painted cell would leave that one open.
     pub fn take_edit_hidden_by_draw(&mut self) -> bool {
         let was_painted = std::mem::take(&mut self.edit_painted_before);
         was_painted && !self.edit_painted && self.grid.editing.is_some()
