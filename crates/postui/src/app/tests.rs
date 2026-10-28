@@ -12097,6 +12097,18 @@ fn the_add_option_prompt_refuses_a_name_that_already_exists() {
     assert!(app.last_action_failed);
     let after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert_eq!(after, before, "nothing written");
+
+    // Through the prompt itself: the refusal re-opens it with the typing.
+    app.anims.enabled = false;
+    app.update(Action::OpenNewOptionInlinePrompt { owner: "locale".into() });
+    type_chars(&mut app, "en");
+    click_hit(&mut app, Hit::ModalConfirm);
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the prompt re-opened: {:?}", app.toasts.messages());
+    };
+    assert_eq!(fields[0].input.text(), "en");
+    let after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert_eq!(after, before, "nothing written");
 }
 
 #[test]
@@ -18506,11 +18518,41 @@ fn an_existing_name_in_the_ghost_row_is_refused_and_keeps_the_typed_text() {
 
     // Tab is refused the same way: it neither walks on into alice's value
     // cell nor writes.
+    app.last_action_failed = false;
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(app.last_action_failed, "the refusal fails the key");
     let edit = app.varmanager.grid.editing.as_ref().expect("Tab left the edit in place");
     assert_eq!((edit.row, edit.col, edit.input.text()), (2, 0, "alice"));
     let after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert_eq!(after, before, "nothing written");
+}
+
+/// Task #196: the refusal reads the file the create writes, so an option
+/// another program added since the last reload (not in the grid yet) is
+/// refused too, and keeps its values.
+#[test]
+fn a_ghost_name_added_outside_since_the_last_reload_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let qa = dir.path().join("environments/qa.toml");
+    let mut outside = std::fs::read_to_string(&qa).unwrap();
+    outside.push_str("\n[options.user.carol]\nuser = \"3003\"\n");
+    std::fs::write(&qa, &outside).unwrap();
+
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    for c in "carol".chars() {
+        app.handle_key(plain(c));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.toasts.last_message(), Some("option \"carol\" already exists on user"));
+    let edit = app.varmanager.grid.editing.as_ref().expect("the refusal left the edit in place");
+    assert_eq!(edit.input.text(), "carol");
+    assert_eq!(std::fs::read_to_string(&qa).unwrap(), outside, "carol keeps her values");
 }
 
 #[test]

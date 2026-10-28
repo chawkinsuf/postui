@@ -533,6 +533,30 @@ pub fn upsert_option(
     Ok(doc.to_string())
 }
 
+/// Creates `[options.<selector>."<option>"]` as [`upsert_option`] writes
+/// it, but only when `doc` has no option by that name yet: `Conflict` if
+/// it has, since writing a new option's values over an existing one would
+/// replace them (task #196). The check reads `doc`, the file as the write
+/// finds it, so an option another program added since the last reload is
+/// refused too, not overwritten.
+pub fn create_option(
+    doc: &str,
+    selector: &str,
+    option: &str,
+    description: Option<&str>,
+    values: &IndexMap<String, String>,
+) -> Result<String, EditError> {
+    check_option_name(option)?;
+    let mut parsed = parse(doc)?;
+    if options_selector_mut(parsed.as_table_mut(), selector).is_some_and(|g| g.contains_key(option))
+    {
+        return Err(EditError::Conflict(format!(
+            "option \"{option}\" already exists on {selector}"
+        )));
+    }
+    upsert_option(doc, selector, option, description, values)
+}
+
 /// Renames one option of `selector`. `NotFound` if the selector or the option
 /// isn't in this environment; `Conflict` if `to` already exists (the
 /// rename would merge two records into one).

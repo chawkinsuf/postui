@@ -72,6 +72,8 @@ pub enum VarEdit {
         request_value: String,
         target: PromoteTarget,
     },
+    /// Creates option `name`; refused when the file already holds one by
+    /// that name ([`varedit::create_option`]).
     NewOption {
         env: String,
         selector: String,
@@ -397,10 +399,13 @@ impl Project {
                     Ok(())
                 })
             }
+            // A create, never an update: an option `name` that the file
+            // already holds is refused, checked against the file text the
+            // write reads (task #196).
             VarEdit::NewOption { env, selector, name, description, values } => {
                 self.cascade(label, |p| {
                     p.edit_options_home(selector, env, |doc| {
-                        varedit::upsert_option(doc, selector, name, description.as_deref(), values)
+                        varedit::create_option(doc, selector, name, description.as_deref(), values)
                     })
                 })
             }
@@ -464,12 +469,15 @@ impl Project {
                 // then `"<name> copy-2"`, … while the name is taken. A
                 // paste never overwrites the row it collides with, so
                 // pasting back into the environment a row came from is
-                // exactly a duplicate of it.
+                // exactly a duplicate of it. The name is picked from the
+                // loaded options; the write is a create, so a name another
+                // program took since the last reload is refused rather
+                // than written over (task #196).
                 let taken = self.options_of_for(env, selector).unwrap_or_default();
                 let fresh = pasted_option_name(name, |n| taken.contains_key(n));
                 self.cascade(label, |p| {
                     p.edit_options_home(selector, env, |doc| {
-                        varedit::upsert_option(
+                        varedit::create_option(
                             doc,
                             selector,
                             &fresh,
@@ -1038,5 +1046,79 @@ mod tests {
         assert!(qa.contains("[options.creds.\"alice copy-2\"]"), "{qa}");
         // The row it collided with is still there, unchanged.
         assert!(qa.contains("[options.creds.alice]"), "{qa}");
+    }
+
+    fn creds_values(user_id: &str, customer_id: &str) -> IndexMap<String, String> {
+        IndexMap::from([
+            ("user_id".to_string(), user_id.to_string()),
+            ("customer_id".to_string(), customer_id.to_string()),
+        ])
+    }
+
+    /// Task #196: `NewOption` creates, so an option the file already holds
+    /// is refused, nothing is written and no journal entry lands. It used
+    /// to write the new values over the existing option's.
+    #[test]
+    fn new_option_refuses_a_name_the_file_already_holds() {
+        let (dir, mut p) = vars_fixture();
+        let before = read(&dir, "environments/qa.toml").unwrap();
+        let err = p
+            .apply_var_edit(&VarEdit::NewOption {
+                env: "qa".into(),
+                selector: "creds".into(),
+                name: "alice".into(),
+                description: None,
+                values: creds_values("", ""),
+            })
+            .unwrap_err();
+        assert_eq!(err.to_string(), "option \"alice\" already exists on creds");
+        assert_eq!(read(&dir, "environments/qa.toml").unwrap(), before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// The refusal reads the file the write reads, not the loaded options:
+    /// an option another program added since the project was read is
+    /// refused too, and keeps its values.
+    #[test]
+    fn new_option_refuses_an_option_added_outside_since_the_last_read() {
+        let (dir, mut p) = vars_fixture();
+        p.set_active_env(Some("qa".into()));
+        let outside = "[options.creds.alice]\nuser_id = \"1\"\ncustomer_id = \"2\"\n\n[options.creds.carol]\nuser_id = \"7\"\ncustomer_id = \"8\"\n";
+        std::fs::write(dir.path().join("environments/qa.toml"), outside).unwrap();
+        assert!(!p.env_data().options["creds"].contains_key("carol"), "not reloaded yet");
+        let err = p
+            .apply_var_edit(&VarEdit::NewOption {
+                env: "qa".into(),
+                selector: "creds".into(),
+                name: "carol".into(),
+                description: None,
+                values: creds_values("", ""),
+            })
+            .unwrap_err();
+        assert_eq!(err.to_string(), "option \"carol\" already exists on creds");
+        assert_eq!(read(&dir, "environments/qa.toml").unwrap(), outside);
+    }
+
+    /// A paste picks its name from the loaded options; one another program
+    /// took since is refused by the same create, not written over.
+    #[test]
+    fn paste_option_refuses_a_name_taken_outside_since_the_last_read() {
+        let (dir, mut p) = vars_fixture();
+        // Active, so the paste picks its name from the loaded options.
+        p.set_active_env(Some("qa".into()));
+        let outside = "[options.creds.alice]\nuser_id = \"1\"\ncustomer_id = \"2\"\n\n[options.creds.bob]\nuser_id = \"7\"\ncustomer_id = \"8\"\n";
+        std::fs::write(dir.path().join("environments/qa.toml"), outside).unwrap();
+        assert!(!p.env_data().options["creds"].contains_key("bob"), "not reloaded yet");
+        let err = p
+            .apply_var_edit(&VarEdit::PasteOption {
+                env: "qa".into(),
+                selector: "creds".into(),
+                name: "bob".into(),
+                description: None,
+                values: creds_values("", ""),
+            })
+            .unwrap_err();
+        assert_eq!(err.to_string(), "option \"bob\" already exists on creds");
+        assert_eq!(read(&dir, "environments/qa.toml").unwrap(), outside);
     }
 }
