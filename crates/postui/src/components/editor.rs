@@ -1369,9 +1369,8 @@ impl Editor {
     /// selected cells and a hidden caret below are handled for it: a
     /// selection made in arrows outlives a switch to vim until the engine
     /// settles it, at the next key or click routed to the body (the
-    /// session that opens on return does not settle). Review round 2
-    /// removed this handling as unreachable and round 3 found the path
-    /// (`a_selection_left_by_a_switch_to_vim_keeps_its_fill`).
+    /// session that opens on return does not settle;
+    /// `a_selection_left_by_a_switch_to_vim_keeps_its_fill`).
     fn paint_bracket_pair(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -5740,6 +5739,12 @@ mod tests {
         assert!(e.body_drag_to(x + 1, area.y));
         assert_eq!(e.body_selected_text().as_deref(), Some("{\""));
         assert_eq!(lit_body_cells(&mut e), 0, "a mouse selection");
+        // A double click on the `[` takes its block.
+        assert!(e.body_select_word_at(x + 6, area.y));
+        assert_eq!(e.body_selected_text().as_deref(), Some("[1]"));
+        assert_eq!(lit_body_cells(&mut e), 0, "a double click's block");
+        e.body_select_all();
+        assert_eq!(lit_body_cells(&mut e), 0, "select-all");
     }
 
     /// #189 (spec R21): the vim profile keeps Vim's matchparen in Visual

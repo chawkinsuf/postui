@@ -12065,6 +12065,7 @@ mod tests {
         let open = col_of(&r, 1, '[');
         let close = col_of(&r, 4, ']');
         click_cell(&mut r, 1, open);
+        assert!(bracket_lit_at(&mut r, true, 4, close), "a plain click lights it");
         let (area, _) = render_buf(&mut r);
         let at = |col: usize| area.x + u16::try_from(col).unwrap();
         assert!(r.drag_selection_to(at(open - 2), area.y + 1));
