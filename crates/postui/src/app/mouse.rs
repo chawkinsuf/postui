@@ -673,6 +673,12 @@ impl App {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
+                // The body's wheel settles the vim engine here, after the
+                // move, not in `Editor::scroll_body`: the editor may not
+                // name the engine (the vim seam), and the scrollbar, which
+                // also reaches `scroll_body`, is a press its click settles
+                // (`App::vim_body_scrolled`). This arm holds the wheel's
+                // two routes onto the body, on its text and off it (below).
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
                     && self.editor.handle_wheel(m)
                 {

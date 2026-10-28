@@ -1875,25 +1875,12 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
 #[test]
 fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
     use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
-    let mut app = vim(Fixture::Body);
-    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
-    app.editor.set_body_text(&lines.join("\n"));
-    draw(&mut app);
+    let mut app = vim_long_body();
     feed(&mut app, "ggjjvl");
     assert_eq!(app.mode_indicator(), Some("VISUAL"));
     let area = app.editor.last_body_area.unwrap();
     let span = |app: &App| app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
-    for _ in 0..40 {
-        let kind = MouseEventKind::ScrollDown;
-        let row = area.y + 1;
-        app.handle_mouse(MouseEvent {
-            kind,
-            column: area.x + 8,
-            row,
-            modifiers: KeyModifiers::NONE,
-        });
-        draw(&mut app);
-    }
+    scroll_body(&mut app, 40);
     let top = app.editor.body.viewport_offset().1;
     assert_eq!(top, 40);
     let caret = app.editor.body.cursor;
@@ -1947,13 +1934,14 @@ fn vim_long_body() -> App {
     app
 }
 
-/// `n` wheel notches down on the body's text, a frame after each.
-fn scroll_body(app: &mut App, n: usize) {
+/// `n` wheel notches on the body's text, down (up when `n` is negative),
+/// a frame after each.
+fn scroll_body(app: &mut App, n: i32) {
     use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
     let area = app.editor.last_body_area.unwrap();
-    for _ in 0..n {
+    let kind = if n < 0 { MouseEventKind::ScrollUp } else { MouseEventKind::ScrollDown };
+    for _ in 0..n.unsigned_abs() {
         let (column, row) = (area.x + 8, area.y + 1);
-        let kind = MouseEventKind::ScrollDown;
         app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
         draw(app);
     }
@@ -1999,22 +1987,14 @@ fn the_wheel_drops_an_operator_and_spends_ctrl_o() {
 /// nothing; `i` ctrl+o, the wheel up, `x` types).
 #[test]
 fn a_wheel_notch_at_the_top_still_drops_an_operator_and_spends_ctrl_o() {
-    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
     let mut app = vim_long_body();
-    let area = app.editor.last_body_area.unwrap();
-    let notch_up = |app: &mut App| {
-        let kind = MouseEventKind::ScrollUp;
-        let (column, row) = (area.x + 8, area.y + 1);
-        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
-        draw(app);
-    };
     feed(&mut app, "ggd");
-    notch_up(&mut app);
+    scroll_body(&mut app, -1);
     assert_eq!(app.editor.body.viewport_offset().1, 0, "nothing moved");
     feed(&mut app, "j");
     assert_eq!(app.editor.body_text().lines().count(), 120, "nothing deleted");
     feed(&mut app, "gg0i<C-o>");
-    notch_up(&mut app);
+    scroll_body(&mut app, -1);
     assert_eq!(app.mode_indicator(), Some("INSERT"));
     feed(&mut app, "x");
     assert_eq!(app.editor.body_text().lines().next(), Some("xrow0"));
