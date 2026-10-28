@@ -548,6 +548,14 @@ pub struct VarManager {
     /// The main loop draws after every event that changes anything (a
     /// resize included), so a key always meets the width on screen.
     grid_width: Option<u16>,
+    /// Whether the last `draw` painted the cell [`OptionGridState::editing`]
+    /// holds, and whether the draw before it did: what
+    /// [`Self::take_edit_hidden_by_draw`] reads (task #199). Set by the
+    /// paint itself, so every way a frame can leave the cell off screen (a
+    /// narrower pane dropping its column, a pane too small for the grid at
+    /// all) counts alike.
+    edit_painted: bool,
+    edit_painted_before: bool,
     /// Set by a keyboard move so the next `draw` snaps `left_scroll` to
     /// keep `left_cursor` visible; a wheel/drag gesture clears it (those
     /// place the viewport explicitly). Mirrors `Sidebar::ensure_visible`.
@@ -1057,6 +1065,23 @@ impl VarManager {
         let shown =
             self.grid_width.map_or(ncols, |w| usize::from(GridFit::new(w, ncols).count.max(1)));
         Some((ghost, shown))
+    }
+
+    /// Whether the last draw left off screen a cell edit the draw before it
+    /// painted (task #199): its column dropped by a narrower pane, or the
+    /// grid not drawn at all. Answers once per draw, so a commit of that
+    /// edit that refuses is not retried until the edit is painted and then
+    /// hidden again. After a draw that painted no edit nothing counts, so
+    /// an edit opened since then has to be on screen first. The flags say
+    /// whether an edit was painted, not which one: an edit that replaced
+    /// a painted one within one event (the Tab walk) and isn't painted
+    /// counts too, and committing it, untouched, writes nothing. Not
+    /// keeping which one is deliberate: an edit the draw didn't paint is
+    /// live off screen, the state this exists to end, so a check that
+    /// matched the painted cell would leave that one open.
+    pub fn take_edit_hidden_by_draw(&mut self) -> bool {
+        let was_painted = std::mem::take(&mut self.edit_painted_before);
+        was_painted && !self.edit_painted && self.grid.editing.is_some()
     }
 
     /// Puts the grid cursor on row `row` of the options `ctx` lists now
@@ -2122,6 +2147,9 @@ impl VarManager {
         // as they are even on a path that forgot to sync; the cursor comes
         // with them. A detail that is gone waits for `sync` (see there).
         let _ = self.rebuild_rows(ctx);
+        // Before any early return: a frame that paints no grid paints no
+        // edit either.
+        self.edit_painted_before = std::mem::take(&mut self.edit_painted);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
             return;
@@ -2358,11 +2386,11 @@ impl VarManager {
             }
 
             // Only the drawn columns paint. An edit opened while its column
-            // was drawn and then dropped by a narrower terminal stays live
-            // unpainted, as it always has: task #198 keeps the keyboard and
-            // new edits off undrawn columns, and what should become of an
-            // open edit whose column goes (commit, cancel, or keep it
-            // drawn) is a separate decision, not made here.
+            // was drawn and then dropped by a narrower terminal is not
+            // painted in this frame (`edit_painted` stays false): the main
+            // loop commits it right after the draw
+            // (`App::commit_grid_edit_off_screen`, task #199), since a draw
+            // writes nothing.
             for col in 0..cols.x.len() {
                 let (cx, cw) = (cols.x[col], cols.w[col]);
                 // The focused cell keeps a lift of its own inside the
@@ -2380,6 +2408,7 @@ impl VarManager {
                     let line = edit.input.draw_line_windowed(true, theme, cw);
                     fill(buf, Rect::new(cx, ry, cw, 1), theme.control_hover);
                     buf.set_line(cx, ry, &line, cw);
+                    self.edit_painted = true;
                 } else if ghost {
                     if col == 0 {
                         text(

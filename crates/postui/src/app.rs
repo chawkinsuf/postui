@@ -9554,6 +9554,58 @@ impl App {
         }
     }
 
+    /// Called after every draw: a grid cell edit the draw before painted
+    /// and this one left off screen (a resize dropped its column, or left
+    /// no room for the grid) commits, saved, through
+    /// [`Self::commit_grid_edit`], as closing an input does (task #199;
+    /// the user: "198 a."), so the typing is kept and nothing stays live
+    /// off screen. The draw is the one place that learns what fits, and a
+    /// draw writes nothing, so it records what it painted
+    /// ([`VarManager::take_edit_hidden_by_draw`]; the recorded grid width
+    /// would miss a frame with no room for the grid, which records none)
+    /// and the write happens here, at the event boundary right after it.
+    /// It ends as the grid's own keys do (`handle_grid_key`), through
+    /// `update(Action::Render)`, so the commit gets the same event tail
+    /// as any input, then catches the vim session up, as the main loop
+    /// does after an async action. Returns whether it acted (the caller
+    /// repaints).
+    ///
+    /// A dialog over the screen doesn't stop it: the commit saves what was
+    /// typed into the cell and nothing else, as a click away would, and a
+    /// dialog that changes project state closes the open inputs first
+    /// anyway (close-input-first).
+    ///
+    /// A frame that draws no grid for a reason other than size (no
+    /// environment, the selector gone) never meets a live edit here: every
+    /// change that could bring those about closes the Manager's input
+    /// first (an environment switch, a selector delete, a reload, task
+    /// #78), so `commit_grid_edit`'s early returns are as unreachable from
+    /// here as from a click away.
+    ///
+    /// A refusal does not set `last_action_failed`: that flag stops the
+    /// key or action sequence a refusal happens in, and no key is running
+    /// after a draw.
+    ///
+    /// A refused commit keeps its edit and toasts, as every refusal does
+    /// (a refused close keeps its input). Its cell is still off screen, so
+    /// the edit stays live there with the toast saying why; widening the
+    /// pane shows it again, and its keys (Enter, Esc, Tab) commit as
+    /// before. Cancelling it instead would lose the typing the ruling
+    /// keeps. It is not retried on the next draw (the edit was not
+    /// painted, so nothing went off screen), so a refusal toasts once
+    /// rather than once a frame. (mine)
+    ///
+    /// [`VarManager::take_edit_hidden_by_draw`]: crate::components::varmanager::VarManager::take_edit_hidden_by_draw
+    pub fn commit_grid_edit_off_screen(&mut self) -> bool {
+        if !self.varmanager.take_edit_hidden_by_draw() {
+            return false;
+        }
+        self.commit_grid_edit(false);
+        self.update(Action::Render);
+        self.vim_catch_up();
+        true
+    }
+
     /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
     /// (then `-copy-2`, …). A variable keeps its description, its default
     /// and its secret flag; a selector copies its field list only — options
@@ -12396,7 +12448,8 @@ impl App {
         // The walk's last cell is the ghost row's name, its only cell.
         let last = (ghost * ncols) as i32;
         // A cell the pane dropped after its edit opened (a narrower
-        // terminal, task #198) sits past the row's last drawn one: Tab
+        // terminal, task #198, whose commit then was refused: task #199
+        // commits it otherwise) sits past the row's last drawn one: Tab
         // goes on to the next row, BackTab back to that last drawn cell.
         let flat = if col >= ncols {
             (row * ncols + ncols) as i32 - i32::from(dir < 0)
