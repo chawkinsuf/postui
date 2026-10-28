@@ -18452,6 +18452,36 @@ fn a_refused_entry_name_toasts_and_keeps_the_typed_text() {
     assert!(!on_disk.contains("description"), "{on_disk}");
 }
 
+/// Task #196: the + Add row creates, so a name that already exists creates
+/// nothing and says so, in the add-option prompt's words. It used to write
+/// an empty value over every field of the existing option, silently.
+#[test]
+fn an_existing_name_in_the_ghost_row_is_refused_and_keeps_the_typed_text() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+
+    // Row 2 is the ghost row (alice, bob, then the ghost).
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    for c in "alice".chars() {
+        app.handle_key(plain(c));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.toasts.last_message(), Some("option \"alice\" already exists on user"));
+    let edit = app.varmanager.grid.editing.as_ref().expect("the refusal left the edit in place");
+    assert_eq!((edit.row, edit.col), (2, 0), "still the ghost's name cell");
+    assert_eq!(edit.input.text(), "alice");
+    let after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert_eq!(after, before, "nothing written");
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(env.options["user"]["alice"].values["user"], "1001");
+}
+
 #[test]
 fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     let dir = tempfile::tempdir().unwrap();

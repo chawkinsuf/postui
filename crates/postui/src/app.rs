@@ -7410,16 +7410,8 @@ impl App {
                         return true;
                     }
                 };
-                // Create means create: writing over an existing option of
-                // the same name from the add prompt would silently clobber
-                // its values.
-                if postui_core::varmodel::options_of(self.variables(), self.env_data(), &owner)
-                    .is_some_and(|options| options.contains_key(&key))
-                {
-                    self.toasts.push(
-                        format!("option \"{key}\" already exists on {owner}"),
-                        ToastKind::Error,
-                    );
+                if let Some(msg) = self.option_name_taken(&owner, &key) {
+                    self.toasts.push(msg, ToastKind::Error);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -9355,6 +9347,19 @@ impl App {
         }
     }
 
+    /// The refusal for creating option `name` on `selector` when the
+    /// selector already has one by that name, as the active environment
+    /// (or, for a shared selector, variables.toml) holds it; `None` when
+    /// the name is free. Create means create: core's `NewOption` is an
+    /// upsert, so writing an existing name would silently replace that
+    /// option's values. Both create paths ask it, the add-option prompt
+    /// and the grid's + Add row.
+    fn option_name_taken(&self, selector: &str, name: &str) -> Option<String> {
+        postui_core::varmodel::options_of(self.variables(), self.env_data(), selector)
+            .is_some_and(|options| options.contains_key(name))
+            .then(|| format!("option \"{name}\" already exists on {selector}"))
+    }
+
     /// Commits whatever cell the selector grid's [`OptionGridState::editing`]
     /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
     /// on the three kinds of cell the grid has: the ghost row's name cell
@@ -9367,8 +9372,10 @@ impl App {
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
-    /// option name `description`, which core refuses. `false` only for
-    /// that refusal.
+    /// option name `description`, which core refuses. The ghost row's name
+    /// cell refuses a name the selector already has the same way (task
+    /// #196): it creates, and core's `NewOption` would write the empty
+    /// values over that option. `false` only for a refusal.
     pub(crate) fn commit_grid_edit(&mut self, walk_on: bool) -> bool {
         let Some(edit) = self.varmanager.grid.editing.take() else {
             return true;
@@ -9407,6 +9414,13 @@ impl App {
             // that doesn't exist yet — the caller never starts one).
             if edit.col != 0 || value.is_empty() {
                 return true;
+            }
+            // A taken name is refused like a failed write: the toast, and
+            // the typing kept for a retry.
+            if let Some(msg) = self.option_name_taken(&selector, &value) {
+                self.varmanager.grid.editing = Some(edit);
+                self.toasts.push(msg, ToastKind::Error);
+                return false;
             }
             let values = fields
                 .iter()
