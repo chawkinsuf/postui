@@ -240,18 +240,22 @@ pub struct Editor {
     /// The engine's search prompt and matches for the next draw, mirrored
     /// in by `App::vim_mirror_body_search` (spec §5.6). Empty in arrows.
     pub(crate) body_search: crate::keyroute::engine_glue::BodySearch,
-    /// Whether the body pane keeps its bottom row for the engine's search
-    /// prompt: the vim profile's, set by `ui::draw` every frame. Vim's
-    /// command line is a row of its own at all times (`'cmdheight'` 1,
-    /// never 0), so the body is one row shorter whether or not a search
-    /// is open, and `/` never resizes it (#129). A display copy of the
-    /// profile, as the response's `set_vim_cursor` is: `ui::draw` is the
-    /// one path that draws the editor, and sets it first. What it gives
-    /// up: a key handled between a profile switch and the next frame
-    /// reads the last frame's `last_body_area`, as after a resize; a
-    /// `DrawCtx` field would not change that, since the geometry is the
-    /// last frame's either way.
-    pub(crate) prompt_row: bool,
+    /// Whether the vim profile is on, set by `ui::draw` every frame: a
+    /// display copy of the profile, as the response's `set_vim_cursor` is.
+    /// `ui::draw` is the one path that draws the editor, and sets it first.
+    /// It decides two things:
+    /// - The body pane keeps its bottom row for the engine's search
+    ///   prompt. Vim's command line is a row of its own at all times
+    ///   (`'cmdheight'` 1, never 0), so the body is one row shorter whether
+    ///   or not a search is open, and `/` never resizes it (#129). What it
+    ///   gives up: a key handled between a profile switch and the next
+    ///   frame reads the last frame's `last_body_area`, as after a resize;
+    ///   a `DrawCtx` field would not change that, since the geometry is the
+    ///   last frame's either way.
+    /// - The arrows profile lights no bracket pair while text is selected
+    ///   (#189); the vim profile follows Vim's matchparen, which keeps it
+    ///   ([`Self::paint_bracket_pair`]).
+    pub(crate) vim_profile: bool,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
@@ -415,7 +419,7 @@ impl Default for Editor {
             body_visual: None,
             body_hl_overlays: Vec::new(),
             body_search: Default::default(),
-            prompt_row: false,
+            vim_profile: false,
             body_handler: body_key_handler(),
             body_sel_anchor: None,
             body_word_anchor: None,
@@ -1348,6 +1352,12 @@ impl Editor {
     /// and so does a shown caret's cell (R8, #187), so the caret stays
     /// visible on its bracket as Vim's cursor does: only the partner, or
     /// the bracket before a caret between chars, lights.
+    ///
+    /// The arrows profile lights nothing while text is selected (#189, the
+    /// user: "No only in arrows mode. Any testing I do is referring
+    /// specifically to arrows mode. Vim mode follows vim."). The vim
+    /// profile keeps the pair in Visual, as Vim's matchparen runs on every
+    /// `CursorMoved`, Visual included.
     fn paint_bracket_pair(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -1357,6 +1367,9 @@ impl Editor {
     ) {
         use crate::text::brackets::{bracket_at, partner_of};
         use crate::text::{Lines as _, Pos};
+        if !self.vim_profile && self.body.selection.is_some() {
+            return;
+        }
         let lines = &self.body.lines;
         // Most frames have no bracket by the caret: look before measuring
         // the view.
@@ -1388,8 +1401,9 @@ impl Editor {
         // Comparing screen cells, not text positions, is what keeps the
         // caret visible: were this layout and edtui's ever to disagree,
         // the light would land beside the caret, never over it. A hidden
-        // caret (under a selection that doesn't cover it) has no
-        // look to keep, so its bracket lights.
+        // caret (under a selection that doesn't cover it, which only the
+        // vim profile gets this far with, #189) has no look to keep, so
+        // its bracket lights.
         let caret_at = self.body.cursor_screen_position().filter(|_| caret_shown);
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
         for (at, cell) in [(a, cell_a), (b, cell_b)] {
@@ -1752,7 +1766,7 @@ impl Editor {
     /// (#129), where a press places no caret (`App::press_text`).
     pub(crate) fn below_body_text(&self, y: u16) -> bool {
         self.active_tab == EditorTab::Body
-            && self.prompt_row
+            && self.vim_profile
             && self.last_body_area.is_some_and(|a| y == a.bottom())
     }
 
@@ -3166,7 +3180,7 @@ pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
 /// counts as minimized, showing no text and no search prompt. The user
 /// (#129, 2026-10-27): "Shouldn't we not allow it to be less than 2
 /// rows?" In the vim profile one of the two is the search prompt's
-/// ([`Editor::prompt_row`]), so the text always keeps a row of its own.
+/// ([`Editor::vim_profile`]), so the text always keeps a row of its own.
 pub const BODY_MIN_ROWS: u16 = 2;
 
 /// The fewest content rows (below [`CHROME_HEIGHT`]) the shown editor is
@@ -3994,7 +4008,7 @@ impl Editor {
                 if area.height < BODY_MIN_ROWS {
                     return;
                 }
-                let prompt_rect = self.prompt_row.then(|| {
+                let prompt_rect = self.vim_profile.then(|| {
                     area.height -= 1;
                     Rect { y: area.bottom(), height: 1, ..area }
                 });
@@ -5550,7 +5564,7 @@ mod tests {
         // Just after the `{`, so both ends light.
         e.body.cursor = edtui::Index2::new(0, 1);
         assert_eq!(lit_body_cells(&mut e), 2, "both show");
-        e.prompt_row = true;
+        e.vim_profile = true;
         let buf = draw_body(&mut e, true);
         let area = e.last_body_area.unwrap();
         assert_eq!(usize::from(area.height) + 1, height, "the prompt keeps the row");
@@ -5566,7 +5580,7 @@ mod tests {
     #[test]
     fn the_search_prompt_row_shows_nothing_of_the_body_under_it() {
         let mut e = body_editor("{}");
-        e.prompt_row = true;
+        e.vim_profile = true;
         draw_body(&mut e, true);
         let height = usize::from(e.last_body_area.unwrap().height);
         e.set_body_text(&vec!["abcdef"; height + 5].join("\n"));
@@ -5601,7 +5615,7 @@ mod tests {
         let lines: Vec<String> = (0..80).map(|i| format!("line{i}")).collect();
         e.set_body_text(&lines.join("\n"));
         e.body.mode = EditorMode::Normal;
-        e.prompt_row = true;
+        e.vim_profile = true;
         let closed = draw_body(&mut e, true);
         let area = e.last_body_area.unwrap();
         assert_eq!(area.height + 1, full.height, "the body is one row shorter");
@@ -5641,7 +5655,7 @@ mod tests {
             cursor: 2,
         });
         for vim in [true, false] {
-            e.prompt_row = vim;
+            e.vim_profile = vim;
             for rows in [1, 0] {
                 // The pane's rows inside its ring: `tall` at 24.
                 let (buf, hits) = draw_body_sized(&mut e, true, 24 - tall + rows);
@@ -5678,11 +5692,64 @@ mod tests {
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
     }
 
+    /// #189 (the user: "No only in arrows mode. Any testing I do is
+    /// referring specifically to arrows mode. Vim mode follows vim."): in
+    /// the arrows profile a selection lights no pair, whether it hides the
+    /// caret or covers it, from a key or a drag. The pair is back once the
+    /// selection goes.
+    #[test]
+    fn an_arrows_selection_lights_no_bracket() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut e = body_editor("{\"a\": [1]}");
+        e.body.cursor = edtui::Index2::new(0, 4);
+        for _ in 0..2 {
+            e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        }
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 6), "the caret on `[`");
+        assert_eq!(lit_body_cells(&mut e), 0, "a selection that hides the caret");
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(e.body.selection.is_none());
+        assert!(lit_body_cells(&mut e) > 0, "no selection: the pair is back");
+        e.body.cursor = edtui::Index2::new(0, 7);
+        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert!(e.body.selection.as_ref().is_some_and(|s| s.contains(&e.body.cursor)));
+        assert_eq!(lit_body_cells(&mut e), 0, "a selection over the caret");
+        // A drag from the `{` onto the `"`.
+        e.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        draw_body(&mut e, true);
+        let area = e.last_body_area.unwrap();
+        let x = area.x + line_number_gutter_width(1);
+        e.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(e.body_drag_to(x + 1, area.y));
+        assert_eq!(e.body_selected_text().as_deref(), Some("{\""));
+        assert_eq!(lit_body_cells(&mut e), 0, "a mouse selection");
+    }
+
+    /// #189: the vim profile keeps Vim's matchparen in Visual (its
+    /// `plugin/matchparen.vim` runs on every `CursorMoved`, Visual
+    /// included), so the partner outside the span lights.
+    #[test]
+    fn vim_visual_keeps_the_pair() {
+        let mut e = body_editor("{\"a\": [1]}");
+        e.vim_profile = true;
+        e.body.mode = EditorMode::Visual;
+        e.body.cursor = edtui::Index2::new(0, 6);
+        e.body_visual = Some((edtui::Index2::new(0, 4), edtui::Index2::new(0, 6)));
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the partner `]`");
+    }
+
     /// R8 (#187): a caret the draw hides (a selection that doesn't cover
-    /// it) has no look to keep, so its own bracket lights.
+    /// it) has no look to keep, so its own bracket lights. Only the vim
+    /// profile lights a pair under a selection (#189).
     #[test]
     fn a_hidden_caret_on_a_bracket_lights_it() {
         let mut e = body_editor("{\"a\": [1]}");
+        e.vim_profile = true;
         e.body.cursor = edtui::Index2::new(0, 4);
         for _ in 0..2 {
             e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
@@ -5697,11 +5764,13 @@ mod tests {
     /// caret's bracket; the partner lights. (The selection rule covers
     /// that cell on its own; this pins that a shown caret under a
     /// selection, the third `caret_shown` case, neither lights nor loses
-    /// the fill.)
+    /// the fill.) The vim profile's: arrows lights no pair under a
+    /// selection (#189).
     #[test]
     fn a_selection_over_the_caret_keeps_its_fill_on_the_bracket() {
         let theme = Theme::dark();
         let mut e = body_editor("{\"a\": [1]}");
+        e.vim_profile = true;
         e.body.cursor = edtui::Index2::new(0, 7);
         e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
         assert_eq!(e.body.cursor, edtui::Index2::new(0, 6), "the caret on `[`");

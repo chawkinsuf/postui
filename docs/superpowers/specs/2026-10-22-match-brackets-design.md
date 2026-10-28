@@ -367,3 +367,37 @@ and the user picked the recommended option for each (`mine (approved)`):
 - **R20 is a line-end comma.** Only a `,` that ends its line (blanks may
   follow) takes the bracket before it. Before, any `,` right after a
   bracket did, so a click on the comma in Raw's `f(a),g(b)` lit `(a)`.
+
+## 7. Amendment, 2026-10-27: no pair under an arrows selection (#189)
+
+The task asked: "When selecting text, the brace matching should be
+disabled." Vim's matchparen does the opposite. `plugin/matchparen.vim`
+(Vim 9.1) runs on every `CursorMoved`, Visual included, and returns early
+only for the popup menu or when there are no colours. Asked about the vim
+profile, the user said:
+
+> No only in arrows mode. Any testing I do is referring specifically to
+> arrows mode. Vim mode follows vim.
+
+| # | Rule | From |
+|---|---|---|
+| R21 | Arrows, body and response: while text is selected (a drag, a double click, shift+arrows, select-all, the response's shift+↑/↓ lines), no pair lights. Once the selection goes, the pair lights again by R1/R10 (the response's click is kept, not forgotten). The vim profile keeps the pair in Visual and under a drag, as Vim does. | you |
+
+**Design.**
+
+- Body: `paint_bracket_pair` returns first when the profile is arrows and
+  `body.selection` is set. The editor's per-frame profile copy, which
+  #129 named `prompt_row`, is renamed `vim_profile`, since it now decides
+  this too. The vim engine turns a GUI selection into Visual or drops it
+  (`settle`), so a vim draw with `body.selection` set is a guard more
+  than a case; R8's rules for a selection's cells and a hidden caret stay
+  for it.
+- Response: the draw asks for the pair only when the pane is focused and
+  either the profile is vim or no selection (`ReadyView::sel`) shows. The
+  memo isn't consulted while the light is off.
+
+**Tests.** Editor: an arrows selection from keys or a drag lights nothing,
+and the pair is back once it goes; vim Visual keeps the partner lit; the
+#187 hidden-caret and covered-caret tests now run in the vim profile.
+Response: an arrows drag and shift+↓ light nothing, and clearing the
+selection brings the clicked pair back; vim's `V` keeps the pair.
