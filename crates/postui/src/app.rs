@@ -7335,8 +7335,9 @@ impl App {
                 // A grid that drew no cell (task #200) opens nothing, and
                 // this still returns handled with no toast. The add verb's
                 // key and chip resolve to nothing then (`grid_verb`, task
-                // #202); arrows' `o`, the `+ Option` button and a command
-                // still send this, and open nothing.
+                // #202), and the `+ Option` button is not painted (task
+                // #207); arrows' `o` and a command still send this, and
+                // open nothing.
                 self.vm_start_cell_edit(row, 0);
                 true
             }

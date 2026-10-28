@@ -1944,6 +1944,18 @@ impl VarManager {
         }
     }
 
+    /// What a click on the selector pane's title-row option button does:
+    /// `Verb::Add` for `+ Option`, `Verb::Put` for `Paste`. The grid's own
+    /// verb whatever has the keyboard, so the button acts exactly when the
+    /// grid's key would: nothing with no option row drawn (task #207),
+    /// where the draw doesn't paint the button either.
+    pub fn option_button_action(&self, ctx: &Project, verb: Verb) -> Option<Action> {
+        let VmDetail::Group(selector) = &self.detail else {
+            return None;
+        };
+        self.grid_verb(ctx, selector, verb)
+    }
+
     fn list_verb(&self, ctx: &Project, verb: Verb) -> Option<Action> {
         let name = self.selected_row().and_then(VmRow::name).map(str::to_string);
         match verb {
@@ -2254,11 +2266,23 @@ impl VarManager {
         let x0 = right.x + 2;
         let inner_w = right.width.saturating_sub(4).max(1);
         let bottom = right.y + right.height;
-        let mut y = right.y + 1;
+        let y = right.y + 1;
+        let title_fits = y + TALL_PILL_H <= bottom;
 
-        // A shared selector's options don't live in an environment, so its
-        // grid works with none active; everyone else gets the hint.
-        let shared = is_shared(ctx, selector);
+        // The grid under the title block paints first (task #207), so the
+        // title row knows whether it drew an option row: the two option
+        // buttons are hidden exactly when `no_rows_drawn` (`grid_shape` is
+        // `Some((_, 0))`), the check the grid's keys and chips read (#202),
+        // and a click on either asks those same verbs
+        // (`option_button_action`). It answers false for a per-environment
+        // selector with no environment, which has no grid at all
+        // (`NO_ENV_HINT` in its place) rather than one too small for its
+        // rows: the buttons, keys and chips all keep their ways there. The
+        // title block ends where the grid starts, so the order their hits
+        // register in changes nothing.
+        let grid_y = if title_fits { y + TALL_PILL_H } else { y };
+        self.draw_option_grid(buf, right, grid_y, theme, ctx, hits, hovered, selector);
+        let no_rows = self.no_rows_drawn(ctx);
 
         // --- title row: name + the pane's four buttons ------------------
         // A full-size `Button`, like the variable pane's title row: a Manage detail
@@ -2273,7 +2297,7 @@ impl VarManager {
         // bevelled `Button`, which put its own label on `y + 1` -- and
         // once all three panes drew the same control that row of
         // difference was simply visible.
-        if y + TALL_PILL_H <= bottom {
+        if title_fits {
             let label = format!("Selector: {selector}");
             text(buf, x0, y, &label, theme.text, theme.page, true);
             // Painted right to left, so the array runs that way too: the
@@ -2296,6 +2320,17 @@ impl VarManager {
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
                 let Some(rect) = row.next(lbl, gap) else { break };
+                // With no option row drawn the two option buttons are not
+                // there (task #207): their keys and chips act on nothing
+                // then (#202), and a paste would write an option no row
+                // shows. Their place is laid out all the same, so the
+                // selector's three don't move. Not there rather than greyed
+                // like Paste with nothing copied: greyed says "copy one
+                // first", and nothing here would make these work but a
+                // taller pane; the footer drops their chips the same way.
+                if no_rows && matches!(hit, Hit::VmNewOption | Hit::VmPasteOption) {
+                    continue;
+                }
                 // Paste stands there greyed with nothing copied — the one
                 // control that says the pair exists before it is used —
                 // and takes no clicks and no hover while it does.
@@ -2306,31 +2341,28 @@ impl VarManager {
                     hits.register(painted, hit);
                 }
             }
-            y += TALL_PILL_H;
             // The scope line goes in the blank row under the title rather
             // than beside it: the title row's remaining width belongs to
             // the buttons, and crowding a badge in there would push
             // `+ Option` off the pane at ordinary widths. With no
-            // environment active there is nothing to say — the grid is
-            // about to be replaced by `NO_ENV_HINT`, which says it.
-            let scope_badge = if shared {
+            // environment active there is nothing to say — the grid's
+            // place holds `NO_ENV_HINT`, which says it.
+            let scope_badge = if is_shared(ctx, selector) {
                 Some(SHARED_BADGE)
             } else if ctx.active_env().is_some() {
                 Some(PER_ENV_BADGE)
             } else {
                 None
             };
-            if let Some(badge) = scope_badge
-                && y > right.y
-                && y - 1 < bottom
-            {
+            // The block's last row, inside the pane since the block fits.
+            if let Some(badge) = scope_badge {
                 // Both lines are the same kind of statement, so they get
                 // the same weight — the SHARED SELECTORS section is what
                 // flags the unusual case now.
                 text(
                     buf,
                     x0,
-                    y - 1,
+                    grid_y - 1,
                     crate::ui::clip(badge, inner_w),
                     theme.text_muted,
                     theme.page,
@@ -2338,8 +2370,29 @@ impl VarManager {
                 );
             }
         }
+    }
 
-        if ctx.active_env().is_none() && !shared {
+    /// The selector pane under its title block, from row `y`: the options
+    /// grid, or [`NO_ENV_HINT`] in its place (see [`Self::draw_entry_grid`]).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_option_grid(
+        &mut self,
+        buf: &mut Buffer,
+        right: Rect,
+        mut y: u16,
+        theme: &Theme,
+        ctx: &Project,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        selector: &str,
+    ) {
+        let x0 = right.x + 2;
+        let inner_w = right.width.saturating_sub(4).max(1);
+        let bottom = right.y + right.height;
+
+        // A shared selector's options don't live in an environment, so its
+        // grid works with none active; everyone else gets the hint.
+        if ctx.active_env().is_none() && !is_shared(ctx, selector) {
             if y < bottom {
                 text(
                     buf,
@@ -4969,6 +5022,50 @@ fields = ["user_id", "customer_id"]
         vm.point_grid(&ctx, 1, 0); // bob
         assert_eq!(vm.verb_action(&ctx, None, Verb::Delete { count: 1 }), None);
         assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None, "Space");
+    }
+
+    /// Task #207: with no option row drawn, the title row's two option
+    /// buttons are not there, as their keys and chips act on nothing
+    /// (#202): a paste click wrote an option no row showed. The three
+    /// selector buttons stay where they were. Drawn again, both are back.
+    #[test]
+    fn a_pane_too_short_for_an_option_row_paints_no_option_buttons() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.stash = vm.option_row(&ctx, 0); // alice copied: Paste is armed
+        let (_, tall) = render_buf_at(&mut vm, &ctx, 116);
+        for hit in [Hit::VmNewOption, Hit::VmPasteOption] {
+            assert!(tall.rect_of(&hit).is_some(), "{hit:?} is there with rows drawn");
+        }
+
+        let (buf, hits) = render_buf_sized(&mut vm, &ctx, 116, TALL_PILL_H + 3);
+        assert!(hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(), "no row drawn");
+        let content = format!("{buf:?}");
+        for (hit, label) in [(Hit::VmNewOption, "+ Option"), (Hit::VmPasteOption, "Paste")] {
+            assert!(hits.rect_of(&hit).is_none(), "{hit:?} takes a click");
+            assert!(!content.contains(label), "{label} is painted: {content}");
+        }
+        for hit in [Hit::VmEditFields, Hit::VmRename, Hit::VmDelete] {
+            assert_eq!(hits.rect_of(&hit), tall.rect_of(&hit), "{hit:?} moved");
+        }
+        // Nor would a click on them act: they ask the grid's verbs, from
+        // the left list's focus as from the grid's.
+        assert_eq!(vm.focus, VmFocus::List);
+        let paste = Verb::Put { above: false, count: 1 };
+        for verb in [Verb::Add, paste] {
+            assert_eq!(vm.option_button_action(&ctx, verb), None, "{verb:?}");
+        }
+
+        let (_, hits) = render_buf_at(&mut vm, &ctx, 116);
+        for hit in [Hit::VmNewOption, Hit::VmPasteOption] {
+            assert_eq!(hits.rect_of(&hit), tall.rect_of(&hit), "{hit:?} is back");
+        }
+        assert_eq!(vm.option_button_action(&ctx, Verb::Add), Some(Action::StartNewOptionEdit));
+        assert!(matches!(
+            vm.option_button_action(&ctx, paste),
+            Some(Action::VarStruct(VarStructOp::PasteOption { count: 1, .. }))
+        ));
     }
 
     /// Task #202: with no option row drawn, the grid's verbs resolve to

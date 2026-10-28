@@ -18404,6 +18404,47 @@ fn clicking_a_rows_copy_button_copies_it_and_the_paste_button_lands_it() {
     assert_eq!(env.options["user"]["alice copy"].values["user"], "1001");
 }
 
+/// Task #207: on a pane too short for any option row, a click where the
+/// armed Paste button stood writes nothing: the title row paints no option
+/// button while no row is drawn, so no row-less option appears on disk.
+#[test]
+fn a_paste_click_on_a_pane_too_short_for_an_option_row_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    rendered_text_at(&mut app, 130, 46);
+    let copy = app.hits.rect_of(&crate::hit::Hit::VmEntryCopy(0)).expect("row 0 has a copy button");
+    app.handle_mouse(left_down(copy.x, copy.y));
+    rendered_text_at(&mut app, 130, 46);
+    let paste =
+        app.hits.rect_of(&crate::hit::Hit::VmPasteOption).expect("the copy armed the paste button");
+    let rename = app.hits.rect_of(&crate::hit::Hit::VmRename);
+
+    rendered_text_at(&mut app, 130, 14);
+    assert_eq!(
+        app.hits.rect_of(&crate::hit::Hit::VmRename),
+        rename,
+        "the title row is drawn where it was"
+    );
+    assert!(
+        app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
+        "no option row is drawn"
+    );
+    assert_eq!(app.hits.hit_at(paste.x + 2, paste.y + 1), None, "nothing stands there");
+    app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(!env.options["user"].contains_key("alice copy"), "{:?}", env.options["user"].keys());
+
+    // The same click with the rows drawn again lands the paste.
+    rendered_text_at(&mut app, 130, 46);
+    app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(env.options["user"].contains_key("alice copy"), "{:?}", env.options["user"].keys());
+}
+
 #[test]
 fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() {
     let dir = tempfile::tempdir().unwrap();

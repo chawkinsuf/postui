@@ -2546,19 +2546,17 @@ impl App {
                 self.vm_point_grid(row, 0);
                 self.update(Action::CopyOption { row })
             }
+            // The title row's two option buttons act as the grid's keys do
+            // (`option_button_action`): nothing with no option row drawn
+            // (task #207), where they aren't painted either.
             Hit::VmPasteOption => {
-                let crate::components::varmanager::VmDetail::Group(selector) =
-                    self.varmanager.detail.clone()
+                let paste = crate::action::Verb::Put { above: false, count: 1 };
+                let Some(action) =
+                    self.project().and_then(|p| self.varmanager.option_button_action(p, paste))
                 else {
                     return false;
                 };
-                let Some(env) = self
-                    .project()
-                    .and_then(|p| crate::components::varmanager::op_env(p, &selector))
-                else {
-                    return false;
-                };
-                self.update(Action::VarStruct(VarStructOp::PasteOption { env, selector, count: 1 }))
+                self.update(action)
             }
             Hit::VmEntryDelete(row) => {
                 let crate::components::varmanager::VmDetail::Group(selector) =
@@ -2576,7 +2574,12 @@ impl App {
                 self.update(Action::DeleteEntry { env, selector, name })
             }
             Hit::VmNewOption => {
-                self.update(Action::StartNewOptionEdit);
+                let Some(action) = self.project().and_then(|p| {
+                    self.varmanager.option_button_action(p, crate::action::Verb::Add)
+                }) else {
+                    return false;
+                };
+                self.update(action);
                 self.update(Action::Render)
             }
             Hit::VmEditFields => {
