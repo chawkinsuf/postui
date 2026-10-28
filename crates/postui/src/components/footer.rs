@@ -577,7 +577,10 @@ pub fn draw_footer(
         })
         // Last, so the chips that stay never move when it comes and goes;
         // after the editor's send slot too, since it comes and goes as the
-        // caret crosses a token, more often than a send starts or ends.
+        // caret crosses a token. While it is up the caret is in an open
+        // field or the body (`Editor::caret_token`), where the slot stays
+        // empty all through a send, a vim count included; so the slot moves
+        // it only as a send starts or ends.
         .chain(tip_open.then(|| {
             let edit = Action::TipPill(crate::action::TipPill::Edit);
             (Key::Of(edit.clone()), "edit".to_string(), Some(edit))
