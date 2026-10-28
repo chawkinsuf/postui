@@ -8592,10 +8592,7 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                self.editor.variables.insert(
-                    name.clone(),
-                    postui_core::model::Entry { value: text.clone(), enabled: true },
-                );
+                // The write itself waits for the token (below).
                 Ok(())
             }
         };
@@ -8624,6 +8621,21 @@ impl App {
                     ExtractSource::Selection(surface) => {
                         self.replace_selection_with_token(surface, &name);
                     }
+                }
+                // A `Request` destination writes its variable only now,
+                // after the token has landed in the field and an open cell
+                // has committed (#152). On the Vars tab the cell edits this
+                // same map and names its row by index, and "+ Add" is the
+                // index one past the rows: the very index an insert takes.
+                // Written while the cell was open, the new variable became
+                // the cell's row, and the token renamed it away. The cell
+                // still holds the typing until the token lands in it (spec
+                // 2026-10-19 R6), and the two writes are one editor step.
+                if wrote_to_request {
+                    self.editor.variables.insert(
+                        name.clone(),
+                        postui_core::model::Entry { value: text, enabled: true },
+                    );
                 }
                 // Finding 2, same ruling as promote: the
                 // `Request` destination's write only exists so far

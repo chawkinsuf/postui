@@ -23842,6 +23842,61 @@ fn extracting_an_open_cell_to_the_request_is_one_editor_step() {
     assert!(!app.editor.variables.contains_key("token"));
 }
 
+/// Task #152: extracting the Vars "+ Add" name cell to "This request"
+/// writes into the map the cell edits. The cell names its row by index,
+/// and "+ Add" is the index one past the rows, so the new variable must
+/// not land there while the cell is open: the token commits first, as a
+/// row of its own, and the variable keeps its name and value. Whole cell
+/// and a selection in it alike.
+#[test]
+fn extracting_the_vars_add_name_to_the_request_keeps_the_new_variable() {
+    use crate::action::TextSurface;
+    for selection in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping"))
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::ForceOpenRequest("main/ping".into()));
+        app.editor.active_tab = EditorTab::Vars;
+        app.editor.preferred_tab = EditorTab::Vars;
+        app.focus = PaneId::Editor;
+        app.capture_undo();
+        assert!(app.editor.variables.is_empty());
+        click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
+        type_chars(&mut app, "abc");
+        let edit = app.editor.table.editing.as_mut().expect("the + Add name cell is open");
+        assert_eq!(edit.row, 0, "+ Add is one past the (no) rows");
+        if selection {
+            edit.input.set_cursor(0);
+            edit.input.begin_mouse_selection();
+            edit.input.extend_mouse_selection_to(3);
+            app.update(Action::ConfirmExtractSelection {
+                name: "nv".into(),
+                destination: crate::action::ExtractDestination::Request,
+                surface: TextSurface::TableCell,
+            });
+        } else {
+            app.update(Action::ConfirmExtractVariable {
+                name: "nv".into(),
+                destination: crate::action::ExtractDestination::Request,
+            });
+        }
+        app.capture_undo();
+        assert!(app.editor.table.editing.is_none(), "selection {selection}: the cell commits");
+        assert_eq!(
+            request_vars(&app),
+            [("{{nv}}".to_string(), String::new()), ("nv".to_string(), "abc".to_string())],
+            "selection {selection}"
+        );
+        let saved = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
+        assert_eq!(saved.variables["nv"].value, "abc", "selection {selection}: saved");
+        app.update(Action::Undo);
+        assert!(app.editor.variables.is_empty(), "selection {selection}: one editor step");
+    }
+}
+
 #[test]
 fn extracting_a_body_selection_replaces_it_with_the_token() {
     use crate::action::TextSurface;
