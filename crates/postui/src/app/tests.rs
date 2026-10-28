@@ -19202,6 +19202,32 @@ fn tab_walks_every_field_then_the_description_with_two_fields() {
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
+/// Task #198: a pane too narrow for the description column drops it, and
+/// the walk drops it too: Tab off the last drawn cell goes on to the next
+/// row rather than into an edit nobody can see.
+#[test]
+fn tab_skips_a_description_column_the_narrow_grid_does_not_draw() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    rendered_text_at(&mut app, 50, 30);
+    let drawn =
+        |app: &App, col| app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col }).is_some();
+    assert!(drawn(&app, 1) && !drawn(&app, 2), "name and field drawn, description not");
+    let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+    let tab = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let back = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+
+    app.vm_start_cell_edit(0, 1); // alice's one field
+    tab(&mut app);
+    assert_eq!(at(&app), Some((1, 0)), "bob's name, past the undrawn description");
+    back(&mut app);
+    assert_eq!(at(&app), Some((0, 1)), "back to alice's field");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
 #[test]
 fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
     let dir = tempfile::tempdir().unwrap();
