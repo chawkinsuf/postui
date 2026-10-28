@@ -961,10 +961,9 @@ impl App {
                 moved
             }
             PaneId::Editor => {
-                // edtui owns the body's viewport and only exposes moving it
-                // by one wheel notch at a time (which also keeps its cursor
-                // inside the viewport); feed it the difference. A table
-                // tab's view moves by exactly that many lines.
+                // The body scrolls by the difference in one move, and its
+                // caret follows into the view (`Editor::scroll_body`). A
+                // table tab's view moves by exactly that many lines.
                 let delta =
                     (offset as i64 - spec.offset as i64).clamp(i16::MIN as i64, i16::MAX as i64);
                 self.scroll_editor(delta as i16);
