@@ -19239,13 +19239,11 @@ fn tab_skips_a_description_column_the_narrow_grid_does_not_draw() {
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
-/// One frame as the main loop draws it at `w`×`h`: whether the open grid
-/// edit's column is drawn is read before the draw, and an edit the draw
-/// dropped commits after it (task #199).
+/// One frame as the main loop draws it at `w`×`h`: the draw, then the
+/// commit of a grid edit the draw left off screen (task #199).
 fn main_loop_frame_at(app: &mut App, w: u16, h: u16) {
-    let drawn = app.grid_edit_drawn();
     rendered_text_at(app, w, h);
-    app.commit_grid_edit_off_screen(drawn);
+    app.commit_grid_edit_off_screen();
 }
 
 /// Task #199 (the user: "198 a."): a resize that drops the column of an
@@ -19274,8 +19272,16 @@ fn a_resize_that_hides_an_open_grid_edit_commits_it() {
 
     // An edit on a column the narrow grid still draws stays open.
     app.vm_start_cell_edit(0, 1); // alice's one field
+    app.handle_key(KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE));
     main_loop_frame_at(&mut app, 50, 30);
     assert!(app.varmanager.grid.editing.is_some(), "the field column is drawn");
+
+    // A pane too narrow for any grid hides every column: the edit commits.
+    main_loop_frame_at(&mut app, 36, 30);
+    assert!(app.varmanager.grid.editing.is_none(), "no edit live with no grid");
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("user = \"10019\""), "{qa}");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
 /// Task #199: a commit the resize starts that refuses keeps its edit, as
@@ -19292,6 +19298,7 @@ fn a_refused_commit_of_a_hidden_grid_edit_keeps_it_and_toasts_once() {
     main_loop_frame_at(&mut app, 100, 46);
     app.vm_start_cell_edit(0, 2);
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    main_loop_frame_at(&mut app, 100, 46);
     // The file stops parsing under the edit: core refuses the write.
     let qa = dir.path().join("environments/qa.toml");
     std::fs::write(&qa, "not = [valid").unwrap();
@@ -19304,6 +19311,12 @@ fn a_refused_commit_of_a_hidden_grid_edit_keeps_it_and_toasts_once() {
     main_loop_frame_at(&mut app, 49, 30);
     assert_eq!(app.toasts.messages().len(), 1, "no retry per frame: {:?}", app.toasts.messages());
     assert_eq!(std::fs::read_to_string(&qa).unwrap(), "not = [valid");
+
+    // Enter commits the hidden edit again, refused again, the edit kept.
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let edit = app.varmanager.grid.editing.as_ref().expect("still kept");
+    assert_eq!((edit.row, edit.col, edit.input.text()), (0, 2, "x"));
+    assert_eq!(app.toasts.messages().len(), 2, "{:?}", app.toasts.messages());
 }
 
 #[test]

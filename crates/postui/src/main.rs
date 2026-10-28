@@ -211,9 +211,6 @@ async fn run(
     let mut redraw = true;
     while !app.should_quit {
         if redraw {
-            // Read before the draw lays the grid out at the terminal's
-            // width, for the commit after it (task #199).
-            let grid_edit_drawn = app.grid_edit_drawn();
             // Wrapped in a synchronized-update guard (crossterm's BSU/ESU,
             // `\x1b[?2026h`/`l`): without it, a terminal that samples the
             // screen mid-write can paint a partially-applied frame — the
@@ -245,9 +242,9 @@ async fn run(
             // pointer (hover-revealed buttons, view switches); re-resolve
             // hover against the fresh hit map and repaint if it changed.
             redraw = app.resync_hover();
-            // A narrower terminal can drop the column of an open grid edit:
-            // it commits here, after the draw that dropped it.
-            redraw |= app.commit_grid_edit_off_screen(grid_edit_drawn);
+            // A narrower terminal can leave an open grid edit off screen:
+            // it commits here, after the draw that hid it (task #199).
+            redraw |= app.commit_grid_edit_off_screen();
         }
 
         tokio::select! {
