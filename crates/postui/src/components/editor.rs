@@ -1440,9 +1440,9 @@ impl Editor {
     fn scroll_body(&mut self, delta: i32) -> bool {
         use crate::text::Lines as _;
         let Some(area) = self.last_body_area else { return false };
+        let (_, width) = self.body_columns(area);
         let lines = &self.body.lines;
-        let width = usize::from(area.width.saturating_sub(line_number_gutter_width(lines.len())));
-        if width == 0 || lines.is_empty() {
+        if width == 0 || area.height == 0 || lines.is_empty() {
             return false;
         }
         let top = self.body.viewport_offset().1;
@@ -1494,13 +1494,23 @@ impl Editor {
         // edtui's column clamp: on a char in Normal, after one otherwise.
         // Normal is the vim engine's: it shows its mode on the body's state
         // (`BodyBuf::show`, vim/engine/buf.rs), and only a mouse event
-        // through `handle_mouse` sets the body back to Insert.
+        // through `handle_mouse` sets the body back to Insert. Its Visual
+        // takes the line's end too, as the engine's own Visual caret may.
         let at = edtui::Index2::new(row, col);
         self.body.cursor = if self.body.mode == EditorMode::Normal {
             self.clamp_to_cell(at)
         } else {
             edtui::Index2::new(row, col.min(self.body.lines.len_col(row).unwrap_or(0)))
         };
+    }
+
+    /// The line-number gutter edtui splits off the left of `area`, and the
+    /// text width right of it, as edtui lays the body out: the one width
+    /// rule the view ([`Self::body_view`]) and the scroll's limit
+    /// ([`Self::scroll_body`]) wrap by.
+    fn body_columns(&self, area: Rect) -> (u16, usize) {
+        let gutter = line_number_gutter_width(self.body.lines.len());
+        (gutter, usize::from(area.width.saturating_sub(gutter)))
     }
 
     /// Where the body's text rows sit in `area` from edtui's viewport top.
@@ -1514,8 +1524,7 @@ impl Editor {
         use crate::text::Lines as _;
         let bottom = area.bottom();
         let lines = &self.body.lines;
-        let gutter = line_number_gutter_width(lines.len());
-        let width = usize::from(area.width.saturating_sub(gutter));
+        let (gutter, width) = self.body_columns(area);
         if width == 0 {
             return None;
         }
