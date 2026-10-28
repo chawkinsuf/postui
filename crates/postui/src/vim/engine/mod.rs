@@ -115,6 +115,11 @@ pub enum Settled {
     Key,
     /// A left press off the buffer's text: Visual ends.
     Click,
+    /// A left press on the command line's row (the body's search row,
+    /// #129): a half-typed command (an operator, a count) is dropped, and
+    /// the cursor and Visual stay, as on Vim's command line (probed in
+    /// 9.1).
+    CommandLine,
     /// The mouse on the buffer's text, at a char (Vim's `do_mouse()`).
     Mouse(Pos, Mouse),
 }
@@ -754,17 +759,47 @@ impl Engine {
     /// Visual from Normal or Insert; any other GUI selection is dropped. A
     /// `Click`, a press off the text, ends Visual. A query box has no Visual layer, so its GUI
     /// selection stays (typing replaces it). A press drops a half-typed
-    /// command. In Insert, a caret the event moved splits the session as a
+    /// command. A `CommandLine` press keeps Visual, and while a search is
+    /// typed a press off the text keeps the search, its operator and Visual
+    /// (#129, below). In Insert, a caret the event moved splits the session as a
     /// cursor key does (Vim's `ins_mouse()`). Then the caret is clamped and
     /// becomes the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
         self.note = None;
         self.request = None;
-        if matches!(how, Settled::Click | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)) {
+        // While a search is being typed, Vim's mouse leaves it open, with
+        // what it is typed for (`d/`) and Visual under it (probed in 9.1:
+        // `/li`, a click on the command line, `X` types `/lXi`; a click on
+        // the text, `X` types `/liX`). So a press off the text keeps them:
+        // on the search's row or the line numbers, on a divider, or on a
+        // menu row (the body menu's Paste types into the search and the
+        // search goes on, #129). A press on a control (a chip, a button) has
+        // already dropped them before it acted, as gVim's menu and toolbar
+        // items do (the app's `vim_control_press`). The rest of the settle
+        // still runs, for whatever that press's own action moved.
+        // Two of Vim's ways are not followed here, as before #129: a press
+        // on the text itself still ends the search and places the caret,
+        // and the prompt has no click caret, so typing goes on at its end.
+        let searching =
+            self.search.is_some() && matches!(how, Settled::Click | Settled::CommandLine);
+        // A press on the command line's row (`CommandLine`) is a `Click`
+        // that keeps Visual and Insert ctrl+o's one command (probed in 9.1:
+        // `d` or `3`, a click there, and the next key runs alone; Visual
+        // stays; `i` ctrl+o, a click there, `x` deletes), and the `pressed`
+        // a double click's Visual goes on with.
+        let command_line = how == Settled::CommandLine;
+        if !searching
+            && matches!(
+                how,
+                Settled::Click
+                    | Settled::CommandLine
+                    | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)
+            )
+        {
             self.clear_pending();
         }
-        if matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
+        if !command_line && matches!(self.mode, Mode::InsertNormal { .. }) && !self.pending() {
             self.resume_after_ctrl_o(buf, state);
         }
         // Vim's selection is made from the pointer, and the field's own goes.
@@ -805,7 +840,7 @@ impl Engine {
                 Some(_) => buf.clear_gui_selection(),
                 None => {}
             }
-            if how == Settled::Click && visual {
+            if how == Settled::Click && visual && !searching {
                 // The area as it was before the click moved the caret.
                 let at = self.rested.unwrap_or(caret);
                 self.end_visual(at, &*buf, state);

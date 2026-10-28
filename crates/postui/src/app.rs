@@ -2676,8 +2676,10 @@ impl App {
     /// Moves the editor/response line `editor_delta` rows down (up when
     /// negative) from where the split's state puts it, un-eased, and saves
     /// a change (spec E13, P2). A minimized pane counts from its snap: the
-    /// editor from its chrome, the response from its full header strip, so
-    /// one row out of either end shows one row of content. Past either end
+    /// editor from one row short of its floor (`layout::editor_min_rows`,
+    /// #129; its chrome on a column too short for the floor), the response
+    /// from its full header strip, so one row out of either end shows the
+    /// editor at its floor or one row of response content. Past either end
     /// it snaps there, keeping the share (E6, E9a).
     ///
     /// The rows come from the state at the settled layout's column height,
@@ -2698,7 +2700,7 @@ impl App {
         };
         let now = self.split_state();
         let editor_rows = if now.editor_minimized {
-            crate::components::editor::CHROME_HEIGHT
+            crate::layout::editor_min_rows(column.height) - 1
         } else if now.response_minimized {
             column.height.saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT)
         } else {
@@ -2744,13 +2746,17 @@ impl App {
             (PaneId::Response, ResizeDir::Taller) => self.resize_split_rows(-n),
             (PaneId::Response, ResizeDir::Shorter) => self.resize_split_rows(n),
             // `N_` counts the focused pane's content rows: the editor's
-            // below its chrome, the response's below its header strip.
+            // below its chrome, the response's below its header strip. A
+            // count that would leave the editor under its floor lands on
+            // the floor (`layout::counted_editor_rows`, #129).
             (PaneId::Sidebar, ResizeDir::Height) => false,
-            (PaneId::Editor, ResizeDir::Height) => self.move_split_line(|_, _| {
-                i32::from(crate::components::editor::CHROME_HEIGHT).saturating_add(n)
+            (PaneId::Editor, ResizeDir::Height) => self.move_split_line(|column, _| {
+                let rows = i32::from(crate::components::editor::CHROME_HEIGHT).saturating_add(n);
+                crate::layout::counted_editor_rows(column, rows)
             }),
             (PaneId::Response, ResizeDir::Height) => self.move_split_line(|column, _| {
-                i32::from(column) - i32::from(crate::components::response::HEADER_STRIP_HEIGHT) - n
+                let strip = i32::from(crate::components::response::HEADER_STRIP_HEIGHT);
+                crate::layout::counted_editor_rows(column, i32::from(column) - strip - n)
             }),
             // The split eases, like the keyboard stop it is (E14), and the
             // sidebar takes half the body, as Vim's CTRL-W = makes all

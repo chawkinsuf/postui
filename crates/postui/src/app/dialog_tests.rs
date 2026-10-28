@@ -766,3 +766,23 @@ fn arrows_enter_confirms_a_rename() {
     assert!(app.modals.is_empty());
     assert!(has_request(&app, "main/delta"));
 }
+
+/// #129, #194: a press on a dialog that is not a menu is a control press
+/// for a search typed in the dialog's own field: the search goes, as a
+/// gVim menu item's `<C-C>` takes the command line, rather than staying
+/// open through the press as it does under the body menu.
+#[test]
+fn a_press_in_a_dialog_cancels_its_fields_search() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim_app(Fixture::SidebarThree);
+    feed(&mut app, "r<Esc>/et");
+    assert_eq!(app.mode_indicator(), Some("SEARCH"));
+    draw(&mut app);
+    let body = app.hits.rect_of(&Hit::ModalBody).expect("the dialog's surface");
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+        let (column, row) = (body.x + 1, body.y);
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+    }
+    assert!(!app.modals.is_empty(), "the dialog stays");
+    assert_ne!(app.mode_indicator(), Some("SEARCH"), "its field's search goes");
+}

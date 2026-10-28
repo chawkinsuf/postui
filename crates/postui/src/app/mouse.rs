@@ -674,7 +674,7 @@ impl App {
                     return self.modals.scroll_top(d);
                 }
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
-                    && self.editor.handle_mouse(m)
+                    && self.editor.handle_wheel(m)
                 {
                     return self.update(Action::Render);
                 }
@@ -1107,6 +1107,20 @@ impl App {
         clicks: Clicks,
         open: bool,
     ) {
+        // The one rule for the row the vim profile keeps under the body's
+        // text for the search prompt (#129), which is the body's for every
+        // other mouse input: a press there places no caret. It gives the
+        // body the keyboard, anchors no sweep (a sweep extends from the
+        // caret its press placed), and settles as a press on Vim's command
+        // line: a half-typed command goes, an open search and Visual go
+        // on. Vim 9.1 does the same (probed: a click there leaves the
+        // cursor, keeps an open `/` line and Visual, drops a pending `d`
+        // or count, and dragged up over the text selects nothing).
+        if field == FieldId::Body && self.editor.below_body_text(m.row) {
+            self.move_editor_caret(SubFocus::Content);
+            self.vim_command_line_press();
+            return;
+        }
         let at = self.text_at(field, m.column, m.row, open, false);
         if field == FieldId::Body || at.is_some() {
             self.text_drag = Some(TextDrag::Field(field));
@@ -1407,6 +1421,29 @@ impl App {
         // (The footer's quit chip, once its exception, is not drawn under a
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
+        // In vim a control click is gVim's menu or toolbar item: it cancels
+        // the search being typed and a half-typed command before it acts
+        // (`vim_control_press`). A press on the body's own window (its
+        // text, its search row, its scrollbar) is Vim's own click, which
+        // keeps them; a divider moves only itself; and an open menu (its
+        // rows, or the backdrop that dismisses it) acts in the mode it was
+        // opened over, so the body menu's Paste types into the search (Vim's
+        // command-line Paste is a `:cmenu` entry) (#129, #194). A dialog's
+        // buttons are controls like any other, for a search typed in the
+        // dialog's own field. A pane's bare surface, the body's ring gutter
+        // included, is no exception: a press there is a click away that
+        // takes the caret from the body (`move_editor_caret` below), which
+        // ends its search as it did before #129.
+        let body_window = matches!(
+            hit,
+            Hit::BodyEditor
+                | Hit::ScrollbarThumb(PaneId::Editor)
+                | Hit::ScrollbarTrack(PaneId::Editor, _)
+        );
+        let in_menu = matches!(self.modals.top(), Some(Modal::Dropdown(_)));
+        if !(in_menu || body_window || self.is_separator_press(&hit)) {
+            self.vim_control_press();
+        }
         // A footer chip is the key it advertises. While the editor's caret
         // is anywhere in it (the table's cursor on any stop, an open cell,
         // the Body, the URL line selected or open, the method badge), every

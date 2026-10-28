@@ -63,6 +63,10 @@ pub(crate) struct VimState {
     /// gutter, or the response's header strip), which `vim_mouse_end` does
     /// not settle as a click.
     separator_press: bool,
+    /// This event's left press landed on the row the body keeps for the
+    /// search prompt (#129), which `vim_mouse_end` settles as a press on
+    /// Vim's command line.
+    command_line_press: bool,
 }
 
 /// The change `.` repeats (spec §5.12) and the history's change count
@@ -552,6 +556,19 @@ impl App {
         }
     }
 
+    /// A left press on a control (a chip, a button, a tab: anything that is
+    /// not the body's own window, a divider, or a menu or dialog): gVim's
+    /// menu or toolbar item, which `:amenu` starts with `<C-C>` in
+    /// Command-line and Operator-pending mode (gui.txt, the `:amenu`
+    /// table). So the search being typed and a half-typed command go
+    /// before the control acts (#129; the user's #194: "Yes let's follow
+    /// vim for mouse interactions as well"). Vim profile only.
+    pub(super) fn vim_control_press(&mut self) {
+        if self.profile() == KeyProfile::Vim {
+            self.vim_drop_pending();
+        }
+    }
+
     /// The engine `id` runs on: the dialog engine for a dialog's field
     /// (plan M3b Deviation 1), else the screen's.
     pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {
@@ -559,7 +576,8 @@ impl App {
     }
 
     /// What the engine needs to know about the view (piece 3 §4.1): the
-    /// body's rows as last drawn.
+    /// body's rows as last drawn. The search prompt's row is not among
+    /// them, as Vim's command line is not its window's (#129).
     pub(crate) fn view_ctx(&self, id: FieldId) -> ViewCtx {
         let rows = self.editor.last_body_area.map(|a| usize::from(a.height));
         ViewCtx { viewport_rows: if id == FieldId::Body { rows } else { None } }
@@ -725,6 +743,10 @@ impl App {
         let feedback = {
             let (glue, buf) = self.session_parts(id);
             let mut buf = buf?;
+            // An open search prompt takes the paste before a selection
+            // does, as Vim's paste goes into its command line (#129):
+            // `visual_span` is `None` while the prompt is open, Visual
+            // under it or not, so a search begun from a selection gets it.
             if let Some((from, to)) = glue.visual_span(&mut buf) {
                 glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, text));
                 None
@@ -1012,6 +1034,7 @@ impl App {
             self.sync_session(None, Cause::Before);
             self.vim.text_mouse = None;
             self.vim.separator_press = false;
+            self.vim.command_line_press = false;
         }
         MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
     }
@@ -1019,18 +1042,25 @@ impl App {
     /// After a mouse event: a button's settles the session. What the
     /// mouse did on the text of the field that has the caret now settles
     /// at its char (spec 2026-10-14); any other left press is a plain
-    /// click, except one on a window separator, and a release does
-    /// nothing, as in Vim. An editor footer chip's press is a click too,
-    /// as a gVim menu item inserts `<C-C>` in Visual/Op-pending (gui.txt;
-    /// task #194, `App::on_hit`).
+    /// click, except one on a window separator, or on the body's search
+    /// row (as on Vim's command line), and a release does nothing, as in
+    /// Vim. An editor footer chip's press is a click too, as a gVim menu
+    /// item inserts `<C-C>` in Visual/Op-pending (gui.txt; task #194,
+    /// `App::on_hit`).
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
         if !edge.button {
             return;
         }
         let separator = std::mem::take(&mut self.vim.separator_press);
+        let command_line = std::mem::take(&mut self.vim.command_line_press);
         let how = match self.vim.text_mouse.take() {
             Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
                 Some(Settled::Mouse(at, mouse))
+            }
+            // Only once the body has the caret: a press whose caret move a
+            // field refused settles on that field as any other click.
+            _ if command_line && self.field_caret() == FieldCaret::Live(FieldId::Body) => {
+                Some(Settled::CommandLine)
             }
             _ => (edge.left_press && !separator).then_some(Settled::Click),
         };
@@ -1043,6 +1073,14 @@ impl App {
     /// so the end of the event settles nothing.
     pub(super) fn vim_separator_press(&mut self) {
         self.vim.separator_press = true;
+    }
+
+    /// A left press on the row the body keeps under its text for the
+    /// search prompt (#129): it settles as a press on Vim's command line
+    /// (`Settled::CommandLine`), which drops a half-typed command and keeps
+    /// the cursor, Visual and an open search.
+    pub(super) fn vim_command_line_press(&mut self) {
+        self.vim.command_line_press = true;
     }
 
     /// A left press on `field`'s text at char `(row, col)`, with Vim's click

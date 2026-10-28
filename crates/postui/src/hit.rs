@@ -129,7 +129,9 @@ pub enum Hit {
     /// The 1-column gutter between the sidebar and the main column: the
     /// handle the sidebar's width is dragged by.
     SidebarGutter,
-    /// Raw mouse event forwarded to edtui (click-to-place, wheel).
+    /// Raw mouse event forwarded to edtui (click-to-place, wheel). In the
+    /// vim profile it also covers the row under the text kept for the
+    /// search prompt (#129), which is the body's for every mouse input.
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,

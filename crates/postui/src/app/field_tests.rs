@@ -1689,19 +1689,385 @@ fn cells_of(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, c: &str)
         .collect()
 }
 
-/// Spec §5.6: the prompt is drawn on the body pane's bottom row.
+/// Spec §5.6: the prompt is drawn on the body pane's bottom row, which
+/// the vim profile keeps for it, open or not, as Vim keeps its command
+/// line (#129): the body stays the rows above it.
 #[test]
 fn the_search_prompt_draws_on_the_bodys_bottom_row() {
     let mut app = vim(Fixture::Body);
     app.editor.set_body_text("foo bar foo");
-    feed(&mut app, "/fo");
     let buf = draw_buffer(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    let bottom = row_text(&buf, area, area.bottom() - 1);
+    assert_eq!(row_text(&buf, area, area.bottom()).trim(), "", "a blank row below the body");
+    feed(&mut app, "/fo");
+    let buf = draw_buffer(&mut app);
+    assert_eq!(app.editor.last_body_area, Some(area), "the body keeps its size");
+    let bottom = row_text(&buf, area, area.bottom());
     assert!(bottom.starts_with("/fo"), "{bottom:?}");
     feed(&mut app, "<Esc>");
     let buf = draw_buffer(&mut app);
-    assert!(!row_text(&buf, area, area.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
+    assert_eq!(app.editor.last_body_area, Some(area), "and after Esc");
+    assert_eq!(row_text(&buf, area, area.bottom()).trim(), "", "Esc closes the prompt");
+}
+
+/// #129: the arrows profile keeps no row for the vim prompt: its body
+/// has the pane's rows, one more than the vim profile's.
+#[test]
+fn the_arrows_body_keeps_no_prompt_row() {
+    let mut app = vim(Fixture::Body);
+    let area = app.editor.last_body_area.unwrap();
+    app.use_profile(KeyProfile::Arrows);
+    draw(&mut app);
+    let arrows = app.editor.last_body_area.unwrap();
+    assert_eq!(arrows, ratatui::layout::Rect { height: area.height + 1, ..area });
+}
+
+/// #129, the task's steps: `L` puts the caret on the body's last row, and
+/// `/` shows it there above the prompt, nothing moved. Esc leaves the
+/// view as it was. The engine's window is the body's rows throughout.
+#[test]
+fn l_then_slash_keeps_the_carets_line_in_view() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "L");
+    let before = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let h = usize::from(area.height);
+    let caret = app.editor.body.cursor.row;
+    assert_eq!(caret, h - 1, "L: the last row");
+    assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(h));
+    let body = |buf: &ratatui::buffer::Buffer| -> Vec<String> {
+        (area.y..area.bottom()).map(|y| row_text(buf, area, y)).collect()
+    };
+    // One key and one frame, no settling draw after.
+    for ev in crate::keyroute::notation::events("/") {
+        app.handle_key(ev);
+    }
+    let open = draw_buffer(&mut app);
+    assert_eq!(app.editor.last_body_area, Some(area));
+    assert_eq!(body(&open), body(&before), "nothing shifts");
+    let last = row_text(&open, area, area.bottom() - 1);
+    assert!(last.trim_end().ends_with(&format!("row{caret}")), "{last:?}");
+    assert!(row_text(&open, area, area.bottom()).starts_with('/'));
+    assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(h));
+    feed(&mut app, "<Esc>");
+    let closed = draw_buffer(&mut app);
+    assert_eq!(app.editor.body.viewport_offset().1, 0);
+    assert_eq!(body(&closed), body(&before), "Esc leaves the view as it was");
+}
+
+/// #129: the prompt's row is the body's for the mouse, open or not, but a
+/// press there places no caret, so it never moves the body's caret to a
+/// line the body doesn't show. It keeps the keyboard on the body, as a
+/// click on Vim's command line leaves the window and its cursor (probed:
+/// `3G`, a click there, the cursor on line 3 in Normal), and an open
+/// search stays open.
+#[test]
+fn a_click_on_the_search_prompt_leaves_the_body_caret() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "3G");
+    let caret = app.editor.body.cursor;
+    let area = app.editor.last_body_area.unwrap();
+    assert_eq!(app.hits.hit_at(area.x + 8, area.bottom()), Some(&Hit::BodyEditor));
+    let held = |app: &App| app.focus == PaneId::Editor && app.editor.sub_focus == SubFocus::Content;
+    assert!(held(&app));
+    click_at(&mut app, area.x + 8, area.bottom());
+    assert_eq!(app.editor.body.cursor, caret, "the blank row");
+    assert!(held(&app), "the body keeps the keyboard");
+    // Nor from the keyboard's other pane: the press gives the body it.
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    click_at(&mut app, area.x + 8, area.bottom());
+    assert_eq!(app.editor.body.cursor, caret);
+    assert!(held(&app), "the press gives the body the keyboard");
+    feed(&mut app, "/x");
+    assert_eq!(app.hits.hit_at(area.x + 8, area.bottom()), Some(&Hit::BodyEditor));
+    click_at(&mut app, area.x + 8, area.bottom());
+    assert_eq!(app.editor.body.cursor, caret, "the open prompt");
+    assert!(held(&app));
+    // The next key still types into the search (probed: Vim's `/li`, a
+    // click on its line, `X` gives `/lXi`; postui's prompt has no click
+    // caret, so it types at the end).
+    feed(&mut app, "y");
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("xy"), "the search stays open");
+    // Visual too survives a press there, as in Vim (probed: `vj`, a click
+    // on the command line, `y` yanks the two lines' span).
+    feed(&mut app, "<Esc>vj");
+    let span = app.editor.body_visual;
+    assert!(span.is_some());
+    click_at(&mut app, area.x + 8, area.bottom());
+    draw(&mut app);
+    assert_eq!(app.editor.body_visual, span, "Visual stays");
+}
+
+/// #129: the prompt's row is the body's for the wheel and the right
+/// button too: a notch there scrolls the body as one on its text does,
+/// and a right press opens the body's text menu.
+#[test]
+fn the_search_prompts_row_wheels_and_menus_as_the_body() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let wheel = |app: &mut App, row: u16| {
+        let kind = MouseEventKind::ScrollDown;
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 8,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        draw(app);
+        app.editor.body.viewport_offset().1
+    };
+    let on_text = wheel(&mut app, area.bottom() - 1);
+    assert!(on_text > 0, "the notch scrolls the body");
+    assert_eq!(wheel(&mut app, area.bottom()), on_text * 2, "the same notch on the prompt's row");
+    let kind = MouseEventKind::Down(MouseButton::Right);
+    let row = area.bottom();
+    app.handle_mouse(MouseEvent { kind, column: area.x + 8, row, modifiers: KeyModifiers::NONE });
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("the body's text menu") };
+    assert!(d.items.iter().any(|i| i.label == "Paste"));
+}
+
+/// #129: while a search is being typed, the body's menu over the row
+/// below the text is the body's, and its Paste types into the search, which
+/// stays open, as Vim's paste goes into its command line: the pick's press,
+/// as any press off the text while a search is typed, leaves the search
+/// open (probed in 9.1).
+#[test]
+fn menu_paste_while_searching_types_into_the_search() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("ab");
+    app.set_clipboard_for_test(clip);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let text = app.editor.body.lines.to_string();
+    feed(&mut app, "/x");
+    let kind = MouseEventKind::Down(MouseButton::Right);
+    let row = area.bottom();
+    app.handle_mouse(MouseEvent { kind, column: area.x + 8, row, modifiers: KeyModifiers::NONE });
+    draw(&mut app);
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("the body's text menu") };
+    let i = d.items.iter().position(|i| i.label == "Paste").expect("Paste");
+    let at = app.hits.rect_of(&Hit::DropdownRow(i)).expect("the Paste row");
+    click_at(&mut app, at.x + 1, at.y);
+    draw(&mut app);
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("xab"), "typed into the open search");
+    assert_eq!(app.editor.body.lines.to_string(), text, "the body unchanged");
+}
+
+/// #129: a paste while a search begun from a selection is typed goes into
+/// the search, not over the selection, as Vim's paste goes into its
+/// command line.
+#[test]
+fn a_paste_while_searching_from_visual_types_into_the_search() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("one\ntwo\nthree");
+    draw(&mut app);
+    let text = app.editor.body.lines.to_string();
+    feed(&mut app, "vj/x");
+    assert!(app.paste_text("ab"));
+    draw(&mut app);
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("xab"));
+    assert_eq!(app.editor.body.lines.to_string(), text, "the selection kept its text");
+}
+
+/// #129: a press on the prompt's row anchors nothing: a double click
+/// there selects no word, and a sweep from it up over the text selects
+/// nothing, as in Vim (probed: a press on the command line dragged up
+/// over the text selects nothing). A sweep from the text down onto the
+/// row is the body's below-the-text sweep and scrolls on.
+#[test]
+fn a_press_on_the_prompts_row_anchors_no_sweep() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "3G");
+    let caret = app.editor.body.cursor;
+    let area = app.editor.last_body_area.unwrap();
+    let mouse = |app: &mut App, kind, row| {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 8,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        draw(app);
+    };
+    let down = MouseEventKind::Down(MouseButton::Left);
+    let up = MouseEventKind::Up(MouseButton::Left);
+    let drag = MouseEventKind::Drag(MouseButton::Left);
+    for _ in 0..2 {
+        mouse(&mut app, down, area.bottom());
+        mouse(&mut app, up, area.bottom());
+    }
+    assert_eq!(app.editor.body.cursor, caret, "no word");
+    assert!(app.editor.body_visual.is_none() && app.editor.body.selection.is_none());
+    mouse(&mut app, down, area.bottom());
+    mouse(&mut app, drag, area.y + 1);
+    mouse(&mut app, up, area.y + 1);
+    assert_eq!(app.editor.body.cursor, caret, "no sweep");
+    assert!(app.editor.body_visual.is_none() && app.editor.body.selection.is_none());
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    // From the text down onto the row: Visual, and the view scrolls on.
+    mouse(&mut app, down, area.y + 1);
+    mouse(&mut app, drag, area.bottom());
+    assert!(app.editor.body_visual.is_some(), "the sweep selects");
+    assert!(app.editor.body.cursor.row >= usize::from(area.height), "past the body's last row");
+    mouse(&mut app, up, area.bottom());
+}
+
+/// #129: a press on the prompt's row drops a half-typed command, as one on
+/// Vim's command line does (probed in 9.1: `d`, a click there, `w` only
+/// moves; `3`, a click there, `x` deletes one char).
+#[test]
+fn a_press_on_the_prompts_row_drops_a_pending_command() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("one two three\nfour");
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    feed(&mut app, "gg0d");
+    click_at(&mut app, area.x + 8, area.bottom());
+    feed(&mut app, "w");
+    assert_eq!(app.editor.body.lines.to_string(), "one two three\nfour", "`w` only moves");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(0, 4));
+    feed(&mut app, "0");
+    feed(&mut app, "3");
+    click_at(&mut app, area.x + 8, area.bottom());
+    feed(&mut app, "x");
+    assert_eq!(app.editor.body.lines.to_string(), "ne two three\nfour", "one char");
+}
+
+/// #129, #194: a click on a control (here the footer's vars chip, which
+/// keeps the body's caret) is gVim's menu or toolbar item, so it cancels
+/// the search being typed and the operator it was typed for before it acts
+/// (gui.txt's `:amenu` table: `<C-C>` in Command-line mode). A click on the
+/// body's line numbers, the body's own window, keeps them, as Vim's does.
+#[test]
+fn a_control_click_cancels_the_search_before_it_acts() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("one two three\nfour");
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    feed(&mut app, "gg0d/thr");
+    click_at(&mut app, area.x, area.y); // the line numbers
+    draw(&mut app);
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("thr"), "the body's own click keeps it");
+    let footer = app.settled_layout().unwrap().footer;
+    let chip = (footer.y..footer.bottom())
+        .flat_map(|y| (footer.x..footer.right()).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            matches!(app.hits.hit_at(x, y), Some(Hit::FooterChip(Action::OpenVarPicker { .. })))
+        })
+        .expect("the vars chip");
+    click_at(&mut app, chip.0, chip.1);
+    draw(&mut app);
+    assert!(app.editor.body_search.prompt.is_none(), "the chip cancels the search");
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))), "and then acts");
+    feed(&mut app, "<Esc>");
+    draw(&mut app);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "the body keeps the caret");
+    feed(&mut app, "w");
+    assert_eq!(app.editor.body.lines.to_string(), "one two three\nfour", "no `d` left");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(0, 4));
+}
+
+/// #129 (the user's "Go"): vim's `{N}<C-w>_` with a count that would leave
+/// the body under two rows lands on the floor, as Vim never closes a
+/// window with a count; `0` still minimizes, and a single `<C-w>-` from
+/// the floor minimizes.
+#[test]
+fn a_counted_height_under_the_floor_lands_on_it() {
+    let mut app = vim(Fixture::Body);
+    let column = app.settled_layout().unwrap().main.height;
+    let floor = crate::layout::editor_floor(column).expect("a tall column");
+    for n in 1..=4 {
+        feed(&mut app, &format!("{n}<C-w>_"));
+        draw(&mut app);
+        let s = app.split_state();
+        assert!(!s.editor_minimized && !s.response_minimized, "{n}: shown");
+        assert_eq!(crate::layout::editor_rows_for(column, s.ratio), floor, "{n}: the floor");
+        assert_eq!(app.editor.last_body_area.map(|a| a.height), Some(1), "{n}: text row");
+    }
+    feed(&mut app, "<C-w>-");
+    assert!(app.split_state().editor_minimized, "a step from the floor minimizes");
+    feed(&mut app, "<C-w>+");
+    let s = app.split_state();
+    assert!(!s.editor_minimized);
+    assert_eq!(crate::layout::editor_rows_for(column, s.ratio), floor, "back on the floor");
+}
+
+/// #129: the bar measures the body above the prompt's row, as the thumb
+/// drag's spec does, and stays as it is when the prompt opens.
+#[test]
+fn the_search_prompt_leaves_the_scrollbar() {
+    let mut app = vim(Fixture::Body);
+    let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
+    let thumb = |app: &App| app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor));
+    app.editor.set_body_text(&vec!["x"; h].join("\n"));
+    draw(&mut app);
+    assert_eq!(thumb(&app), None, "the body's rows fit");
+    app.editor.set_body_text(&vec!["x"; h + 1].join("\n"));
+    draw(&mut app);
+    let bar = thumb(&app).expect("one line more than the body shows");
+    let area = app.editor.last_body_area.unwrap();
+    let spec = app.editor.scrollbar_spec().unwrap();
+    assert_eq!(crate::hit::thumb_geometry(&spec, area.height).1, bar.height);
+    feed(&mut app, "/");
+    assert_eq!(thumb(&app), Some(bar));
+    assert_eq!(app.editor.last_body_area, Some(area));
+}
+
+/// #129: a two-row pane gives the body one row above the prompt's; the
+/// frame after Enter still paints the match the search jumped to.
+#[test]
+fn a_one_row_body_paints_the_match_after_the_prompt() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    fn draw_at(app: &mut App, rows: u16) -> ratatui::buffer::Buffer {
+        app.anims.finish_all();
+        let mut terminal = Terminal::new(TestBackend::new(160, rows)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+    let mut app = vim(Fixture::Body);
+    let mut lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    lines[100] = "needle".into();
+    app.editor.set_body_text(&lines.join("\n"));
+    let rows = (8..48)
+        .find(|&h| {
+            draw_at(&mut app, h);
+            app.editor.last_body_area.map(|a| a.height) == Some(1)
+        })
+        .expect("a height with a one-row body");
+    let mut buf = draw_at(&mut app, rows);
+    for ev in crate::keyroute::notation::events("/needle<CR>") {
+        app.handle_key(ev);
+        buf = draw_at(&mut app, rows);
+    }
+    let area = app.editor.last_body_area.unwrap();
+    assert_eq!(area.height, 1);
+    assert!(row_text(&buf, area, area.y).contains("needle"));
+    // The second letter: the caret's own cell is REVERSED regardless.
+    let x = (area.x..area.right()).find(|&x| buf[(x, area.y)].symbol() == "e").unwrap();
+    assert!(buf[(x, area.y)].modifier.contains(Modifier::REVERSED), "the match is painted");
 }
 
 /// The prompt's caret stands past the cells its text paints: `❤️` (a
@@ -1713,31 +2079,33 @@ fn the_search_prompts_caret_follows_the_painted_cells() {
     feed(&mut app, "/\u{2764}\u{fe0f}x");
     let buf = draw_buffer(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    let y = area.bottom() - 1;
+    let y = area.bottom(); // the prompt's row, below the body
     let reversed: Vec<u16> = (area.x..area.right())
         .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
         .collect();
     assert_eq!(reversed, [area.x + 4], "after `/`, the heart's two cells and `x`");
 }
 
-/// Final review M-4: the prompt covers the bottom row, so a `{{token}}`
-/// under it registers no hit a click could find.
+/// Final review M-4: a `{{token}}` on the body's bottom row keeps its hit
+/// there as the prompt opens below it (#129), and the prompt's row has
+/// none a click could find.
 #[test]
 fn the_search_prompt_row_has_no_token_hits() {
     let mut app = vim(Fixture::Body);
     let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
     let mut lines = vec!["x"; h - 1];
     lines.push("{{v}}");
+    lines.push("{{v}}"); // one line below the body
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    let bottom = area.bottom() - 1;
-    let on_bottom =
-        |app: &App| app.hits.rects_of(&Hit::VarToken("v".into())).iter().any(|r| r.y == bottom);
-    assert!(on_bottom(&app), "the token is drawn on the bottom row");
+    let rows = |app: &App| -> Vec<u16> {
+        app.hits.rects_of(&Hit::VarToken("v".into())).iter().map(|r| r.y).collect()
+    };
+    assert_eq!(rows(&app), [area.bottom() - 1], "the body's bottom row only");
     feed(&mut app, "/x");
     assert!(app.editor.body_search.prompt.is_some());
-    assert!(!on_bottom(&app), "the prompt row has no token hit");
+    assert_eq!(rows(&app), [area.bottom() - 1], "the same, none on the prompt");
 }
 
 /// Plan M3a Deviation 16: matches REVERSED, the one Enter lands on also BOLD.
