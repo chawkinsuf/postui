@@ -9415,13 +9415,14 @@ impl App {
 
     /// Commits whatever cell the selector grid's [`OptionGridState::editing`]
     /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
-    /// on the three kinds of cell the grid has: the ghost row's name cell
+    /// on the four kinds of cell the grid has: the ghost row's name cell
     /// creates an option (with an empty value for every field, so the new
     /// record validates) and, with `walk_on`, continues into its first
     /// field cell (the keyboard's Enter, Esc and Tab; a close for a click
     /// away or a state change does not), a real option's name cell renames
-    /// it, and a field cell writes that one value. Text that didn't change
-    /// writes nothing.
+    /// it, a field cell writes that one value, and the description cell
+    /// sets the option's description (an emptied one removes it). Text
+    /// that didn't change writes nothing.
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
@@ -9500,7 +9501,7 @@ impl App {
                 from: options[edit.row].clone(),
                 to: value,
             })
-        } else if edit.col == fields.len() + 1 {
+        } else if edit.col == crate::components::varmanager::desc_col(fields.len()) {
             // The trailing description column: an emptied cell removes the
             // stored key (clearing a text value, not an entity remove).
             t = self.begin_op();
@@ -9531,7 +9532,9 @@ impl App {
                 // cursor, which the create left on the option by name
                 // (spec 2026-10-27 N9): the write re-read the file, so an
                 // edit another program made can have moved the option off
-                // the ghost's old index.
+                // the ghost's old index. A selector always has a field
+                // (core refuses an empty field list, `varmodel::EmptyFields`),
+                // so the `is_empty` check is only a guard, never a path.
                 let created = self.project().and_then(|p| self.varmanager.grid_at(p));
                 if walk_on
                     && ghost
@@ -12332,9 +12335,10 @@ impl App {
     /// Keys while a selector-grid cell owns the keyboard — the same contract
     /// as [`Self::handle_var_form_key`]: `Esc` and `Enter` both commit
     /// (the field rule), anything else goes to the cell's own `LineInput`.
-    /// `Tab` commits and steps one column right on the same row, so a
-    /// freshly created option can be filled in without reaching for the
-    /// mouse; a commit that failed keeps its edit and stays put, and fails
+    /// `Tab` commits and opens the next cell in reading order (name, each
+    /// field, description, then the next row; [`Self::step_grid_edit`]),
+    /// so a freshly created option can be filled in without reaching for
+    /// the mouse; a commit that failed keeps its edit and stays put, and fails
     /// the key (`last_action_failed`), as the add-option prompt's refusal
     /// fails its confirm.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
@@ -12356,9 +12360,10 @@ impl App {
     }
 
     /// `Tab`/`BackTab` inside a live grid cell: commit, then open the cell
-    /// one step away in reading order (Task 8's table parity) — off the end
-    /// of a row wraps to the next row's first column, and off the front of
-    /// one wraps back to the previous row's last. The ghost row is the far
+    /// one step away in reading order (Task 8's table parity) — a row's
+    /// cells are its name, each field, then its description; off the end
+    /// of a row wraps to the next row's name, and off the front of one
+    /// wraps back to the previous row's description. The ghost row is the far
     /// end in both directions: forward stops there (it becomes a real option
     /// only once its name commits), and there is nothing before row 0's
     /// name cell.
@@ -12382,26 +12387,21 @@ impl App {
         if self.varmanager.grid.editing.is_some() {
             return true;
         }
-        let Some((row, _)) = self.project().and_then(|p| self.varmanager.grid_at(p)) else {
+        let Some(((row, _), (ghost, ncols))) = self
+            .project()
+            .and_then(|p| Some((self.varmanager.grid_at(p)?, self.varmanager.grid_shape(p)?)))
+        else {
             return true;
         };
-        let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
-            return true;
-        };
-        let ncols = 1 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
-        let last_row =
-            postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
-                .map_or(0, indexmap::IndexMap::len);
+        // The walk's last cell is the ghost row's name, its only cell.
+        let last = (ghost * ncols) as i32;
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than
             // closing the edit out from under the user — the same cell
             // re-opens, now showing what was just committed.
-            f if f < 0 => (row, col),
-            f => {
-                let (r, c) = (f as usize / ncols, f as usize % ncols);
-                if r > last_row { (row, col) } else { (r, c) }
-            }
+            f if f < 0 || f > last => (row, col),
+            f => (f as usize / ncols, f as usize % ncols),
         };
         self.vm_start_cell_edit(next_row, next_col);
         true

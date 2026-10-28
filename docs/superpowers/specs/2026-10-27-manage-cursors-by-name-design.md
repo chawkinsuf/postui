@@ -191,7 +191,7 @@ get a dated paragraph naming #83 and N6 / N7.
 | N8 | Renaming the selected env or space from the header with the screen closed, then opening it: the cursor is on the renamed item. A grid rename: the cursor is on the new name. |
 | N9 | Ghost-row create: the cursor is on the new option (the existing walk-on tests still pass). A paste with the cursor on the ghost row: the cursor is on the first pasted option. |
 | N10 | An env switch where both environments have bob: the cursor stays on bob. An env switch to one without bob: the cursor is on nothing. |
-| N11 | The existing column tests pass unchanged (Tab, Right, Left, a click on a cell). |
+| N11 | The existing column tests pass unchanged (Tab, Right, Left, a click on a cell). *Amended 2026-10-27 (task #188):* Tab's walk now takes in the description column (the stage 7 spec's §4), so the Tab tests step through it; the by-name walk test still checks the step is from the committed option's row. |
 | N12 | The existing drag tests pass. A reload under a drag leaves the cursor on the dragged space in the order on disk (ported). |
 | N13 | None: the existing scroll tests cover it. |
 
