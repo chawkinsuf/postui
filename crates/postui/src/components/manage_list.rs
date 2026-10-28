@@ -26,8 +26,12 @@ pub const LEFT_W: u16 = crate::components::varmanager::LEFT_W;
 
 #[derive(Default)]
 pub struct ManageList {
-    /// Index into the current tab's item list.
-    pub cursor: usize,
+    /// The slug of the environment or space the cursor is on (task #83):
+    /// an outside edit that adds, removes or reorders items leaves it on
+    /// its item with no code following it. `None`, or a slug the list no
+    /// longer holds, is the cursor on nothing (spec 2026-10-27 N5).
+    /// Private: every read and write goes through the methods below (N2).
+    cursor: Option<String>,
     pub scroll: usize,
     visible_rows: usize,
     ensure_visible: bool,
@@ -152,25 +156,73 @@ impl ManageList {
         }
     }
 
+    /// The item the cursor is on, as `tab`'s list holds it now; `None` on
+    /// nothing.
     pub fn selected<'a>(&self, tab: ManageTab, ctx: &'a Project) -> Option<&'a str> {
-        Self::items(tab, ctx).get(self.cursor).map(String::as_str)
+        let items = Self::items(tab, ctx);
+        self.cursor_in(items).map(|i| items[i].as_str())
     }
 
-    /// Keeps the cursor on `name` after a reorder/rename/reload.
+    /// Where the cursor's item sits in `items` (the project's list, or a
+    /// drag's working order); `None` on nothing.
+    pub fn cursor_in(&self, items: &[String]) -> Option<usize> {
+        let name = self.cursor.as_deref()?;
+        items.iter().position(|s| s == name)
+    }
+
+    /// Puts the cursor on `name`, when `tab`'s list holds it, and scrolls
+    /// it into view.
     pub fn select_name(&mut self, tab: ManageTab, ctx: &Project, name: &str) {
-        if let Some(i) = Self::items(tab, ctx).iter().position(|s| s == name) {
-            self.cursor = i;
+        if Self::items(tab, ctx).iter().any(|s| s == name) {
+            self.cursor = Some(name.to_string());
             self.ensure_visible = true;
         }
     }
 
-    /// Pulls the cursor back into a list `len` rows long — how a cursor
-    /// parked by a tab switch survives its list shrinking while the tab
-    /// was away, and where a delete leaves it (the same index, clamped).
-    /// An empty list leaves the cursor at 0.
-    pub fn clamp(&mut self, len: usize) {
-        if self.cursor >= len {
-            self.cursor = len.saturating_sub(1);
+    /// Puts the cursor on row `i` of `tab`'s list, as a click does. A row
+    /// past the end leaves it where it is.
+    pub fn select_index(&mut self, tab: ManageTab, ctx: &Project, i: usize) {
+        if let Some(name) = Self::items(tab, ctx).get(i) {
+            self.cursor = Some(name.clone());
+        }
+    }
+
+    /// A cursor on nothing goes to the first item: how a list comes on
+    /// screen (spec N6), on the first open and after its item went while
+    /// it was away. A cursor on something stays where it is.
+    pub fn settle(&mut self, tab: ManageTab, ctx: &Project) {
+        if self.selected(tab, ctx).is_none() {
+            self.cursor = Self::items(tab, ctx).first().cloned();
+            self.ensure_visible = true;
+        }
+    }
+
+    /// The item a delete of `name` hands the cursor to (spec N7): the one
+    /// after it, else the one before it, else none. Read before the delete,
+    /// where the list is the one the user saw: the delete re-reads the
+    /// list from disk, so an index taken now could name another item once
+    /// it lands, while a name cannot.
+    pub fn neighbour(tab: ManageTab, ctx: &Project, name: &str) -> Option<String> {
+        let items = Self::items(tab, ctx);
+        let i = items.iter().position(|s| s == name)?;
+        items.get(i + 1).or_else(|| i.checked_sub(1).and_then(|j| items.get(j))).cloned()
+    }
+
+    /// The app's own delete of `name` landed: a cursor on it moves to
+    /// `next`, its [`Self::neighbour`] read before the delete. A cursor on
+    /// another item stays on its own.
+    pub fn removed(&mut self, name: &str, next: Option<String>) {
+        if self.cursor.as_deref() == Some(name) {
+            self.cursor = next;
+            self.ensure_visible = true;
+        }
+    }
+
+    /// The app's own rename of `from` to `to` (spec N8): a cursor on it
+    /// follows the new name.
+    pub fn renamed(&mut self, from: &str, to: &str) {
+        if self.cursor.as_deref() == Some(from) {
+            self.cursor = Some(to.to_string());
             self.ensure_visible = true;
         }
     }
@@ -190,8 +242,10 @@ impl ManageList {
 
     /// Starts a drag of row `i`: records the displayed order as both
     /// `original` and the starting `working` order, and lands the cursor
-    /// on the dragged row. Both list tabs reorder; the Variables tab has
-    /// no list of its own here, and a row past the end refuses.
+    /// on the dragged item, which it then rides with by name wherever the
+    /// working order puts it (spec N12). Both list tabs reorder; the
+    /// Variables tab has no list of its own here, and a row past the end
+    /// refuses.
     pub fn begin_drag(&mut self, i: usize, tab: ManageTab, ctx: &Project) -> bool {
         if tab == ManageTab::Variables {
             return false;
@@ -201,14 +255,14 @@ impl ManageList {
             return false;
         };
         let order = items.to_vec();
+        self.cursor = Some(name.clone());
         self.drag = Some(ListDrag { tab, name, original: order.clone(), working: order });
-        self.cursor = i;
         true
     }
 
     /// Moves the dragged row to the slot under row `i` (clamped to the
-    /// list) and takes the cursor with it. Returns whether the working
-    /// order changed; the caller then repaints.
+    /// list); the cursor holds its name, so it goes with it. Returns
+    /// whether the working order changed; the caller then repaints.
     pub fn drag_to_row(&mut self, i: usize) -> bool {
         let Some(drag) = self.drag.as_mut() else {
             return false;
@@ -225,15 +279,14 @@ impl ManageList {
         }
         let moved = drag.working.remove(cur);
         drag.working.insert(target, moved);
-        self.cursor = target;
         true
     }
 
     /// Puts the working order back to the order the drag started from,
     /// without ending the drag: the preview of a cancel, shown while the
     /// pointer is outside the list (where a release would cancel). The
-    /// cursor rides back with the dragged row, as it does on every other
-    /// move. Returns whether anything changed.
+    /// cursor rides back with the dragged row by name. Returns whether
+    /// anything changed.
     pub fn drag_reset(&mut self) -> bool {
         let Some(drag) = self.drag.as_mut() else {
             return false;
@@ -242,10 +295,6 @@ impl ManageList {
             return false;
         }
         drag.working = drag.original.clone();
-        let at = drag.working.iter().position(|n| *n == drag.name);
-        if let Some(i) = at {
-            self.cursor = i;
-        }
         true
     }
 
@@ -527,7 +576,7 @@ impl ManageList {
     /// the screen whitelist, vim's `q` is the router's macro prefix (plan
     /// M4b Deviation 18).
     pub fn handle_key(&mut self, ev: KeyEvent, tab: ManageTab, ctx: &Project) -> Option<Action> {
-        let len = Self::items(tab, ctx).len();
+        let items = Self::items(tab, ctx);
         // Each navigation arm takes exactly the chord it names: a bare named
         // key, alt+↑/↓ (move the row), ctrl+Home/End (first/last row) or
         // ctrl+d/u/f/b. Any other chord does nothing rather than act as the
@@ -555,43 +604,43 @@ impl ManageList {
             KeyCode::Up if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, -1)),
             KeyCode::Down if alt => Some(Self::move_action(tab, self.selected(tab, ctx)?, 1)),
             KeyCode::Down if plain => {
-                self.step(1, len);
+                self.step(1, items);
                 None
             }
             KeyCode::Up if plain => {
-                self.step(-1, len);
+                self.step(-1, items);
                 None
             }
             KeyCode::Home if plain || ctrl => {
-                self.step(i32::MIN / 2, len);
+                self.step(i32::MIN / 2, items);
                 None
             }
             KeyCode::End if plain || ctrl => {
-                self.step(i32::MAX / 2, len);
+                self.step(i32::MAX / 2, items);
                 None
             }
             KeyCode::PageDown if plain => {
-                self.step(self.page(), len);
+                self.step(self.page(), items);
                 None
             }
             KeyCode::PageUp if plain => {
-                self.step(-self.page(), len);
+                self.step(-self.page(), items);
                 None
             }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.step((self.page() / 2).max(1), len);
+                self.step((self.page() / 2).max(1), items);
                 None
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.step(-(self.page() / 2).max(1), len);
+                self.step(-(self.page() / 2).max(1), items);
                 None
             }
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.step(self.page(), len);
+                self.step(self.page(), items);
                 None
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.step(-self.page(), len);
+                self.step(-self.page(), items);
                 None
             }
             KeyCode::Delete if plain => Some(Self::delete_action(tab, self.selected(tab, ctx)?)),
@@ -603,12 +652,18 @@ impl ManageList {
         }
     }
 
-    /// Moves `cursor` by `delta` rows, clamped to `0..len` (or the single
-    /// slot `0` when the list is empty), and marks it for scroll-into-view.
-    /// The shared body behind Up/Down and every g/G/page-key alias.
-    fn step(&mut self, delta: i32, len: usize) {
-        let bound = len.max(1) as i32 - 1;
-        self.cursor = (self.cursor as i32 + delta).clamp(0, bound.max(0)) as usize;
+    /// Moves the cursor by `delta` rows of `items`, clamped to the list,
+    /// stores the name it lands on, and marks it for scroll-into-view. A
+    /// cursor on nothing starts above the first row, so ↓ (or ↑) lands on
+    /// the first and End on the last (spec N5); an empty list has nowhere
+    /// to land. The shared body behind Up/Down and every g/G/page-key alias.
+    fn step(&mut self, delta: i32, items: &[String]) {
+        let Some(last) = items.len().checked_sub(1) else {
+            return;
+        };
+        let from = self.cursor_in(items).map_or(-1, |i| i as i32);
+        let to = from.saturating_add(delta).clamp(0, last as i32) as usize;
+        self.cursor = Some(items[to].clone());
         self.ensure_visible = true;
     }
 
@@ -689,13 +744,15 @@ impl ManageList {
             Some(d) if d.tab == tab => d.working.clone(),
             _ => Self::items(tab, ctx).to_vec(),
         };
-        if self.cursor >= items.len() {
-            self.cursor = items.len().saturating_sub(1);
-        }
+        // The cursor's row in what is drawn, found by its name; on nothing
+        // (its item went) no row is the cursor's and the pane shows its
+        // hint (spec N5).
+        let at = self.cursor_in(&items);
         let left = Rect { width: LEFT_W.min(body.width), ..body };
         let right = Rect { x: body.x + left.width, width: body.width - left.width, ..body };
-        self.draw_left(frame, left, theme, tab, ctx, &items, hits, hovered);
-        self.draw_right(frame, right, theme, tab, ctx, &items, requests, hits, hovered);
+        self.draw_left(frame, left, theme, tab, ctx, (&items, at), hits, hovered);
+        let selected = at.map(|i| items[i].as_str());
+        self.draw_right(frame, right, theme, tab, ctx, selected, requests, hits, hovered);
     }
 
     /// The Environments tab's `TLS` row: a label and three segments,
@@ -763,7 +820,7 @@ impl ManageList {
         theme: &Theme,
         tab: ManageTab,
         ctx: &Project,
-        items: &[String],
+        (items, at): (&[String], Option<usize>),
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
@@ -800,10 +857,12 @@ impl ManageList {
         self.last_list = list;
         self.last_len = items.len();
         if self.ensure_visible && self.visible_rows > 0 {
-            if self.cursor < self.scroll {
-                self.scroll = self.cursor;
-            } else if self.cursor >= self.scroll + self.visible_rows {
-                self.scroll = self.cursor + 1 - self.visible_rows;
+            if let Some(at) = at {
+                if at < self.scroll {
+                    self.scroll = at;
+                } else if at >= self.scroll + self.visible_rows {
+                    self.scroll = at + 1 - self.visible_rows;
+                }
             }
             self.ensure_visible = false;
         }
@@ -815,7 +874,7 @@ impl ManageList {
             // ever part company). Tab-gated exactly like `items` above:
             // only the drag's own tab lists the names it holds.
             let dragged = self.drag.as_ref().is_some_and(|d| d.tab == tab && d.name == items[i]);
-            let highlight = if dragged || i == self.cursor {
+            let highlight = if dragged || Some(i) == at {
                 RowHighlight::Selected
             } else if hovered == Some(&Hit::ManageRow(i)) {
                 RowHighlight::Hover
@@ -851,7 +910,7 @@ impl ManageList {
                 crate::ui::clip(&label, list.width.saturating_sub(3)),
                 theme.text,
                 bg,
-                i == self.cursor,
+                Some(i) == at,
             );
             hits.register(Rect { x: list.x, y, width: list.width, height: 1 }, Hit::ManageRow(i));
         }
@@ -865,7 +924,7 @@ impl ManageList {
         theme: &Theme,
         tab: ManageTab,
         ctx: &Project,
-        items: &[String],
+        selected: Option<&str>,
         requests: &BTreeMap<String, Vec<String>>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -874,7 +933,7 @@ impl ManageList {
         fill(buf, right, theme.page);
         self.painted_buttons = 0;
         self.painted_tls = 0;
-        let Some(name) = items.get(self.cursor) else {
+        let Some(name) = selected else {
             self.focus = ListFocus::List;
             let hint = match tab {
                 ManageTab::Spaces => "Select a space",
@@ -1031,9 +1090,29 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// A list settled on `tab`'s first item, as the screen brings it up.
+    fn settled(tab: ManageTab, ctx: &Project) -> ManageList {
+        let mut l = ManageList::default();
+        l.settle(tab, ctx);
+        l
+    }
+
+    /// A list with its cursor on row `i` of `tab`'s items.
+    fn on_row(tab: ManageTab, ctx: &Project, i: usize) -> ManageList {
+        let mut l = ManageList::default();
+        l.select_index(tab, ctx, i);
+        l
+    }
+
+    /// The cursor's row in `tab`'s items, or `None` on nothing.
+    fn row(l: &ManageList, tab: ManageTab, ctx: &Project) -> Option<usize> {
+        l.cursor_in(ManageList::items(tab, ctx))
+    }
+
     #[test]
     fn page_chords_are_strict_synonyms_and_the_vim_letters_are_gone_in_the_manage_list() {
         let (ctx, _dir) = ctx();
+        let spaces = ManageTab::Spaces;
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         for letter in [
             key(KeyCode::Char('j')),
@@ -1042,33 +1121,71 @@ mod tests {
             key(KeyCode::Char('l')),
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
         ] {
-            let mut l = ManageList { cursor: 1, visible_rows: 2, ..Default::default() };
-            assert_eq!(l.handle_key(letter, ManageTab::Spaces, &ctx), None, "{letter:?}");
-            assert_eq!(l.cursor, 1, "{letter:?} moved the cursor");
+            let mut l = ManageList { visible_rows: 2, ..on_row(spaces, &ctx, 1) };
+            assert_eq!(l.handle_key(letter, spaces, &ctx), None, "{letter:?}");
+            assert_eq!(row(&l, spaces, &ctx), Some(1), "{letter:?} moved the cursor");
             assert_eq!(l.focus, ListFocus::List, "{letter:?} entered the pane");
         }
         let pairs = [(ctrl('f'), key(KeyCode::PageDown)), (ctrl('b'), key(KeyCode::PageUp))];
         for (alias, canonical) in pairs {
-            let (mut a, mut b) = (ManageList::default(), ManageList::default());
-            a.cursor = 1;
-            b.cursor = 1;
-            a.visible_rows = 2;
-            b.visible_rows = 2;
-            let ra = a.handle_key(alias, ManageTab::Spaces, &ctx);
-            let rb = b.handle_key(canonical, ManageTab::Spaces, &ctx);
+            let mut a = ManageList { visible_rows: 2, ..on_row(spaces, &ctx, 1) };
+            let mut b = ManageList { visible_rows: 2, ..on_row(spaces, &ctx, 1) };
+            let ra = a.handle_key(alias, spaces, &ctx);
+            let rb = b.handle_key(canonical, spaces, &ctx);
             assert_eq!(ra, rb, "{alias:?}");
-            assert_eq!(a.cursor, b.cursor, "{alias:?}");
+            assert_eq!(row(&a, spaces, &ctx), row(&b, spaces, &ctx), "{alias:?}");
         }
-        let mut l = ManageList { visible_rows: 2, ..Default::default() };
-        l.handle_key(ctrl('f'), ManageTab::Spaces, &ctx);
-        assert_eq!(l.cursor, 2, "three spaces: clamped to the last");
-        l.handle_key(ctrl('b'), ManageTab::Spaces, &ctx);
-        assert_eq!(l.cursor, 0);
+        let mut l = ManageList { visible_rows: 2, ..settled(spaces, &ctx) };
+        l.handle_key(ctrl('f'), spaces, &ctx);
+        assert_eq!(row(&l, spaces, &ctx), Some(2), "three spaces: clamped to the last");
+        l.handle_key(ctrl('b'), spaces, &ctx);
+        assert_eq!(row(&l, spaces, &ctx), Some(0));
         // Half pages: ctrl+d/ctrl+u move by half the visible rows.
-        l.handle_key(ctrl('d'), ManageTab::Spaces, &ctx);
-        assert_eq!(l.cursor, 1, "half of a 2-row page");
-        l.handle_key(ctrl('u'), ManageTab::Spaces, &ctx);
-        assert_eq!(l.cursor, 0);
+        l.handle_key(ctrl('d'), spaces, &ctx);
+        assert_eq!(row(&l, spaces, &ctx), Some(1), "half of a 2-row page");
+        l.handle_key(ctrl('u'), spaces, &ctx);
+        assert_eq!(row(&l, spaces, &ctx), Some(0));
+    }
+
+    /// #83 N5: a cursor on nothing (its item went) starts a move above the
+    /// first row: ↓ and ↑ land on the first, End on the last. An empty
+    /// list leaves it on nothing.
+    #[test]
+    fn a_cursor_on_nothing_steps_onto_the_first_row() {
+        let (ctx, _dir) = ctx();
+        let spaces = ManageTab::Spaces;
+        for (code, want) in [(KeyCode::Down, 0), (KeyCode::Up, 0), (KeyCode::End, 2)] {
+            let mut l = ManageList::default();
+            assert_eq!(row(&l, spaces, &ctx), None);
+            l.handle_key(key(code), spaces, &ctx);
+            assert_eq!(row(&l, spaces, &ctx), Some(want), "{code:?}");
+        }
+        let mut l = ManageList::default();
+        l.step(1, &[]);
+        assert_eq!(l.cursor_in(&[]), None, "an empty list has nowhere to land");
+    }
+
+    /// #83 N7: the app's delete moves a cursor on the deleted item to the
+    /// item after it (the one before when it was last), named before the
+    /// delete, and leaves a cursor on another item on its own.
+    #[test]
+    fn removed_lands_on_the_neighbour_or_keeps_its_own_item() {
+        let (mut ctx, _dir) = ctx();
+        let spaces = ManageTab::Spaces;
+        assert_eq!(ManageList::neighbour(spaces, &ctx, "main").as_deref(), Some("auth"));
+        assert_eq!(ManageList::neighbour(spaces, &ctx, "billing").as_deref(), Some("auth"));
+        let mut on_auth = on_row(spaces, &ctx, 1);
+        let mut on_billing = on_row(spaces, &ctx, 2);
+        let next = ManageList::neighbour(spaces, &ctx, "main");
+        ctx.delete_space("main").unwrap();
+        on_auth.removed("main", next);
+        assert_eq!(on_auth.selected(spaces, &ctx), Some("auth"), "another item: its own");
+        let next = ManageList::neighbour(spaces, &ctx, "billing");
+        ctx.delete_space("billing").unwrap();
+        on_billing.removed("billing", next);
+        assert_eq!(on_billing.selected(spaces, &ctx), Some("auth"), "the last went: the one above");
+        let next = ManageList::neighbour(spaces, &ctx, "auth");
+        assert_eq!(next, None, "the only item has no neighbour");
     }
 
     fn draw_at(l: &mut ManageList, tab: ManageTab, ctx: &Project, w: u16) -> HitMap {
@@ -1093,7 +1210,7 @@ mod tests {
     #[test]
     fn right_enters_the_detail_pane_and_left_on_its_first_control_leaves() {
         let (ctx, _dir) = ctx();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         assert_eq!(l.focus, ListFocus::List);
         assert_eq!(l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx), None);
@@ -1135,7 +1252,7 @@ mod tests {
             key(KeyCode::Char('g')),
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
         ] {
-            let mut l = ManageList::default();
+            let mut l = settled(ManageTab::Environments, &ctx);
             draw_at(&mut l, ManageTab::Environments, &ctx, 100);
             l.focus = ListFocus::Detail;
             l.detail_row = DetailRow::Tls;
@@ -1153,7 +1270,7 @@ mod tests {
     #[test]
     fn an_unpainted_tls_row_has_no_aim() {
         let (ctx, _dir) = ctx();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         // Tall enough for the title row and its buttons, not the TLS row.
         draw_sized(&mut l, ManageTab::Environments, &ctx, 100, 3);
         assert_eq!(l.painted_tls, 0, "precondition: no TLS segment painted");
@@ -1175,7 +1292,7 @@ mod tests {
     #[test]
     fn detail_rows_walk_between_the_buttons_and_the_tls_segments() {
         let (ctx, _dir) = ctx();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         assert_eq!(l.detail_row, DetailRow::Buttons);
@@ -1190,7 +1307,7 @@ mod tests {
         l.handle_key(key(KeyCode::Home), ManageTab::Environments, &ctx);
         assert_eq!(l.detail_row, DetailRow::Buttons);
 
-        let mut s = ManageList::default();
+        let mut s = settled(ManageTab::Spaces, &ctx);
         draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
         s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
         s.handle_key(key(KeyCode::Down), ManageTab::Spaces, &ctx);
@@ -1205,7 +1322,7 @@ mod tests {
         use postui_core::project::TlsPolicy;
         let (ctx, _dir) = ctx();
         let env = ctx.environments()[0].clone();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         assert_eq!(
@@ -1228,7 +1345,7 @@ mod tests {
             Some(Action::SetEnvTls { env: env.clone(), policy: Some(TlsPolicy::Verify) })
         );
         // The Spaces pane: Move all, Rename, Delete from the left.
-        let mut s = ManageList::default();
+        let mut s = settled(ManageTab::Spaces, &ctx);
         draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
         s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
         assert_eq!(
@@ -1242,13 +1359,13 @@ mod tests {
     fn the_manage_list_has_no_verb_letters() {
         let (ctx, _dir) = ctx();
         for tab in [ManageTab::Environments, ManageTab::Spaces] {
-            let mut l = ManageList::default();
+            let mut l = settled(tab, &ctx);
             draw_at(&mut l, tab, &ctx, 100);
             for c in ['n', 'a', 'r', 'd', 'm', 't'] {
                 assert_eq!(l.handle_key(key(KeyCode::Char(c)), tab, &ctx), None, "{c} on {tab:?}");
             }
         }
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         assert!(matches!(
             l.handle_key(key(KeyCode::Delete), ManageTab::Environments, &ctx),
@@ -1262,9 +1379,9 @@ mod tests {
     #[test]
     fn verb_rename_and_reorder_still_work_from_the_detail_pane() {
         let (ctx, _dir) = ctx();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Spaces, &ctx);
         draw_at(&mut l, ManageTab::Spaces, &ctx, 100);
-        l.cursor = 1;
+        l.select_index(ManageTab::Spaces, &ctx, 1);
         l.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
         assert_eq!(
             l.verb_action(ManageTab::Spaces, &ctx, Verb::Rename),
@@ -1288,12 +1405,12 @@ mod tests {
     #[test]
     fn the_aim_skips_buttons_the_narrow_pane_dropped() {
         let (ctx, _dir) = ctx();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Spaces, &ctx);
         // The widest pane that drops Move all but still fits Rename.
         let w = (40..120)
             .rev()
             .find(|w| {
-                let mut probe = ManageList::default();
+                let mut probe = settled(ManageTab::Spaces, &ctx);
                 let hits = draw_at(&mut probe, ManageTab::Spaces, &ctx, *w);
                 hits.rect_of(&Hit::ManageMoveAll).is_none()
                     && hits.rect_of(&Hit::ManageRename).is_some()
@@ -1316,7 +1433,7 @@ mod tests {
     fn the_aimed_control_paints_focused() {
         let (ctx, _dir) = ctx();
         let theme = Theme::dark();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         l.handle_key(key(KeyCode::Down), ManageTab::Environments, &ctx);
@@ -1352,7 +1469,7 @@ mod tests {
     fn detail_pane_chips_name_the_aimed_control() {
         let (ctx, _dir) = ctx();
         let env = ctx.environments()[0].clone();
-        let mut l = ManageList::default();
+        let mut l = settled(ManageTab::Environments, &ctx);
         draw_at(&mut l, ManageTab::Environments, &ctx, 100);
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         let chips = crate::keyroute::spell::spelled(l.footer_chips(ManageTab::Environments, &ctx));
@@ -1365,7 +1482,7 @@ mod tests {
             "{chips:?}"
         );
         assert!(chips.iter().any(|(k, l, _)| *k == "esc" && *l == "back"), "{chips:?}");
-        let mut s = ManageList::default();
+        let mut s = settled(ManageTab::Spaces, &ctx);
         draw_at(&mut s, ManageTab::Spaces, &ctx, 100);
         s.handle_key(key(KeyCode::Right), ManageTab::Spaces, &ctx);
         let chips = crate::keyroute::spell::spelled(s.footer_chips(ManageTab::Spaces, &ctx));
@@ -1382,15 +1499,20 @@ mod tests {
         assert_eq!(d.original, ["main", "auth", "billing"]);
         assert_eq!(d.working, ["main", "auth", "billing"]);
 
+        // The cursor holds the dragged item's name, so it is wherever the
+        // working order puts that item (spec 2026-10-27 N12).
+        let at = |l: &ManageList| l.cursor_in(&l.drag.as_ref().unwrap().working);
         assert!(l.drag_to_row(2));
         assert_eq!(l.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
-        assert_eq!(l.cursor, 2, "the cursor follows the dragged row");
+        assert_eq!(at(&l), Some(2), "the cursor follows the dragged row");
         assert!(!l.drag_to_row(2), "no change reports false");
         assert!(l.drag_to_row(0));
         assert_eq!(l.drag.as_ref().unwrap().working, ["main", "auth", "billing"]);
         assert!(l.drag_to_row(9), "past the end clamps to the last slot");
         assert_eq!(l.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
-        assert_eq!(l.cursor, 2);
+        assert_eq!(at(&l), Some(2));
+        assert!(l.drag_reset());
+        assert_eq!(at(&l), Some(0), "and back with it on a reset");
     }
 
     #[test]
@@ -1458,7 +1580,7 @@ mod tests {
         use postui_core::project::TlsPolicy;
         let (project, _dir) = ctx();
         let theme = Theme::dark();
-        let mut list = ManageList::default();
+        let mut list = settled(ManageTab::Environments, &project);
         let mut hits = HitMap::default();
         let requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
@@ -1503,7 +1625,7 @@ mod tests {
         use crate::hit::HitMap;
         let (project, _dir) = ctx();
         let theme = Theme::dark();
-        let mut list = ManageList::default();
+        let mut list = settled(ManageTab::Environments, &project);
         let mut hits = HitMap::default();
         let requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
@@ -1545,7 +1667,7 @@ mod tests {
         use crate::hit::HitMap;
         let (project, _dir) = ctx();
         let theme = Theme::dark();
-        let mut list = ManageList::default();
+        let mut list = settled(ManageTab::Spaces, &project);
         let mut hits = HitMap::default();
         // Ten names into a pane with room for seven rows of list.
         let names: Vec<String> = (0..10).map(|i| format!("req{i}")).collect();
@@ -1612,12 +1734,11 @@ mod tests {
             (ManageTab::Environments, env, format!("Environment: {wide}")),
             (ManageTab::Spaces, space, format!("Space: {wide}")),
         ] {
-            let items = if tab == ManageTab::Spaces { ctx.spaces() } else { ctx.environments() };
-            let cursor = items.iter().position(|s| *s == slug).unwrap();
             let title_end = LEFT_W + 2 + crate::ui::cells(&title) as u16;
             let (mut kept, mut dropped) = (0, 0);
             for w in LEFT_W + 20..=LEFT_W + 90 {
-                let mut l = ManageList { cursor, ..Default::default() };
+                let mut l = ManageList::default();
+                l.select_name(tab, &ctx, &slug);
                 let hits = draw_at(&mut l, tab, &ctx, w);
                 for button in ManageList::buttons(tab) {
                     match hits.rect_of(&button.hit()) {
@@ -1644,7 +1765,7 @@ mod tests {
         use crate::hit::HitMap;
         let (project, _dir) = ctx();
         let theme = Theme::dark();
-        let mut list = ManageList::default();
+        let mut list = settled(ManageTab::Spaces, &project);
         let mut hits = HitMap::default();
         let requests: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 10)).unwrap();
