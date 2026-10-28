@@ -8581,6 +8581,37 @@ impl App {
                 }
             }
             ExtractDestination::Request => {
+                // The variable goes into the map an open Vars cell edits,
+                // and the cell names its row by index (see
+                // `debug_assert_no_open_vars_cell`). When the cell is not
+                // the source (a response, URL or body selection), nothing
+                // lands in it, so it commits now, as its own step, the way
+                // the value dialog commits it (#151, #203): before the
+                // name check, which then sees a key typed there. When it
+                // is the source, it stays open until the token lands in
+                // it (spec 2026-10-19 R6), and the write waits (below).
+                // `from_cell` asks what the token replacement below asks:
+                // a focused field is the URL while it is open, and the
+                // cell otherwise.
+                //
+                // A refusal below therefore finds the cell already
+                // committed, and it stays closed with its typing kept as
+                // one undoable step, as Cancel leaves it at a dirty gate
+                // (R4); the commit is the one Enter or a click away makes.
+                // Checking first would leave it open, but would miss a key
+                // typed there that is this name, and the insert would then
+                // overwrite that row. The refusals before this arm (an
+                // invalid name, no selection) read nothing of the map, so
+                // they leave the cell open.
+                let from_cell = match source {
+                    ExtractSource::FocusedField => !self.editor.url_open(),
+                    ExtractSource::Selection(surface) => {
+                        surface == crate::action::TextSurface::TableCell
+                    }
+                };
+                if !from_cell {
+                    self.commit_open_vars_cell();
+                }
                 // No structural-file hazard here — `[variables]`
                 // options are a separate resolution layer (spec §2)
                 // with no `validate_env`-style cross-checks — but an
@@ -8638,10 +8669,10 @@ impl App {
                     // open, the new variable became the cell's row, and the
                     // token renamed it away. The cell still holds the
                     // typing until the token lands in it (spec 2026-10-19
-                    // R6), and the two writes are one editor step. This
-                    // orders only the cell's own extract: a response
-                    // selection extracted while a Vars cell is open still
-                    // writes under that cell, as before #152.
+                    // R6), and the two writes are one editor step. Any
+                    // other source committed an open Vars cell before the
+                    // name check (above), so none is open here.
+                    self.debug_assert_no_open_vars_cell();
                     self.editor.variables.insert(
                         name.clone(),
                         postui_core::model::Entry { value: text, enabled: true },
@@ -8790,12 +8821,25 @@ impl App {
     /// when it runs either (#153). The promote has no commit of its own:
     /// it would serve no path the app takes. A new way to promote from the
     /// main screen (a palette row, a tooltip action) must commit an open
-    /// Vars cell before it reads the value, as the value dialog does.
+    /// Vars cell before it reads the value, as the value dialog does. An
+    /// extract to "This request" adds a row too: it commits the cell
+    /// itself, or first lands its token there (`confirm_extract`, #152,
+    /// #203).
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
-            "a Vars row write (value dialog or promote) under an open Vars cell"
+            "a Vars row write (value dialog, promote or extract) under an open Vars cell"
         );
+    }
+
+    /// Commits an open Vars cell, as its own step, ahead of a write that
+    /// adds or removes request-variable rows (why:
+    /// [`Self::debug_assert_no_open_vars_cell`]). A cell on another tab
+    /// stays open: those writes touch no row of its table.
+    fn commit_open_vars_cell(&mut self) {
+        if self.editor.active_tab == EditorTab::Vars {
+            self.commit_table_edit();
+        }
     }
 
     /// Builds and opens the value-edit popup for a simple (or
@@ -8814,9 +8858,7 @@ impl App {
         // Any other cell stays open under the dialog, as under the
         // tooltip's pill (#135): the dialog writes no row of its table,
         // which is why this is not `close_open_inputs`.
-        if self.editor.active_tab == EditorTab::Vars {
-            self.commit_table_edit();
-        }
+        self.commit_open_vars_cell();
         // What each destination currently stores (`None` = nothing), so
         // cycling the scope can reseed the value field, and the Remove
         // button knows whether there is anything to delete there. A
