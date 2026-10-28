@@ -124,9 +124,19 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
 /// The prompts prefill a folder by its on-disk name, and `slugify` is not
 /// the identity on every valid name (it trims a leading or trailing `-`),
 /// so slugifying every segment moved a request out of a hand-made `old-`
-/// into `old` (#206). The cost, accepted on #206: a typed new folder keeps
-/// a dash at either end (`x-/Name` makes `x-/`, `-/Name` makes `-/`), so a
-/// stray dash no longer folds into the folder beside it.
+/// into `old` (#206).
+///
+/// The cost, chosen on #206 over the alternative and re-confirmed after
+/// two review rounds raised it: a typed *new* folder is created exactly as
+/// typed when it is a valid name, so a stray dash no longer folds into
+/// the folder beside it. `api-/List` makes `api-/` next to `api/`,
+/// `-rf/X` makes a `-rf` folder (a name shell tools read as a flag),
+/// `-/X` makes `-/`, and `old -/X` (not a valid name, so slugified) lands
+/// in `old` while `old-/X` lands in `old-`. The alternative was to keep a
+/// typed segment only when a folder by that name already exists on disk
+/// and slugify the rest as before; that needs the project's disk at every
+/// caller and makes the same text land differently depending on what
+/// exists, and the stateless rule was preferred.
 ///
 /// The first segment of a path the app builds here is the space's
 /// directory name (the active space, or the request's own), and it follows
