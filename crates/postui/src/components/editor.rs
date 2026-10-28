@@ -1334,9 +1334,9 @@ impl Editor {
     /// and Replace) also takes the bracket before it; Vim's Normal and
     /// Visual carets sit on a char. Both ends must show (R5). A cell the
     /// Visual span, a search hit or the selection paints keeps that paint,
-    /// and so does a shown caret's cell (R8, #187), as Vim's cursor covers
-    /// its own bracket: only the partner, or the bracket before a caret
-    /// between chars, lights.
+    /// and so does a shown caret's cell (R8, #187), so the caret stays
+    /// visible on its bracket as Vim's cursor does: only the partner, or
+    /// the bracket before a caret between chars, lights.
     fn paint_bracket_pair(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -1367,22 +1367,24 @@ impl Editor {
             overlays.iter().any(|h| h.contains(&at))
                 || self.body.selection.as_ref().is_some_and(|s| s.contains(&at))
         };
-        // Only `a` can sit under the caret: `bracket_at` takes the char
-        // under it first, so the partner never does. A shown caret keeps
-        // its cell (R8, #187). The caret here is a painted cell, edtui's
-        // reverse, not a terminal cursor drawn over the text as Vim's is:
-        // the pair's colours under that reverse read as an ordinary
-        // coloured char, and the caret disappeared. So Vim's outcome is
-        // what's kept (its cursor stays visible on its bracket), not its
-        // paint, and that holds for the Insert caret too, which postui
-        // draws as a block on the char. A hidden caret (under a selection
-        // that doesn't cover it) has no look to keep, so its bracket lights.
-        let caret_cell = caret_shown && edtui::Index2::new(a.row, a.col) == caret;
+        // Only `a` can sit under the caret (it is on the caret's row, and
+        // `bracket_at` takes the char under the caret first, so the partner
+        // never does). A shown caret keeps its cell (R8, #187). Vim's
+        // matchparen does colour the cursor's bracket, but Vim's cursor is
+        // the terminal's, drawn over the text and findable whatever the
+        // colours. The caret here is a painted cell, edtui's reverse: the
+        // pair's colours under that reverse read as an ordinary coloured
+        // char, and the caret disappeared. So Vim's outcome is kept (the
+        // cursor stays visible on its bracket), not its paint, and that
+        // holds for the Insert caret too, which postui draws as a block on
+        // the char. A hidden caret (under a selection that doesn't cover
+        // it) has no look to keep, so its bracket lights.
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
-        for (at, (x, y), skip) in [(a, cell_a, caret_cell), (b, cell_b, false)] {
-            if !skip && !covered(at) {
-                buf[(x, y)].set_style(lit);
-            }
+        if !(caret_shown && col == caret.col) && !covered(a) {
+            buf[cell_a].set_style(lit);
+        }
+        if !covered(b) {
+            buf[cell_b].set_style(lit);
         }
     }
 
@@ -5351,7 +5353,7 @@ mod tests {
     /// or just after one, lights its partner; a caret just after one
     /// lights both. R8 (#187): the caret's own cell keeps the caret's look.
     #[test]
-    fn the_caret_on_or_after_a_bracket_lights_the_pair() {
+    fn a_caret_on_or_after_a_bracket_lights_its_partner() {
         let mut e = body_editor("{\"a\": [1]}");
         e.body.cursor = edtui::Index2::new(0, 0);
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 9)), "the partner `}}`");
@@ -5528,7 +5530,10 @@ mod tests {
     }
 
     /// R8: a selection that covers the caret keeps its fill on the
-    /// caret's bracket; the partner lights.
+    /// caret's bracket; the partner lights. (The selection rule covers
+    /// that cell on its own; this pins that a shown caret under a
+    /// selection, the third `caret_shown` case, neither lights nor loses
+    /// the fill.)
     #[test]
     fn a_selection_over_the_caret_keeps_its_fill_on_the_bracket() {
         let theme = Theme::dark();
