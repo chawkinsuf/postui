@@ -996,7 +996,12 @@ impl VarManager {
             GridRow::Ghost => options.map_or(0, IndexMap::len),
             GridRow::Named(name) => options?.get_index_of(name)?,
         };
-        Some((i, self.grid.cursor.col))
+        // The column clamps here, on read, to the last one drawn (task
+        // #198): a pane narrowed for a moment shows the cursor on a cell
+        // it draws without forgetting the column it was on, which comes
+        // back once the pane is wide enough again.
+        let (_, ncols) = self.grid_shape(ctx)?;
+        Some((i, self.grid.cursor.col.min(ncols - 1)))
     }
 
     /// The open selector's grid as `ctx` lists it now: the ghost row's
@@ -1019,6 +1024,10 @@ impl VarManager {
         let ncols = grid_ncols(group_fields(ctx, selector).len());
         // Before the first draw nothing is on screen to measure: every
         // column. The name column is the floor (`grid_columns` keeps it).
+        // The layout is rerun from the width rather than the draw storing
+        // its column count: the count also depends on the field list, which
+        // an edit can change before the next frame, while the width only
+        // changes with the terminal. It is a few columns of arithmetic.
         let shown = self.grid_width.map_or(ncols, |w| grid_columns(0, w, ncols).x.len().max(1));
         Some((ghost, shown))
     }
@@ -1748,8 +1757,11 @@ impl VarManager {
         // bare ghost row: the moves go nowhere, and Esc still leaves.
         let (last_row, ncols) = self.grid_shape(ctx).unwrap_or((0, 1));
         let last_col = ncols - 1;
+        // The column the cursor shows on (`grid_at` clamps on read): the
+        // one Left, Right, Tab and Enter act from. A row move keeps the
+        // stored column, so a column a narrow pane hides comes back when
+        // it widens.
         let col = self.grid.cursor.col.min(last_col);
-        self.grid.cursor.col = col;
         // The row the name is at now; on nothing (spec N5) a move starts
         // above the first row, so ↓ or ↑ lands on the first and End on the
         // last. Every move stores the name it lands on (`point_grid`).
@@ -1757,7 +1769,7 @@ impl VarManager {
         let plain = ev.modifiers.is_empty();
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         let step_to = |this: &mut Self, row: usize| {
-            this.point_grid(ctx, row.min(last_row), col);
+            this.point_grid(ctx, row.min(last_row), this.grid.cursor.col);
             None
         };
         // A named key acts bare only; any other chord does nothing (piece
@@ -2265,11 +2277,12 @@ impl VarManager {
         let rows_bottom = bottom.saturating_sub(1).max(y);
         let visible = (rows_bottom - y) as usize;
         let total = rows.len() + 1;
-        // A column a field removal, or a narrower pane (task #198), left
-        // past the last one drawn clamps back. The row needs no clamp: it
-        // is found by its option's name (task #83), and a cursor whose
-        // option went is on nothing (spec N5).
-        self.grid.cursor.col = self.grid.cursor.col.min(cols.x.len().saturating_sub(1));
+        // A column a field removal left past the last one clamps back. The
+        // row needs no clamp: it is found by its option's name (task #83),
+        // and a cursor whose option went is on nothing (spec N5). A column
+        // a narrow pane drops is clamped on read instead (`grid_at`), so
+        // widening the pane again gives it back.
+        self.grid.cursor.col = self.grid.cursor.col.min(desc_col(fields.len()));
         let at = self.grid_at(ctx);
         let cursor = at.filter(|_| self.focus == VmFocus::Grid);
         self.grid_visible = visible;
@@ -4669,11 +4682,6 @@ fields = ["user_id", "customer_id"]
         assert_eq!(edit.input.text(), "");
     }
 
-    /// The text painted in `rect`'s cells.
-    fn rect_text(buf: &Buffer, rect: Rect) -> String {
-        (rect.x..rect.x + rect.width).map(|x| buf[(x, rect.y)].symbol()).collect()
-    }
-
     /// Task #198: a pane too narrow for the description column drops it,
     /// and the keyboard stops at the last column drawn. Before, Right went
     /// on into the hidden column and Enter opened an edit nobody could see,
@@ -4702,6 +4710,30 @@ fields = ["user_id", "customer_id"]
         vm.handle_key(key(KeyCode::Enter), &ctx);
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, drawn - 1), "Enter opens a cell on screen");
+    }
+
+    /// Task #198: the cursor shows on the last drawn column while a narrow
+    /// pane hides its own, and a row move keeps that column, so it comes
+    /// back when the pane widens again. Left acts from the column shown.
+    #[test]
+    fn a_narrow_frame_does_not_forget_the_cursors_column() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        vm.point_grid(&ctx, 0, desc_col(2));
+        render_buf_at(&mut vm, &ctx, 58);
+        let (_, drawn) = vm.grid_shape(&ctx).unwrap();
+        assert_eq!(vm.grid_at(&ctx), Some((0, drawn - 1)), "shown on the last drawn column");
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        assert_eq!(vm.grid_at(&ctx), Some((1, drawn - 1)));
+        render_buf_at(&mut vm, &ctx, 116);
+        assert_eq!(vm.grid_at(&ctx), Some((1, desc_col(2))), "back on the description");
+
+        render_buf_at(&mut vm, &ctx, 58);
+        vm.handle_key(key(KeyCode::Left), &ctx);
+        render_buf_at(&mut vm, &ctx, 116);
+        assert_eq!(vm.grid_at(&ctx), Some((1, drawn - 2)), "one left of the column shown");
     }
 
     /// Task #198: an edit asked for on a column the grid doesn't draw opens
@@ -4741,7 +4773,7 @@ fields = ["user_id", "customer_id"]
             let cell = hits.rect_of(&Hit::VmEntryCell { row: 0, col }).unwrap();
             assert!(!cell.intersects(copy) && !cell.intersects(trash), "column {col}");
         }
-        let shown = rect_text(&buf, desc);
+        let shown = crate::components::var_tokens::row_text(&buf, desc);
         assert!(!shown.trim().is_empty() && "the admin".starts_with(shown.trim()), "{shown:?}");
     }
 
