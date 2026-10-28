@@ -1982,37 +1982,40 @@ fn a_wheel_notch_at_the_top_still_drops_an_operator_and_spends_ctrl_o() {
     assert_eq!(app.editor.body_text().lines().next(), Some("xrow0"));
 }
 
-/// #201: in the arrows profile the wheel moves the view, not the caret
-/// (the user: "Yes arrows should scroll the view and not the cursor"):
-/// the caret stays on line 3 off screen, and the next typed char goes in
-/// there and brings the view back.
+/// #201: in arrows a wheel pull clears the selection (the user: "I think
+/// just clear the selection on arrows maybe"), but a drag still held goes
+/// on from its press: its next motion selects from there to the pointer,
+/// as before the wheel.
 #[test]
-fn the_arrows_wheel_scrolls_the_view_and_typing_goes_in_at_the_caret() {
-    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+fn an_arrows_drag_held_through_the_wheel_selects_from_its_press() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = build(Fixture::Body);
     let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
-    app.editor.body.cursor = edtui::Index2::new(2, 1);
-    draw(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    for _ in 0..40 {
-        let kind = MouseEventKind::ScrollDown;
-        let row = area.y + 1;
-        app.handle_mouse(MouseEvent {
-            kind,
-            column: area.x + 8,
-            row,
-            modifiers: KeyModifiers::NONE,
-        });
+    // The text starts past the line numbers: three digits and a space.
+    let x = area.x + 4;
+    let at = |kind, column, row| MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), x, area.y + 2));
+    draw(&mut app);
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), x + 2, area.y + 3));
+    draw(&mut app);
+    assert!(app.editor.body_selected_text().is_some_and(|t| t.starts_with("row2\n")));
+    for _ in 0..20 {
+        app.handle_mouse(at(MouseEventKind::ScrollDown, x + 2, area.y + 3));
         draw(&mut app);
     }
-    assert_eq!(app.editor.body.viewport_offset().1, 40, "the view moved");
-    assert_eq!(app.editor.body.cursor, edtui::Index2::new(2, 1), "the caret stayed");
-    feed(&mut app, "X");
+    let top = app.editor.body.viewport_offset().1;
+    assert_eq!(top, 20);
+    assert_eq!(app.editor.body.selection, None, "the pull cleared it");
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), x + 2, area.y + 3));
     draw(&mut app);
-    assert_eq!(app.editor.body_text().lines().nth(2), Some("rXow2"));
-    assert_eq!(app.editor.body.viewport_offset().1, 2, "the view is back at the caret");
+    let selected = app.editor.body_selected_text().unwrap_or_default();
+    assert!(selected.starts_with("row2\n"), "from the press: {selected:?}");
+    // Cells, inclusive: through the one under the pointer.
+    assert!(selected.ends_with("\nrow22\nrow"), "to the pointer on row 23: {selected:?}");
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), x + 2, area.y + 3));
 }
 
 /// #129: while a search is being typed, the body's menu over the row

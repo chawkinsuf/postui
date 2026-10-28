@@ -555,6 +555,7 @@ impl Glue {
         target!(self, buf, |t| self.engine.settle(t, how));
         self.saw(buf);
     }
+
     /// One key. `memory` is the app's last pattern, lent to the engine for
     /// the call (plan M5b Deviation 20).
     pub fn handle(

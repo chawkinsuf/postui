@@ -148,25 +148,29 @@ Visible in scrollable panes (sidebar, response, body) whenever content overflows
 Thumb is proportional and draggable; clicking the track above/below the thumb pages
 up/down. Wheel scrolling unchanged.
 
-**Amended 2026-10-28 (task #201): the body's wheel and scrollbar.** In the arrows
-profile they move the view, not the caret (`you`: "Yes arrows should scroll the view
-and not the cursor"). The caret stays where it was, off screen too, and so does a
-selection, as in GUI editors; the frames after keep the view where the scroll left
-it. The next key that reaches the body acts at the caret and brings the view back
-to it, whatever it does (an arrow at the text's edge too), as a GUI editor reveals
-its caret; so does anything else that moves the caret or changes the text (a click,
-an undo, a load) (`mine`). Keys the app takes before the body (the palette, Send,
-copy) leave the view. In the vim profile the caret follows the view in, once, as
-Vim's wheel moves the cursor only to keep it in the window (`'scrolloff'` 0), and
-the scroll settles the engine as Vim's `nv_mousescroll()`/`ins_mousescroll()` do
-(`Vim`, probed in 9.1 in tmux): a Visual span follows the cursor (`v` on line 3, the
-wheel down, the cursor on the window's top line in its column, the span from line 3
-to it; the wheel up from line 40, the cursor on the window's bottom line and the
-span from it to line 40); a half-typed operator drops (`d`, the wheel, `j` deletes
-nothing); Insert ctrl+o's one command is the wheel (`i` ctrl+o, the wheel, `X`
-types); an Insert the pull moved splits its undo step (`iBB`, the wheel, `CC` Esc
-`u` undoes only `CC`). A search being typed stays open (`mine`, not probed: as a
-press off the text keeps it, #129).
+**Amended 2026-10-28 (task #201): the body's wheel and scrollbar and a selection.**
+In both profiles the caret follows the view in, once, as it has since #181 (`you`:
+"we should just have the caret scroll with the view", replacing an earlier ruling
+that the arrows wheel move only the view; holding the view away from the caret
+meant fighting edtui's render, which scrolls to its caret on every frame).
+
+In the arrows profile, a pull that moves the caret clears the selection, which would
+otherwise end away from the caret (`you`: "I think just clear the selection on
+arrows maybe"). A notch that leaves the caret where it was keeps the selection
+(`mine`). Only the selection goes, not the press it grew from: a drag still held
+selects from its press to the pointer again at its next motion (`mine`).
+
+In the vim profile the scroll settles the engine as Vim's
+`nv_mousescroll()`/`ins_mousescroll()` do (`Vim`, probed in 9.1 in tmux), on every
+notch, one that moves nothing at a limit too: a Visual span follows the cursor (`v`
+on line 3, the wheel down, the cursor on the window's top line in its column, the
+span from line 3 to it; the wheel up from line 40, the cursor on the window's bottom
+line and the span from it to line 40); a half-typed operator drops (`d`, the wheel,
+`j` deletes nothing, at the top too); Insert ctrl+o's one command is the wheel (`i`
+ctrl+o, the wheel, `X` types); an Insert the pull moved splits its undo step (`iBB`,
+the wheel, `CC` Esc `u` undoes only `CC`). A search being typed stays open (`mine`,
+not probed: as a press off the text keeps it, #129). A body session another pane
+has the keys of settles nothing until it is live again (`mine`).
 
 ## 5. Method dropdown and the popup primitive
 
