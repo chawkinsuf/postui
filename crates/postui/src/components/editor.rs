@@ -1367,20 +1367,19 @@ impl Editor {
             overlays.iter().any(|h| h.contains(&at))
                 || self.body.selection.as_ref().is_some_and(|s| s.contains(&at))
         };
-        // Only `a` can sit under the caret (it is on the caret's row, and
-        // `bracket_at` takes the char under the caret first, so the partner
-        // never does). A shown caret keeps its cell (R8, #187). Vim's
-        // matchparen does colour the cursor's bracket, but Vim's cursor is
-        // the terminal's, drawn over the text and findable whatever the
-        // colours. The caret here is a painted cell, edtui's reverse: the
-        // pair's colours under that reverse read as an ordinary coloured
-        // char, and the caret disappeared. So Vim's outcome is kept (the
-        // cursor stays visible on its bracket), not its paint, and that
-        // holds for the Insert caret too, which postui draws as a block on
-        // the char. A hidden caret (under a selection that doesn't cover
-        // it) has no look to keep, so its bracket lights.
+        // A shown caret keeps its cell (R8, #187): the pair's colours under
+        // edtui's reverse read as an ordinary coloured char, and the caret
+        // disappeared. Why that differs from Vim's paint (its cursor is the
+        // terminal's, drawn over MatchParen) is in the spec's #187
+        // amendment. The cell is the one edtui drew the caret on, read
+        // back, not worked out again. Only `a` can be it: `bracket_at`
+        // takes the char under the caret first, so the partner never is. A
+        // hidden caret (under a selection that doesn't cover it) has no
+        // look to keep, so its bracket lights.
+        let on_caret = caret_shown
+            && self.body.cursor_screen_position() == Some(ratatui::layout::Position::from(cell_a));
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
-        if !(caret_shown && col == caret.col) && !covered(a) {
+        if !on_caret && !covered(a) {
             buf[cell_a].set_style(lit);
         }
         if !covered(b) {
@@ -5341,12 +5340,13 @@ mod tests {
         (cell.fg, cell.bg) == (theme.on_accent, theme.accent)
     }
 
-    /// Whether `cell` shows the caret's look on a bracket: edtui's reverse
-    /// over the bracket's own colours (plain text on the page), not the
-    /// pair's.
-    fn caret_look(cell: &ratatui::buffer::Cell) -> bool {
-        let theme = Theme::dark();
-        cell.modifier.contains(Modifier::REVERSED) && (cell.fg, cell.bg) == (theme.text, theme.page)
+    /// Whether the focused body shows the caret's look at (`row`, `col`):
+    /// edtui's reverse over the char's own colours, the ones an unfocused
+    /// draw (no caret, no pair) gives it.
+    fn caret_look(e: &mut Editor, row: usize, col: usize) -> bool {
+        let own = body_cell_at(e, false, row, col);
+        let cell = body_cell_at(e, true, row, col);
+        cell.modifier.contains(Modifier::REVERSED) && (cell.fg, cell.bg) == (own.fg, own.bg)
     }
 
     /// Spec 2026-10-22 (matching brackets) R1, R2: the caret on a bracket,
@@ -5357,7 +5357,7 @@ mod tests {
         let mut e = body_editor("{\"a\": [1]}");
         e.body.cursor = edtui::Index2::new(0, 0);
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 9)), "the partner `}}`");
-        assert!(caret_look(&body_cell_at(&mut e, true, 0, 0)), "the caret's `{{`");
+        assert!(caret_look(&mut e, 0, 0), "the caret's `{{`");
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 6)), "an unrelated `[`");
         e.body.cursor = edtui::Index2::new(0, 10);
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 9)), "after `}}`, the `}}` lights");
@@ -5368,7 +5368,7 @@ mod tests {
         // (R2), so the caret keeps its look on the `}` and the `{` lights.
         let mut e = body_editor("{}");
         e.body.cursor = edtui::Index2::new(0, 1);
-        assert!(caret_look(&body_cell_at(&mut e, true, 0, 1)), "the caret's `}}`");
+        assert!(caret_look(&mut e, 0, 1), "the caret's `}}`");
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the partner `{{`");
     }
 
@@ -5553,7 +5553,7 @@ mod tests {
         let mut e = body_editor("[1], 2");
         e.body.mode = EditorMode::Normal;
         e.body.cursor = edtui::Index2::new(0, 2);
-        assert!(caret_look(&body_cell_at(&mut e, true, 0, 2)), "the caret's `]`");
+        assert!(caret_look(&mut e, 0, 2), "the caret's `]`");
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the partner `[`");
     }
 

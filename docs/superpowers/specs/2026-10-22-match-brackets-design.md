@@ -139,6 +139,8 @@ and `%` don't change.
   - A cell the Visual span, a search hit or the selection already paints
     keeps that paint.
   - The caret's cell is not painted, so it keeps the caret's look (R8).
+    The cell is the one edtui reports drawing the caret on
+    (`cursor_screen_position`), read after the render like the viewport.
     (Until #187 this read "keeps its reverse, because only the colours
     are patched", and the code lit it. See the amendment below.)
 - R2's `before` is `self.body.mode == EditorMode::Insert`. The engine
