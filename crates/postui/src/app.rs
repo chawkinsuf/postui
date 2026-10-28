@@ -8775,19 +8775,18 @@ impl App {
     /// Commits the table cell under edit through the active tab's own
     /// `Enter` handling, so the new text lands in the map (not left as a
     /// pending edit) and rides the same dirty/save path as any row commit.
+    /// The table's warning (a name that is taken refuses or merges the
+    /// row) shows as it does when Enter is typed by hand (#204).
     fn commit_table_edit_with_enter(&mut self) {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        match self.editor.active_tab {
-            EditorTab::Params => {
-                self.editor.table.handle_key(enter, &mut self.editor.params);
-            }
-            EditorTab::Headers => {
-                self.editor.table.handle_key(enter, &mut self.editor.headers);
-            }
-            EditorTab::Vars => {
-                self.editor.table.handle_key(enter, &mut self.editor.variables);
-            }
-            EditorTab::Body => {}
+        let outcome = match self.editor.active_tab {
+            EditorTab::Params => self.editor.table.handle_key(enter, &mut self.editor.params),
+            EditorTab::Headers => self.editor.table.handle_key(enter, &mut self.editor.headers),
+            EditorTab::Vars => self.editor.table.handle_key(enter, &mut self.editor.variables),
+            EditorTab::Body => return,
+        };
+        if let Some(w) = outcome.warning {
+            self.toasts.push(w, ToastKind::Warning);
         }
     }
 
