@@ -31364,7 +31364,7 @@ fn picking_the_value_in_effect_writes_it_and_undo_removes_it() {
 }
 
 /// Task #195: clearing an AI command the file never set leaves the file
-/// as it was, so there is nothing to undo.
+/// without the key, as it was, so there is nothing to undo.
 #[test]
 fn clearing_an_unset_ai_command_records_no_step() {
     let dir = tempfile::tempdir().unwrap();
