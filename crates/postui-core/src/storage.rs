@@ -116,9 +116,36 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
 }
 
 /// Splits a typed display path into `(folder_slug_prefix, leaf_display)`:
-/// `/` still means folders, each folder segment is slugified, and the
-/// last segment — trimmed — is the free-form display name. `None` when
-/// the leaf is empty.
+/// `/` still means folders, and the last segment — trimmed — is the
+/// free-form display name. `None` when the leaf is empty.
+///
+/// A folder segment is trimmed and lowercased, and used as it stands when
+/// that is already a valid slug segment; only the rest are slugified.
+/// The prompts prefill a folder by its on-disk name, and `slugify` is not
+/// the identity on every valid name (it trims a leading or trailing `-`),
+/// so slugifying every segment moved a request out of a hand-made `old-`
+/// into `old` (#206).
+///
+/// The cost, chosen on #206 over the alternative and re-confirmed after
+/// two review rounds raised it: a typed *new* folder is created exactly as
+/// typed when it is a valid name, so a stray dash no longer folds into
+/// the folder beside it. `api-/List` makes `api-/` next to `api/`,
+/// `-rf/X` makes a `-rf` folder (a name shell tools read as a flag),
+/// `-/X` makes `-/`, and `old -/X` (not a valid name, so slugified) lands
+/// in `old` while `old-/X` lands in `old-`. The alternative was to keep a
+/// typed segment only when a folder by that name already exists on disk
+/// and slugify the rest as before; that needs the project's disk at every
+/// caller and makes the same text land differently depending on what
+/// exists, and the stateless rule was preferred.
+///
+/// The first segment of a path the app builds here is the space's
+/// directory name (the active space, or the request's own), and it follows
+/// the same rule, so a hand-made space `old-` stays `old-`. Creating or
+/// renaming a space or environment is different: that names its directory
+/// or file with `slugify`, since they carry a display name in
+/// `project.toml` and their slug is never what the user types. A request
+/// folder has no display name; the typed segment is its on-disk name,
+/// which is why a valid one is kept.
 pub fn split_display_path(input: &str) -> Option<(String, String)> {
     let (folders, leaf) = match input.rsplit_once('/') {
         Some((f, l)) => (f, l),
@@ -130,8 +157,9 @@ pub fn split_display_path(input: &str) -> Option<(String, String)> {
     }
     let folder = folders
         .split('/')
-        .filter(|s| !s.trim().is_empty())
-        .map(slugify)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .map(|s| if validate_slug(&s).is_ok() { s } else { slugify(&s) })
         .collect::<Vec<_>>()
         .join("/");
     Some((folder, leaf.to_string()))
@@ -159,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn split_display_path_slugifies_folders_and_keeps_the_leaf_verbatim() {
+    fn split_display_path_slugifies_non_slug_folders_and_keeps_the_leaf_verbatim() {
         assert_eq!(
             split_display_path("API Auth/Get User"),
             Some(("api-auth".into(), "Get User".into()))
@@ -171,6 +199,34 @@ mod tests {
         );
         assert_eq!(split_display_path("folder/   "), None, "empty leaf");
         assert_eq!(split_display_path(""), None);
+    }
+
+    /// #206: a folder segment that is already a valid on-disk name, once
+    /// lowercased, is used as typed; only the rest are slugified.
+    #[test]
+    fn split_display_path_keeps_a_folder_that_is_already_a_slug() {
+        assert_eq!(split_display_path("old-/Ping"), Some(("old-".into(), "Ping".into())));
+        assert_eq!(split_display_path("-wip/Ping"), Some(("-wip".into(), "Ping".into())));
+        assert_eq!(split_display_path("Old-/Ping"), Some(("old-".into(), "Ping".into())));
+        assert_eq!(
+            split_display_path("main/old-/x-/Ping"),
+            Some(("main/old-/x-".into(), "Ping".into()))
+        );
+        assert_eq!(split_display_path("-/Ping"), Some(("-".into(), "Ping".into())));
+        assert_eq!(
+            split_display_path(" old- /Ping"),
+            Some(("old-".into(), "Ping".into())),
+            "surrounding spaces are not part of the name"
+        );
+        assert_eq!(
+            split_display_path("Old Stuff-/Ping"),
+            Some(("old-stuff".into(), "Ping".into())),
+            "a segment that is not a slug is slugified as before"
+        );
+        for dots in ["..", "."] {
+            let (folder, _) = split_display_path(&format!("{dots}/Ping")).unwrap();
+            assert!(validate_slug(&folder).is_ok(), "{dots:?} is never kept as typed: {folder:?}");
+        }
     }
 
     #[test]
