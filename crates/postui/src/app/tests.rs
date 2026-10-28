@@ -14111,6 +14111,145 @@ fn remove_marks_a_request_override_and_confirm_drops_it() {
     );
 }
 
+/// #154: a disabled request var, `base_url` unchecked on the Vars tab, under
+/// the qa env's value. The env still supplies, so the popup opens there.
+fn disabled_request_var_popup_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = token_popup_app();
+    app.editor.variables.insert(
+        "base_url".into(),
+        postui_core::model::Entry { value: "http://req.local".into(), enabled: false },
+    );
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    (app, dir)
+}
+
+/// #154: the value popup shows a disabled request row for what it is:
+/// This request holds the row's stored value, marked disabled, and the
+/// popup still opens on the scope that supplies (the env).
+#[test]
+fn the_value_popup_shows_a_disabled_request_var_marked_disabled() {
+    let (mut app, _dir) = disabled_request_var_popup_app();
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Active env value", "the disabled row supplies nothing");
+    assert_eq!(scope.choices, vec!["Active env value", "This request"]);
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "https://qa.example.com");
+    let content = rendered_text(&mut app);
+    assert!(!content.contains("(disabled)"), "the mark is This request's: {content}");
+
+    // Cycle to "This request": its stored value, the mark, and a remove.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "http://req.local", "the row's stored value");
+    let content = rendered_text(&mut app);
+    assert!(content.contains("This request (disabled)"), "{content}");
+    assert!(app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_some());
+    assert_eq!(
+        app.modals.value_popup_remove_scope(),
+        Some(crate::action::ExtractDestination::Request),
+        "the remove names the request row"
+    );
+}
+
+#[test]
+fn the_value_popup_has_no_disabled_mark_for_an_enabled_request_var() {
+    let (mut app, _dir) = token_popup_app();
+    app.editor.variables.insert(
+        "base_url".into(),
+        postui_core::model::Entry { value: "http://req.local".into(), enabled: true },
+    );
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("This request"), "{content}");
+    assert!(!content.contains("(disabled)"), "{content}");
+}
+
+/// #154: a write to This request changes the disabled row's value and
+/// leaves it disabled ("Why do we have to do anything to the enabled
+/// status when we edit the value?", the user).
+#[test]
+fn writing_a_disabled_request_var_from_the_value_popup_keeps_it_disabled() {
+    let (mut app, _dir) = disabled_request_var_popup_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    for _ in 0.."http://req.local".len() {
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    for c in "http://req2.local".chars() {
+        app.handle_key(plain(c));
+    }
+    click_modal_confirm(&mut app);
+
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    let row = &app.editor.variables["base_url"];
+    assert_eq!(row.value, "http://req2.local");
+    assert!(!row.enabled, "a write never changes the row's enabled status");
+}
+
+/// #154: removing a disabled row from This request removes the row, as
+/// for an enabled one.
+#[test]
+fn removing_a_disabled_request_var_from_the_value_popup_drops_the_row() {
+    let (mut app, _dir) = disabled_request_var_popup_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(alt('d'));
+    assert!(app.editor.variables.contains_key("base_url"), "pending until confirm");
+    click_modal_confirm(&mut app);
+    assert!(!app.editor.variables.contains_key("base_url"), "the row is gone on confirm");
+}
+
+/// #154: typing a value back onto a This request marked for removal
+/// writes it instead (as for any scope), into the row that is still there
+/// and still disabled, so the mark stays on while the box reads empty.
+#[test]
+fn retyping_a_removed_disabled_request_var_writes_it_still_disabled() {
+    let (mut app, _dir) = disabled_request_var_popup_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(alt('d'));
+    // The popup re-lands on the env; step back onto This request.
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("This request (disabled)"), "{content}");
+    assert!(content.contains("(not set)"), "{content}");
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    for c in "http://req3.local".chars() {
+        app.handle_key(plain(c));
+    }
+    click_modal_confirm(&mut app);
+    let row = &app.editor.variables["base_url"];
+    assert_eq!(row.value, "http://req3.local");
+    assert!(!row.enabled);
+}
+
+/// #154: with the env value marked for removal, the popup re-lands on the
+/// scope that would supply. A disabled request row supplies nothing, so
+/// that is the default, not This request.
+#[test]
+fn removing_the_env_value_over_a_disabled_request_var_lands_on_the_default() {
+    let (mut app, _dir) = disabled_request_var_popup_app();
+    app.handle_key(alt('d'));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the popup stays open")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Project default");
+    assert_eq!(scope.choices, vec!["Project default", "Active env value", "This request"]);
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "http://localhost:8080");
+}
+
 #[test]
 fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
     let (mut app, dir) = token_popup_app();
