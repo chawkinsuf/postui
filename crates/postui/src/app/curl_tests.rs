@@ -1072,14 +1072,30 @@ fn a_name_comment_renames_a_row_that_was_not_open() {
     assert!(!app.editor_holds_unsaved());
 }
 
-/// N3: a folder in the name reads from the request's own folder.
+/// N3 (amended): a name with a `/` reads from the space's top, as the
+/// Rename prompt and a top-level import read it, so replaying the paste
+/// that imported a request lands where the import put it.
 #[test]
-fn a_folder_in_the_name_comment_reads_from_the_request_folder() {
-    let mut app = app_with_clip("# @name sub/Pong\ncurl https://x/new");
+fn a_folder_in_the_name_comment_reads_from_the_space_top() {
+    let mut app = app_with_clip("# @name api/List users\ncurl https://x/new");
     replace(&mut app, Some("main/api/ping"));
-    assert_eq!(app.editor.slug.as_deref(), Some("main/api/sub/pong"));
-    assert_eq!(app.editor.name.as_deref(), Some("Pong"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/list-users"), "not api/api");
+    assert_eq!(app.editor.name.as_deref(), Some("List users"));
     assert_eq!(app.editor.url.text(), "https://x/new");
+    // The paste that names it where it already is renames nothing.
+    let mut app = app_with_clip("# @name api/ping\ncurl https://x/new");
+    replace(&mut app, Some("main/api/ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
+    assert!(app.toasts.last_message().unwrap().starts_with("Replaced ping from curl \u{2014}"));
+}
+
+/// N3 (amended): a bare name keeps the request in its folder.
+#[test]
+fn a_bare_name_comment_keeps_the_request_folder() {
+    let mut app = app_with_clip("# @name Pong\ncurl https://x/new");
+    replace(&mut app, Some("main/api/ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/pong"));
+    assert_eq!(app.editor.name.as_deref(), Some("Pong"));
 }
 
 /// N2: the rename's refusals come before the dirty gate and change
@@ -1145,13 +1161,13 @@ fn a_rename_refused_after_the_gate_still_replaces_under_the_old_name() {
     assert_eq!(app.editor.url.text(), "https://x/top");
 }
 
-/// A leading `/` reads from the request's folder too, as the Rename
-/// prompt drops it.
+/// A leading `/` is a `/`: the name reads from the space's top, as the
+/// Rename prompt reads `/Pong`.
 #[test]
-fn a_leading_slash_in_the_name_comment_is_dropped() {
+fn a_leading_slash_in_the_name_comment_reads_from_the_space_top() {
     let mut app = app_with_clip("# @name /Pong\ncurl https://x/new");
     replace(&mut app, Some("main/api/ping"));
-    assert_eq!(app.editor.slug.as_deref(), Some("main/api/pong"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
 }
 
 /// N5: the name the request already has renames nothing; another case is

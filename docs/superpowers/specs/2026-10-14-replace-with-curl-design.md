@@ -151,7 +151,7 @@ reset by a rename's undo).
 |---|---|---|
 | N1 | Replace runs the existing rename first, as its own journaled project step, then lands the editor change as U1 says. The order of steps is declarations (U5), rename, editor change, so undo takes back the editor change, then the rename, then the declarations. Discard reverts the fields and keeps the rename; undo takes it back. A rename that still fails when it runs (a file written while the gate was up) toasts rename's error and the replace lands under the old name, so the declarations are never left without the request that uses them (mine, first review round). | mine (approved) |
 | N2 | The rename's checks (an empty leaf, a name another request in the target folder answers to) run up front with U7's other refusals, before the dirty gate. A refusal toasts rename's own words after U12's `cannot replace: ` (`cannot replace: a request named "X" already exists here`, first review round) and changes nothing. | mine (approved) |
-| N3 | A `/` in the name reads relative to the request's own folder (`# @name sub/X` on `api/ping` lands at `api/sub/X`), through rename's folder move, inside the request's space. A bare name keeps the folder. | mine (approved) |
+| N3 | **Amended 2026-10-28 (#148, fifth review round):** a name with a `/` in it reads from the space's top, as the Rename prompt and a top-level import read it, so replaying the paste that imported a request lands where the import put it (`# @name api/X` on `api/ping` lands at `api/X`, not `api/api/X`). A leading `/` counts as one (`/X` lands at the top, as the Rename prompt reads it, mine). A bare name keeps the request in its folder. All through rename's folder move, inside the request's space. ~~First: a `/` read relative to the request's own folder (`# @name sub/X` on `api/ping` landed at `api/sub/X`); the round argued that nested a replayed import's folder twice.~~ | mine (approved) |
 | N4 | A scratch request ignores `# @name`: it has no file to rename, and Save still asks for a name. | mine (approved) |
 | N5 | A `# @name` that is the request's own name, spelled the same, in its own folder, renames nothing, and is asked before the rename's checks, so it never refuses. Another case is a rename (`Kept` to `KEPT` rewrites the name and keeps the file), as the Rename prompt takes a case-only change. (First written as "ignoring case"; two review rounds argued a case-only change asked for in the comment was dropped silently, mine.) | mine |
 | N6 | Toast: `Replaced {old} from curl, renamed to {new}`, then U11's summary parts and undo hint. A rename with no field change still reads `Replaced …` (it changed something). | mine |
@@ -178,7 +178,8 @@ stopped a Discard being recorded. (Rounds 1–2 seated the shadow in the
 replace alone; two review rounds argued for the shared shape, mine.)
 
 Tests (`curl_tests.rs`): a `# @name` renames the open request and a row
-not yet open; a folder in the name moves it under the request's folder;
+not yet open; a folder in the name reads from the space's top (`api/X` from a request in
+`api/` lands at `api/X`; `/X` at the top) and a bare name keeps the folder;
 a taken name refuses before the gate with nothing changed; the same name
 renames nothing and another case renames; a rename refused after the
 gate still replaces; a scratch ignores it; a bare curl keeps

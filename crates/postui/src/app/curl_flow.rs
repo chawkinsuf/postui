@@ -332,9 +332,13 @@ impl App {
     }
 
     /// The display path a paste's `# @name` renames `slug` to (replace spec
-    /// §6), read from the request's own folder (N3); `None` when the
-    /// request already has that name, spelled the same, in that folder
-    /// (N5): a different spelling, case included, is what the comment
+    /// §6, N3 as amended): a name with a `/` in it (a leading one too)
+    /// reads from the space's top, as the Rename prompt and a top-level
+    /// import read it, so replaying the paste that imported a request
+    /// lands where the import put it; a bare name keeps the request's
+    /// folder. `None` when the request already has that name, spelled the
+    /// same, in that folder (N5): a different spelling, case included, is
+    /// what the comment
     /// asks for, as the Rename prompt takes a case-only change. Asked
     /// before the rename's checks, so a name that changes nothing never
     /// refuses. What the rename would refuse is refused here, before the
@@ -343,14 +347,13 @@ impl App {
     /// anything changes says so, where replacing without it would drop the
     /// comment unsaid (a bare curl still replaces). A rename that fails
     /// only after the gate goes on without it instead (N1), since by then
-    /// the gate's answer has acted. A leading `/` is dropped, as the
-    /// Rename prompt drops it: the name is never read from the space's
-    /// top.
+    /// the gate's answer has acted.
     fn curl_rename(&self, slug: &str, named: &str) -> Result<Option<String>, String> {
-        let named = named.trim_start_matches('/');
         let folder = slug.rsplit_once('/').map(|(f, _)| f);
-        let to = match folder {
-            Some(folder) => format!("{folder}/{named}"),
+        let base = if named.contains('/') { postui_core::storage::space_of(slug) } else { folder };
+        let named = named.trim_start_matches('/');
+        let to = match base {
+            Some(base) => format!("{base}/{named}"),
             None => named.to_string(),
         };
         let same = postui_core::storage::split_display_path(&to).is_some_and(|(f, leaf)| {
