@@ -8587,11 +8587,22 @@ impl App {
                 // name check, which then sees a key typed there. When it
                 // is the source, it stays open until the token lands in
                 // it (spec 2026-10-19 R6), and the write waits (below).
-                let from_cell = matches!(
-                    source,
-                    ExtractSource::FocusedField
-                        | ExtractSource::Selection(crate::action::TextSurface::TableCell)
-                );
+                // `from_cell` asks what the token replacement below asks:
+                // a focused field is the URL while it is open, and the
+                // cell otherwise.
+                //
+                // A refusal below therefore finds the cell already
+                // committed, and it stays closed with its typing kept as
+                // one undoable step, as Cancel leaves it at a dirty gate
+                // (R4). Checking first would leave it open, but would miss
+                // a key typed there that is this name, and the insert
+                // would then overwrite that row.
+                let from_cell = match source {
+                    ExtractSource::FocusedField => !self.editor.url_open(),
+                    ExtractSource::Selection(surface) => {
+                        surface == crate::action::TextSurface::TableCell
+                    }
+                };
                 if !from_cell && self.editor.active_tab == EditorTab::Vars {
                     self.commit_table_edit();
                 }

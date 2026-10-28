@@ -23992,6 +23992,10 @@ fn extracting_a_response_selection_to_the_request_refuses_the_open_cell_s_key() 
     assert!(app.toasts.messages().iter().any(|m| m.contains("already exists")));
     let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
     assert_eq!(request_vars(&app), [pair("nv", "")], "the typed key keeps its empty value");
+    let saved = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
+    assert!(saved.variables.is_empty(), "a refused extract saves nothing");
+    app.update(Action::Undo);
+    assert!(request_vars(&app).is_empty(), "the cell's commit is its own step");
 }
 
 #[test]
