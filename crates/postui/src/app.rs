@@ -12149,6 +12149,14 @@ impl App {
     /// With no files behind the app, or a file that will not read, there
     /// is nothing to tell, and the value in effect stands alone.
     ///
+    /// `Unset` holds the value in effect, not the default, so an undo puts
+    /// back the pre-change state exactly: when the session runs a value
+    /// the file never took (a refused keymap write), the undo leaves the
+    /// file without the key and the session on that value, as it was. It
+    /// gives up the file and the session agreeing after the undo; writing
+    /// the session value instead would put a key into the file it never
+    /// held.
+    ///
     /// The file is asked only whether it carries the key. A carried
     /// value is taken as the one in effect, which is what the Settings
     /// tab last wrote or the last load read; a hand edit since then that

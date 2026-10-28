@@ -948,13 +948,19 @@ impl Config {
             return Ok(());
         };
         let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
-        let existing = disk.read(&rel).map_err(|e| e.to_string())?.unwrap_or_default();
-        let mut doc: toml_edit::DocumentMut =
-            existing.parse().map_err(|e: toml_edit::TomlError| {
-                format!("{name} has a syntax error and was left unchanged: {e}")
-            })?;
+        let existing = disk.read(&rel).map_err(|e| e.to_string())?;
+        let mut doc = Self::parse_doc(name, existing)?;
         f(&mut doc);
         disk.write(&rel, &doc.to_string()).map_err(|e| e.to_string())
+    }
+
+    /// `name`'s text as a document, the one load [`Self::edit`] and
+    /// [`Self::holds_ui_key`] share: an absent file is an empty document,
+    /// and one that does not parse is refused.
+    fn parse_doc(name: &str, text: Option<String>) -> Result<toml_edit::DocumentMut, String> {
+        text.unwrap_or_default().parse().map_err(|e: toml_edit::TomlError| {
+            format!("{name} has a syntax error and was left unchanged: {e}")
+        })
     }
 
     /// Persists the `[projects]` table of `config.toml`.
@@ -1051,8 +1057,7 @@ impl Config {
     pub fn holds_ui_key(&self, key: &str) -> Option<bool> {
         let disk = self.disk.as_ref()?;
         let rel = postui_core::disk::RelPath::new(CONFIG_TOML).ok()?;
-        let text = disk.peek(&rel).ok()?.unwrap_or_default();
-        let doc: toml_edit::DocumentMut = text.parse().ok()?;
+        let doc = Self::parse_doc(CONFIG_TOML, disk.peek(&rel).ok()?).ok()?;
         Some(doc.contains_key(key))
     }
 
