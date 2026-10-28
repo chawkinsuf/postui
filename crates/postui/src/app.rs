@@ -8592,7 +8592,9 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                // The write itself waits for the token (below).
+                // The write itself waits for the token (below). This
+                // check still holds then: the token's commit can only
+                // write a key holding `{{name}}`, never `name` itself.
                 Ok(())
             }
         };
@@ -8623,36 +8625,36 @@ impl App {
                         self.replace_selection_with_token(surface, &name);
                     }
                 }
-                // A `Request` destination writes its variable only now,
-                // after the token has landed in the field and an open cell
-                // has committed (#152). On the Vars tab the cell edits this
-                // same map and names its row by index, and "+ Add" is the
-                // index one past the rows: the very index an insert takes.
-                // Written while the cell was open, the new variable became
-                // the cell's row, and the token renamed it away. The cell
-                // still holds the typing until the token lands in it (spec
-                // 2026-10-19 R6), and the two writes are one editor step.
                 if wrote_to_request {
-                    self.debug_assert_no_open_vars_cell();
+                    // A `Request` destination writes its variable only
+                    // now, after the token has landed in the field and an
+                    // open cell has committed (#152). On the Vars tab the
+                    // cell edits this same map and names its row by index,
+                    // and "+ Add" is the index one past the rows: the very
+                    // index an insert takes. Written while the cell was
+                    // open, the new variable became the cell's row, and the
+                    // token renamed it away. The cell still holds the
+                    // typing until the token lands in it (spec 2026-10-19
+                    // R6), and the two writes are one editor step. This
+                    // orders only the cell's own extract: a response
+                    // selection extracted while a Vars cell is open still
+                    // writes under that cell, as before #152.
                     self.editor.variables.insert(
                         name.clone(),
                         postui_core::model::Entry { value: text, enabled: true },
                     );
-                }
-                // Finding 2, same ruling as promote: the
-                // `Request` destination's write only exists so far
-                // in the dirty editor buffer (both the new
-                // `[variables]` option above and the field text
-                // `replace_focused_field_with_token` just
-                // committed) — save it synchronously rather than
-                // leaving it save-on-demand, so "extract to
-                // request, then quit" can't lose it.
-                // Nothing has been committed through core on this arm (a
-                // `Request` destination touches no var file), so unlike
-                // promote this save can afford to ask: it goes through the
-                // ordinary checked save, whose confirm carries the same
-                // Overwrite / Reload / Cancel choice ctrl+s offers.
-                if wrote_to_request {
+                    // Finding 2, same ruling as promote: the write only
+                    // exists so far in the dirty editor buffer (both the
+                    // new `[variables]` option and the field text
+                    // `replace_focused_field_with_token` just committed)
+                    // — save it synchronously rather than leaving it
+                    // save-on-demand, so "extract to request, then quit"
+                    // can't lose it. Nothing has been committed through
+                    // core on this arm (a `Request` destination touches no
+                    // var file), so unlike promote this save can afford to
+                    // ask: it goes through the ordinary checked save, whose
+                    // confirm carries the same Overwrite / Reload / Cancel
+                    // choice ctrl+s offers.
                     if self.editor.slug.is_some() {
                         // Cleared first so the flag read below is this
                         // save's own answer. `save_request_checked` sets
@@ -8786,13 +8788,10 @@ impl App {
     /// it would serve no path the app takes. A new way to promote from the
     /// main screen (a palette row, a tooltip action) must commit an open
     /// Vars cell before it reads the value, as the value dialog does.
-    /// Extract to "This request" is the third writer: it keeps the cell
-    /// open until the token lands in it (spec 2026-10-19 R6), and writes
-    /// its variable only after that commit (`confirm_extract`, #152).
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
-            "a Vars row write (value dialog, promote or extract) under an open Vars cell"
+            "a Vars row write (value dialog or promote) under an open Vars cell"
         );
     }
 

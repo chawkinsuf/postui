@@ -23854,8 +23854,10 @@ fn extracting_the_vars_add_name_to_the_request_keeps_the_new_variable() {
     for selection in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         var_project(dir.path());
-        postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping"))
-            .unwrap();
+        let mut ping = req("https://x/ping");
+        ping.variables
+            .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+        postui_core::fixtures::save_request(dir.path(), "main/ping", &ping).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
         app.update(Action::ForceOpenRequest("main/ping".into()));
@@ -23863,11 +23865,10 @@ fn extracting_the_vars_add_name_to_the_request_keeps_the_new_variable() {
         app.editor.preferred_tab = EditorTab::Vars;
         app.focus = PaneId::Editor;
         app.capture_undo();
-        assert!(app.editor.variables.is_empty());
-        click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
+        click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
         type_chars(&mut app, "abc");
         let edit = app.editor.table.editing.as_mut().expect("the + Add name cell is open");
-        assert_eq!(edit.row, 0, "+ Add is one past the (no) rows");
+        assert_eq!(edit.row, 1, "+ Add is one past the rows");
         if selection {
             edit.input.set_cursor(0);
             edit.input.begin_mouse_selection();
@@ -23885,15 +23886,16 @@ fn extracting_the_vars_add_name_to_the_request_keeps_the_new_variable() {
         }
         app.capture_undo();
         assert!(app.editor.table.editing.is_none(), "selection {selection}: the cell commits");
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
         assert_eq!(
             request_vars(&app),
-            [("{{nv}}".to_string(), String::new()), ("nv".to_string(), "abc".to_string())],
+            [pair("a", "1"), pair("{{nv}}", ""), pair("nv", "abc")],
             "selection {selection}"
         );
         let saved = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
         assert_eq!(saved.variables["nv"].value, "abc", "selection {selection}: saved");
         app.update(Action::Undo);
-        assert!(app.editor.variables.is_empty(), "selection {selection}: one editor step");
+        assert_eq!(request_vars(&app), [pair("a", "1")], "selection {selection}: one editor step");
     }
 }
 
