@@ -10806,6 +10806,22 @@ impl App {
                     if let Some(saved) = self.editor.saved.as_mut() {
                         saved.name = Some(leaf);
                     }
+                    // The shadow is re-keyed too, name included, as the
+                    // rename's undo and redo re-key it (`after_replay`):
+                    // the rename is the project step, so the next capture
+                    // must see neither the slug change (it would only
+                    // re-seed, dropping an edit made in the same event, as
+                    // a replace with curl makes) nor the name (a rename that
+                    // keeps the slug would record it as an editor edit, and
+                    // undoing that put the old name back over the file's).
+                    // Only the key moves; what the shadow holds otherwise is
+                    // untouched, so no pending edit is swallowed.
+                    if let Some(shadow) = self.shadow.as_mut()
+                        && shadow.slug.as_deref() == Some(from)
+                    {
+                        shadow.slug = Some(slug.clone());
+                        shadow.req.name = self.editor.name.clone();
+                    }
                 }
                 // The cursor follows the row through a re-sort
                 // (sweep-7 bug b).
@@ -10817,6 +10833,8 @@ impl App {
                 true
             }
             Err(e) => {
+                // The caller may go on (a replace without its rename).
+                self.op_in_flight = false;
                 let msg = self.rename_refusal(from, &e);
                 self.toasts.push(msg, ToastKind::Error);
                 false

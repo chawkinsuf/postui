@@ -156,16 +156,26 @@ reset by a rename's undo).
 | N5 | A `# @name` that is the request's own name, spelled the same, in its own folder, renames nothing, and is asked before the rename's checks, so it never refuses. Another case is a rename (`Kept` to `KEPT` rewrites the name and keeps the file), as the Rename prompt takes a case-only change. (First written as "ignoring case"; two review rounds argued a case-only change asked for in the comment was dropped silently, mine.) | mine |
 | N6 | Toast: `Replaced {old} from curl, renamed to {new}`, then U11's summary parts and undo hint. A rename with no field change still reads `Replaced …` (it changed something). | mine |
 
-Design: core `CurlImport` gains `named: Option<String>`, the `# @name`
-text alone, set only from the comment (`suggested_name` keeps folding
-the comment with the URL fallback for import's prompt). `CurlReplace`
+Design: core `CurlImport` holds `named: Option<String>`, the `# @name`
+text alone, set only from the comment; import's `suggested_name()` is
+`named`, else the URL's suggestion (one copy of the name, third review
+round). `Project::check_rename_request` is `rename_request`'s checks
+without the write, and the replace asks it before the gate. `CurlReplace`
 carries the checked rename target. `apply_curl_replace` runs the rename
-through the method the `RenameRequest` arm now calls, then seats the
-undo shadow at the renamed request itself, in this one caller: a capture
-that sees the slug change only re-seeds, so without the seat the editor
-change would not be recorded, and a rename that keeps the slug would
-record the name as an editor edit. It then reads the editor for the kept
-fields, so the name kept is the new one.
+through `App::rename_request`, the method the `RenameRequest` arm now
+calls, and then reads the editor for the kept fields, so the name kept
+is the new one.
+
+The rename re-keys the undo shadow (its slug and name), as the rename's
+undo and redo already did in `after_replay`. Without it a capture that
+sees the slug change only re-seeds, so the replace's editor change in
+the same event would not be recorded, and a rename that keeps the slug
+records the name as an editor edit whose undo puts the old name back
+over the file's (a Rename prompt bug on main too, `Kept` to `Kept!`).
+Only the key moves, never the shadow's contents, so no pending edit is
+swallowed: unlike #10's seat in `land`, which overwrote the shadow and
+stopped a Discard being recorded. (Rounds 1–2 seated the shadow in the
+replace alone; two review rounds argued for the shared shape, mine.)
 
 Tests (`curl_tests.rs`): a `# @name` renames the open request and a row
 not yet open; a folder in the name moves it under the request's folder;

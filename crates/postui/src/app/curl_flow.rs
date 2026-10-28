@@ -133,7 +133,7 @@ impl App {
     pub(super) fn push_curl_prompt(&mut self, run: CurlImportRun) {
         let space = self.active_space();
         let folder = run.folder.clone().unwrap_or_else(|| space.clone());
-        let name = self.free_request_name(&folder, &run.current().suggested_name);
+        let name = self.free_request_name(&folder, &run.current().suggested_name());
         // The prompt speaks folders inside the space, as New request does.
         let prefill = match folder.strip_prefix(&format!("{space}/")) {
             Some(rel) => format!("{rel}/{name}"),
@@ -413,17 +413,9 @@ impl App {
         // name, so the declarations above are never left without the
         // request that uses them.
         let renamed = match (rename, self.editor.slug.clone()) {
-            (Some(to), Some(from)) if self.rename_request(&from, &to) => {
-                // A capture that sees the slug change only re-seeds, and one
-                // that sees the same slug with the new name records it as an
-                // edit: either way the editor change below would not be its
-                // own step. Seat the renamed request as the shadow here, in
-                // this caller, not in the shared rename, whose prompt is
-                // followed by a capture that re-seeds as it should (open's
-                // seat moved into a shared path broke Discard in #10).
-                self.seed_shadow(self.editor.slug.clone(), self.editor.current_request());
-                Some(display(self))
-            }
+            // The rename re-keys the undo shadow, so the editor change below
+            // is still its own step.
+            (Some(to), Some(from)) if self.rename_request(&from, &to) => Some(display(self)),
             _ => None,
         };
         // Read after the rename: the name kept is the new one, and a rename

@@ -151,9 +151,11 @@ pub struct CurlImport {
     /// value.
     pub variables: Vec<(String, Option<String>)>,
     /// A `# @name` comment's text as written (D18; a `/` in it means a
-    /// folder, as typed into the prompt), else `{METHOD} {last non-empty
-    /// path segment, else host}`, never containing `/`.
-    pub suggested_name: String,
+    /// folder, as typed into the prompt), `None` without one. (Task #148:
+    /// the field, which replace renames from, replaced `suggested_name:
+    /// String`; `suggested_name()` is now this, else `{METHOD} {last
+    /// non-empty path segment, else host}`, never containing `/`.)
+    pub named: Option<String>,
 }
 
 pub struct CurlBatch {

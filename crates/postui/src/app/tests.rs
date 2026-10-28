@@ -4839,6 +4839,26 @@ fn renaming_the_open_request_moves_local_state_to_the_new_slug() {
     assert_eq!(relaunched.editor.slug.as_deref(), Some("main/zulu"), "a relaunch reopens it");
 }
 
+/// Task #148: a rename that keeps the slug (only `name` changes) is the
+/// project step alone; the editor records no edit of the name, so one undo
+/// takes the rename back and leaves the editor clean.
+#[test]
+fn a_rename_that_keeps_the_slug_records_no_editor_edit() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.capture_undo();
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Alpha!".into() });
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.name.as_deref(), Some("Alpha!"));
+    assert!(matches!(app.history_top_kind_for_test(), Some(crate::undo::StepKind::Project { .. })));
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert_eq!(app.editor.name, None);
+    assert!(!app.editor.is_dirty());
+    assert_eq!(postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().name, None);
+}
+
 /// Final review M2: undoing a rename of the open request restores the
 /// file's missing `name` (a legacy file) in the editor too, so a later
 /// save never writes the undone name back.

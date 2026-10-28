@@ -1012,6 +1012,18 @@ fn a_name_comment_renames_the_open_request_and_undo_takes_it_back_after_the_edit
     app.update(Action::Undo);
     assert!(!app.proj().variables().vars.contains_key("TOKEN"));
     assert_eq!(app.editor.current_request(), before);
+    // Redo walks the same three steps forward.
+    app.update(Action::Redo);
+    assert!(app.proj().variables().vars.contains_key("TOKEN"));
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    assert_eq!(app.editor.url.text(), "https://x/old");
+    assert!(!app.editor_holds_unsaved());
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert_eq!(app.editor.name.as_deref(), Some("Fresh"));
+    assert!(app.editor_holds_unsaved());
 }
 
 #[test]
@@ -1095,11 +1107,13 @@ fn a_taken_or_empty_name_refuses_before_the_dirty_gate() {
         assert_eq!(on_disk(&app, "main/api/ping").unwrap().url, "https://x/ping");
         assert_eq!(app.toasts.last_message(), Some(toast), "{clip}");
         // The open request refuses the same way.
-        let mut app = kept_app(&clip.replace("PONG", "TOP"));
+        let clip = clip.replace("PONG", "TOP");
+        let mut app = kept_app(&clip);
         let before = app.editor.current_request();
         replace(&mut app, None);
         assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
         assert_eq!(app.editor.current_request(), before, "{clip}");
+        assert_eq!(app.toasts.last_message(), Some(toast.replace("PONG", "TOP").as_str()));
     }
 }
 
