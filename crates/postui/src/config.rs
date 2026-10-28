@@ -1040,9 +1040,10 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
     }
 
-    /// Removes one top-level key of `config.toml`, so the setting falls
-    /// back to its default: what an undo writes for a key the file did
-    /// not carry before the change (task #195).
+    /// Removes one top-level key of `config.toml`: what an undo writes for
+    /// a key the file did not carry before the change (task #195). The
+    /// next load reads the key's default; the app applies what the undo
+    /// step held, which is the default unless the session ran another.
     pub fn remove_ui_key(&mut self, key: &str) -> Result<(), String> {
         self.edit(CONFIG_TOML, |doc| {
             doc.remove(key);

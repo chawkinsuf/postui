@@ -315,9 +315,9 @@ applies even a refused write, applies through `apply_ui` too (`mine`).
 effect, not what the file held, so the undo of the first change to an
 unset key wrote the default into `config.toml`. Each side of a `Config`
 step is now the value in effect plus whether the file carried the key,
-read through `Config` (`Config::holds_ui_key`): `UiValue::Unset(value)`
-for a key the file did not carry, which `App::write_ui_value` writes as
-no key (`Config::remove_ui_key`) and applies as the boxed value. The
+read through `Config` (`Config::holds_ui_key`), as `undo::HeldUiValue`.
+`App::write_ui_value` writes an uncarried side as no key
+(`Config::remove_ui_key`) and applies the value it holds. The
 undo puts the file back as it was (the user: "yes" to fixing it) and
 the app with it, and a write that changes neither, such as clearing an
 unset AI command, records no step (`mine`). A click on the lit segment
