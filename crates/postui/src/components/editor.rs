@@ -1362,8 +1362,11 @@ impl Editor {
         // The overlays lead `body.highlights` (the draw splices them in
         // first), so edtui's own test says what they cover.
         let overlays = &self.body.highlights[..self.body_hl_overlays.len()];
-        // edtui drew a shown caret reversed; lighting its cell over that
-        // left a plain-looking char where the caret was (#187). A hidden
+        // edtui drew a shown caret in the caret's style (reversed, or the
+        // selection's fill when a selection covers it); lighting its cell
+        // over that left a plain-looking char where the caret was (#187).
+        // The caret's cell is the one at `caret`, whichever bracket of the
+        // pair sits there (`{|}` puts it on the partner). A hidden
         // caret (under a selection that doesn't cover it) has no look to
         // keep, so its bracket lights.
         let covered = |at: Pos| {
@@ -5354,6 +5357,12 @@ mod tests {
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "and so does its `{{`");
         e.body.cursor = edtui::Index2::new(0, 2);
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "on `a` nothing lights");
+        // `{|}`: the bracket under the caret is the `}`, so the caret
+        // keeps its look there and the `{` lights.
+        let mut e = body_editor("{}");
+        e.body.cursor = edtui::Index2::new(0, 1);
+        assert!(caret_look(&body_cell_at(&mut e, true, 0, 1)), "the caret's `}}`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the partner `{{`");
     }
 
     /// R7: only the focused body lights.
