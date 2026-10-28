@@ -1390,7 +1390,19 @@ impl ReadyView {
 
     /// [`ReadyView::bracket_pair`], worked out again only when what it reads
     /// changed since the last frame.
+    ///
+    /// Arrows lights no pair while a selection is up (#189, spec R21),
+    /// whether or not it is in view: it is still what a copy takes. Vim
+    /// keeps it under `V` or a drag, as Vim's matchparen does in Visual.
+    /// The selection only hides the pair: the click stays, so once the
+    /// selection goes the pair is back, as the body's is by its caret. A
+    /// drag that began on a bracket is a press on it, which records the
+    /// click as any press there does (R10); forgetting it when a drag
+    /// starts would be a second rule for one press.
     fn lit_pair(&mut self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        if !vim && self.sel.is_some() {
+            return None;
+        }
         // Each profile's own start: vim reads its cursor, arrows the click.
         // A key in arrows keeps the click (#89), so it never walks again.
         let start = if vim {
@@ -4719,15 +4731,7 @@ impl Component for Response {
         if view.mode == ViewMode::Raw && view.h_scroll > 0 {
             view.index_raw_rows(view.scroll..view.scroll + view.height);
         }
-        // Arrows lights no pair while a selection shows (#189, spec R21);
-        // vim keeps it under `V` or a drag, as Vim's matchparen does in
-        // Visual. The selection only hides the pair: the click stays, so
-        // once the selection goes the pair is back, as the body's is by
-        // its caret. A drag that began on a bracket is a press on it, which
-        // records the click as any press there does (R10); forgetting it
-        // when a drag starts would be a second rule for one press.
-        let lights = ctx.focused && (self.vim_cursor || view.sel.is_none());
-        let pair = if lights { view.lit_pair(self.vim_cursor) } else { None };
+        let pair = if ctx.focused { view.lit_pair(self.vim_cursor) } else { None };
         let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area, pair);
         frame.render_widget(Paragraph::new(body), body_area);
 

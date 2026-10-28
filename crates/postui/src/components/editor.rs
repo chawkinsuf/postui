@@ -1347,29 +1347,27 @@ impl Editor {
     /// Lights the bracket by the caret and its partner on the drawn frame
     /// (spec 2026-10-22, matching brackets, R1–R8). It runs after edtui
     /// renders, so the viewport is the one on screen, not a guess at
-    /// edtui's scroll. `area` is the rect edtui drew into. `caret_shown` is
-    /// whether the draw had edtui paint the caret this frame.
+    /// edtui's scroll. `area` is the rect edtui drew into.
     ///
     /// A caret between chars (edtui's `Insert`: arrows always, Vim's Insert
     /// and Replace) also takes the bracket before it; Vim's Normal and
     /// Visual carets sit on a char. Both ends must show (R5). A cell the
-    /// Visual span, a search hit or the selection paints keeps that paint,
-    /// and so does a shown caret's cell (R8, #187), so the caret stays
-    /// visible on its bracket as Vim's cursor does: only the partner, or
-    /// the bracket before a caret between chars, lights.
+    /// Visual span or a search hit paints keeps that paint, and so does the
+    /// caret's cell (R8, #187), so the caret stays visible on its bracket
+    /// as Vim's cursor does: only the partner, or the bracket before a
+    /// caret between chars, lights.
     ///
     /// The arrows profile lights nothing while text is selected (#189, the
     /// user: "No only in arrows mode. Any testing I do is referring
-    /// specifically to arrows mode. Vim mode follows vim."). The vim
+    /// specifically to arrows mode. Vim mode follows vim."), whether or not
+    /// the selection is in view: it is still what a copy takes. The vim
     /// profile keeps the pair in Visual, as Vim's matchparen runs on every
-    /// `CursorMoved`, Visual included.
-    fn paint_bracket_pair(
-        &self,
-        buf: &mut ratatui::buffer::Buffer,
-        area: Rect,
-        caret_shown: bool,
-        theme: &Theme,
-    ) {
+    /// `CursorMoved`, Visual included. Visual is the engine's span (an
+    /// overlay), and the engine turns edtui's own selection into Visual or
+    /// drops it when it settles each event (`settle`), so after the check
+    /// below no draw paints over a `body.selection`, nor hides the caret
+    /// under one (spec R21).
+    fn paint_bracket_pair(&self, buf: &mut ratatui::buffer::Buffer, area: Rect, theme: &Theme) {
         use crate::text::brackets::{bracket_at, partner_of};
         use crate::text::{Lines as _, Pos};
         if !self.vim_profile && self.body.selection.is_some() {
@@ -1393,7 +1391,6 @@ impl Editor {
         let covered = |at: Pos| {
             let at = edtui::Index2::new(at.row, at.col);
             overlays.iter().any(|h| h.contains(&at))
-                || self.body.selection.as_ref().is_some_and(|s| s.contains(&at))
         };
         // A shown caret keeps its cell (R8, #187): the pair's colours under
         // edtui's reverse read as an ordinary coloured char, and the caret
@@ -1405,11 +1402,8 @@ impl Editor {
         // the next cell) keeps the caret, and a light never lands on it.
         // Comparing screen cells, not text positions, is what keeps the
         // caret visible: were this layout and edtui's ever to disagree,
-        // the light would land beside the caret, never over it. A hidden
-        // caret (under a selection that doesn't cover it, which only the
-        // vim profile gets this far with, #189) has no look to keep, so
-        // its bracket lights.
-        let caret_at = self.body.cursor_screen_position().filter(|_| caret_shown);
+        // the light would land beside the caret, never over it.
+        let caret_at = self.body.cursor_screen_position();
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
         for (at, cell) in [(a, cell_a), (b, cell_b)] {
             if caret_at != Some(cell.into()) && !covered(at) {
@@ -4122,7 +4116,7 @@ impl Editor {
                 frame.render_widget(view, area);
                 self.paint_selected_breaks(frame.buffer_mut(), area, theme);
                 if focused {
-                    self.paint_bracket_pair(frame.buffer_mut(), area, caret_shown, theme);
+                    self.paint_bracket_pair(frame.buffer_mut(), area, theme);
                 }
                 // Body coverage (spec §7): edtui paints the text itself, so
                 // its tokens are found by reading the rendered rows back out
@@ -5733,10 +5727,11 @@ mod tests {
         assert_eq!(lit_body_cells(&mut e), 0, "a mouse selection");
     }
 
-    /// #189 (spec R21): the vim profile keeps Vim's matchparen under a
-    /// selection, so the partner outside it lights: in Visual (the
-    /// engine's span, which `body.selection` doesn't hold) and under a
-    /// selection the same keys make in arrows, which lights nothing there.
+    /// #189 (spec R21): the vim profile keeps Vim's matchparen in Visual
+    /// (the engine's span, which `body.selection` doesn't hold), so the
+    /// partner outside it lights. The check is the profile's: an edtui
+    /// selection stops only the arrows draw. (The engine settles such a
+    /// selection away before a vim draw; it is set here only to pin that.)
     #[test]
     fn vim_visual_keeps_the_pair() {
         let mut e = body_editor("{\"a\": [1]}");
@@ -5753,42 +5748,6 @@ mod tests {
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "a selection: the partner");
         e.vim_profile = false;
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the same in arrows");
-    }
-
-    /// R8 (#187): a caret the draw hides (a selection that doesn't cover
-    /// it) has no look to keep, so its own bracket lights. Only the vim
-    /// profile lights a pair under a selection (#189).
-    #[test]
-    fn a_hidden_caret_on_a_bracket_lights_it() {
-        let mut e = body_editor("{\"a\": [1]}");
-        e.vim_profile = true;
-        e.body.cursor = edtui::Index2::new(0, 4);
-        for _ in 0..2 {
-            e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
-        }
-        assert_eq!(e.body_selected_text().as_deref(), Some(": "));
-        assert_eq!(e.body.cursor, edtui::Index2::new(0, 6), "the caret on `[`");
-        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 6)), "the caret's `[`");
-        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the partner `]`");
-    }
-
-    /// R8: a selection that covers the caret keeps its fill on the
-    /// caret's bracket; the partner lights. (The selection rule covers
-    /// that cell on its own; this pins that a shown caret under a
-    /// selection, the third `caret_shown` case, neither lights nor loses
-    /// the fill.) The vim profile's: arrows lights no pair under a
-    /// selection (#189).
-    #[test]
-    fn a_selection_over_the_caret_keeps_its_fill_on_the_bracket() {
-        let theme = Theme::dark();
-        let mut e = body_editor("{\"a\": [1]}");
-        e.vim_profile = true;
-        e.body.cursor = edtui::Index2::new(0, 7);
-        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
-        assert_eq!(e.body.cursor, edtui::Index2::new(0, 6), "the caret on `[`");
-        assert!(e.body.selection.as_ref().is_some_and(|s| s.contains(&e.body.cursor)));
-        assert_eq!(body_cell_at(&mut e, true, 0, 6).bg, theme.selection, "the caret's `[`");
-        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the partner `]`");
     }
 
     /// R8 (#187): a vim Normal caret on a bracket keeps the caret's look,
