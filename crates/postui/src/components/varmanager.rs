@@ -2220,7 +2220,22 @@ impl VarManager {
             VmDetail::Group(name) if ctx.variables().selectors.contains_key(&name) => {
                 let buf = frame.buffer_mut();
                 fill(buf, right, theme.page);
-                self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
+                let option_buttons =
+                    self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
+                // The title row's option buttons paint only once the grid
+                // has, and only if it drew an option row (task #207): with
+                // none drawn, their keys and chips act on nothing (#202),
+                // and so do they, by not being there. A paste would write
+                // an option no row shows. `no_rows_drawn` reads this
+                // frame's record, which the title row comes too early for.
+                if !self.no_rows_drawn(ctx) {
+                    for (button, rect, hit) in option_buttons {
+                        let painted = button.paint(buf, rect, theme);
+                        if let Some(hit) = hit {
+                            hits.register(painted, hit);
+                        }
+                    }
+                }
             }
             _ => draw_detail_placeholder(frame, right, theme),
         }
@@ -2234,6 +2249,10 @@ impl VarManager {
     /// no active environment there is nowhere for options to live, so the
     /// grid is replaced by [`NO_ENV_HINT`] (the top bar's environment
     /// switcher, drawn either way, is the way out of that state).
+    ///
+    /// Returns the title row's two option buttons laid out but not painted,
+    /// each with the hit it takes clicks under (`None`: greyed), for `draw`
+    /// to paint once it knows the grid drew an option row (task #207).
     #[allow(clippy::too_many_arguments)]
     fn draw_entry_grid(
         &mut self,
@@ -2244,9 +2263,10 @@ impl VarManager {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
         selector: &str,
-    ) {
+    ) -> Vec<(Button<'static>, Rect, Option<Hit>)> {
+        let mut option_buttons = Vec::new();
         if right.width < 8 || right.height < 3 {
-            return;
+            return option_buttons;
         }
         let state_of = |hit: &Hit| {
             if hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
@@ -2301,8 +2321,18 @@ impl VarManager {
                 // and takes no clicks and no hover while it does.
                 let disabled = hit == Hit::VmPasteOption && !can_paste;
                 let state = if disabled { ControlState::Disabled } else { state_of(&hit) };
-                let painted = Button { label: lbl, kind, state }.paint(buf, rect, theme);
-                if !disabled {
+                let button = Button { label: lbl, kind, state };
+                let option = matches!(hit, Hit::VmNewOption | Hit::VmPasteOption);
+                let hit = (!disabled).then_some(hit);
+                // The option ones wait for the grid: `draw` paints them if
+                // it drew an option row (task #207). Their place is laid
+                // out either way, so the selector's three never move.
+                if option {
+                    option_buttons.push((button, rect, hit));
+                    continue;
+                }
+                let painted = button.paint(buf, rect, theme);
+                if let Some(hit) = hit {
                     hits.register(painted, hit);
                 }
             }
@@ -2351,14 +2381,14 @@ impl VarManager {
                     false,
                 );
             }
-            return;
+            return option_buttons;
         }
 
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
         let cols = grid_columns(x0, inner_w, grid_ncols(fields.len()));
         if y >= bottom || cols.x.is_empty() {
-            return;
+            return option_buttons;
         }
         // The header strip is exactly as wide as the rows beneath it, so
         // the grid reads as one inset block with the pane's margin around it.
@@ -2553,6 +2583,7 @@ impl VarManager {
                 false,
             );
         }
+        option_buttons
     }
 
     /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row
@@ -4969,6 +5000,38 @@ fields = ["user_id", "customer_id"]
         vm.point_grid(&ctx, 1, 0); // bob
         assert_eq!(vm.verb_action(&ctx, None, Verb::Delete { count: 1 }), None);
         assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None, "Space");
+    }
+
+    /// Task #207: with no option row drawn, the title row's two option
+    /// buttons are not there, as their keys and chips act on nothing
+    /// (#202): a paste click wrote an option no row showed. The three
+    /// selector buttons stay where they were. Drawn again, both are back.
+    #[test]
+    fn a_pane_too_short_for_an_option_row_paints_no_option_buttons() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.stash = vm.option_row(&ctx, 0); // alice copied: Paste is armed
+        let (_, tall) = render_buf_at(&mut vm, &ctx, 116);
+        for hit in [Hit::VmNewOption, Hit::VmPasteOption] {
+            assert!(tall.rect_of(&hit).is_some(), "{hit:?} is there with rows drawn");
+        }
+
+        let (buf, hits) = render_buf_sized(&mut vm, &ctx, 116, TALL_PILL_H + 3);
+        assert!(hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(), "no row drawn");
+        let content = format!("{buf:?}");
+        for (hit, label) in [(Hit::VmNewOption, "+ Option"), (Hit::VmPasteOption, "Paste")] {
+            assert!(hits.rect_of(&hit).is_none(), "{hit:?} takes a click");
+            assert!(!content.contains(label), "{label} is painted: {content}");
+        }
+        for hit in [Hit::VmEditFields, Hit::VmRename, Hit::VmDelete] {
+            assert_eq!(hits.rect_of(&hit), tall.rect_of(&hit), "{hit:?} moved");
+        }
+
+        let (_, hits) = render_buf_at(&mut vm, &ctx, 116);
+        for hit in [Hit::VmNewOption, Hit::VmPasteOption] {
+            assert_eq!(hits.rect_of(&hit), tall.rect_of(&hit), "{hit:?} is back");
+        }
     }
 
     /// Task #202: with no option row drawn, the grid's verbs resolve to
