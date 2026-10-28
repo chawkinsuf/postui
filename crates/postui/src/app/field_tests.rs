@@ -1954,6 +1954,66 @@ fn a_press_on_the_prompts_row_drops_a_pending_command() {
     assert_eq!(app.editor.body.lines.to_string(), "ne two three\nfour", "one char");
 }
 
+/// #129, #194: a click on a control (here the footer's vars chip, which
+/// keeps the body's caret) is gVim's menu or toolbar item, so it cancels
+/// the search being typed and the operator it was typed for before it acts
+/// (gui.txt's `:amenu` table: `<C-C>` in Command-line mode). A click on the
+/// body's line numbers, the body's own window, keeps them, as Vim's does.
+#[test]
+fn a_control_click_cancels_the_search_before_it_acts() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("one two three\nfour");
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    feed(&mut app, "gg0d/thr");
+    click_at(&mut app, area.x, area.y); // the line numbers
+    draw(&mut app);
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("thr"), "the body's own click keeps it");
+    let footer = app.settled_layout().unwrap().footer;
+    let chip = (footer.y..footer.bottom())
+        .flat_map(|y| (footer.x..footer.right()).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            matches!(app.hits.hit_at(x, y), Some(Hit::FooterChip(Action::OpenVarPicker { .. })))
+        })
+        .expect("the vars chip");
+    click_at(&mut app, chip.0, chip.1);
+    draw(&mut app);
+    assert!(app.editor.body_search.prompt.is_none(), "the chip cancels the search");
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))), "and then acts");
+    feed(&mut app, "<Esc>");
+    draw(&mut app);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "the body keeps the caret");
+    feed(&mut app, "w");
+    assert_eq!(app.editor.body.lines.to_string(), "one two three\nfour", "no `d` left");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(0, 4));
+}
+
+/// #129 (the user's "Go"): vim's `{N}<C-w>_` with a count that would leave
+/// the body under two rows lands on the floor, as Vim never closes a
+/// window with a count; `0` still minimizes, and a single `<C-w>-` from
+/// the floor minimizes.
+#[test]
+fn a_counted_height_under_the_floor_lands_on_it() {
+    let mut app = vim(Fixture::Body);
+    let column = app.settled_layout().unwrap().main.height;
+    let floor = crate::layout::editor_floor(column).expect("a tall column");
+    for n in 1..=4 {
+        feed(&mut app, &format!("{n}<C-w>_"));
+        draw(&mut app);
+        let s = app.split_state();
+        assert!(!s.editor_minimized && !s.response_minimized, "{n}: shown");
+        assert_eq!(crate::layout::editor_rows_for(column, s.ratio), floor, "{n}: the floor");
+        assert_eq!(app.editor.last_body_area.map(|a| a.height), Some(1), "{n}: text row");
+    }
+    feed(&mut app, "<C-w>-");
+    assert!(app.split_state().editor_minimized, "a step from the floor minimizes");
+    feed(&mut app, "<C-w>+");
+    let s = app.split_state();
+    assert!(!s.editor_minimized);
+    assert_eq!(crate::layout::editor_rows_for(column, s.ratio), floor, "back on the floor");
+}
+
 /// #129: the bar measures the body above the prompt's row, as the thumb
 /// drag's spec does, and stays as it is when the prompt opens.
 #[test]

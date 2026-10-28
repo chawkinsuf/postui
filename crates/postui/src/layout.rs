@@ -273,6 +273,30 @@ pub fn editor_floor(column_height: u16) -> Option<u16> {
         .then_some(editor::CHROME_HEIGHT + editor::CONTENT_MIN_HEIGHT)
 }
 
+/// The fewest rows a shown editor has in a `column_height`-row column: its
+/// [`editor_floor`], or one past its chrome on a column too short for the
+/// floor. One row fewer is the minimized editor: [`split_for_editor_rows`]
+/// minimizes below it, and a minimized editor's height keys count from one
+/// row short of it, so its first `ctrl+w +` shows it.
+pub fn editor_min_rows(column_height: u16) -> u16 {
+    editor_floor(column_height).unwrap_or(editor::CHROME_HEIGHT + 1)
+}
+
+/// The editor rows a counted height key (`{N}<C-w>_`, on the editor or
+/// the response) asks for, `editor_rows`, as the split takes them: a target
+/// past the chrome but short of [`editor_min_rows`] lands there, as Vim
+/// never closes a window with a count (#129; the user's "Go"). At or above
+/// the chrome it minimizes the editor, as it did before the floor. A
+/// single `ctrl+w -` from the floor still minimizes (mine (approved)).
+pub fn counted_editor_rows(column_height: u16, editor_rows: i32) -> i32 {
+    let min = i32::from(editor_min_rows(column_height));
+    if editor_rows > i32::from(editor::CHROME_HEIGHT) && editor_rows < min {
+        min
+    } else {
+        editor_rows
+    }
+}
+
 /// The rows a `column_height`-row main column has left after both panes'
 /// fixed chrome (the editor's address bar and tab bar, the response's
 /// header strip): what the split's share divides, in both directions
@@ -316,8 +340,7 @@ pub fn split_for_editor_rows(
     editor_rows: i32,
 ) -> SplitState {
     let column = i32::from(column_height);
-    let floor = editor_floor(column_height).unwrap_or(editor::CHROME_HEIGHT + 1);
-    if editor_rows < i32::from(floor) {
+    if editor_rows < i32::from(editor_min_rows(column_height)) {
         return SplitState {
             editor_minimized: true,
             response_minimized: false,

@@ -772,10 +772,12 @@ impl Engine {
         // what it is typed for (`d/`) and Visual under it (probed in 9.1:
         // `/li`, a click on the command line, `X` types `/lXi`; a click on
         // the text, `X` types `/liX`). So a press off the text keeps them:
-        // on the search's row, on a menu row (the body menu's Paste types
-        // into the search and the search goes on, #129), or on any other
-        // spot that keeps the caret (a chip, the bar). The rest of the
-        // settle still runs, for whatever that press's own action moved.
+        // on the search's row or the line numbers, on a divider, or on a
+        // menu row (the body menu's Paste types into the search and the
+        // search goes on, #129). A press on a control (a chip, a button) has
+        // already dropped them before it acted, as gVim's menu and toolbar
+        // items do (the app's `vim_control_press`). The rest of the settle
+        // still runs, for whatever that press's own action moved.
         // Two of Vim's ways are not followed here, as before #129: a press
         // on the text itself still ends the search and places the caret,
         // and the prompt has no click caret, so typing goes on at its end.

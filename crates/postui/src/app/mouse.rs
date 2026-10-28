@@ -1421,6 +1421,23 @@ impl App {
         // (The footer's quit chip, once its exception, is not drawn under a
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
+        // In vim a control click is gVim's menu or toolbar item: it cancels
+        // the search being typed and a half-typed command before it acts
+        // (`vim_control_press`). A press on the body's own window (its
+        // text, its search row, its scrollbar) is Vim's own click, which
+        // keeps them; a divider moves only itself; and a menu or dialog acts
+        // in the mode it was opened over, so the body menu's Paste types
+        // into the search (Vim's command-line Paste is a `:cmenu` entry)
+        // (#129, #194).
+        let body_window = matches!(
+            hit,
+            Hit::BodyEditor
+                | Hit::ScrollbarThumb(PaneId::Editor)
+                | Hit::ScrollbarTrack(PaneId::Editor, _)
+        );
+        if !(in_dialog || body_window || self.is_separator_press(&hit)) {
+            self.vim_control_press();
+        }
         // A footer chip is the key it advertises. While the editor's caret
         // is in its content (on any tab: the table's cursor on any stop, an
         // open cell, the Body) or on the selected URL line, every chip on

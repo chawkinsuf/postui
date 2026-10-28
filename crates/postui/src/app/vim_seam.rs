@@ -556,6 +556,19 @@ impl App {
         }
     }
 
+    /// A left press on a control (a chip, a button, a tab: anything that is
+    /// not the body's own window, a divider, or a menu or dialog): gVim's
+    /// menu or toolbar item, which `:amenu` starts with `<C-C>` in
+    /// Command-line and Operator-pending mode (gui.txt, the `:amenu`
+    /// table). So the search being typed and a half-typed command go
+    /// before the control acts (#129; the user's #194: "Yes let's follow
+    /// vim for mouse interactions as well"). Vim profile only.
+    pub(super) fn vim_control_press(&mut self) {
+        if self.profile() == KeyProfile::Vim {
+            self.vim_drop_pending();
+        }
+    }
+
     /// The engine `id` runs on: the dialog engine for a dialog's field
     /// (plan M3b Deviation 1), else the screen's.
     pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {
