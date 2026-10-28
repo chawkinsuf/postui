@@ -1866,6 +1866,77 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
     assert!(d.items.iter().any(|i| i.label == "Paste"));
 }
 
+/// #201: in Visual the wheel pulls the cursor into the window and the
+/// span follows it, as Vim's does (probed in 9.1: `v` on line 3, the wheel
+/// down, the span runs from line 3 to the cursor at the window's top, and
+/// `y` takes it). The scrollbar's drag is the same move.
+#[test]
+fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "ggjjvl");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    let area = app.editor.last_body_area.unwrap();
+    let span = |app: &App| app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
+    for _ in 0..40 {
+        let kind = MouseEventKind::ScrollDown;
+        let row = area.y + 1;
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 8,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        draw(&mut app);
+    }
+    let top = app.editor.body.viewport_offset().1;
+    assert_eq!(top, 40);
+    let caret = app.editor.body.cursor;
+    assert_eq!((caret.row, caret.col), (40, 1), "the cursor at the window's top");
+    assert_eq!(span(&app), Some(((2, 0), (40, 1))), "the span follows it");
+    app.update(Action::ScrollPane(PaneId::Editor, 10));
+    draw(&mut app);
+    assert_eq!(span(&app), Some(((2, 0), (50, 1))), "and the scrollbar's move");
+    feed(&mut app, "y");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+}
+
+/// #201: in the arrows profile the wheel moves the view, not the caret
+/// (the user: "Yes arrows should scroll the view and not the cursor"):
+/// the caret stays on line 3 off screen, and the next typed char goes in
+/// there and brings the view back.
+#[test]
+fn the_arrows_wheel_scrolls_the_view_and_typing_goes_in_at_the_caret() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let mut app = build(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    app.editor.body.cursor = edtui::Index2::new(2, 1);
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    for _ in 0..40 {
+        let kind = MouseEventKind::ScrollDown;
+        let row = area.y + 1;
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 8,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        draw(&mut app);
+    }
+    assert_eq!(app.editor.body.viewport_offset().1, 40, "the view moved");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(2, 1), "the caret stayed");
+    feed(&mut app, "X");
+    draw(&mut app);
+    assert_eq!(app.editor.body_text().lines().nth(2), Some("rXow2"));
+    assert_eq!(app.editor.body.viewport_offset().1, 2, "the view is back at the caret");
+}
+
 /// #129: while a search is being typed, the body's menu over the row
 /// below the text is the body's, and its Paste types into the search, which
 /// stays open, as Vim's paste goes into its command line: the pick's press,

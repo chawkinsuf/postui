@@ -676,6 +676,7 @@ impl App {
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
                     && self.editor.handle_wheel(m)
                 {
+                    self.vim_body_scrolled();
                     return self.update(Action::Render);
                 }
                 if self.screen == Screen::Manage {

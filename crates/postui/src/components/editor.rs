@@ -274,6 +274,20 @@ pub struct Editor {
     /// The row a triple click selected: while set, `body_drag_to` extends
     /// by whole lines from it. Cleared by any single click.
     body_line_anchor: Option<usize>,
+    /// The caret as the last arrows wheel or scrollbar scroll left it
+    /// (#201): the view moved and the caret stayed, so the draw keeps the
+    /// view where the scroll put it, however far off it the caret is.
+    /// While the caret and the text stay as they were, the view stays;
+    /// the draw drops it once either changed (a key moved the caret or
+    /// typed, a click placed it, an undo, a load), and the view goes back
+    /// to following the caret, as edtui's render does on every other
+    /// frame. The table's `scrolled_away` is the same rule. A copy of the
+    /// caret, not a flag cleared where input comes in: the caret has no
+    /// setter of its own (edtui's handlers, the vim engine and the app all
+    /// write `body.cursor`), and comparing it catches every way it moves
+    /// without sorting them. `None` in the vim profile, whose wheel moves
+    /// the caret into the view, as Vim's does.
+    body_scrolled_away: Option<edtui::Index2>,
     /// The indent arrows Enter left alone on a new line, while it is
     /// untouched (spec 2026-10-16): the request's body leaves the line out
     /// ([`Self::body_text`]) and [`Self::settle_auto_indent`] drops it from
@@ -429,6 +443,7 @@ impl Default for Editor {
             body_sel_anchor: None,
             body_word_anchor: None,
             body_line_anchor: None,
+            body_scrolled_away: None,
             auto_indent: None,
             saved_indent: None,
             indent_default: Indent::DEFAULT,
@@ -1445,10 +1460,18 @@ impl Editor {
     }
 
     /// Scrolls the body `delta` lines: a wheel notch, or a scrollbar
-    /// drag's difference. The top moves first, up to the first line, and
-    /// down only while the last line isn't wholly in view; then the caret
-    /// follows it into the view, once. Returns whether the top moved; a
-    /// scroll that moved nothing leaves the caret alone.
+    /// drag's difference. The top moves, up to the first line, and down
+    /// only while the last line isn't wholly in view. Returns whether the
+    /// top moved; a scroll that moved nothing leaves the caret alone.
+    ///
+    /// What the caret does follows the profile (#201). In arrows the view
+    /// moves and the caret stays where it is, off screen too, and so does
+    /// any selection, as in GUI editors (the user: "Yes arrows should
+    /// scroll the view and not the cursor"); `body_scrolled_away` keeps
+    /// the draw from scrolling back to it. In vim the caret follows the
+    /// view in, once, as Vim's wheel moves the cursor only to keep it in
+    /// the window (`'scrolloff'` 0), and the app repaints a Visual span to
+    /// it (`App::vim_body_scrolled`).
     ///
     /// postui moves the top itself (#181) rather than through edtui's
     /// wheel, which moves the top a line per notch and then pulls the
@@ -1461,7 +1484,7 @@ impl Editor {
     /// a drag of n lines as n notches), so the move is postui's own.
     ///
     /// Why only the wheel and the bar: they are the moves that set the top
-    /// and let the caret follow. Every other move (keys, the vim engine's
+    /// and leave the caret, or let it follow. Every other move (keys, the vim engine's
     /// scrolls, a restored caret) places the caret, and the render then
     /// brings it into view, which is what it should do.
     fn scroll_body(&mut self, delta: i32) -> bool {
@@ -1498,7 +1521,11 @@ impl Editor {
         }
         let before = self.body.cursor;
         self.body.set_viewport_offset(0, new_top);
-        self.caret_into_view(area, before);
+        if self.vim_profile {
+            self.caret_into_view(area, before);
+        } else {
+            self.body_scrolled_away = Some(before);
+        }
         true
     }
 
@@ -1506,8 +1533,8 @@ impl Editor {
     /// view with the count from the new top: onto the nearest line in
     /// view, and onto one of that line's rows in view (the last line can be
     /// cut off at the bottom, and the top one too when it is taller than
-    /// the body), not a row that isn't drawn. The view moved, and the
-    /// caret follows it.
+    /// the body), not a row that isn't drawn. The view moved, and in the
+    /// vim profile the caret follows it ([`Self::scroll_body`]).
     fn caret_into_view(&mut self, area: Rect, before: edtui::Index2) {
         let Some(view) = self.fit_body_rows(area) else { return };
         let Some(last) = view.rows.len().checked_sub(1).map(|n| view.top + n) else { return };
@@ -2658,6 +2685,12 @@ struct BodyView {
 }
 
 impl BodyView {
+    /// Whether text row `row` starts in view: edtui's own test for a
+    /// caret it needn't scroll to (a line cut off at the bottom counts).
+    fn shows_row(&self, row: usize) -> bool {
+        (self.top..self.top + self.rows.len()).contains(&row)
+    }
+
     /// The screen cell of the char at `at`, when it is in view.
     fn cell<L: crate::text::Lines + ?Sized>(
         &self,
@@ -4180,7 +4213,20 @@ impl Editor {
                 // parse (see `json_body_highlights`).
                 // The buffer as drawn, not the request's `body_text`.
                 let text_now = self.body.lines.to_string();
-                if self.body_hl_text != text_now || self.body_hl_marker != Some(theme.accent) {
+                let text_changed = self.body_hl_text != text_now;
+                // An arrows scroll's view stays only while the caret and
+                // the text are as the scroll left them (#201): a key that
+                // moved the caret or typed, a click, an undo or a load
+                // brings the view back to the caret. The draw follows the
+                // event that changed them (one event, then a frame), so the
+                // text as the last frame drew it is the text the scroll saw.
+                if text_changed
+                    || self.vim_profile
+                    || self.body_scrolled_away != Some(self.body.cursor)
+                {
+                    self.body_scrolled_away = None;
+                }
+                if text_changed || self.body_hl_marker != Some(theme.accent) {
                     self.body.set_highlights(json_body_highlights(&self.body.lines, theme));
                     self.body_hl_text = text_now;
                     self.body_hl_marker = Some(theme.accent);
@@ -4198,6 +4244,23 @@ impl Editor {
                     self.body.highlights.splice(..stale, fresh);
                     self.body_hl_overlays = overlays;
                 }
+                // Before edtui scrolls to the caret: in the frame the body
+                // gets shorter (a resize, a divider drag) it would measure
+                // the caret against the lines the frame before showed
+                // (#181).
+                let fit = self.fit_body_rows(area);
+                // A caret an arrows scroll left out of view (#201): edtui's
+                // render scrolls to its caret on every frame, with no way
+                // to turn that off, so it renders around a stand-in on the
+                // view's first line, painted with an empty style (a cell
+                // `set_style` that changes nothing), and the caret goes
+                // back after. Nothing reads the stand-in: the caret isn't
+                // shown, and the tip and the bracket pair find the caret
+                // by the text, so an off-screen one finds no cell.
+                let caret = self.body.cursor;
+                let stand_in = fit
+                    .filter(|view| self.body_scrolled_away.is_some() && !view.shows_row(caret.row))
+                    .map(|view| edtui::Index2::new(view.top, 0));
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.page).fg(theme.text))
                     .cursor_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -4215,25 +4278,27 @@ impl Editor {
                 // `hide_cursor` (= base style) there erases the head
                 // cell's highlight (the first char of the first line, on
                 // an upward whole-lines sweep).
-                let caret_shown = match self.body.selection.as_ref() {
-                    Some(sel) => sel.contains(&self.body.cursor),
-                    None => focused,
-                };
-                if !caret_shown {
+                let caret_shown = stand_in.is_none()
+                    && match self.body.selection.as_ref() {
+                        Some(sel) => sel.contains(&caret),
+                        None => focused,
+                    };
+                if stand_in.is_some() {
+                    edtui_theme = edtui_theme.cursor_style(Style::default());
+                } else if !caret_shown {
                     edtui_theme = edtui_theme.hide_cursor();
                 } else if self.body.selection.is_some() {
                     edtui_theme = edtui_theme.cursor_style(body_selection_style(theme));
                 }
-                // Before edtui scrolls to the caret: in the frame the body
-                // gets shorter (a resize, a divider drag) it would measure
-                // the caret against the lines the frame before showed
-                // (#181).
-                self.fit_body_rows(area);
+                if let Some(at) = stand_in {
+                    self.body.cursor = at;
+                }
                 let view = EditorView::new(&mut self.body)
                     .theme(edtui_theme)
                     .wrap(true)
                     .line_numbers(LineNumbers::Absolute);
                 frame.render_widget(view, area);
+                self.body.cursor = caret;
                 self.paint_selected_breaks(frame.buffer_mut(), area, theme);
                 if focused {
                     self.paint_bracket_pair(frame.buffer_mut(), area, caret_shown, theme);
@@ -5533,23 +5598,34 @@ mod tests {
         assert!(caret_cell(&e).is_some(), "top {}", e.body.viewport_offset().1);
     }
 
+    /// [`wrapped_body_with`] in the vim profile, whose wheel pulls the
+    /// caret into the view (#201). Drawn a row taller than the arrows
+    /// body, so the text keeps its 15 rows above the search prompt's row.
+    fn vim_wrapped_body_with(short: impl Fn(usize) -> String) -> Editor {
+        let mut e = wrapped_body_with(short);
+        e.vim_profile = true;
+        draw_body_sized(&mut e, true, 25);
+        assert_eq!(e.last_body_area.unwrap().height, 15);
+        e
+    }
+
     /// #181, review round 3: a wheel notch up past wrapped lines keeps
     /// moving the view, with the caret in it. edtui's wheel pulled the
     /// caret in with the line count from the top before the notch, which
     /// left it below the view, and the render scrolled back to it: the
-    /// view stopped at the wrapped lines (12, 11, 10, 10, …).
+    /// view stopped at the wrapped lines (12, 11, 10, 10, …). The vim
+    /// profile's pull (#201).
     #[test]
     fn the_wheel_scrolls_up_past_wrapped_lines() {
-        let mut e = wrapped_body();
-        draw_body_sized(&mut e, true, 24);
+        let mut e = vim_wrapped_body_with(|i| format!("l{i}"));
         let area = e.last_body_area.unwrap();
         e.body.set_viewport_offset(0, 12);
         e.body.cursor = edtui::Index2::new(12 + usize::from(area.height) - 1, 0);
-        draw_body_sized(&mut e, true, 24);
+        draw_body_sized(&mut e, true, 25);
         let mut tops = vec![e.body.viewport_offset().1];
         for _ in 0..5 {
             wheel(&mut e, true);
-            draw_body_sized(&mut e, true, 24);
+            draw_body_sized(&mut e, true, 25);
             let top = e.body.viewport_offset().1;
             assert!(caret_cell(&e).is_some(), "the caret is in view at top {top}");
             tops.push(top);
@@ -5558,14 +5634,15 @@ mod tests {
     }
 
     /// #181, review round 5: the caret following the wheel keeps its
-    /// column, up to the length of the line it lands on.
+    /// column, up to the length of the line it lands on. The vim
+    /// profile's pull (#201).
     #[test]
     fn the_wheel_pull_keeps_the_column() {
         // Short lines of 20 chars, but line 23.
-        let mut e = wrapped_body_with(|i| if i == 23 { "ab".into() } else { "y".repeat(20) });
+        let mut e = vim_wrapped_body_with(|i| if i == 23 { "ab".into() } else { "y".repeat(20) });
         e.body.set_viewport_offset(0, 10);
         e.body.cursor = edtui::Index2::new(24, 15);
-        draw_body_sized(&mut e, true, 24);
+        draw_body_sized(&mut e, true, 25);
         assert_eq!(e.body.viewport_offset().1, 10);
         // From top 9 the view ends at line 21. edtui's wheel stopped the
         // caret on line 23 ("ab") first.
@@ -5574,17 +5651,20 @@ mod tests {
     }
 
     /// #181, review round 5: a notch that leaves the caret's line cut off
-    /// at the bottom moves the caret onto that line's rows in view.
+    /// at the bottom moves the caret onto that line's rows in view. The
+    /// vim profile's pull (#201), drawn a row taller for the prompt's row.
     #[test]
     fn the_wheel_pull_lands_on_a_drawn_row() {
         let (mut e, width) = long_lines_body();
+        e.vim_profile = true;
         e.body.set_viewport_offset(0, 5);
         e.body.cursor = edtui::Index2::new(8, width * 2 + 1);
-        draw_body_sized(&mut e, true, 23);
+        draw_body_sized(&mut e, true, 24);
+        assert_eq!(e.last_body_area.unwrap().height, 14);
         assert_eq!(e.body.viewport_offset().1, 5);
         assert!(caret_cell(&e).is_some(), "on line 8's third row");
         wheel(&mut e, true);
-        draw_body_sized(&mut e, true, 23);
+        draw_body_sized(&mut e, true, 24);
         assert_eq!(e.body.viewport_offset().1, 4);
         assert_eq!(e.body.cursor.row, 8);
         assert!(caret_cell(&e).is_some(), "on line 8's second row, the last drawn");
@@ -5633,20 +5713,112 @@ mod tests {
     }
 
     /// #181, review round 6: a scrollbar drag of many lines is one move,
-    /// with the caret following into the view, and back.
+    /// with the caret following into the view, and back. The vim
+    /// profile's pull (#201).
     #[test]
     fn a_long_scroll_moves_once_and_the_caret_follows() {
-        let mut e = wrapped_body();
-        draw_body_sized(&mut e, true, 24);
+        let mut e = vim_wrapped_body_with(|i| format!("l{i}"));
         e.handle_scroll(100);
-        draw_body_sized(&mut e, true, 24);
+        draw_body_sized(&mut e, true, 25);
         // The 15 short lines 25..39 fill the body.
         assert_eq!(e.body.viewport_offset().1, 25);
         assert_eq!(e.body.cursor.row, 25);
         assert!(caret_cell(&e).is_some());
         e.handle_scroll(-100);
-        draw_body_sized(&mut e, true, 24);
+        draw_body_sized(&mut e, true, 25);
         assert_eq!(e.body.viewport_offset().1, 0);
+        assert!(caret_cell(&e).is_some());
+    }
+
+    /// 60 short lines, drawn, the caret on line 3 (row 2) at column 2.
+    fn arrows_long_body() -> Editor {
+        let text: Vec<String> = (0..60).map(|i| format!("line{i}")).collect();
+        let mut e = body_editor(&text.join("\n"));
+        e.body.cursor = edtui::Index2::new(2, 2);
+        draw_body(&mut e, true);
+        e
+    }
+
+    /// One wheel notch down on the body, `n` times, with a frame after
+    /// each, as the event loop draws.
+    fn wheel_down(e: &mut Editor, n: usize) {
+        for _ in 0..n {
+            wheel(e, false);
+            draw_body(e, true);
+        }
+    }
+
+    /// #201, the user: "Yes arrows should scroll the view and not the
+    /// cursor". The arrows wheel moves the view; the caret stays on line 3
+    /// out of view, and the frames after keep the view where the wheel
+    /// left it, the caret drawn nowhere.
+    #[test]
+    fn the_arrows_wheel_moves_the_view_and_leaves_the_caret() {
+        let mut e = arrows_long_body();
+        wheel_down(&mut e, 20);
+        assert_eq!(e.body.viewport_offset().1, 20);
+        assert_eq!(e.body.cursor, edtui::Index2::new(2, 2), "the caret stays");
+        let buf = draw_body(&mut e, true);
+        assert_eq!(e.body.viewport_offset().1, 20, "the frames keep the view");
+        assert_eq!(caret_cell(&e), None);
+        let area = e.last_body_area.unwrap();
+        let reversed = (area.y..area.bottom())
+            .flat_map(|y| (area.x..area.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+            .count();
+        assert_eq!(reversed, 0, "no caret painted in view");
+        // The scrollbar's move is the same.
+        e.handle_scroll(10);
+        draw_body(&mut e, true);
+        assert_eq!(e.body.viewport_offset().1, 30);
+        assert_eq!(e.body.cursor, edtui::Index2::new(2, 2));
+    }
+
+    /// #201: a selection stays as it was under the arrows wheel, its
+    /// caret end with it.
+    #[test]
+    fn the_arrows_wheel_leaves_the_selection() {
+        let mut e = arrows_long_body();
+        e.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        let selected = e.body_selected_text();
+        assert_eq!(selected.as_deref(), Some("ne2\nli"));
+        draw_body(&mut e, true);
+        wheel_down(&mut e, 20);
+        assert_eq!(e.body.viewport_offset().1, 20);
+        assert_eq!(e.body.cursor, edtui::Index2::new(3, 2));
+        assert_eq!(e.body_selected_text(), selected);
+    }
+
+    /// #201: after an arrows scroll the next key acts at the caret, and
+    /// the view goes back to it, as a GUI editor's does: a typed char
+    /// goes in on line 3, an arrow moves from there, and a forward delete
+    /// (the caret stays, the text changes) shows it too.
+    #[test]
+    fn a_key_after_the_arrows_wheel_acts_at_the_caret_and_shows_it() {
+        let keys = [KeyCode::Char('X'), KeyCode::Down, KeyCode::Delete];
+        for key in keys {
+            let mut e = arrows_long_body();
+            wheel_down(&mut e, 20);
+            e.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+            draw_body(&mut e, true);
+            assert!(caret_cell(&e).is_some(), "{key:?}: the caret is in view");
+            let line3 = e.body_text().lines().nth(2).map(str::to_string);
+            match key {
+                KeyCode::Char('X') => assert_eq!(line3.as_deref(), Some("liXne2")),
+                KeyCode::Down => assert_eq!(e.body.cursor, edtui::Index2::new(3, 2)),
+                _ => assert_eq!(line3.as_deref(), Some("lie2")),
+            }
+        }
+    }
+
+    /// #201: a scroll of the arrows view never sticks once the caret moved
+    /// without a key (an undo, a restore, the app placing it).
+    #[test]
+    fn a_caret_moved_after_the_arrows_wheel_brings_the_view_to_it() {
+        let mut e = arrows_long_body();
+        wheel_down(&mut e, 20);
+        e.body.cursor = edtui::Index2::new(5, 0);
+        draw_body(&mut e, true);
         assert!(caret_cell(&e).is_some());
     }
 
@@ -8624,14 +8796,12 @@ url = "https://api.example.com/users""#,
         assert!(app.editor.last_body_area.is_some(), "body area recorded");
 
         // A large downward scroll, well past the visible page, should move
-        // the viewport (and, via edtui's own clamp, the cursor) down from
-        // row 0 -- not a "no panic" no-op.
+        // the viewport down from row 0 -- not a "no panic" no-op. The
+        // arrows caret stays where it was (#201, the user: "Yes arrows
+        // should scroll the view and not the cursor").
         assert!(app.update(Action::ScrollPane(crate::layout::PaneId::Editor, 100)));
-        assert!(
-            app.editor.body.cursor.row > 0,
-            "scrolling down a long body must move the cursor off row 0, got {}",
-            app.editor.body.cursor.row
-        );
+        assert_eq!(app.editor.body.viewport_offset().1, 100, "the view moved");
+        assert_eq!(app.editor.body.cursor.row, 0, "the caret stayed");
     }
 
     /// Regression test for the controller sweep's Paint Gap B report: with

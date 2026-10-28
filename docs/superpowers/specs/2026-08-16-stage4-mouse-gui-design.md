@@ -148,6 +148,21 @@ Visible in scrollable panes (sidebar, response, body) whenever content overflows
 Thumb is proportional and draggable; clicking the track above/below the thumb pages
 up/down. Wheel scrolling unchanged.
 
+**Amended 2026-10-28 (task #201): the body's wheel and scrollbar.** In the arrows
+profile they move the view, not the caret (`you`: "Yes arrows should scroll the view
+and not the cursor"). The caret stays where it was, off screen too, and so does a
+selection, as in GUI editors; the frames after keep the view where the scroll left
+it. The first key that moves the caret or changes the text acts at the caret and
+brings the view back to it, and so does anything else that moves the caret (a click,
+an undo, a load) (`mine`). A key that changes neither (an arrow at the text's edge,
+an unbound chord) leaves the view where it is (`mine`, the table's rule in
+`2026-10-25-headers-tab-scroll-design.md` S6). In the vim profile the caret follows
+the view in, once, as Vim's wheel moves the cursor only to keep it in the window
+(`'scrolloff'` 0), and a Visual span follows the cursor (`Vim`, probed in 9.1 in
+tmux: `v` on line 3, the wheel down, the cursor on the window's top line in its
+column, the span from line 3 to it; the wheel up from line 40, the cursor on the
+window's bottom line and the span from it to line 40).
+
 ## 5. Method dropdown and the popup primitive
 
 - One lightweight popup primitive (bordered list floated at an anchor rect, rendered

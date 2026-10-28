@@ -556,6 +556,12 @@ impl Glue {
         self.saw(buf);
     }
 
+    /// The view moved the caret (`Engine::repaint`, #201).
+    pub fn repaint(&mut self, buf: &mut FieldBuf<'_>) {
+        target!(self, buf, |t| self.engine.repaint(t));
+        self.saw(buf);
+    }
+
     /// One key. `memory` is the app's last pattern, lent to the engine for
     /// the call (plan M5b Deviation 20).
     pub fn handle(

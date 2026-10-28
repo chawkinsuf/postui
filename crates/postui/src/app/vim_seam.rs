@@ -1218,6 +1218,20 @@ impl App {
         self.vim.glue.follow_body(from, self.editor.slug.as_deref());
     }
 
+    /// The body's wheel or scrollbar scrolled it (`Editor::scroll_body`),
+    /// which in the vim profile pulls the caret into the view: a Visual
+    /// span the engine painted repaints to the caret, as Vim's follows the
+    /// cursor (#201). Nothing to do when the engine doesn't hold the body.
+    pub(crate) fn vim_body_scrolled(&mut self) {
+        if !self.vim_owns_body() {
+            return;
+        }
+        let (glue, buf) = self.session_parts(FieldId::Body);
+        if let Some(mut buf) = buf {
+            glue.repaint(&mut buf);
+        }
+    }
+
     /// The editor's body is a new buffer with no slug to tell it apart (a
     /// fresh scratch): the body's engine state goes with the old one.
     pub(crate) fn vim_drop_body(&mut self) {

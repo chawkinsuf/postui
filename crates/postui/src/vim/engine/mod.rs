@@ -853,6 +853,16 @@ impl Engine {
         self.rest(buf, state);
     }
 
+    /// The view pulled the caret into the window (the body's wheel or
+    /// scrollbar, Vim's `nv_mousescroll()` with `'scrolloff'` 0): the mode
+    /// paints again from where the caret is now, so a Visual span follows
+    /// it (#201; probed in 9.1: `v` on line 3, wheel down, the span runs
+    /// from line 3 to the cursor at the window's top, and `y` takes it).
+    /// Only the paint: the caret, the mode and what is pending stay.
+    pub fn repaint<B: TextBuf>(&self, t: Target<'_, B>) {
+        self.paint(t.buf);
+    }
+
     /// Adopts a GUI selection's anchor as charwise Visual. An open Insert
     /// session ends first, as `leave` ends it (no step back). `settle` has
     /// already split a session the event moved, so an unused autoindent
