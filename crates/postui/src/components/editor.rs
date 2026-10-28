@@ -1492,6 +1492,9 @@ impl Editor {
             _ => before.col,
         };
         // edtui's column clamp: on a char in Normal, after one otherwise.
+        // Normal is the vim engine's: it shows its mode on the body's state
+        // (`BodyBuf::show`, vim/engine/buf.rs), and only a mouse event
+        // through `handle_mouse` sets the body back to Insert.
         let at = edtui::Index2::new(row, col);
         self.body.cursor = if self.body.mode == EditorMode::Normal {
             self.clamp_to_cell(at)
@@ -1867,10 +1870,12 @@ impl Editor {
 
     /// Forwards a raw mouse event to the body editor when the Body tab is
     /// active and the event landed inside the area it was last drawn into.
-    /// Returns `true` when the event was consumed (edtui itself does its own
-    /// narrower bounds check against the area it recorded at render time,
-    /// which excludes the line-number gutter — this outer check only rules
-    /// out events elsewhere in the app).
+    /// Returns `true` when the event was consumed (for a button event edtui
+    /// itself does its own narrower bounds check against the area it
+    /// recorded at render time, which excludes the line-number gutter —
+    /// this outer check only rules out events elsewhere in the app). A
+    /// wheel notch goes to [`Self::handle_wheel`], which scrolls wherever
+    /// on the body it lands.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Position;
