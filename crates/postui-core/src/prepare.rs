@@ -1,10 +1,8 @@
 use crate::model::{Body, Entry, HttpRequest, Method};
 use crate::varmodel;
 use indexmap::IndexMap;
-use percent_encoding::{AsciiSet, CONTROLS};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedRequest {
@@ -31,24 +29,6 @@ pub struct PreparedRequest {
     /// Skip TLS certificate verification for this send (the request's
     /// `insecure` flag, carried through so the transport can pick a client).
     pub insecure: bool,
-    /// What the send carries of a secret value in a spelling other than
-    /// the value itself, each exactly as it goes out, so output that must
-    /// not show a secret can hide these too (the command line's mask;
-    /// screens ignore it). A secret that goes out as written (in a header,
-    /// the body) needs nothing listed. Listed: the credentials of the
-    /// `Authorization: Basic` the client makes of a URL's userinfo holding
-    /// a secret; a `Host` a secret can change, whole (as it is masked on
-    /// screen); a secret in a `[params]` key or value as the query
-    /// serializer encodes it; and, when `[params]` makes the URL's own query
-    /// be decoded and encoded again, each encoded key or value of it that
-    /// holds secret text, whole (what the secret becomes there depends on
-    /// the text around it). Last, the HTTP client's own encoding: reqwest
-    /// parses `url` with the `url` crate, which percent-encodes what a path
-    /// or query may not carry as written (non-ASCII, a space, `"`, `<`...),
-    /// so each secret in the URL is listed as those encode sets spell it,
-    /// computed with the client's own crate's sets. The client's other
-    /// rewrites of a path (`\` to `/`, `.` and `..` segments) are not.
-    pub secret_wire: Vec<String>,
 }
 
 /// One header that goes on the wire: its real name and value (what the
@@ -166,22 +146,27 @@ fn overlaid_vars(req: &HttpRequest, ctx: &PrepareContext) -> IndexMap<String, St
     vars
 }
 
-/// The one substitution `prepare` and `header_rows` go through: `put`
-/// writes each resolvable `{{name}}` (given the text so far, the name and
-/// its value); the rest stay verbatim, their names collected into
-/// `unresolved`.
-fn substitute_each(
+/// The one substitution both `prepare` and `header_rows` go through:
+/// replaces every resolvable `{{name}}`, leaves the rest verbatim while
+/// collecting their names into `unresolved`, and renders the value of any
+/// name in `masked` as [`SECRET_MASK`] instead.
+fn substitute_masked(
     text: &str,
     vars: &IndexMap<String, String>,
+    masked: &BTreeSet<String>,
     unresolved: &mut BTreeSet<String>,
-    mut put: impl FnMut(&mut String, &str, &str),
 ) -> String {
+    if masked.is_empty() {
+        return crate::vars::substitute(text, vars, unresolved);
+    }
+    let tokens = crate::vars::find_tokens(text);
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    for t in crate::vars::find_tokens(text) {
+    for t in tokens {
         out.push_str(&text[last..t.start]);
         match vars.get(&t.name) {
-            Some(v) => put(&mut out, &t.name, v),
+            Some(_) if masked.contains(&t.name) => out.push_str(SECRET_MASK),
+            Some(v) => out.push_str(v),
             None => {
                 unresolved.insert(t.name.clone());
                 out.push_str(&text[t.start..t.end]);
@@ -193,153 +178,25 @@ fn substitute_each(
     out
 }
 
-/// [`substitute_each`] writing each value, except that of a name in
-/// `masked`, which renders as [`SECRET_MASK`].
-fn substitute_masked(
-    text: &str,
-    vars: &IndexMap<String, String>,
-    masked: &BTreeSet<String>,
-    unresolved: &mut BTreeSet<String>,
-) -> String {
-    if masked.is_empty() {
-        return crate::vars::substitute(text, vars, unresolved);
-    }
-    substitute_each(text, vars, unresolved, |out, name, value| {
-        out.push_str(if masked.contains(name) { SECRET_MASK } else { value })
-    })
-}
-
-/// A substituted text, and the byte ranges of it that secret values fill.
-type Marked = (String, Vec<Range<usize>>);
-
-/// [`substitute_each`] writing every value, with the byte ranges of the
-/// result that values of the names in `secrets` fill.
-fn substitute_marked(
-    text: &str,
-    vars: &IndexMap<String, String>,
-    secrets: &BTreeSet<String>,
-    unresolved: &mut BTreeSet<String>,
-) -> Marked {
-    let mut ranges = Vec::new();
-    let out = substitute_each(text, vars, unresolved, |out, name, value| {
-        if secrets.contains(name) {
-            ranges.push(out.len()..out.len() + value.len());
-        }
-        out.push_str(value);
-    });
-    (out, ranges)
-}
-
-/// The `url` crate's percent-encode sets for a path and for a special
-/// scheme's query (url 2.5 `parser.rs`'s `PATH` and `SPECIAL_QUERY`, which
-/// it doesn't export), copied: what the HTTP client, which parses a URL
-/// with that crate, encodes in each. `CONTROLS` takes in every non-ASCII
-/// byte too.
-const URL_PATH: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'<')
-    .add(b'>')
-    .add(b'`')
-    .add(b'#')
-    .add(b'?')
-    .add(b'{')
-    .add(b'}');
-const URL_SPECIAL_QUERY: &AsciiSet =
-    &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'<').add(b'>').add(b'\'');
-
-/// How the HTTP client spells `secret` in a URL's path and in its query,
-/// where that differs from `secret` itself.
-fn client_spellings(secret: &str) -> impl Iterator<Item = String> + '_ {
-    [URL_PATH, URL_SPECIAL_QUERY]
-        .into_iter()
-        .map(|set| percent_encoding::utf8_percent_encode(secret, set).to_string())
-        .filter(move |spelled| spelled != secret)
-}
-
-/// `text` as the query serializer writes a key or value.
-fn form_encoded(text: &str) -> String {
-    form_urlencoded::byte_serialize(text.as_bytes()).collect()
-}
-
-/// One pair of the query [`assemble_url`] writes: its key and value as the
-/// serializer takes them (decoded), and the spellings of secret text in it
-/// that go on the wire (for [`PreparedRequest::secret_wire`]).
-struct QueryPair {
-    key: String,
-    value: String,
-    secret_wire: Vec<String>,
-}
-
-/// The pairs of `query`, which starts at byte `at` of the substituted URL,
-/// as `form_urlencoded::parse` reads them (split on `&`, then on the first
-/// `=`, empty ones skipped), each with what it sends of the secret text
-/// `secrets` (ranges in that URL) marks. The serializer writes them again,
-/// decoded and encoded: a secret's own spelling there depends on the text
-/// around it (a `%XX` or `+` it borders, an `=` that is data after a key
-/// but a separator before one), so a key or value holding secret text is
-/// listed whole as it is encoded. One the encoding leaves as written,
-/// holding whole secrets, sends them verbatim and is not listed.
-fn url_pairs(query: &str, at: usize, secrets: &[Range<usize>]) -> Vec<QueryPair> {
-    let mut pairs = Vec::new();
-    let mut start = at;
-    for segment in query.split('&') {
-        let whole = start..start + segment.len();
-        start = whole.end + 1;
-        let Some((key, value)) = form_urlencoded::parse(segment.as_bytes()).next() else {
-            continue;
-        };
-        let (key_text, value_text) = segment.split_once('=').unwrap_or((segment, ""));
-        let key_range = whole.start..whole.start + key_text.len();
-        let value_range =
-            if segment.contains('=') { key_range.end + 1..whole.end } else { whole.end..whole.end };
-        let mut secret_wire = Vec::new();
-        for (written, decoded, part) in
-            [(key_text, &key, key_range), (value_text, &value, value_range)]
-        {
-            let touching: Vec<&Range<usize>> =
-                secrets.iter().filter(|s| s.start < part.end && part.start < s.end).collect();
-            if touching.is_empty() {
-                continue;
-            }
-            let encoded = form_encoded(decoded);
-            let inside = touching.iter().all(|s| part.start <= s.start && s.end <= part.end);
-            if encoded != written || !inside {
-                secret_wire.push(encoded);
-            }
-        }
-        pairs.push(QueryPair { key: key.into_owned(), value: value.into_owned(), secret_wire });
-    }
-    pairs
-}
-
 /// One substitution pass of the final URL: substitutes the URL and the
 /// enabled `[params]`, then merges the params into the query string
 /// (`[params]` overriding URL pairs, one warning per override). Shared by
 /// `prepare`'s real pass and its masked `display_url` pass so the two can
-/// never assemble differently. `sub` gives a text substituted and the
-/// byte ranges of it that secret values fill; with them, the URL comes
-/// back with what it sends of secret text in another spelling (for
-/// [`PreparedRequest::secret_wire`]).
+/// never assemble differently.
 fn assemble_url(
     req: &HttpRequest,
-    sub: &mut dyn FnMut(&str) -> Marked,
+    sub: &mut dyn FnMut(&str) -> String,
     warnings: &mut Vec<PrepareWarning>,
-) -> (String, Vec<String>) {
-    let (subbed_url, url_secrets) = sub(&req.url);
-    // The client percent-encodes what a path or query may not carry as
-    // written; its encoding is byte by byte, so a secret anywhere in the
-    // URL goes out as the encode sets spell it, whatever is around it.
-    let mut secret_wire: Vec<String> =
-        url_secrets.iter().flat_map(|r| client_spellings(&subbed_url[r.clone()])).collect();
-    let enabled: Vec<_> = req
+) -> String {
+    let subbed_url = sub(&req.url);
+    let enabled: Vec<(String, String)> = req
         .params
         .iter()
         .filter(|(_, e)| e.enabled)
         .map(|(k, e)| (sub(k), sub(&e.value)))
         .collect();
     if enabled.is_empty() {
-        return (subbed_url, secret_wire);
+        return subbed_url;
     }
     // A fragment is never part of the query: split it off first, or `?`
     // inside it would be taken for the query and the whole `#…` would be
@@ -348,41 +205,29 @@ fn assemble_url(
         Some((u, f)) => (u.to_string(), Some(f.to_string())),
         None => (subbed_url.clone(), None),
     };
-    let (base, query, query_at) = match without_fragment.split_once('?') {
-        Some((b, q)) => (b.to_string(), q.to_string(), b.len() + 1),
-        None => (without_fragment.clone(), String::new(), without_fragment.len()),
+    let (base, query) = match without_fragment.split_once('?') {
+        Some((b, q)) => (b.to_string(), q.to_string()),
+        None => (without_fragment.clone(), String::new()),
     };
-    // URL pairs first, in order, before the `[params]` table's entries
-    // are merged in below.
-    let mut pairs = url_pairs(&query, query_at, &url_secrets);
-    for ((k, k_secrets), (v, v_secrets)) in enabled {
-        // The serializer encodes a `[params]` key or value byte by byte, so
-        // a secret in one goes out as its own encoding.
-        let secret_wire = (k_secrets.iter().map(|r| &k[r.clone()]))
-            .chain(v_secrets.iter().map(|r| &v[r.clone()]))
-            .map(|secret| (form_encoded(secret), secret))
-            .filter(|(encoded, secret)| encoded != secret)
-            .map(|(encoded, _)| encoded)
-            .collect();
-        let pair = QueryPair { key: k, value: v, secret_wire };
-        let existing = pairs.iter().position(|p| p.key == pair.key);
+    // (key, value) pairs; URL pairs first, in order, before the
+    // `[params]` table's entries are merged in below.
+    let mut pairs: Vec<(String, String)> =
+        form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+    for (k, v) in &enabled {
+        let existing = pairs.iter().position(|(pk, _)| pk == k);
         if let Some(i) = existing {
-            warnings.push(PrepareWarning::ParamOverridesUrl { key: pair.key.clone() });
-            pairs.retain(|p| p.key != pair.key);
-            pairs.insert(i.min(pairs.len()), pair);
+            warnings.push(PrepareWarning::ParamOverridesUrl { key: k.clone() });
+            pairs.retain(|(pk, _)| pk != k);
+            pairs.insert(i.min(pairs.len()), (k.clone(), v.clone()));
         } else {
-            pairs.push(pair);
+            pairs.push((k.clone(), v.clone()));
         }
     }
-    let qs = form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(pairs.iter().map(|p| (&p.key, &p.value)))
-        .finish();
-    secret_wire.extend(pairs.into_iter().flat_map(|p| p.secret_wire));
-    let url = match fragment {
+    let qs = form_urlencoded::Serializer::new(String::new()).extend_pairs(pairs).finish();
+    match fragment {
         Some(f) => format!("{base}?{qs}#{f}"),
         None => format!("{base}?{qs}"),
-    };
-    (url, secret_wire)
+    }
 }
 
 pub fn prepare(
@@ -392,21 +237,22 @@ pub fn prepare(
     let vars = overlaid_vars(req, ctx);
 
     let mut missing = BTreeSet::new();
-    let secret_names = secret_names(ctx);
-    let mut sub = |s: &str| substitute_marked(s, &vars, &secret_names, &mut missing);
+    let no_mask = BTreeSet::new();
+    let mut sub = |s: &str| substitute_masked(s, &vars, &no_mask, &mut missing);
 
     let mut warnings = Vec::new();
-    let (url, mut secret_wire) = assemble_url(req, &mut sub, &mut warnings);
+    let url = assemble_url(req, &mut sub, &mut warnings);
     // The same assembly again with secret values masked — what screens
     // show for the sent request (`PreparedRequest::display_url`). Its
     // warnings are duplicates of the real pass's, so they're dropped.
+    let secret_names = secret_names(ctx);
     let display_url = if secret_names.is_empty() {
         url.clone()
     } else {
         let mut ignored = BTreeSet::new();
-        let (masked, _) = assemble_url(
+        let masked = assemble_url(
             req,
-            &mut |s| (substitute_masked(s, &vars, &secret_names, &mut ignored), Vec::new()),
+            &mut |s| substitute_masked(s, &vars, &secret_names, &mut ignored),
             &mut Vec::new(),
         );
         // A mask that landed in the query string got percent-encoded by
@@ -417,7 +263,7 @@ pub fn prepare(
         masked.replace(&encoded_mask, SECRET_MASK)
     };
 
-    let body = sent_body(req).map(|b| if req.substitute_body { sub(b).0 } else { b.to_string() });
+    let body = sent_body(req).map(|b| if req.substitute_body { sub(b) } else { b.to_string() });
 
     // Only what goes on the wire has to resolve: a row that isn't sent
     // (an overridden default, a row naming a client-owned header) never
@@ -427,7 +273,7 @@ pub fn prepare(
     // it not to fail (spec 2026-10-18 R3a/R3b; a send-time notice was
     // weighed in review and declined).
     let body_len = body.as_ref().map(String::len);
-    let rows = rows(req, ctx, &vars, &secret_names, body_len, &mut warnings, &mut secret_wire);
+    let rows = rows(req, ctx, &vars, &secret_names, body_len, &mut warnings);
     let wire = wire_order(&rows);
     let headers: Vec<SentHeader> = rows
         .into_iter()
@@ -452,9 +298,6 @@ pub fn prepare(
             .collect();
         return Err(PrepareError::Unresolved(causes));
     }
-    // A secret written twice, or spelled alike by both encode sets, once.
-    secret_wire.sort_unstable();
-    secret_wire.dedup();
 
     Ok((
         PreparedRequest {
@@ -469,7 +312,6 @@ pub fn prepare(
                 Some(crate::project::TlsPolicy::Insecure) => true,
                 None => req.insecure,
             },
-            secret_wire,
         },
         warnings,
     ))
@@ -649,7 +491,7 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow> {
         true => substituted_len(body, &vars),
         false => body.len(),
     });
-    rows(req, ctx, &vars, &secret_names(ctx), body_len, &mut Vec::new(), &mut Vec::new())
+    rows(req, ctx, &vars, &secret_names(ctx), body_len, &mut Vec::new())
 }
 
 /// The byte length `text` has once [`crate::vars::substitute`] has run on
@@ -665,9 +507,7 @@ fn substituted_len(text: &str, vars: &IndexMap<String, String>) -> usize {
 /// The rows of [`header_rows`], from what the caller already worked out:
 /// the overlaid `vars`, the `secrets` to mask, and the byte length of the
 /// body the send carries — so [`prepare`] substitutes nothing twice.
-/// Duplicate defaults are reported to `warnings`, and what a sent client
-/// row carries of a secret in another spelling to `secret_wire` (see
-/// [`PreparedRequest::secret_wire`]).
+/// Duplicate defaults are reported to `warnings`.
 fn rows(
     req: &HttpRequest,
     ctx: &PrepareContext,
@@ -675,7 +515,6 @@ fn rows(
     secrets: &BTreeSet<String>,
     body_len: Option<usize>,
     warnings: &mut Vec<PrepareWarning>,
-    secret_wire: &mut Vec<String>,
 ) -> Vec<HeaderRow> {
     let no_mask = BTreeSet::new();
     let quiet = |s: &str| substitute_masked(s, vars, &no_mask, &mut BTreeSet::new());
@@ -806,28 +645,21 @@ fn rows(
     let by_token = || with_stand_ins(&req.url, &url_tokens, vars, &unresolved);
     if let Some(auth) = real.authorization.clone().filter(|_| !changed(&by_token(), authorization))
     {
-        let unsent = replaced(&rows, "authorization");
         let display = if changed(&by_secret, authorization) {
-            // The credentials are base64 of the userinfo, secret and all.
-            if unsent.is_none() {
-                secret_wire.extend(auth.strip_prefix("Basic ").map(str::to_string));
-            }
             format!("Basic {SECRET_MASK}")
         } else {
             auth.clone()
         };
-        rows.insert(0, client_row("Authorization", auth, display, unsent));
+        rows.insert(
+            0,
+            client_row("Authorization", auth, display, replaced(&rows, "authorization")),
+        );
     }
     // `Host` is the URL's authority as the client derives it, real and
-    // masked. A URL whose host is still a `{{token}}` has none yet. One a
-    // secret can change is masked whole, so it is hidden whole too.
+    // masked. A URL whose host is still a `{{token}}` has none yet.
     if let Some(host) = real.host.clone() {
-        let display = if changed(&by_secret, |h| &h.host) {
-            secret_wire.push(host.clone());
-            SECRET_MASK.to_string()
-        } else {
-            host.clone()
-        };
+        let display =
+            if changed(&by_secret, |h| &h.host) { SECRET_MASK.to_string() } else { host.clone() };
         rows.push(client_row("Host", host, display, None));
     }
     // The byte length of what goes on the wire, never the masked body. An
@@ -2058,106 +1890,6 @@ mod tests {
         assert_eq!(h.display, format!("Basic {SECRET_MASK}"));
         let h = auth("https://user:pw@x.test/p?key={{k}}");
         assert_eq!(h.display, h.value, "the secret is not in the userinfo");
-    }
-
-    /// A context whose `names` are secrets with the given values.
-    fn secret_ctx(secrets: &[(&str, &str)]) -> PrepareContext {
-        let mut c = ctx(secrets, &[]);
-        for (name, _) in secrets {
-            c.meta.insert(name.to_string(), varmodel::VarMeta::Secret);
-        }
-        c
-    }
-
-    /// The `Authorization: Basic` the client makes of a secret in the
-    /// userinfo is listed as its credentials, exactly as sent; one a sent
-    /// row replaces is not sent, so not listed.
-    #[test]
-    fn secret_wire_lists_the_basic_credentials_of_a_secret_userinfo() {
-        let c = secret_ctx(&[("pw", "hunter2")]);
-        let (p, _) = prepare(&base("https://user:{{pw}}@x.test/p"), &c).unwrap();
-        let sent = &p.wire.iter().find(|h| h.name == "authorization").unwrap().value;
-        assert_eq!(p.secret_wire, vec!["dXNlcjpodW50ZXIy".to_string()]);
-        assert_eq!(sent, &format!("Basic {}", p.secret_wire[0]));
-
-        let mut req = base("https://user:{{pw}}@x.test/p");
-        req.headers.insert("Authorization".into(), on("Bearer x"));
-        let (p, _) = prepare(&req, &c).unwrap();
-        assert!(p.secret_wire.is_empty(), "{:?}", p.secret_wire);
-    }
-
-    /// A secret in a `[params]` value goes out as the serializer encodes it,
-    /// and is listed exactly so.
-    #[test]
-    fn secret_wire_lists_a_params_secret_as_the_query_carries_it() {
-        let c = secret_ctx(&[("k", "a+b/c d")]);
-        let mut req = base("https://x.test/p");
-        req.params.insert("key".into(), on("{{k}}"));
-        let (p, _) = prepare(&req, &c).unwrap();
-        assert_eq!(p.url, "https://x.test/p?key=a%2Bb%2Fc+d");
-        assert_eq!(p.secret_wire, vec!["a%2Bb%2Fc+d".to_string()]);
-    }
-
-    /// With `[params]`, the URL's own query is decoded and encoded again:
-    /// a key or value holding secret text is listed whole, as it is sent.
-    /// One the encoding leaves as written sends the secret verbatim.
-    #[test]
-    fn secret_wire_lists_a_reencoded_url_query_value_whole() {
-        let c = secret_ctx(&[("k", "ab+c==")]);
-        let mut req = base("https://x.test/p?token={{k}}&q=user-{{k}}&z=1");
-        req.params.insert("a".into(), on("1"));
-        let (p, _) = prepare(&req, &c).unwrap();
-        assert_eq!(p.url, "https://x.test/p?token=ab+c%3D%3D&q=user-ab+c%3D%3D&z=1&a=1");
-        assert_eq!(p.secret_wire, vec!["ab+c%3D%3D".to_string(), "user-ab+c%3D%3D".to_string()]);
-
-        let c = secret_ctx(&[("k", "plain-secret")]);
-        let (p, _) = prepare(&req, &c).unwrap();
-        assert!(p.url.contains("token=plain-secret&"), "{}", p.url);
-        assert!(p.secret_wire.is_empty(), "{:?}", p.secret_wire);
-        // A secret that holds the `=` between a key and its value spans
-        // both, so each goes on the list even when written as it was.
-        let c = secret_ctx(&[("k", "name=value")]);
-        let (p, _) = prepare(&base_with_param("https://x.test/p?{{k}}"), &c).unwrap();
-        assert!(p.url.contains("?name=value&a=1"), "{}", p.url);
-        assert_eq!(p.secret_wire, vec!["name".to_string(), "value".to_string()]);
-    }
-
-    fn base_with_param(url: &str) -> HttpRequest {
-        let mut req = base(url);
-        req.params.insert("a".into(), on("1"));
-        req
-    }
-
-    /// The client percent-encodes a URL's path and query as the `url` crate
-    /// does: a secret it would spell otherwise is listed in that spelling.
-    #[test]
-    fn secret_wire_lists_a_url_secret_as_the_client_encodes_it() {
-        let c = secret_ctx(&[("k", "pä ss")]);
-        let (p, _) = prepare(&base("https://x.test/u/{{k}}"), &c).unwrap();
-        assert_eq!(p.secret_wire, vec!["p%C3%A4%20ss".to_string()]);
-        let parsed = url::Url::parse(&p.url).unwrap();
-        assert_eq!(parsed.path(), "/u/p%C3%A4%20ss", "what the client sends");
-        // A quote only a special scheme's query encodes.
-        let c = secret_ctx(&[("k", "it's-me")]);
-        let (p, _) = prepare(&base("https://x.test/p?q={{k}}"), &c).unwrap();
-        assert_eq!(p.secret_wire, vec!["it%27s-me".to_string()]);
-        assert_eq!(url::Url::parse(&p.url).unwrap().query(), Some("q=it%27s-me"));
-    }
-
-    /// A `Host` a secret can change is listed whole, as it is masked.
-    #[test]
-    fn secret_wire_lists_a_host_a_secret_changes() {
-        let c = secret_ctx(&[("t", "Acme")]);
-        let (p, _) = prepare(&base("https://{{t}}.example.com/x"), &c).unwrap();
-        assert_eq!(p.secret_wire, vec!["acme.example.com".to_string()]);
-    }
-
-    #[test]
-    fn secret_wire_is_empty_without_secrets() {
-        let mut req = base("https://user:pw@x.test/{{id}}?q=a b");
-        req.params.insert("k".into(), on("{{id}}/x"));
-        let (p, _) = prepare(&req, &ctx(&[("id", "ä 1")], &[])).unwrap();
-        assert!(p.secret_wire.is_empty(), "{:?}", p.secret_wire);
     }
 
     /// An empty body goes out with no `Content-Length`: the client sends

@@ -216,17 +216,7 @@ that echoes a token back. Secret values shorter than 4 characters are
 not masked (they would mask unrelated text); `check` warns about them.
 (mine)
 
-*Amended 2026-10-29 (#215, mine (approved)):* the mask covers each
-secret's plain value and every wire spelling `prepare` derived from it,
-which `prepare` lists exactly (`PreparedRequest::secret_wire`): a query
-value's encoding, the Basic credentials of a URL's userinfo, a `Host` a
-secret changes (whole), and the HTTP client's percent-encoding of the URL
-(computed with the client's own `url` crate encode sets). A secret in the
-URL's own query, when the request also has `[params]`, masks the whole
-query key or value holding it, since re-encoding mixes it with the text
-around it. For a JSON body, and for jq's error text, any JSON escaping is
-covered: string literals are decoded, masked and re-encoded, the rest left
-byte for byte. Other server-side transforms are not covered.
+*Amended 2026-10-29 (#215, mine (approved); the user: "we can still adjust it if it is adding a lot of code and complication"):* the request side is masked as the TUI shows it (prepare's display forms); everything else printed has each secret's exact value replaced; a secret the server echoes back re-encoded or escaped is not caught, and the skill (piece 3) tells Claude so.
 
 ### Piece 3 — edit flag, TUI blocking screen, skill
 

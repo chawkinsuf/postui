@@ -138,12 +138,7 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// A local HTTP server for the commands that send. It answers by path:
 /// `/ok` 200 JSON `{"id":42}`; `/missing` 404 `nope`; `/echo` 200 with the
 /// request's `authorization` in `x-echo` and its body back; `/bytes` 200
-/// `ok\xff\xfe`; `/escaped` 200 JSON holding the
-/// fixture's secret with its hyphen written as a JSON escape;
-/// `/echo-url` 200 with the request target as the body; `/escaped-slash`
-/// 200 JSON holding `ab/cd/ef-gh` written `ab\/cd\/ef-gh`; `/echo-go` 200
-/// JSON `{"auth": <the request's authorization>}` as Go escapes it; `/hang`
-/// never answers; anything else 200, empty.
+/// `ok\xff\xfe`; `/hang` never answers; anything else 200, empty.
 pub struct Server {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
@@ -220,28 +215,6 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
             format!("x-echo: {}\r\n", header("authorization").unwrap_or_default()),
             body.to_vec(),
         ),
-        // The fixture's secret `s3cr3t-value`, its `-` written as an escape.
-        "/escaped" => (
-            "200 OK",
-            "content-type: application/json\r\n".into(),
-            // A backslash, `u`, `002d`: six characters on the wire.
-            b"{\"t\":\"s3cr3t\\u002dvalue\"}".to_vec(),
-        ),
-        // The request target, query string included, back as the body.
-        "/echo-url" => ("200 OK", String::new(), target.as_bytes().to_vec()),
-        // The request's `authorization` in JSON as Go's encoder writes it.
-        "/echo-go" => (
-            "200 OK",
-            "content-type: application/json\r\n".into(),
-            format!("{{\"auth\":\"{}\"}}", go_json(&header("authorization").unwrap_or_default()))
-                .into_bytes(),
-        ),
-        // `ab/cd/ef-gh` with its slashes written `\/`, as PHP's json_encode does.
-        "/escaped-slash" => (
-            "200 OK",
-            "content-type: application/json\r\n".into(),
-            b"{\"t\":\"ab\\/cd\\/ef-gh\"}".to_vec(),
-        ),
         "/bytes" => ("200 OK", String::new(), b"ok\xff\xfe".to_vec()),
         "/hang" => {
             held.lock().unwrap().push(stream);
@@ -255,20 +228,6 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
     );
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(&payload);
-}
-
-/// `text` as the inside of a JSON string the way Go's `encoding/json`
-/// writes it: `"` and `\` escaped, and `&`, `<`, `>` as `&`, `<`,
-/// `>`.
-fn go_json(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '"' => "\\\"".to_string(),
-            '\\' => "\\\\".to_string(),
-            '&' | '<' | '>' => format!("\\u{:04x}", c as u32),
-            other => other.to_string(),
-        })
-        .collect()
 }
 
 /// A project at `<home>/<dir>` with two spaces, two environments and three

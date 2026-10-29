@@ -260,12 +260,31 @@ Exits 1 when any request failed to prepare or send or returned 400 or more.
 
 /// One command: its name, the options it takes (by their long spelling;
 /// `-p` is `--project`, `-o` is `--output`), what positional argument it
-/// takes, as the noun the user reads (`"directory"` or `"request"`), and its usage.
+/// takes, and its usage.
 struct Spec {
     name: &'static str,
     flags: &'static [&'static str],
-    positional: Option<&'static str>,
+    positional: Option<Positional>,
     usage: &'static str,
+}
+
+/// A command's positional argument.
+#[derive(Clone, Copy, PartialEq)]
+enum Positional {
+    /// `init`'s directory (`~` expands).
+    Dir,
+    /// `run`'s request slug.
+    Request,
+}
+
+impl Positional {
+    /// The noun the user reads.
+    fn noun(self) -> &'static str {
+        match self {
+            Positional::Dir => "directory",
+            Positional::Request => "request",
+        }
+    }
 }
 
 #[rustfmt::skip]
@@ -275,8 +294,8 @@ const SPECS: [Spec; 8] = [
     Spec { name: "requests", flags: &["--project", "--text", "--space"],                  positional: None,            usage: REQUESTS_USAGE },
     Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"], positional: None,            usage: VARS_USAGE },
     Spec { name: "check",    flags: &["--project", "--text", "--env"],                    positional: None,            usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some("directory"), usage: INIT_USAGE },
-    Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some("request"), usage: RUN_USAGE },
+    Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some(Positional::Dir), usage: INIT_USAGE },
+    Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some(Positional::Request), usage: RUN_USAGE },
     Spec { name: "suite",    flags: &["--project", "--text", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"], positional: None, usage: SUITE_USAGE },
 ];
 
@@ -408,10 +427,12 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
                 return Err(format!("unexpected argument '{text}'"));
             };
             if o.positional.is_some() {
-                return Err(format!("one {what} at most; '{text}' is a second"));
+                return Err(format!("one {} at most; '{text}' is a second", what.noun()));
             }
             o.positional = Some(match arg.to_str() {
-                Some(s) if what == "directory" => crate::config::expand_tilde(s).into_os_string(),
+                Some(s) if what == Positional::Dir => {
+                    crate::config::expand_tilde(s).into_os_string()
+                }
                 _ => (*arg).clone(),
             });
             continue;
@@ -524,7 +545,7 @@ pub async fn run(cmd: Command) -> ExitCode {
                     if let Some(Err(e)) =
                         output.map(|file| run::write_output(&file, printed.as_bytes()))
                     {
-                        report.note_write_failure(e.message);
+                        report.note_write_failure(&e.message);
                         printed = match out::render(&report, g.text, suite::SuiteReport::text) {
                             Ok(printed) => printed,
                             Err(e) => return out::fail(&e, g.text),

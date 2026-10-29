@@ -31,8 +31,7 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
-/// Builds the plain verifying client with no timeout (used by tests;
-/// `Clients` builds its own the same way). Deliberately no timeout of any
+/// Builds the client used for all requests. Deliberately no timeout of any
 /// kind: a slow request stays in flight until the server answers or the
 /// user cancels it (Esc) — the UI warns when a request has been waiting a
 /// long time instead of killing it.
@@ -41,16 +40,15 @@ pub fn client() -> reqwest::Client {
     // it only sets up connection pooling/TLS config, and does not touch I/O
     // until the first request is actually sent. Verified with a plain
     // `#[test]` (no `#[tokio::test]`) below.
-    build_client(false, None)
+    reqwest::Client::new()
 }
 
 /// The one client builder: `insecure` skips TLS certificate verification,
 /// `idle` is an idle timeout: how long connecting, and then the wait for
 /// each read (the response's head, every chunk of its body), may take. A
 /// long download that keeps coming is never cut off. `build()` can only
-/// fail on TLS backend initialization; the fallback is the plain default
-/// client, so a failed insecure build fails closed (a verifying client).
-fn build_client(insecure: bool, idle: Option<Duration>) -> reqwest::Client {
+/// fail on TLS backend initialization; each caller says what to do then.
+fn build_client(insecure: bool, idle: Option<Duration>) -> Result<reqwest::Client, reqwest::Error> {
     let mut builder = reqwest::Client::builder();
     if insecure {
         builder = builder.danger_accept_invalid_certs(true);
@@ -58,7 +56,7 @@ fn build_client(insecure: bool, idle: Option<Duration>) -> reqwest::Client {
     if let Some(d) = idle {
         builder = builder.connect_timeout(d).read_timeout(d);
     }
-    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    builder.build()
 }
 
 /// The two clients a send can go out on: the normal verifying one and one
@@ -77,15 +75,22 @@ impl Default for Clients {
 }
 
 impl Clients {
-    /// No timeout, as the TUI wants it.
     pub fn new() -> Self {
-        Self::with_timeout(None)
+        // Same fallback story as `client_with_timeout`: `build()` only fails
+        // on TLS backend init, and if the insecure variant somehow can't be
+        // built, failing closed (a verifying client) is the safe default.
+        Self {
+            verifying: client(),
+            insecure: build_client(true, None).unwrap_or_else(|_| reqwest::Client::new()),
+        }
     }
 
     /// Both clients with an idle timeout when given (the command line's
-    /// `--timeout`; see [`build_client`]).
-    pub fn with_timeout(idle: Option<Duration>) -> Self {
-        Self { verifying: build_client(false, idle), insecure: build_client(true, idle) }
+    /// `--timeout`; see [`build_client`]); a client that can't be built is
+    /// the error.
+    pub fn with_timeout(idle: Option<Duration>) -> Result<Self, String> {
+        let build = |insecure| build_client(insecure, idle).map_err(|e| e.to_string());
+        Ok(Self { verifying: build(false)?, insecure: build(true)? })
     }
 
     /// Picks the client `req` should be sent on.
@@ -95,10 +100,14 @@ impl Clients {
 }
 
 /// Like [`client`] but with an idle timeout, for tests that need a request
-/// to a silent server to die quickly on its own (the real client never
+/// to a silent server to die quickly on its own (the TUI's client never
 /// times out).
 pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
-    build_client(false, Some(timeout))
+    // `build()` can only fail on TLS backend initialization; with the config
+    // here (no custom certs/proxies) that's practically unreachable. Fall
+    // back to the plain default client rather than panicking if it ever
+    // does.
+    build_client(false, Some(timeout)).unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// A response with its body left as the bytes that arrived — what the
@@ -251,6 +260,19 @@ fn mask_error_text(
 mod tests {
     use super::*;
 
+    /// A bare GET of `url`, shown as it is.
+    fn get(url: &str) -> PreparedRequest {
+        PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: url.into(),
+            display_url: url.into(),
+            headers: vec![],
+            wire: vec![],
+            body: None,
+            insecure: false,
+        }
+    }
+
     #[test]
     fn error_text_strips_the_url_clause_on_the_url_itself_not_the_first_paren() {
         // The wire URL holds a `)`: cutting at the first `)` would leave
@@ -299,16 +321,7 @@ mod tests {
     #[test]
     fn for_request_picks_the_insecure_client_only_when_flagged() {
         let clients = Clients::new();
-        let mut req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: "https://x.test".into(),
-            display_url: "https://x.test".into(),
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
-        };
+        let mut req = get("https://x.test");
         assert!(
             std::ptr::eq(clients.for_request(&req), &clients.verifying),
             "unflagged request uses the verifying client"
@@ -319,7 +332,7 @@ mod tests {
             "flagged request uses the insecure client"
         );
 
-        let timed = Clients::with_timeout(Some(Duration::from_secs(5)));
+        let timed = Clients::with_timeout(Some(Duration::from_secs(5))).unwrap();
         req.insecure = false;
         assert!(
             std::ptr::eq(timed.for_request(&req), &timed.verifying),
@@ -347,17 +360,7 @@ mod tests {
                     .unwrap();
             }
         });
-        let url = format!("http://127.0.0.1:{port}/");
-        let req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: url.clone(),
-            display_url: url,
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
-        };
+        let req = get(&format!("http://127.0.0.1:{port}/"));
         let raw = send_raw(&client(), &req).await.unwrap();
         assert_eq!(raw.bytes, b"ok\xff\xfe");
         assert_eq!(raw.status, 200);
@@ -376,18 +379,8 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(3)).await;
             drop(sock);
         });
-        let url = format!("http://127.0.0.1:{port}/");
-        let req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: url.clone(),
-            display_url: url,
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
-        };
-        let clients = Clients::with_timeout(Some(Duration::from_millis(200)));
+        let req = get(&format!("http://127.0.0.1:{port}/"));
+        let clients = Clients::with_timeout(Some(Duration::from_millis(200))).unwrap();
         let started = Instant::now();
         let err = send_raw(clients.for_request(&req), &req).await.expect_err("never answered");
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
@@ -412,18 +405,8 @@ mod tests {
                 sock.write_all(chunk).await.unwrap();
             }
         });
-        let url = format!("http://127.0.0.1:{port}/");
-        let req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: url.clone(),
-            display_url: url,
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
-        };
-        let clients = Clients::with_timeout(Some(Duration::from_millis(600)));
+        let req = get(&format!("http://127.0.0.1:{port}/"));
+        let clients = Clients::with_timeout(Some(Duration::from_millis(600))).unwrap();
         let started = Instant::now();
         let raw = send_raw(clients.for_request(&req), &req).await.expect("each read is in time");
         assert!(started.elapsed() > Duration::from_millis(600), "{:?}", started.elapsed());
@@ -447,14 +430,8 @@ mod tests {
     #[tokio::test]
     async fn a_transport_error_shows_the_masked_url_never_the_secret() {
         let req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: "http://127.0.0.1:1/v1/items?key=sk-live-REAL".into(),
             display_url: "http://127.0.0.1:1/v1/items?key=•••••".into(),
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
+            ..get("http://127.0.0.1:1/v1/items?key=sk-live-REAL")
         };
         let err = send(&client(), &req).await.expect_err("nothing listens on port 1");
         assert!(!err.contains("sk-live-REAL"), "{err}");
@@ -478,16 +455,7 @@ mod tests {
         });
 
         let client = client();
-        let req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: format!("http://{addr}/"),
-            display_url: format!("http://{addr}/"),
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
-        };
+        let req = get(&format!("http://{addr}/"));
         let resp = send(&client, &req).await.unwrap();
         server.join().unwrap();
 
@@ -623,17 +591,7 @@ mod tests {
             head.extend_from_slice("content-type: text/plain; name=ü\r\n\r\n".as_bytes());
             sock.write_all(&head).await.unwrap();
         });
-        let url = format!("http://127.0.0.1:{port}/");
-        let req = PreparedRequest {
-            method: postui_core::model::Method::Get,
-            url: url.clone(),
-            display_url: url,
-            headers: vec![],
-            wire: vec![],
-            body: None,
-            insecure: false,
-            secret_wire: vec![],
-        };
+        let req = get(&format!("http://127.0.0.1:{port}/"));
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
         let value =

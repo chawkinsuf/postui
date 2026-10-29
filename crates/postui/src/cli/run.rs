@@ -72,7 +72,8 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     }
     let mask = if opts.show_secrets { Mask::none() } else { mask::of_env(&project) };
     let context = project.prepare_context();
-    let clients = Clients::with_timeout(opts.timeout);
+    let clients = Clients::with_timeout(opts.timeout)
+        .map_err(|e| CliError::new(format!("could not start the HTTP client: {e}")))?;
     Ok(Session { project, root, env, mask, context, clients, warnings })
 }
 
@@ -139,9 +140,9 @@ pub(super) fn prepare_one(
 }
 
 /// The URL as printed: what the screens show, or what the wire carries with
-/// `--show-secrets`; the mask then hides any secret value still in it.
-pub(super) fn shown_url(mask: &Mask, request: &PreparedRequest, show_secrets: bool) -> String {
-    mask.apply(if show_secrets { &request.url } else { &request.display_url })
+/// `--show-secrets`.
+pub(super) fn shown_url(request: &PreparedRequest, show_secrets: bool) -> String {
+    if show_secrets { &request.url } else { &request.display_url }.clone()
 }
 
 /// `postui run`: one request, prepared and, unless `--dry-run`, sent. Every
@@ -242,9 +243,9 @@ fn record(
     jq: Option<&str>,
     output: Option<&Path>,
 ) {
-    // The body as text, only when something reads it; parsed unmasked (a
-    // mask inside JSON text can break it, a number for one), then masked.
-    let plain = || String::from_utf8_lossy(&raw.bytes);
+    // The body as text, decoded once; parsed unmasked (a mask inside JSON
+    // text can break it, a number for one), then masked.
+    let text = String::from_utf8_lossy(&raw.bytes);
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -264,7 +265,7 @@ fn record(
     let mut taken_results = None;
     let mut show_body = false;
     match jq {
-        Some(filter) => match run_jq(filter, &plain(), mask) {
+        Some(filter) => match run_jq(filter, &text, mask) {
             Ok(results) => {
                 let (lines, values): (Vec<String>, Vec<serde_json::Value>) =
                     results.into_iter().unzip();
@@ -282,15 +283,13 @@ fn record(
                 taken_results = taken;
             }
             // The filter failed: the body is shown (nothing is written to
-            // `-o`), so the caller needn't send the request again. jq's
-            // message quotes values as JSON, so their literals are read
-            // through.
+            // `-o`), so the caller needn't send the request again.
             Err(message) => {
                 show_body = true;
                 report.jq = Some(JqReport {
                     filter: mask.apply(filter),
                     output: None,
-                    error: Some(mask.apply_literals(&message)),
+                    error: Some(mask.apply(&message)),
                 });
             }
         },
@@ -315,15 +314,9 @@ fn record(
         }
     }
     if show_body {
-        let plain = plain();
-        let parsed: Option<serde_json::Value> = serde_json::from_str(&plain).ok();
-        // A JSON body is masked literal by literal, so a secret the server
-        // escaped is caught however it did, and the rest stays as it came;
-        // any other body as plain text. Other transforms the server applies
-        // stay as sent.
-        response.body =
-            Some(if parsed.is_some() { mask.apply_literals(&plain) } else { mask.apply(&plain) });
-        response.body_json = parsed.map(|v| mask.apply_json(v));
+        response.body = Some(mask.apply(&text));
+        response.body_json =
+            serde_json::from_str::<serde_json::Value>(&text).ok().map(|v| mask.apply_json(v));
     }
     report.response = Some(response);
 }
@@ -366,20 +359,18 @@ pub async fn run(
             return Ok(report);
         }
     };
-    // The session's mask plus what this request sends of its secrets in
-    // other spellings.
-    let mask = s.mask.with_wire(&request);
-    // What the screens show, or what the wire carries with --show-secrets;
-    // the mask then hides any secret value still in the text.
+    let mask = &s.mask;
+    // The request side as the screens show it, or as the wire carries it
+    // with --show-secrets.
     let show = opts.show_secrets;
     report.method = Some(request.method);
-    report.url = Some(shown_url(&mask, &request, show));
+    report.url = Some(shown_url(&request, show));
     report.request_headers = request
         .wire
         .iter()
         .map(|h| ShownHeader {
-            name: mask.apply(if show { &h.name } else { &h.display_name }),
-            value: mask.apply(if show { &h.value } else { &h.display }),
+            name: if show { &h.name } else { &h.display_name }.clone(),
+            value: if show { &h.value } else { &h.display }.clone(),
         })
         .collect();
     report.request_body = request.body.as_deref().map(|b| mask.apply(b));
@@ -388,7 +379,7 @@ pub async fn run(
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, &mask, raw, jq, output),
+        Ok(raw) => record(&mut report, mask, raw, jq, output),
         Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)

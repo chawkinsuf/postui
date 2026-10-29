@@ -3,6 +3,7 @@
 //! "Piece 2 — run"). A request that can't be read or prepared is that
 //! request's result, and the suite goes on.
 
+use super::mask::Mask;
 use super::out::table;
 use super::read::{displayed, spaces_of, warnings_text};
 use super::run::{FAILED, FIRST_FAILING_STATUS, RunOpts, millis, prepare_one, session, shown_url};
@@ -23,6 +24,9 @@ pub struct SuiteReport {
     /// `-o` could not be written (a warning says so): the run failed.
     #[serde(skip)]
     write_failed: bool,
+    /// The session's, for what is added after the run.
+    #[serde(skip)]
+    mask: Mask,
 }
 
 /// One request's outcome. `status`, `elapsed_ms` and `size` are `null` when
@@ -90,21 +94,18 @@ pub async fn suite(
                     result.error = Some(s.mask.apply(&message));
                 }
                 Ok((_, Ok((request, prepare_warnings)))) => {
-                    // As `run` masks: the session's mask plus what this
-                    // request sends of its secrets in other spellings.
-                    let mask = s.mask.with_wire(&request);
                     request_warnings.extend(
-                        prepare_warnings.iter().map(|w| mask.apply(&format!("{slug}: {w}"))),
+                        prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
                     );
                     result.method = Some(request.method);
-                    result.url = Some(shown_url(&mask, &request, opts.show_secrets));
+                    result.url = Some(shown_url(&request, opts.show_secrets));
                     match send_raw(s.clients.for_request(&request), &request).await {
                         Ok(raw) => {
                             result.status = Some(raw.status);
                             result.elapsed_ms = Some(millis(raw.elapsed));
                             result.size = Some(raw.bytes.len());
                         }
-                        Err(message) => result.error = Some(mask.apply(&message)),
+                        Err(message) => result.error = Some(s.mask.apply(&message)),
                     }
                 }
             }
@@ -125,6 +126,7 @@ pub async fn suite(
         totals,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).chain(request_warnings).collect(),
         write_failed: false,
+        mask: s.mask,
     })
 }
 
@@ -141,8 +143,8 @@ impl SuiteReport {
 
     /// Records that `-o` could not be written: the requests were sent, so the
     /// report still prints, with `message` as a warning.
-    pub fn note_write_failure(&mut self, message: String) {
-        self.warnings.push(message);
+    pub fn note_write_failure(&mut self, message: &str) {
+        self.warnings.push(self.mask.apply(message));
         self.write_failed = true;
     }
 

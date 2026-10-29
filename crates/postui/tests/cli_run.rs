@@ -59,7 +59,7 @@ text = '{"t": "{{token}}", "u": "{{user_id}}"}'
         "requests/main/org.toml",
         "name = \"Org\"\nmethod = \"GET\"\nurl = \"{{base}}/org/{{org_id}}\"\n",
     );
-    for name in ["ok", "missing", "bytes", "hang", "escaped", "escaped-slash"] {
+    for name in ["ok", "missing", "bytes", "hang"] {
         put(
             &format!("requests/main/{name}.toml"),
             &format!("name = \"{name}\"\nmethod = \"GET\"\nurl = \"{{{{base}}}}/{name}\"\n"),
@@ -461,106 +461,6 @@ fn run_jq_prints_the_filters_output() {
     assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
 }
 
-/// A secret in a query string comes back from an echoing server as it was
-/// sent: as written in the URL, encoded by `[params]`, or percent-encoded
-/// by the client (non-ASCII); each must be masked.
-#[test]
-fn run_masks_a_secret_echoed_percent_encoded() {
-    let (home, server, root) = served();
-    let secrets = |token: &str| {
-        std::fs::write(
-            root.join(".postui/secrets.toml"),
-            format!("[dev]\ntoken = \"{token}\"\n\n[qa]\ntoken = \"{token}\"\n"),
-        )
-        .unwrap();
-    };
-    let echo = |query: &str, params: &str| {
-        std::fs::write(
-            root.join("requests/main/echo-url.toml"),
-            format!(
-                "name = \"EchoUrl\"\nmethod = \"GET\"\nurl = \"{{{{base}}}}/echo-url?{query}\"\n\
-                 {params}"
-            ),
-        )
-        .unwrap();
-        let out = send(&home, &root, "main/echo-url", &[]);
-        assert_ok(&out, "run main/echo-url");
-        json(&out)["response"]["body"].as_str().unwrap().to_string()
-    };
-
-    secrets("a+b/c=dd");
-    assert_eq!(echo("k={{token}}&z=1", ""), format!("/echo-url?k={MASK}&z=1"));
-    // `[params]` sends it as `a%2Bb%2Fc%3Ddd`.
-    assert_eq!(echo("z=1", "\n[params]\nk = \"{{token}}\"\n"), format!("/echo-url?z=1&k={MASK}"));
-    // The client sends `p%C3%A4sswort`.
-    secrets("pässwort");
-    assert_eq!(echo("k={{token}}", ""), format!("/echo-url?k={MASK}"));
-    assert!(server.seen().contains(&"GET /echo-url".to_string()));
-}
-
-/// Go's JSON encoder writes `&`, `<`, `>` as `\u0026`, `\u003c`, `\u003e`;
-/// a secret holding them is still masked in the raw body and `--text`.
-#[test]
-fn run_masks_a_secret_the_server_escapes_as_go_does() {
-    let (home, _server, root) = served();
-    let secret = "a&b<c>d-secret";
-    std::fs::write(
-        root.join(".postui/secrets.toml"),
-        format!("[dev]\ntoken = \"{secret}\"\n\n[qa]\ntoken = \"{secret}\"\n"),
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("requests/main/echo-go.toml"),
-        "name = \"EchoGo\"\nmethod = \"GET\"\nurl = \"{{base}}/echo-go\"\n\n\
-         [headers]\nAuthorization = \"Bearer {{token}}\"\n",
-    )
-    .unwrap();
-
-    let out = send(&home, &root, "main/echo-go", &[]);
-    assert_ok(&out, "run main/echo-go");
-    let v = json(&out);
-    assert_eq!(v["response"]["body"], format!("{{\"auth\":\"Bearer {MASK}\"}}"));
-    assert_eq!(v["response"]["body_json"], serde_json::json!({"auth": format!("Bearer {MASK}")}));
-    let printed = String::from_utf8_lossy(&out.stdout);
-    assert!(!printed.contains("u0026") && !printed.contains("-secret"), "{printed}");
-
-    let out = send(&home, &root, "main/echo-go", &["--text"]);
-    assert_ok(&out, "run main/echo-go --text");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains(&format!("{{\"auth\":\"Bearer {MASK}\"}}")), "{text}");
-    assert!(!text.contains("u0026") && !text.contains("-secret"), "{text}");
-}
-
-/// Masking a JSON body touches only the literals holding a secret: the
-/// rest comes back byte for byte, escapes, spacing and number spelling
-/// included.
-#[test]
-fn run_leaves_a_json_bodys_untouched_parts_as_they_came() {
-    let (home, _server, root) = served();
-    std::fs::write(
-        root.join("requests/main/echo-raw.toml"),
-        r#"name = "EchoRaw"
-method = "POST"
-url = "{{base}}/echo"
-substitute_body = true
-
-[body]
-type = "json"
-text = '''{ "keep" : "a\/b \u00e9",  "n": 1.50,
-  "t":"{{token}}" }'''
-"#,
-    )
-    .unwrap();
-
-    let out = send(&home, &root, "main/echo-raw", &[]);
-    assert_ok(&out, "run main/echo-raw");
-    let v = json(&out);
-    assert_eq!(
-        v["response"]["body"],
-        format!("{{ \"keep\" : \"a\\/b \\u00e9\",  \"n\": 1.50,\n  \"t\":\"{MASK}\" }}")
-    );
-}
-
 /// A failed run whose reader has gone (stdout a closed pipe) still exits 1.
 #[test]
 fn a_failed_run_to_a_closed_stdout_exits_1() {
@@ -581,30 +481,6 @@ fn a_failed_run_to_a_closed_stdout_exits_1() {
     assert_eq!(child.wait().unwrap().code(), Some(1));
 }
 
-/// A secret in the URL's userinfo goes out as a derived `Authorization:
-/// Basic <base64>`; a server echoing it back must not reveal it.
-#[test]
-fn run_masks_a_basic_header_derived_from_the_url() {
-    let (home, server, root) = served();
-    let url = server.base().replacen("http://", "http://user:{{token}}@", 1);
-    std::fs::write(
-        root.join("requests/main/basic.toml"),
-        format!("name = \"Basic\"\nmethod = \"GET\"\nurl = \"{url}/echo\"\n"),
-    )
-    .unwrap();
-
-    let out = send(&home, &root, "main/basic", &[]);
-    assert_ok(&out, "run main/basic");
-    let v = json(&out);
-    let echoed = v["response"]["headers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|h| h["name"] == "x-echo")
-        .unwrap_or_else(|| panic!("no x-echo in {v}"));
-    assert_eq!(echoed["value"], format!("Basic {MASK}"), "{v}");
-}
-
 #[test]
 fn run_jq_output_is_masked() {
     let (home, _server, root) = served();
@@ -614,50 +490,14 @@ fn run_jq_output_is_masked() {
     assert_eq!(json(&out)["jq"]["output"], serde_json::json!([MASK]));
 }
 
-/// A secret the server wrote with a JSON escape is plain text once parsed:
-/// `body`, `body_json`, `--jq` output and the `-o` lines must not show it.
+/// `--jq -o` writes the masked results.
 #[test]
-fn run_masks_a_json_escaped_secret_in_parsed_output() {
+fn run_jq_output_file_is_masked() {
     let (home, _server, root) = served();
-
-    let out = send(&home, &root, "main/escaped", &[]);
-    assert_ok(&out, "run main/escaped");
-    let v = json(&out);
-    assert_eq!(v["response"]["body_json"], serde_json::json!({"t": MASK}));
-    // The raw body too: its string literals are read through.
-    assert_eq!(v["response"]["body"], format!("{{\"t\":\"{MASK}\"}}"));
-    let printed = String::from_utf8_lossy(&out.stdout);
-    assert!(!printed.contains(SECRET) && !printed.contains("u002dvalue"), "{printed}");
-
-    let out = send(&home, &root, "main/escaped", &["--jq", ".t"]);
-    assert_ok(&out, "run main/escaped --jq .t");
-    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
-    assert_eq!(json(&out)["jq"]["output"], serde_json::json!([MASK]));
-
     let file = home.path().join("t.txt");
-    let out = send(&home, &root, "main/escaped", &["--jq", ".t", "-o", s(&file)]);
-    assert_ok(&out, "run main/escaped --jq .t -o");
+    let out = send(&home, &root, "main/echo", &["--jq", ".t", "-o", s(&file)]);
+    assert_ok(&out, "run main/echo --jq .t -o");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("\"{MASK}\"\n"));
-}
-
-/// A secret holding `/` that the server echoes as `\/` (PHP's json_encode)
-/// is masked in `response.body` too, not only once parsed.
-#[test]
-fn run_masks_a_secret_the_server_escapes_its_slashes_in() {
-    let (home, _server, root) = served();
-    let secret = "ab/cd/ef-gh";
-    std::fs::write(
-        root.join(".postui/secrets.toml"),
-        format!("[dev]\ntoken = \"{secret}\"\n\n[qa]\ntoken = \"{secret}\"\n"),
-    )
-    .unwrap();
-
-    let out = send(&home, &root, "main/escaped-slash", &[]);
-    assert_ok(&out, "run main/escaped-slash");
-    let v = json(&out);
-    assert_eq!(v["response"]["body"], format!("{{\"t\":\"{MASK}\"}}"));
-    assert_eq!(v["response"]["body_json"], serde_json::json!({"t": MASK}));
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("ef-gh"));
 }
 
 /// A jq error that quotes the secret, and a filter that holds it, are
@@ -859,6 +699,13 @@ fn suite_output_file_matches_stdout() {
         "{v}"
     );
     assert!(v["error"].is_null());
+
+    // The write warning is masked like the rest: a path holding a secret.
+    let secret_path = file.join(SECRET).join("r.json");
+    let out = home.run(&["suite", "--space", "admin", "-o", s(&secret_path), "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(!printed.contains(SECRET) && printed.contains(MASK), "{printed}");
 }
 
 /// A multi-line error is one line in the `--text` table; the JSON keeps all.
