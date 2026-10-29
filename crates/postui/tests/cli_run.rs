@@ -607,6 +607,9 @@ fn suite_runs_in_sidebar_order_and_keeps_going() {
     for key in ["status", "elapsed_ms", "size"] {
         assert!(unresolved[key].is_null(), "{key}");
     }
+    // Only the variables failed: the request keeps its method and URL.
+    assert_eq!(unresolved["method"], "GET");
+    assert!(unresolved["url"].as_str().unwrap().contains("{{bsae}}"), "{unresolved}");
     let broken = by("main/d-broken");
     assert!(broken["method"].is_null() && broken["url"].is_null() && broken["status"].is_null());
     assert!(broken["error"].as_str().unwrap().contains("d-broken.toml"), "{broken}");
@@ -663,6 +666,24 @@ fn suite_output_file_matches_stdout() {
     let v = json(&out);
     assert!(v["error"].as_str().unwrap().contains("r.json"), "{v}");
     assert!(v["results"].is_null());
+}
+
+#[test]
+fn suite_masks_a_secret_written_in_a_refused_request() {
+    let home = Home::new();
+    let leaky = format!("method = \"GET\"\nurl = \"http://h/{SECRET}/{{{{bsae}}}}\"\n");
+    let root = write_suite_project(&home, "http://h", &[("main/leaky", &leaky)]);
+    for extra in [&[][..], &["--text"][..]] {
+        let mut args = vec!["suite", "-p", s(&root)];
+        args.extend_from_slice(extra);
+        let out = home.run(&args);
+        assert_eq!(out.status.code(), Some(1));
+        let printed = String::from_utf8_lossy(&out.stdout);
+        assert!(!printed.contains(SECRET), "{printed}");
+    }
+    let v = json(&home.run(&["suite", "-p", s(&root)]));
+    let url = v["results"][0]["url"].as_str().unwrap();
+    assert!(url.contains(MASK) && url.contains("{{bsae}}"), "{url}");
 }
 
 #[test]

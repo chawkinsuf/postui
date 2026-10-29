@@ -21,10 +21,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 /// The status a failed run ends with.
-const FAILED: u8 = 1;
+pub(super) const FAILED: u8 = 1;
 
 /// A response status from here up is a failure (`run` exits 1).
-const FIRST_FAILING_STATUS: u16 = 400;
+pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 
 /// What `run` and `suite` share on their command lines.
 #[derive(Debug, Clone, PartialEq, Eq)]

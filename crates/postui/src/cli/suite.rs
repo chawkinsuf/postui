@@ -4,19 +4,13 @@
 //! request's result, and the suite goes on.
 
 use super::out::table;
-use super::read::{displayed, warnings_text};
-use super::run::{RunOpts, millis, prepare_one, session, shown_url};
+use super::read::{displayed, spaces_of, warnings_text};
+use super::run::{FAILED, FIRST_FAILING_STATUS, RunOpts, millis, prepare_one, session, shown_url};
 use super::{CliError, Global};
 use crate::http::send_raw;
 use postui_core::model::Method;
 use serde::Serialize;
 use std::process::ExitCode;
-
-/// The status a suite with a failed request ends with.
-const FAILED: u8 = 1;
-
-/// A response status from here up is a failure.
-const FIRST_FAILING_STATUS: u16 = 400;
 
 /// `postui suite`. Every string in it has been through the session's mask.
 #[derive(Serialize)]
@@ -64,13 +58,7 @@ pub async fn suite(
     opts: &RunOpts,
 ) -> Result<SuiteReport, CliError> {
     let mut s = session(g, opts)?;
-    let spaces: Vec<String> = match space {
-        None => s.project.spaces().to_vec(),
-        Some(wanted) if s.project.spaces().iter().any(|n| n == wanted) => vec![wanted.to_string()],
-        Some(wanted) => {
-            return Err(CliError::new(format!("no such space \"{wanted}\" in this project")));
-        }
-    };
+    let spaces = spaces_of(&s.project, space)?;
     let mut results = Vec::new();
     // What `run` would warn of for each request, in suite order.
     let mut request_warnings = Vec::new();
@@ -89,9 +77,17 @@ pub async fn suite(
                 // A broken file is this request's result, naming the file.
                 Err(e) => {
                     let at = e.file.map(|f| format!(" ({})", f.display())).unwrap_or_default();
-                    result.error = Some(s.mask.apply(&format!("{}{at}", e.message)));
+                    result.error = Some(s.mask.apply(&format!("{}{at}", e.message.trim_end())));
                 }
-                Ok(Err(message)) => result.error = Some(s.mask.apply(&message)),
+                // The file read; only the variables failed: it keeps its
+                // method and URL as written.
+                Ok(Err(message)) => {
+                    if let Ok(req) = s.project.read_request(&slug) {
+                        result.method = Some(req.method);
+                        result.url = Some(s.mask.apply(&req.url));
+                    }
+                    result.error = Some(s.mask.apply(&message));
+                }
                 Ok(Ok((request, prepare_warnings))) => {
                     request_warnings.extend(
                         prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
