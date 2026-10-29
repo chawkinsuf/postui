@@ -423,15 +423,19 @@ description  The account the requests act as
 shared       no
 fields       user_id
 selected     alice
-options      environments/dev.toml
+file         environments/dev.toml
+
+options
   alice  user_id=42  Alice, admin
   bob    user_id=7
 ```
 
 The `vars` head (root, environment, `variables.toml`) starts
 `vars <name>` too, and the selector's facts are one aligned block,
-`description` only when it has one. That's how it was built, which
-differs from the first sketch (mine).
+`description` only when it has one. The options' file is labelled
+`file`, as the JSON key is, and the options follow under their own
+heading, each with its values in the selector's field order. That's
+how it was built, which differs from the first sketch (mine).
 
 - Paths are relative to the root printed at the top (R20). `projects`
   prints absolute roots, because each project has its own.

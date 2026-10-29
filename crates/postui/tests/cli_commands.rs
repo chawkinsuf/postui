@@ -320,7 +320,9 @@ fn vars_name_reports_one_in_full() {
              shared    no\n\
              fields    user_id\n\
              selected  alice\n\
-             options   environments/dev.toml\n\
+             file      environments/dev.toml\n\
+             \n\
+             options\n\
              \x20 alice  user_id=42  Admin\n\
              \x20 bob    user_id=7\n"
         ),
@@ -374,7 +376,9 @@ fn vars_name_of_a_shared_selector_names_variables_toml() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.ends_with(
-            "options   variables.toml\n\
+            "file      variables.toml\n\
+             \n\
+             options\n\
              \x20 acme   org_id=A1  zone=eu  Acme\n\
              \x20 other  org_id=O2  zone=us\n"
         ),

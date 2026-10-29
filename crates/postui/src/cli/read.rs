@@ -630,6 +630,8 @@ fn gather(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<Gathered,
             } else {
                 project.selections_for(key).get(name)
             };
+            // Where `options` came from: the same shared-or-environment
+            // choice `varmodel::options_of` makes; change both together.
             let file = if decl.shared {
                 Some(root.join("variables.toml"))
             } else {
@@ -758,9 +760,10 @@ impl VarReport {
                 ("shared", if s.shared { "yes" } else { "no" }.to_string()),
                 ("fields", s.fields.join(", ")),
                 ("selected", s.selected.clone().unwrap_or_else(|| "-".to_string())),
-                ("options", s.file.as_ref().map_or_else(|| "-".to_string(), |f| rel(root, f))),
+                ("file", s.file.as_ref().map_or_else(|| "-".to_string(), |f| rel(root, f))),
             ]);
             out.push_str(&fields(&facts));
+            out.push_str("\noptions\n");
             let rows: Vec<Vec<String>> = s
                 .options
                 .iter()

@@ -89,15 +89,36 @@ pub fn rel(root: &Path, path: &Path) -> String {
 }
 
 /// `rows` as `label  value` lines, the values aligned and not indented: the
-/// facts a report starts with.
+/// facts a report starts with. A value over several lines continues as a
+/// table cell does (R21).
 pub fn fields(rows: &[(&str, String)]) -> String {
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
-    rows.iter()
-        .map(|(label, value)| match value.as_str() {
-            "" => format!("{label}\n"),
-            value => format!("{label:width$}  {value}\n"),
-        })
-        .collect()
+    let mut out = String::new();
+    for (label, value) in rows {
+        match first_line(value) {
+            "" => out.push_str(label),
+            first => out.push_str(&format!("{label:width$}  {first}")),
+        }
+        out.push('\n');
+        push_under(&mut out, value.lines().skip(1));
+    }
+    out
+}
+
+/// `text`'s first line: what goes in a row (R21).
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
+}
+
+/// Pushes `lines` under a row, indented by four, a blank line kept blank.
+fn push_under<'a>(out: &mut String, lines: impl Iterator<Item = &'a str>) {
+    for line in lines {
+        if !line.is_empty() {
+            out.push_str("    ");
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
 }
 
 /// `n` `thing`s, the plural when `n` isn't 1.
@@ -120,13 +141,12 @@ pub fn table<R: AsRef<[String]>>(rows: &[R]) -> String {
 /// indented by four (nothing when empty): what doesn't fit a column, such
 /// as a broken file's error.
 pub fn table_under<R: AsRef<[String]>>(rows: &[(R, &str)]) -> String {
-    let first = |cell: &str| cell.lines().next().unwrap_or_default().to_string();
     let columns = rows.iter().map(|(cells, _)| cells.as_ref().len()).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| {
             rows.iter()
                 .filter_map(|(cells, _)| cells.as_ref().get(c))
-                .map(|s| crate::ui::cells(&first(s)))
+                .map(|s| crate::ui::cells(first_line(s)))
                 .max()
                 .unwrap_or(0)
         })
@@ -134,25 +154,23 @@ pub fn table_under<R: AsRef<[String]>>(rows: &[(R, &str)]) -> String {
     let mut out = String::new();
     for (cells, under) in rows {
         let cells = cells.as_ref();
-        let shown = cells.iter().rposition(|c| !first(c).is_empty()).map_or(0, |last| last + 1);
-        let mut line = String::from("  ");
+        let shown =
+            cells.iter().rposition(|c| !first_line(c).is_empty()).map_or(0, |last| last + 1);
+        if shown > 0 {
+            out.push_str("  ");
+        }
         for (c, cell) in cells[..shown].iter().enumerate() {
-            let cell = first(cell);
-            line.push_str(&cell);
+            let cell = first_line(cell);
+            out.push_str(cell);
             if c + 1 < shown {
-                line.push_str(&" ".repeat(widths[c] - crate::ui::cells(&cell) + 2));
+                out.push_str(&" ".repeat(widths[c] - crate::ui::cells(cell) + 2));
             }
         }
-        out.push_str(if shown == 0 { "" } else { &line });
         out.push('\n');
-        let rest = cells.iter().flat_map(|cell| cell.lines().skip(1));
-        for extra in rest.chain(under.lines()) {
-            if !extra.is_empty() {
-                out.push_str("    ");
-                out.push_str(extra);
-            }
-            out.push('\n');
-        }
+        push_under(
+            &mut out,
+            cells.iter().flat_map(|cell| cell.lines().skip(1)).chain(under.lines()),
+        );
     }
     out
 }
@@ -191,6 +209,14 @@ mod tests {
         ];
         assert_eq!(table(&rows), "  a   x \n  bb  y   z\n");
         assert_eq!(fields(&[("k", "v ".to_string())]), "k  v \n");
+    }
+
+    /// R21 in `fields`: a value's later lines go under it, not at column 0
+    /// where they would read as more labels.
+    #[test]
+    fn a_multi_line_field_continues_under_it() {
+        let printed = fields(&[("description", "one\ntwo".to_string()), ("k", "v".to_string())]);
+        assert_eq!(printed, "description  one\n    two\nk            v\n");
     }
 
     #[test]
