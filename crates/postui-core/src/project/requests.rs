@@ -41,6 +41,15 @@ pub struct ListingWarning {
     pub message: Warning,
 }
 
+impl ListingWarning {
+    /// The directory under `requests/` its file is in; `None` for a file
+    /// directly in `requests/`, or a warning about no one file.
+    pub fn space_dir(&self) -> Option<&str> {
+        let file = self.file.as_deref()?.strip_prefix("requests/")?;
+        file.split_once('/').map(|(dir, _)| dir)
+    }
+}
+
 /// Walks `requests/` through `Disk`: every `.toml` in a valid space,
 /// parsed for its method and name; broken files listed with the error.
 /// The warnings name the first unreadable directory and every loose file.

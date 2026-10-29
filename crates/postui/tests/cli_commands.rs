@@ -783,6 +783,30 @@ fn check_invalid_file_and_dir_names_are_errors() {
     assert_eq!(warnings[0].0, s(&root.join("requests/loose.toml")));
 }
 
+/// A hidden name (an editor's lock file, macOS's `._` twin, a dot-dir) is
+/// no one's mistake: `check` passes over it and what is inside it.
+#[test]
+fn check_passes_over_hidden_files_and_dirs() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("environments/.#dev.toml"), "base = [").unwrap();
+    std::fs::write(root.join("environments/._dev.toml"), "\0\u{1}junk").unwrap();
+    std::fs::create_dir_all(root.join("requests/.drafts")).unwrap();
+    std::fs::write(
+        root.join("requests/.drafts/x.toml"),
+        "name = \"X\"\nmethod = \"GET\"\nurl = \"{{nope}}\"\n",
+    )
+    .unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    let v = json(&out);
+    assert_eq!(v["ok"], true);
+    for list in ["errors", "warnings"] {
+        assert_eq!(findings(&v, list), [], "{list}");
+    }
+}
+
 /// A `secrets.toml` that won't parse is named, but nothing of its text is
 /// printed: the parser's message quotes the line, secret value and all.
 #[test]

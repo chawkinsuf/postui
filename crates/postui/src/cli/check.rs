@@ -67,20 +67,19 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
 
     // Each name postui passes over is an error on where it is written; the
     // open's warning for it, and the walk's for the files in a skipped
-    // directory, would only say it again.
+    // directory, would only say it again. A hidden directory's files are
+    // passed over without a word, as the directory is.
     let skipped = project.skipped();
     for s in &skipped {
         errors.push(Finding::at(root.join(s.rel()), skipped_message(s)));
     }
     let said = |w: &String| skipped.iter().any(|s| s.warning().as_ref() == Some(w));
     warnings.extend(opened_warnings.into_iter().filter(|w| !said(w)).map(Finding::general));
-    let in_skipped_dir = |file: &str| {
-        skipped.iter().any(|s| {
-            matches!(s, Skipped::SpaceDir(_)) && file.starts_with(&format!("{}/", s.rel()))
-        })
+    let passed_over = |dir: &str| {
+        project::is_hidden(dir) || skipped.contains(&Skipped::SpaceDir(dir.to_string()))
     };
     for w in project.listing_warnings() {
-        if !w.file.as_deref().is_some_and(in_skipped_dir) {
+        if !w.space_dir().is_some_and(passed_over) {
             let file = w.file.as_ref().map(|f| root.join(f));
             warnings.push(Finding { file, message: w.message.clone() });
         }

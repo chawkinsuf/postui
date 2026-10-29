@@ -238,8 +238,17 @@ pub(crate) fn env_rel(env: &str) -> Result<RelPath, Error> {
     rel(&format!("{ENVIRONMENTS_DIR}/{env}.toml"))
 }
 
+/// Whether a file or directory's `name` is hidden (it starts with `.`: an
+/// editor's lock file, macOS's `._` twin, a dot-dir). postui passes over
+/// it like an invalid name, but it is no one's mistake, so it is never
+/// [`Skipped`].
+pub fn is_hidden(name: &str) -> bool {
+    name.starts_with('.')
+}
+
 /// A name postui leaves out because it can't be a space's or an
-/// environment's (a-z 0-9 - _), as the listing that skips it found it.
+/// environment's (a-z 0-9 - _), as the listing that skips it found it. A
+/// hidden file or directory ([`is_hidden`]) is not one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Skipped {
     /// An entry of `project.toml`'s `spaces`.
@@ -960,8 +969,8 @@ impl Project {
         for e in disk.list(&dir)?.into_iter().filter(|e| !e.is_dir) {
             match e.name.strip_suffix(".toml") {
                 Some(stem) if meta::valid_env_name(stem) => out.push(stem.to_string()),
-                Some(_) => skipped.push(e.name),
-                None => {}
+                Some(_) if !is_hidden(&e.name) => skipped.push(e.name),
+                _ => {}
             }
         }
         out.sort();
@@ -1048,7 +1057,9 @@ impl Project {
                 Ok(entries) => {
                     for e in entries.into_iter().filter(|e| e.is_dir) {
                         if !meta::valid_space_name(&e.name) {
-                            bad_dirs.push(e.name);
+                            if !is_hidden(&e.name) {
+                                bad_dirs.push(e.name);
+                            }
                         } else if !out.contains(&e.name) {
                             unlisted.push(e.name);
                         }
@@ -1991,10 +2002,20 @@ mod tests {
             "spaces = [\"main\", \"Bad Space\", \"Bad Space\"]\nenvironments = [\"Bad Env\"]\n",
         )
         .unwrap();
-        for d in ["requests/main", "requests/Main", "requests/Z z", "environments"] {
+        for d in
+            ["requests/main", "requests/Main", "requests/Z z", "requests/.drafts", "environments"]
+        {
             std::fs::create_dir_all(dir.path().join(d)).unwrap();
         }
-        for f in ["environments/dev.toml", "environments/Staging.toml", "environments/notes.txt"] {
+        for f in [
+            "environments/dev.toml",
+            "environments/Staging.toml",
+            "environments/notes.txt",
+            // Hidden: passed over, never skipped.
+            "environments/.#dev.toml",
+            "environments/._dev.toml",
+            "requests/.drafts/x.toml",
+        ] {
             std::fs::write(dir.path().join(f), "").unwrap();
         }
         std::fs::write(dir.path().join("requests/Main/x.toml"), "").unwrap();
@@ -2031,7 +2052,16 @@ mod tests {
 
         let files: Vec<Option<&str>> =
             p.listing_warnings().iter().map(|w| w.file.as_deref()).collect();
-        assert_eq!(files, [Some("requests/Main/x.toml"), Some("requests/loose.toml")]);
+        assert_eq!(
+            files,
+            [
+                Some("requests/.drafts/x.toml"),
+                Some("requests/Main/x.toml"),
+                Some("requests/loose.toml")
+            ]
+        );
+        let dirs: Vec<Option<&str>> = p.listing_warnings().iter().map(|w| w.space_dir()).collect();
+        assert_eq!(dirs, [Some(".drafts"), Some("Main"), None]);
         let joined = p.listing_warning().unwrap();
         assert!(joined.contains("requests/Main/x.toml is not in a valid space"), "{joined}");
         assert!(joined.contains("; requests/loose.toml is not in a space"), "{joined}");
