@@ -485,11 +485,17 @@ pub fn options_of<'a>(
     env: &'a EnvData,
     selector: &str,
 ) -> Option<&'a IndexMap<String, OptionDecl>> {
-    if model.selectors.get(selector).is_some_and(|d| d.shared) {
+    if options_in_model(model, selector) {
         model.options.get(selector)
     } else {
         env.options.get(selector)
     }
+}
+
+/// Whether [`options_of`] reads `selector`'s options from the model (the
+/// variables file, for a shared selector) rather than the environment.
+pub fn options_in_model(model: &VarModel, selector: &str) -> bool {
+    model.selectors.get(selector).is_some_and(|d| d.shared)
 }
 
 /// This environment's options for `selector`, or `None` when the selector

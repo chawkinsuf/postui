@@ -8,7 +8,7 @@ use super::{CliError, Global, target};
 use indexmap::IndexMap;
 use postui_core::model::Method;
 use postui_core::prepare::SECRET_MASK;
-use postui_core::project::{Project, SECRETS_TOML, Warning};
+use postui_core::project::{Project, SECRETS_TOML, Warning, environment_path};
 use postui_core::varmodel::{self, VarMeta};
 use postui_core::{order, storage};
 use serde::Serialize;
@@ -173,7 +173,7 @@ pub fn show(g: &Global) -> Result<ShowReport, CliError> {
         .map(|slug| ShownEnv {
             slug: slug.clone(),
             name: project.env_name(slug),
-            file: env_file(&root, slug),
+            file: environment_path(&root, slug),
             active: project.active_env() == Some(slug.as_str()),
         })
         .collect();
@@ -630,12 +630,11 @@ fn gather(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<Gathered,
             } else {
                 project.selections_for(key).get(name)
             };
-            // Where `options` came from: the same shared-or-environment
-            // choice `varmodel::options_of` makes; change both together.
-            let file = if decl.shared {
+            // Where `options` came from, by the choice `options_of` made.
+            let file = if varmodel::options_in_model(model, name) {
                 Some(root.join("variables.toml"))
             } else {
-                slug.as_ref().map(|slug| env_file(&root, slug))
+                slug.as_ref().map(|slug| environment_path(&root, slug))
             };
             SelectorDetail {
                 name: name.clone(),
@@ -660,7 +659,7 @@ fn gather(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<Gathered,
     Ok(Gathered {
         environment: slug.map(|slug| VarsEnv {
             name: project.env_name(&slug),
-            file: env_file(&root, &slug),
+            file: environment_path(&root, &slug),
             slug,
         }),
         files: VarsFiles { variables: root.join("variables.toml") },
@@ -669,11 +668,6 @@ fn gather(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<Gathered,
         warnings,
         root,
     })
-}
-
-/// Where environment `slug` is written.
-pub(super) fn env_file(root: &Path, slug: &str) -> PathBuf {
-    root.join("environments").join(format!("{slug}.toml"))
 }
 
 /// The lines `vars` and `vars <name>` start with: the root, the
@@ -721,13 +715,13 @@ impl VarsReport {
             .selectors
             .iter()
             .map(|s| {
-                let options =
-                    if s.options.is_empty() { "(none)".to_string() } else { s.options.join(", ") };
+                let list =
+                    |l: &[String]| if l.is_empty() { "(none)".to_string() } else { l.join(", ") };
                 vec![
                     s.name.clone(),
                     format!("selected {}", s.selected.as_deref().unwrap_or("-")),
-                    format!("fields {}", s.fields.join(", ")),
-                    format!("options {options}"),
+                    format!("fields {}", list(&s.fields)),
+                    format!("options {}", list(&s.options)),
                     if s.shared { "shared".to_string() } else { String::new() },
                     s.description.clone().unwrap_or_default(),
                 ]

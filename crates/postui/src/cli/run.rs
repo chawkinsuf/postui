@@ -6,7 +6,7 @@
 
 use super::check::reason;
 use super::mask::{self, Mask};
-use super::out::{count, rel, table};
+use super::out::{count, fields, rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
@@ -439,16 +439,16 @@ impl RunReport {
             (Some(method), Some(url)) => format!("{} {url}\n", method.as_str()),
             _ => format!("{}\n", self.request),
         };
-        let mut rows = vec![
-            vec!["request".to_string(), self.request.clone()],
-            vec!["root".to_string(), self.root.display().to_string()],
-            vec!["file".to_string(), rel(&self.root, &self.file)],
-            vec!["environment".to_string(), self.environment.as_deref().unwrap_or("(none)").into()],
+        let mut facts = vec![
+            ("request", self.request.clone()),
+            ("root", self.root.display().to_string()),
+            ("file", rel(&self.root, &self.file)),
+            ("environment", self.environment.clone().unwrap_or_else(|| "(none)".to_string())),
         ];
         if self.dry_run {
-            rows.push(vec!["dry run".to_string(), "nothing was sent".to_string()]);
+            facts.push(("dry run", "nothing was sent".to_string()));
         }
-        out.push_str(&table(&rows));
+        out.push_str(&fields(&facts));
         if !self.request_headers.is_empty() {
             let rows: Vec<Vec<String>> = self
                 .request_headers

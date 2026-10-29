@@ -8,7 +8,7 @@
 
 use super::mask::MASK_MIN_CHARS;
 use super::out::{count, fields, rel, table};
-use super::read::{displayed, env_file, open, pick_env};
+use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
 use postui_core::project::{self, Project, Skipped};
@@ -92,7 +92,7 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
 
     for slug in project.environments().to_vec() {
         if let Err(e) = project.load_environment(&slug) {
-            errors.push(Finding::at(env_file(&root, &slug), reason(e)));
+            errors.push(Finding::at(project::environment_path(&root, &slug), reason(e)));
         }
     }
 

@@ -151,10 +151,13 @@ fn dry_run_prints_the_prepared_request_masked() {
     assert_ok(&out, "run --dry-run");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("POST") && text.contains(MASK) && !text.contains(SECRET), "{text}");
-    // R20: the file relative to the root the text names.
+    // R20: the file relative to the root the text names, in the head every
+    // report starts with.
     assert!(
-        text.contains(&format!(
-            "  root         {}\n  file         requests/main/me.toml\n",
+        text.starts_with(&format!(
+            "POST {}\nrequest      main/me\nroot         {}\nfile         requests/main/me.toml\n\
+             environment  dev\ndry run      nothing was sent\n",
+            "https://dev.example.com/me?key=●●●●●●",
             s(&root)
         )),
         "{text}"
