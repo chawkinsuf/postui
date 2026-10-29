@@ -94,11 +94,15 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
 
     // A secret too short to mask would show in run and suite output, in
     // whichever environment they run: every environment's is checked, even
-    // when the environment asked for fails to load.
+    // when the environment asked for fails to load. Only names
+    // `variables.toml` declares secret count: an entry it doesn't is never
+    // used.
+    let model = project.variables();
     for (env_slug, secrets) in project.secrets() {
         for (name, value) in secrets {
+            let declared_secret = model.vars.get(name).is_some_and(|v| v.secret);
             // An empty value can't leak, so it isn't warned of.
-            if !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
+            if declared_secret && !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
                 warnings.push(Finding::at(
                     root.join(project::SECRETS_TOML),
                     format!(

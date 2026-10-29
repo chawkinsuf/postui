@@ -182,11 +182,12 @@ migration fails with "open it in postui once to migrate it". (mine)
 `response.body` and `body_json`, so the request needn't be sent again. A
 `-o` write that fails after the send prints the report with the body and
 `error` set (in `suite`, a warning), exit 1. `--select` naming one
-selector twice is a usage error. And (mine (approved)) `--timeout` is an
-timeout on how long the server may stay silent, not a total deadline:
-until the response starts, then between reads of the body; a long download
-that keeps coming is not cut off. `-o` writes the file in
-place (not atomically), so `/dev/null` and pipes work.
+selector twice is a usage error. And (mine (approved)) `--timeout` is not a
+total deadline: the request (connect, upload and any redirects) must get
+its final response started within SECS; after that each gap between reads
+of the body may last SECS, so a long download that keeps coming is not cut
+off. `-o` writes the file in place (not atomically), so `/dev/null` and
+pipes work.
 
 `postui suite [-p] [--space S] [--env E] [--select SEL=OPT]... [--timeout SECS] [-o FILE]`
 

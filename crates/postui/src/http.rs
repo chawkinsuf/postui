@@ -44,19 +44,20 @@ pub fn client() -> reqwest::Client {
 }
 
 /// The one client builder: `insecure` skips TLS certificate verification,
-/// `idle` is how long the server may stay silent. The read timer starts
-/// when the request goes out and resets after each successful read, and
-/// nothing is read until the response head arrives: so a slow upload or a
-/// slow server must answer within `idle`, and then each gap between body
-/// reads must too. A long download that keeps coming is never cut off. `build()` can only
-/// fail on TLS backend initialization; each caller says what to do then.
+/// `idle` is reqwest's read timeout: the timer runs from the request's
+/// creation until the final response head (connecting, uploading and any
+/// redirects included), then resets after each read of the body. So the
+/// request must get its final response started within `idle`, and each gap
+/// between body reads may last `idle`: a long download that keeps coming is
+/// never cut off. `build()` can only fail on TLS backend initialization;
+/// each caller says what to do then.
 fn build_client(insecure: bool, idle: Option<Duration>) -> Result<reqwest::Client, reqwest::Error> {
     let mut builder = reqwest::Client::builder();
     if insecure {
         builder = builder.danger_accept_invalid_certs(true);
     }
     if let Some(d) = idle {
-        builder = builder.connect_timeout(d).read_timeout(d);
+        builder = builder.read_timeout(d);
     }
     builder.build()
 }

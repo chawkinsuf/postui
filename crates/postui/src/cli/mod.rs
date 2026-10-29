@@ -224,9 +224,10 @@ a status of 400 or more, when the request can't be prepared or sent, or when
                             can be given more than once
   --jq <filter>             print the filter's results instead of the body
   -o, --output <file>       write the body (or each jq result) to <file>
-  --timeout <secs>          give up when the server is silent this long: until
-                            the response starts, then between reads of the
-                            body (default: 30; 0: never)
+  --timeout <secs>          give up if the response hasn't started after this
+                            long (connect, upload and redirects included),
+                            or the body stalls this long between reads
+                            (default: 30; 0: never)
   --dry-run                 print the request that would be sent; send nothing
   --show-secrets            print secrets' values
 ",
@@ -254,9 +255,10 @@ request failed to prepare or send or returned 400 or more.
   --select <sel>=<opt>      pick an option of a selector for this run only;
                             can be given more than once
   -o, --output <file>       also write what is printed to <file>
-  --timeout <secs>          give up on a request when the server is silent
-                            this long: until the response starts, then
-                            between reads of the body (default: 30; 0: never)
+  --timeout <secs>          give up on a request if its response hasn't
+                            started after this long (connect, upload and
+                            redirects included), or the body stalls this
+                            long between reads (default: 30; 0: never)
   --show-secrets            print secrets' values
 ",
     text_flag!()
@@ -540,10 +542,12 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Suite { g, space, opts, output } => {
             match suite::suite(&g, space.as_deref(), &opts).await {
                 Ok((mut report, mask)) => {
-                    // The file is named before rendering, so the report in
-                    // it and on stdout are the same bytes.
-                    if let Some(Ok(absolute)) = output.as_deref().map(std::path::absolute) {
-                        report.set_output_file(absolute);
+                    // The file is named (made absolute once) before
+                    // rendering, so the report in it and on stdout are the
+                    // same bytes.
+                    let file = output.as_deref().map(run::absolute);
+                    if let Some(Ok(path)) = &file {
+                        report.set_output_file(path.clone());
                     }
                     let mut printed = match out::render(&report, g.text, suite::SuiteReport::text) {
                         Ok(printed) => printed,
@@ -552,8 +556,8 @@ pub async fn run(cmd: Command) -> ExitCode {
                     // Written before printing, so stdout can say whether it
                     // worked. The requests are sent, so a failed write is a
                     // warning on the one report, not an error envelope.
-                    if let Some(Err(e)) =
-                        output.map(|file| run::write_output(&file, printed.as_bytes()))
+                    if let Some(Err(e)) = file
+                        .map(|path| path.and_then(|p| run::write_output(&p, printed.as_bytes())))
                     {
                         report.note_write_failure(mask.apply(&e.message));
                         printed = match out::render(&report, g.text, suite::SuiteReport::text) {

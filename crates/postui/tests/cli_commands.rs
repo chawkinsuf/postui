@@ -586,6 +586,24 @@ fn check_warns_about_a_secret_too_short_to_mask() {
     assert!(!printed.contains("\"abc\"") && !printed.contains("\"xy\""), "{printed}");
 }
 
+/// An entry of `secrets.toml` that `variables.toml` doesn't declare secret is
+/// never used, so its short value is not warned of.
+#[test]
+fn check_ignores_a_short_undeclared_secret_entry() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(
+        root.join(".postui/secrets.toml"),
+        "[dev]\ntoken = \"s3cr3t-value\"\nstray = \"ab\"\n",
+    )
+    .unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    let warnings = findings(&json(&out), "warnings");
+    assert!(warnings.iter().all(|(_, m)| !m.contains("shorter")), "{warnings:?}");
+}
+
 /// The short-secret warning does not depend on the asked-for environment
 /// loading: a broken `qa` is the error, `dev`'s short secret still warns.
 #[test]

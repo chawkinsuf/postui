@@ -37,8 +37,9 @@ pub struct RunOpts {
     /// given.
     pub selects: Vec<(String, String)>,
     pub show_secrets: bool,
-    /// `--timeout`, already defaulted: how long the server may be silent
-    /// (connecting, or between reads); `None` is no limit.
+    /// `--timeout`, already defaulted: how long the request may take to get
+    /// its final response started, and then each gap between reads of the
+    /// body; `None` is no limit.
     pub timeout: Option<Duration>,
 }
 
@@ -228,16 +229,16 @@ fn run_jq(
         .collect()
 }
 
-/// Writes `bytes` to `file` (made absolute against the working directory)
-/// and gives the absolute path.
-pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<PathBuf, CliError> {
-    let absolute = std::path::absolute(file).map_err(|e| {
-        CliError::at(format!("could not write {}: {e}", file.display()), file.into())
-    })?;
-    hostfs::write_output_file(&absolute, bytes).map_err(|e| {
-        CliError::at(format!("could not write {}: {e}", absolute.display()), absolute.clone())
-    })?;
-    Ok(absolute)
+/// `file` made absolute against the working directory.
+pub(super) fn absolute(file: &Path) -> Result<PathBuf, CliError> {
+    std::path::absolute(file)
+        .map_err(|e| CliError::at(format!("could not write {}: {e}", file.display()), file.into()))
+}
+
+/// Writes `bytes` to the absolute path `file`.
+pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    hostfs::write_output_file(file, bytes)
+        .map_err(|e| CliError::at(format!("could not write {}: {e}", file.display()), file.into()))
 }
 
 /// Fills `report` from `raw`: the response, the jq results, the `-o` file.
@@ -309,7 +310,7 @@ fn record(
         None => show_body = true,
     }
     if let (Some(file), Some(bytes)) = (output, file_bytes) {
-        match write_output(file, &bytes) {
+        match absolute(file).and_then(|path| write_output(&path, &bytes).map(|()| path)) {
             Ok(written) => report.output_file = Some(written),
             // The request is sent and can't be resent safely: the report
             // keeps what came back, as if there were no `-o`.
@@ -386,6 +387,9 @@ pub async fn run(
             value: if show { &h.value } else { &h.display }.clone(),
         })
         .collect();
+    // `prepare` has no display form for the body, so it goes through the
+    // output mask: a secret under MASK_MIN_CHARS prints (the spec doesn't
+    // mask values under 4 characters; `check` warns).
     report.request_body = request.body.as_deref().map(|b| mask.apply(b));
     report.warnings.extend(warnings.iter().map(|w| mask.apply(&w.to_string())));
     if dry_run {
