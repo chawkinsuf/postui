@@ -4,8 +4,11 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 
 /// A throwaway home: `HOME` and the XDG directories point into it, so the
 /// binary reads (and could only ever write) its config here. The path is
@@ -123,6 +126,101 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut out = BTreeMap::new();
     walk(root, root, &mut out);
     out
+}
+
+/// A local HTTP server for the commands that send. It answers by path:
+/// `/ok` 200 JSON `{"id":42}`; `/missing` 404 `nope`; `/echo` 200 with the
+/// request's `authorization` in `x-echo` and its body back; `/bytes` 200
+/// `ok\xff\xfe`; `/hang` never answers; anything else 200, empty.
+pub struct Server {
+    port: u16,
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+impl Server {
+    pub fn start() -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        // Sockets of `/hang` requests, kept open so they stay unanswered.
+        let held = Arc::new(Mutex::new(Vec::new()));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (log, held) = (log.clone(), held.clone());
+                std::thread::spawn(move || serve(stream, &log, &held));
+            }
+        });
+        Server { port, seen }
+    }
+
+    /// `http://127.0.0.1:<port>`.
+    pub fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// `"METHOD /path"` for each request, in arrival order.
+    pub fn seen(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+/// Reads one request off `stream`, records it and answers it.
+fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpStream>>) {
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(at) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => data.extend_from_slice(&chunk[..n]),
+        }
+    };
+    let head = String::from_utf8_lossy(&data[..head_end]).into_owned();
+    let mut lines = head.lines();
+    let mut request_line = lines.next().unwrap_or_default().split(' ');
+    let method = request_line.next().unwrap_or_default();
+    let target = request_line.next().unwrap_or_default();
+    let path = target.split('?').next().unwrap_or_default();
+    let header = |name: &str| {
+        lines
+            .clone()
+            .filter_map(|l| l.split_once(':'))
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.trim().to_string())
+    };
+    let length: usize = header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    while data.len() < head_end + length {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => data.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let body = &data[head_end..];
+    seen.lock().unwrap().push(format!("{method} {path}"));
+    let (status, extra, payload): (&str, String, Vec<u8>) = match path {
+        "/ok" => ("200 OK", "content-type: application/json\r\n".into(), br#"{"id":42}"#.to_vec()),
+        "/missing" => ("404 Not Found", String::new(), b"nope".to_vec()),
+        "/echo" => (
+            "200 OK",
+            format!("x-echo: {}\r\n", header("authorization").unwrap_or_default()),
+            body.to_vec(),
+        ),
+        "/bytes" => ("200 OK", String::new(), b"ok\xff\xfe".to_vec()),
+        "/hang" => {
+            held.lock().unwrap().push(stream);
+            return;
+        }
+        _ => ("200 OK", String::new(), Vec::new()),
+    };
+    let head = format!(
+        "HTTP/1.1 {status}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n",
+        payload.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&payload);
 }
 
 /// A project at `<home>/<dir>` with two spaces, two environments and three

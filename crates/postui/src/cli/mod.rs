@@ -303,6 +303,9 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             if options.dry_run && output.is_some() {
                 return Err("-o needs a send; it can't go with --dry-run".into());
             }
+            if options.dry_run && options.jq.is_some() {
+                return Err("--jq needs a send; it can't go with --dry-run".into());
+            }
             let timeout = match options.timeout.as_deref() {
                 None => Some(DEFAULT_TIMEOUT),
                 Some(secs) => match secs.parse::<u64>() {
@@ -453,8 +456,8 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Init { dir, name, text } => {
             finish(read::init(&dir, name.as_deref()), text, read::InitReport::text)
         }
-        Command::Run { g, request, opts, dry_run, .. } => {
-            match run::run(&g, &request, &opts, dry_run).await {
+        Command::Run { g, request, opts, jq, output, dry_run } => {
+            match run::run(&g, &request, &opts, jq.as_deref(), output.as_deref(), dry_run).await {
                 Ok(report) => {
                     out::emit(&report, g.text, run::RunReport::text).unwrap_or(report.status())
                 }
@@ -617,6 +620,7 @@ mod tests {
         assert!(err(&["run", "a", "--timeout", "soon"]).contains("--timeout"));
         assert!(err(&["run", "a", "--timeout", "-1"]).contains("--timeout"));
         assert!(err(&["run", "a", "-o", "out.bin", "--dry-run"]).contains("-o needs a send"));
+        assert!(err(&["run", "a", "--jq", ".id", "--dry-run"]).contains("--jq needs a send"));
         assert_eq!(err(&["run", "a", "--env", "x", "--env", "y"]), "--env is given twice");
         assert_eq!(err(&["run", "a", "--space", "x"]), "unknown option '--space'");
         assert_eq!(err(&["show", "--select", "a=b"]), "unknown option '--select'");

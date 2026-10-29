@@ -9,13 +9,14 @@ use super::mask::{self, Mask};
 use super::out::table;
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
-use crate::http::Clients;
+use crate::hostfs;
+use crate::http::{Clients, RawResponse, send_raw};
 use postui_core::model::Method;
 use postui_core::prepare::{self, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
-use postui_core::{storage, varmodel};
+use postui_core::{jq, storage, varmodel};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -23,7 +24,7 @@ use std::time::Duration;
 const FAILED: u8 = 1;
 
 /// A response status from here up is a failure (`run` exits 1).
-const FIRST_FAILING_STATUS: u64 = 400;
+const FIRST_FAILING_STATUS: u16 = 400;
 
 /// What `run` and `suite` share on their command lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,8 +136,8 @@ pub struct RunReport {
     request_body: Option<String>,
     dry_run: bool,
     /// What came back; `null` for a dry run or when nothing did.
-    response: Option<serde_json::Value>,
-    jq: Option<serde_json::Value>,
+    response: Option<ResponseReport>,
+    jq: Option<JqReport>,
     output_file: Option<PathBuf>,
     /// Why there is no response (an unresolved variable, a send error).
     error: Option<String>,
@@ -149,12 +150,133 @@ struct ShownHeader {
     value: String,
 }
 
+/// What came back, masked. `body` and `body_json` are `null` when `--jq`
+/// or `-o` took the body.
+#[derive(Serialize)]
+struct ResponseReport {
+    status: u16,
+    ttfb_ms: u64,
+    elapsed_ms: u64,
+    /// The raw length in bytes.
+    size: usize,
+    headers: Vec<ShownHeader>,
+    body: Option<String>,
+    /// The masked body parsed as JSON; `null` when it doesn't parse.
+    body_json: Option<serde_json::Value>,
+}
+
+/// What `--jq` made of the body: each result parsed as JSON, or why not.
+#[derive(Serialize)]
+struct JqReport {
+    filter: String,
+    output: Option<Vec<serde_json::Value>>,
+    error: Option<String>,
+}
+
+/// Whole milliseconds.
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Runs `filter` over the masked body `text`: each result masked, as the
+/// JSON text jq printed it and parsed.
+fn run_jq(
+    filter: &str,
+    text: &str,
+    mask: &Mask,
+) -> Result<Vec<(String, serde_json::Value)>, String> {
+    let doc = jq::JqDocument::parse(text).map_err(|e| e.message())?;
+    let results = jq::run(filter, &doc).map_err(|e| e.message())?;
+    results
+        .into_iter()
+        .map(|r| {
+            let r = mask.apply(&r);
+            let value =
+                serde_json::from_str(&r).map_err(|e| format!("a result isn't JSON: {e}"))?;
+            Ok((r, value))
+        })
+        .collect()
+}
+
+/// Writes `bytes` to `file` (made absolute against the working directory)
+/// and gives the absolute path.
+fn write_output(file: &Path, bytes: &[u8]) -> Result<PathBuf, CliError> {
+    let absolute = std::path::absolute(file)
+        .map_err(|e| CliError::at(format!("can't write {}: {e}", file.display()), file.into()))?;
+    hostfs::write_user_file(&absolute, bytes).map_err(|e| {
+        CliError::at(format!("can't write {}: {e}", absolute.display()), absolute.clone())
+    })?;
+    Ok(absolute)
+}
+
+/// Fills `report` from `raw`: the response, the jq results, the `-o` file.
+fn record(
+    report: &mut RunReport,
+    mask: &Mask,
+    raw: RawResponse,
+    jq: Option<&str>,
+    output: Option<&Path>,
+) -> Result<(), CliError> {
+    let text = mask.apply(&String::from_utf8_lossy(&raw.bytes));
+    let mut response = ResponseReport {
+        status: raw.status,
+        ttfb_ms: millis(raw.ttfb),
+        elapsed_ms: millis(raw.elapsed),
+        size: raw.bytes.len(),
+        headers: raw
+            .headers
+            .iter()
+            .map(|(n, v)| ShownHeader { name: mask.apply(n), value: mask.apply(v) })
+            .collect(),
+        body: None,
+        body_json: None,
+    };
+    // What `-o` would write, and whether the body is shown.
+    let mut file_bytes = None;
+    match jq {
+        Some(filter) => match run_jq(filter, &text, mask) {
+            Ok(results) => {
+                let (lines, values): (Vec<String>, Vec<serde_json::Value>) =
+                    results.into_iter().unzip();
+                file_bytes = output.map(|_| {
+                    lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect::<String>().into_bytes()
+                });
+                report.jq = Some(JqReport {
+                    filter: filter.to_string(),
+                    output: output.is_none().then_some(values),
+                    error: None,
+                });
+            }
+            Err(message) => {
+                report.jq = Some(JqReport {
+                    filter: filter.to_string(),
+                    output: None,
+                    error: Some(mask.apply(&message)),
+                });
+            }
+        },
+        None if output.is_some() => file_bytes = Some(raw.bytes),
+        None => {
+            response.body_json = serde_json::from_str(&text).ok();
+            response.body = Some(text);
+        }
+    }
+    if let (Some(file), Some(bytes)) = (output, file_bytes) {
+        report.output_file = Some(write_output(file, &bytes)?);
+    }
+    report.response = Some(response);
+    Ok(())
+}
+
 /// Runs request `slug` of the project `g` names. With `dry_run` it only
-/// prepares it.
+/// prepares it; else it sends it, and `jq` filters the body and `output`
+/// takes it (or the jq results) to a file.
 pub async fn run(
     g: &Global,
     slug: &str,
     opts: &RunOpts,
+    jq: Option<&str>,
+    output: Option<&Path>,
     dry_run: bool,
 ) -> Result<RunReport, CliError> {
     let mut s = session(g, opts)?;
@@ -196,11 +318,12 @@ pub async fn run(
         .collect();
     report.request_body = request.body.as_deref().map(|b| s.mask.apply(b));
     report.warnings.extend(warnings.iter().map(|w| s.mask.apply(&w.to_string())));
-    if !dry_run {
-        // Placeholder until the send lands; it reads the clients that send
-        // will use.
-        let _clients = &s.clients;
-        return Err(CliError::new("sending is not implemented yet; use --dry-run"));
+    if dry_run {
+        return Ok(report);
+    }
+    match send_raw(s.clients.for_request(&request), &request).await {
+        Ok(raw) => record(&mut report, &s.mask, raw, jq, output)?,
+        Err(message) => report.error = Some(s.mask.apply(&message)),
     }
     Ok(report)
 }
@@ -209,8 +332,8 @@ impl RunReport {
     /// 1 when the run failed: an error, a status of 400 or more, or a jq
     /// error; else 0.
     pub fn status(&self) -> ExitCode {
-        let status = self.response.as_ref().and_then(|r| r["status"].as_u64());
-        let jq_failed = self.jq.as_ref().is_some_and(|j| !j["error"].is_null());
+        let status = self.response.as_ref().map(|r| r.status);
+        let jq_failed = self.jq.as_ref().is_some_and(|j| j.error.is_some());
         if self.error.is_some() || jq_failed || status.is_some_and(|s| s >= FIRST_FAILING_STATUS) {
             ExitCode::from(FAILED)
         } else {
@@ -245,6 +368,33 @@ impl RunReport {
         }
         if let Some(body) = &self.request_body {
             out.push_str(&format!("\nrequest body\n{body}\n"));
+        }
+        if let Some(r) = &self.response {
+            out.push_str(&format!(
+                "\nresponse\n  {} in {} ms (first byte {} ms), {} bytes\n",
+                r.status, r.elapsed_ms, r.ttfb_ms, r.size
+            ));
+            let rows: Vec<Vec<String>> =
+                r.headers.iter().map(|h| vec![h.name.clone(), h.value.clone()]).collect();
+            if !rows.is_empty() {
+                out.push_str("\nresponse headers\n");
+                out.push_str(&table(&rows));
+            }
+            if let Some(body) = &r.body {
+                out.push_str(&format!("\nresponse body\n{body}\n"));
+            }
+        }
+        if let Some(j) = &self.jq {
+            out.push_str(&format!("\njq {}\n", j.filter));
+            for value in j.output.iter().flatten() {
+                out.push_str(&format!("{value}\n"));
+            }
+            if let Some(error) = &j.error {
+                out.push_str(&format!("  error: {error}\n"));
+            }
+        }
+        if let Some(file) = &self.output_file {
+            out.push_str(&format!("\nwritten to {}\n", file.display()));
         }
         if let Some(error) = &self.error {
             out.push_str(&format!("\nerror\n  {error}\n"));

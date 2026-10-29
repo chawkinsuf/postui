@@ -772,6 +772,26 @@ fn every_read_command_writes_nothing() {
     }
 }
 
+/// Only `run` (and later `suite`) puts a request on the wire: the read
+/// commands resolve the URLs, they never visit them.
+#[test]
+fn read_commands_send_nothing() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = write_project(&home, "api");
+    std::fs::write(
+        root.join("environments/dev.toml"),
+        format!("base = \"{}\"\n\n[options.user.alice]\nuser_id = \"42\"\n", server.base()),
+    )
+    .unwrap();
+
+    for command in ["show", "requests", "vars", "check"] {
+        let out = home.run(&[command, "-p", s(&root)]);
+        assert_ne!(out.status.code(), Some(2), "{command}");
+    }
+    assert!(server.seen().is_empty(), "{:?}", server.seen());
+}
+
 /// Review Focus 5: a reader that stopped ends the run quietly.
 #[test]
 fn closed_stdout_ends_quietly() {
