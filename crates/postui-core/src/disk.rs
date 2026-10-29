@@ -70,6 +70,8 @@ pub enum DiskError {
     AlreadyExists(String),
     #[error("{0} not found")]
     NotFound(String),
+    #[error("{0}: refused, opened read-only")]
+    ReadOnly(String),
 }
 
 impl DiskError {
@@ -129,6 +131,9 @@ pub struct Disk {
     /// Where `trash` puts deleted paths: a project's trash folder. A
     /// `Disk` given none (the config directory's) never trashes.
     trash: Option<RelPath>,
+    /// Set by `set_read_only`: every method that would change the disk
+    /// fails with `ReadOnly` before touching it.
+    read_only: bool,
 }
 
 /// What [`Disk::ignore_when_created`] writes: git skips every file in the
@@ -140,7 +145,31 @@ const IGNORE_ALL: &str = "# Written by postui: keeps this folder (secrets, open 
 
 impl Disk {
     pub fn new(root: PathBuf) -> Disk {
-        Disk { root, stamps: HashMap::new(), private: HashSet::new(), ignored: None, trash: None }
+        Disk {
+            root,
+            stamps: HashMap::new(),
+            private: HashSet::new(),
+            ignored: None,
+            trash: None,
+            read_only: false,
+        }
+    }
+
+    /// From now on every write, create, rename, remove and trash fails
+    /// with `ReadOnly` and touches nothing. Reads (which only record
+    /// stamps in memory) are unaffected. There is no way back.
+    pub fn set_read_only(&mut self) {
+        self.read_only = true;
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// The one read-only check: every method that changes the disk calls
+    /// it first, with the path it was asked to change.
+    fn refuse(&self, rel: &RelPath) -> Result<(), DiskError> {
+        if self.read_only { Err(DiskError::ReadOnly(rel.to_string())) } else { Ok(()) }
     }
 
     /// Names the folder `trash` moves deleted paths into, numbered slots
@@ -173,6 +202,7 @@ impl Disk {
         rel: &RelPath,
         op: &'static str,
     ) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         if let Some(d) = self.ignored_dir_to_make(dir, rel) {
             self.make_sealed(&d, rel, op)?;
         }
@@ -216,6 +246,7 @@ impl Disk {
         rel: &RelPath,
         op: &'static str,
     ) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         let abs = self.abs(d);
         let parent = abs.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
@@ -316,6 +347,7 @@ impl Disk {
     }
 
     pub fn write_bytes(&mut self, rel: &RelPath, contents: &[u8]) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         let path = self.abs(rel);
         let target = match std::fs::symlink_metadata(&path) {
             Ok(m) if m.file_type().is_symlink() => {
@@ -354,6 +386,7 @@ impl Disk {
     /// and linked into place only if nothing is there, so a failed write
     /// leaves no partial file and a refused one leaves no residue.
     pub fn write_new(&mut self, rel: &RelPath, text: &str) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         let path = self.abs(rel);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         self.create_dirs(parent, rel, "create the directory of")?;
@@ -365,6 +398,7 @@ impl Disk {
     /// `make_sealed`, which places the `.gitignore` in the directory it
     /// just made and must not come back through `create_dirs`.
     fn place_new(&mut self, path: &Path, rel: &RelPath, contents: &[u8]) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let tmp = Self::staged(parent, contents, rel, self.private.contains(rel))?;
         match tmp.persist_noclobber(path) {
@@ -404,6 +438,7 @@ impl Disk {
 
     /// Removes a file. A missing file is success.
     pub fn remove(&mut self, rel: &RelPath) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         match std::fs::remove_file(self.abs(rel)) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -414,6 +449,7 @@ impl Disk {
     }
 
     pub fn create_dir(&mut self, rel: &RelPath) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         self.create_dirs(&self.abs(rel), rel, "create")?;
         self.record(rel);
         Ok(())
@@ -449,6 +485,7 @@ impl Disk {
     /// missing, `AlreadyExists` when `to` is occupied; `to`'s parent is
     /// created. Records both stamps.
     pub fn rename(&mut self, from: &RelPath, to: &RelPath) -> Result<(), DiskError> {
+        self.refuse(from)?;
         let from_abs = self.abs(from);
         let to_abs = self.abs(to);
         if !from_abs.exists() {
@@ -520,6 +557,7 @@ impl Disk {
     }
 
     pub fn remove_dir_all(&mut self, rel: &RelPath) -> Result<(), DiskError> {
+        self.refuse(rel)?;
         match std::fs::remove_dir_all(self.abs(rel)) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -556,6 +594,7 @@ impl Disk {
     /// so the cost is independent of size. An error, touching nothing, on
     /// a `Disk` given no trash folder.
     pub fn trash(&mut self, rel: &RelPath) -> Result<Ticket, DiskError> {
+        self.refuse(rel)?;
         let Some(root) = self.trash.clone() else {
             let none = std::io::Error::new(std::io::ErrorKind::Unsupported, "no trash folder");
             return Err(DiskError::io("trash", rel)(none));
@@ -568,11 +607,13 @@ impl Disk {
     /// Renames a trashed path back. `AlreadyExists` when the original is
     /// occupied; never clobbers.
     pub fn restore(&mut self, t: &Ticket) -> Result<(), DiskError> {
+        self.refuse(&t.slot)?;
         self.rename(&t.slot, &t.original)
     }
 
     /// The redo half of `restore`: back into the recorded slot.
     pub fn retrash(&mut self, t: &Ticket) -> Result<(), DiskError> {
+        self.refuse(&t.original)?;
         self.rename(&t.original, &t.slot)
     }
 
@@ -1098,6 +1139,47 @@ mod tests {
         disk.write(&p, "x").unwrap();
         assert!(disk.trash(&p).is_err());
         assert!(disk.is_file(&p), "a refused trash leaves the file");
+    }
+
+    #[test]
+    fn read_only_refuses_every_write_and_still_reads() {
+        let (d, mut disk) = disk();
+        let a = RelPath::new("a.txt").unwrap();
+        let slot = RelPath::new(TRASH_DIR).unwrap().join("1/old.txt").unwrap();
+        std::fs::write(d.path().join("a.txt"), "x").unwrap();
+        std::fs::create_dir_all(d.path().join(TRASH_DIR).join("1")).unwrap();
+        std::fs::write(d.path().join(TRASH_DIR).join("1/old.txt"), "t").unwrap();
+        let ticket = Ticket { original: RelPath::new("old.txt").unwrap(), slot: slot.clone() };
+        disk.set_read_only();
+        assert!(disk.is_read_only());
+        let b = RelPath::new("b.txt").unwrap();
+        let sub = RelPath::new("sub").unwrap();
+        let refused: [Result<(), DiskError>; 11] = [
+            disk.write(&a, "y"),
+            disk.write_bytes(&a, b"y"),
+            disk.write_new(&b, "y"),
+            disk.remove(&a),
+            disk.create_dir(&sub),
+            disk.rename(&a, &b),
+            disk.remove_dir_all(&RelPath::new(TRASH_DIR).unwrap()),
+            disk.trash(&a).map(|_| ()),
+            disk.restore(&ticket),
+            disk.retrash(&ticket),
+            disk.empty_trash(),
+        ];
+        for r in refused {
+            assert!(matches!(r, Err(DiskError::ReadOnly(_))), "{r:?}");
+        }
+        assert_eq!(disk.read(&a).unwrap().as_deref(), Some("x"));
+        assert_eq!(disk.peek(&a).unwrap().as_deref(), Some("x"));
+        assert!(disk.exists(&a));
+        assert_eq!(disk.list(&RelPath::new(TRASH_DIR).unwrap()).unwrap().len(), 1);
+        assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "x");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(TRASH_DIR).join("1/old.txt")).unwrap(),
+            "t"
+        );
+        assert!(!d.path().join("b.txt").exists() && !d.path().join("sub").exists());
     }
 
     #[test]
