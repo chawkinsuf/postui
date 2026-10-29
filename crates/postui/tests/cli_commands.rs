@@ -162,16 +162,25 @@ fn subdirectory_of_a_project_is_not_a_project() {
     assert_eq!(v["file"], s(&sub.join("project.toml")));
 }
 
-/// Review Focus 2: every spelling of one directory is one root.
+/// Review Focus 2: every spelling of one directory is one root, `..`
+/// included (the natural answer to the "pass -p" hint from inside it).
 #[test]
 fn project_path_forms_resolve_alike() {
     let home = Home::new();
     let proj = home.project("api", "API");
+    let main = proj.join("requests").join("main");
+    std::fs::create_dir_all(&main).unwrap();
     let trailing = format!("{}/", s(&proj));
-    for form in [s(&proj), &trailing, "api", "./api", "api/", "~/api"] {
+    let up = format!("{}/requests/..", s(&proj));
+    for form in [s(&proj), &trailing, &up, "api", "./api", "api/", "~/api", "api/requests/.."] {
         let out = home.run(&["show", "-p", form]);
         assert_ok(&out, form);
         assert_eq!(json(&out)["root"], s(&proj), "{form}");
+    }
+    for (cwd, args) in [(&main, &["show", "-p", "../.."][..]), (&proj, &["show"])] {
+        let out = home.run_in(cwd, args, |_| {});
+        assert_ok(&out, &format!("{args:?} from {}", cwd.display()));
+        assert_eq!(json(&out)["root"], s(&proj), "{args:?} from {}", cwd.display());
     }
 }
 
