@@ -1197,6 +1197,10 @@ pub enum CliParse {
     /// `postui help <cmd>` or `<cmd> --help`: print this usage to stdout
     /// and exit 0.
     CommandHelp(&'static str),
+    /// A mistake on a command's line, said in `reason`: the error envelope
+    /// on stdout, or, with `--text` on the line, the reason and the
+    /// command's `usage` on stderr; exit 2 either way (spec 2026-10-28 §5).
+    CommandUsage { reason: String, text: bool, usage: &'static str },
 }
 
 /// What `--help` prints to stdout, and a usage error to stderr after its
@@ -1248,7 +1252,11 @@ pub fn parse_cli(args: Vec<OsString>) -> CliParse {
         return match crate::cli::parse(&args) {
             Ok(crate::cli::Parsed::Run(command)) => CliParse::Command(command),
             Ok(crate::cli::Parsed::Help(text)) => CliParse::CommandHelp(text),
-            Err(reason) => CliParse::Usage { reason },
+            Err(reason) => CliParse::CommandUsage {
+                reason,
+                text: args.iter().any(|a| a == "--text"),
+                usage: crate::cli::usage(&first.to_string_lossy()),
+            },
         };
     }
     let is_help = |a: &OsString| a == "--help" || a == "-h";
@@ -2259,7 +2267,21 @@ osc52_limit = 1024
         assert!(
             matches!(cli(&["help", "vars"]), CliParse::CommandHelp(t) if t.starts_with("usage: postui vars"))
         );
-        assert_eq!(mistake(&["show", "--bogus"]), "unknown option '--bogus'");
+        // A command's mistake is the command's: an envelope, or with
+        // `--text` its own usage.
+        assert_eq!(
+            cli(&["show", "--bogus"]),
+            CliParse::CommandUsage {
+                reason: "unknown option '--bogus'".into(),
+                text: false,
+                usage: crate::cli::usage("show"),
+            }
+        );
+        assert!(matches!(
+            cli(&["show", "--bogus", "--text"]),
+            CliParse::CommandUsage { text: true, usage, .. } if usage.starts_with("usage: postui show")
+        ));
+        assert!(matches!(cli(&["help", "bogus"]), CliParse::CommandUsage { usage: USAGE, .. }));
         assert_eq!(
             cli(&["./show"]),
             CliParse::Root { root: Some(PathBuf::from("./show")), debug_ai: false }

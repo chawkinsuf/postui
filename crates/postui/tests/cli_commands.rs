@@ -246,8 +246,9 @@ fn closed_stdout_ends_quietly() {
     }
 }
 
-/// A command's help is its own usage on stdout; a mistake is said on
-/// stderr with status 2.
+/// A command's help is its own usage on stdout; a mistake is the error
+/// envelope on stdout, or with `--text` the reason and the command's own
+/// usage on stderr; status 2 either way (spec 2026-10-28 §5).
 #[test]
 fn command_help_and_mistakes() {
     let home = Home::new();
@@ -264,6 +265,14 @@ fn command_help_and_mistakes() {
     }
     let out = home.run(&["show", "--bogus"]);
     assert_eq!(out.status.code(), Some(2));
+    assert_eq!(json(&out), serde_json::json!({"error": "unknown option '--bogus'"}));
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let out = home.run(&["show", "--bogus", "--text"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stdout));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.starts_with("postui: unknown option '--bogus'"), "{stderr}");
+    assert!(stderr.starts_with("postui: unknown option '--bogus'\n\n"), "{stderr}");
+    assert!(stderr.contains("usage: postui show "), "the command's own usage: {stderr}");
+    assert!(!stderr.contains("commands ("), "not the general usage: {stderr}");
 }

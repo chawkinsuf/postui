@@ -59,6 +59,18 @@ pub fn fail(err: &CliError, text: bool) -> ExitCode {
     ExitCode::from(ERROR)
 }
 
+/// Prints a mistake on a command's line: the envelope on stdout, or with
+/// `text` the reason and the command's `usage` on stderr; the error
+/// status either way.
+pub fn fail_usage(reason: &str, text: bool, usage: &str) -> ExitCode {
+    if text {
+        print_err(&format!("postui: {reason}\n\n{usage}"));
+        ExitCode::from(ERROR)
+    } else {
+        fail(&CliError::new(reason), false)
+    }
+}
+
 /// `rows` as aligned columns, two spaces apart and indented by two, one
 /// row per line; the last column is not padded. Widths are display cells.
 pub fn table(rows: &[Vec<String>]) -> String {

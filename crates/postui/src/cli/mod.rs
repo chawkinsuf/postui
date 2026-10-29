@@ -185,6 +185,12 @@ fn spec(name: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.name == name)
 }
 
+/// The usage a mistake on `name`'s line is told with: the command's own,
+/// or the general one for `help` (whose mistake is naming no command).
+pub fn usage(name: &str) -> &'static str {
+    spec(name).map_or(crate::config::USAGE, |s| s.usage)
+}
+
 /// Parses a command line that starts at the command's name (one of
 /// [`SUBCOMMANDS`]). `--help`/`-h` anywhere on an otherwise valid line, or
 /// `help <cmd>`, asks for that command's usage; a mistake (an unknown
