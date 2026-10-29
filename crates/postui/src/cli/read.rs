@@ -4,8 +4,11 @@
 
 use super::out::table;
 use super::{CliError, Global, target};
+use indexmap::IndexMap;
 use postui_core::model::Method;
+use postui_core::prepare::SECRET_MASK;
 use postui_core::project::{Project, Warning};
+use postui_core::varmodel::{self, VarMeta};
 use postui_core::{order, storage};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -17,6 +20,57 @@ pub(super) fn open(root: &Path) -> Result<(Project, Vec<Warning>), CliError> {
         let file = (!e.file.is_empty()).then(|| e.root.join(&e.file));
         CliError { message: e.error, file }
     })
+}
+
+/// Makes `env` (a slug, else a display name, exact before case-insensitive)
+/// the project's environment for this run, and gives its slug; `None` keeps
+/// the one the open chose (the TUI's: its saved one, else the first). The
+/// result is `None` when the project has no environments. A missing
+/// environment, or one whose file doesn't parse, is the error. Nothing is
+/// written: the project is read-only, so `set_active_env`'s persist of the
+/// choice is refused and ignored.
+pub(super) fn pick_env(
+    project: &mut Project,
+    env: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    let Some(wanted) = env else {
+        return Ok(project.active_env().map(str::to_string));
+    };
+    let slugs = project.environments().to_vec();
+    let named = |slug: &String| project.env_name(slug);
+    let slug = slugs
+        .iter()
+        .find(|s| *s == wanted)
+        .or_else(|| slugs.iter().find(|s| named(s) == wanted))
+        .or_else(|| {
+            slugs
+                .iter()
+                .find(|s| s.eq_ignore_ascii_case(wanted) || named(s).eq_ignore_ascii_case(wanted))
+        })
+        .cloned()
+        .ok_or_else(|| {
+            CliError::new(if slugs.is_empty() {
+                format!("no such environment \"{wanted}\"; this project has none")
+            } else {
+                format!(
+                    "no such environment \"{wanted}\"; the environments are {}",
+                    slugs.join(", ")
+                )
+            })
+        })?;
+    if let Err(e) = project.load_environment(&slug) {
+        return Err(match e {
+            postui_core::project::Error::Parse { file, error } => {
+                CliError::at(format!("environment \"{slug}\": {error}"), project.root().join(file))
+            }
+            other => CliError::new(format!("environment \"{slug}\": {other}")),
+        });
+    }
+    // The file just parsed, so this loads it too; a failure now is a race.
+    if let Some(warning) = project.set_active_env(Some(slug.clone())).into_iter().next() {
+        return Err(CliError::new(warning));
+    }
+    Ok(Some(slug))
 }
 
 /// `postui projects`.
@@ -282,5 +336,191 @@ impl RequestsReport {
             .collect();
         let listed = if rows.is_empty() { "  (none)\n".to_string() } else { table(&rows) };
         format!("{listed}{}", warnings_text(&self.warnings))
+    }
+}
+
+/// `postui vars`.
+#[derive(Serialize)]
+pub struct VarsReport {
+    environment: Option<VarsEnv>,
+    files: VarsFiles,
+    variables: Vec<VarEntry>,
+    selectors: Vec<SelectorEntry>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct VarsEnv {
+    slug: String,
+    name: String,
+    file: PathBuf,
+}
+
+#[derive(Serialize)]
+struct VarsFiles {
+    variables: PathBuf,
+}
+
+#[derive(Serialize)]
+struct VarEntry {
+    name: String,
+    description: Option<String>,
+    /// `null` for `needs_selection`, `missing_secret` and `unset`.
+    value: Option<String>,
+    source: &'static str,
+    secret: bool,
+    /// The selector a field belongs to.
+    selector: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SelectorEntry {
+    name: String,
+    description: Option<String>,
+    shared: bool,
+    fields: Vec<String>,
+    options: Vec<OptionEntry>,
+    /// The option picked, `null` when none (or a stale pick) is.
+    selected: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OptionEntry {
+    name: String,
+    description: Option<String>,
+    values: IndexMap<String, String>,
+}
+
+/// Every variable's value in an environment and where it comes from, and
+/// every selector with its options and the one selected. A secret's value
+/// is masked unless `show_secrets`. A project with no environments gives
+/// `environment: null` and resolves against nothing.
+pub fn vars(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<VarsReport, CliError> {
+    let root = target::resolve(g.project.as_deref())?;
+    let (mut project, mut warnings) = open(&root)?;
+    warnings.extend(project.listing_warning().map(str::to_string));
+    let slug = pick_env(&mut project, env)?;
+
+    let model = project.variables();
+    let resolved = project.resolved();
+    let variables = resolved
+        .meta
+        .iter()
+        .map(|(name, meta)| {
+            let decl = model.vars.get(name);
+            let owner = || {
+                model
+                    .selectors
+                    .iter()
+                    .find(|(_, d)| d.fields.contains(name))
+                    .map(|(n, _)| n.clone())
+            };
+            let (source, selector) = match meta {
+                VarMeta::Simple if project.env_data().values.contains_key(name) => ("env", None),
+                VarMeta::Simple if decl.is_some_and(|d| d.default.is_some()) => ("default", None),
+                VarMeta::Simple => ("unset", None),
+                VarMeta::SelectorMember { selector, .. } => ("selector", Some(selector.clone())),
+                VarMeta::Secret => ("secret", None),
+                VarMeta::NeedsSelection => ("needs_selection", owner()),
+                VarMeta::MissingSecret => ("missing_secret", None),
+            };
+            let secret = matches!(meta, VarMeta::Secret | VarMeta::MissingSecret);
+            let value = resolved
+                .values
+                .get(name)
+                .map(|v| if secret && !show_secrets { SECRET_MASK.to_string() } else { v.clone() });
+            VarEntry {
+                name: name.clone(),
+                description: decl.and_then(|d| d.description.clone()),
+                value,
+                source,
+                secret,
+                selector,
+            }
+        })
+        .collect();
+
+    let key = slug.as_deref().unwrap_or_default();
+    let selectors = model
+        .selectors
+        .iter()
+        .map(|(name, decl)| {
+            let options = varmodel::options_of(model, project.env_data(), name);
+            let picked = if decl.shared {
+                project.local().shared_selections.get(name)
+            } else {
+                project.selections_for(key).get(name)
+            };
+            SelectorEntry {
+                name: name.clone(),
+                description: decl.description.clone(),
+                shared: decl.shared,
+                fields: decl.fields.clone(),
+                options: options
+                    .into_iter()
+                    .flatten()
+                    .map(|(option, o)| OptionEntry {
+                        name: option.clone(),
+                        description: o.description.clone(),
+                        values: o.values.clone(),
+                    })
+                    .collect(),
+                selected: picked.filter(|p| options.is_some_and(|o| o.contains_key(*p))).cloned(),
+            }
+        })
+        .collect();
+
+    Ok(VarsReport {
+        environment: slug.map(|slug| VarsEnv {
+            name: project.env_name(&slug),
+            file: root.join("environments").join(format!("{slug}.toml")),
+            slug,
+        }),
+        files: VarsFiles { variables: root.join("variables.toml") },
+        variables,
+        selectors,
+        warnings,
+    })
+}
+
+impl VarsReport {
+    pub fn text(&self) -> String {
+        let env = match &self.environment {
+            Some(e) => format!("{} ({})", e.name, e.slug),
+            None => "(none)".to_string(),
+        };
+        let mut out = format!("environment  {env}\n");
+        let rows: Vec<Vec<String>> = self
+            .variables
+            .iter()
+            .map(|v| {
+                vec![
+                    v.name.clone(),
+                    v.source.to_string(),
+                    v.value.clone().unwrap_or_else(|| "-".to_string()),
+                    v.description.clone().unwrap_or_default(),
+                ]
+            })
+            .collect();
+        out.push_str("\nvariables\n");
+        out.push_str(&if rows.is_empty() { "  (none)\n".to_string() } else { table(&rows) });
+        let rows: Vec<Vec<String>> = self
+            .selectors
+            .iter()
+            .map(|s| {
+                let options: Vec<&str> = s.options.iter().map(|o| o.name.as_str()).collect();
+                vec![
+                    s.name.clone(),
+                    s.selected.clone().unwrap_or_else(|| "-".to_string()),
+                    format!("fields {}", s.fields.join(", ")),
+                    format!("options {}", options.join(", ")),
+                    if s.shared { "shared".to_string() } else { String::new() },
+                ]
+            })
+            .collect();
+        out.push_str("\nselectors\n");
+        out.push_str(&if rows.is_empty() { "  (none)\n".to_string() } else { table(&rows) });
+        out.push_str(&warnings_text(&self.warnings));
+        out
     }
 }

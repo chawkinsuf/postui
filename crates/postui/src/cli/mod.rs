@@ -322,7 +322,9 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Requests { g, space } => {
             finish(read::requests(&g, space.as_deref()), g.text, read::RequestsReport::text)
         }
-        Command::Vars { g, .. } => not_yet("vars", g.text),
+        Command::Vars { g, env, show_secrets } => {
+            finish(read::vars(&g, env.as_deref(), show_secrets), g.text, read::VarsReport::text)
+        }
         Command::Check { g, .. } => not_yet("check", g.text),
         Command::Init { text, .. } => not_yet("init", text),
     }

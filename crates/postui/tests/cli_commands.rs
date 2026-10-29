@@ -139,9 +139,18 @@ fn write_project(home: &Home, dir: &str) -> PathBuf {
         "name = \"Billing \\\"API\\\" {{x}} ✓\"\nspaces = [\"main\", \"admin\"]\n\n\
          [space.admin]\nname = \"Admin\"\n\n[environment.dev]\nname = \"Dev\"\n",
     );
-    put("variables.toml", "[base]\ndescription = \"API root\"\n");
-    put("environments/dev.toml", "base = \"https://dev\"\n");
-    put("environments/qa.toml", "base = \"https://qa\"\n");
+    put(
+        "variables.toml",
+        "[base]\ndescription = \"API root\"\n\n[token]\nsecret = true\n\n[id]\n\n\
+         [region]\ndefault = \"eu\"\n\n[selectors.user]\nfields = [\"user_id\"]\n",
+    );
+    put(
+        "environments/dev.toml",
+        "base = \"https://dev\"\n\n[options.user.alice]\nuser_id = \"42\"\n",
+    );
+    put("environments/qa.toml", "base = \"https://qa\"\n\n[options.user.bob]\nuser_id = \"7\"\n");
+    put(".postui/state.toml", "environment = \"dev\"\n\n[selections.dev]\nuser = \"alice\"\n");
+    put(".postui/secrets.toml", "[dev]\ntoken = \"s3cr3t-value\"\n");
     put(
         "requests/main/users/get-user.toml",
         "name = \"Get user\"\nmethod = \"GET\"\nurl = \"{{base}}/users\"\n",
@@ -297,6 +306,144 @@ fn requests_reports_a_broken_file() {
     assert!(broken["method"].is_null() && broken["url"].is_null() && broken["name"].is_null());
     assert!(broken["error"].as_str().is_some_and(|e| !e.is_empty()), "{broken}");
     assert_eq!(broken["file"], s(&root.join("requests/main/list.toml")));
+}
+
+/// The `variables` entry named `name`.
+fn var<'a>(v: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    v["variables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == name)
+        .unwrap_or_else(|| panic!("no variable {name} in {v}"))
+}
+
+#[test]
+fn vars_reports_values_and_sources() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let before = tree(&root);
+
+    let out = home.run(&["vars", "-p", s(&root)]);
+    assert_ok(&out, "vars");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("s3cr3t-value"));
+    let v = json(&out);
+    assert_eq!(
+        v["environment"],
+        serde_json::json!({"slug": "dev", "name": "Dev",
+                           "file": s(&root.join("environments/dev.toml"))})
+    );
+    assert_eq!(v["files"], serde_json::json!({"variables": s(&root.join("variables.toml"))}));
+    assert_eq!(
+        *var(&v, "base"),
+        serde_json::json!({"name": "base", "description": "API root", "value": "https://dev",
+                           "source": "env", "secret": false, "selector": null})
+    );
+    assert_eq!(var(&v, "region")["source"], "default");
+    assert_eq!(var(&v, "region")["value"], "eu");
+    assert_eq!(var(&v, "id")["source"], "unset");
+    assert!(var(&v, "id")["value"].is_null());
+    assert_eq!(var(&v, "user_id")["source"], "selector");
+    assert_eq!(var(&v, "user_id")["selector"], "user");
+    assert_eq!(var(&v, "user_id")["value"], "42");
+    assert_eq!(var(&v, "token")["source"], "secret");
+    assert_eq!(var(&v, "token")["secret"], true);
+    assert_eq!(var(&v, "token")["value"], "●●●●●●");
+    assert_eq!(
+        v["selectors"],
+        serde_json::json!([{
+            "name": "user", "description": null, "shared": false, "fields": ["user_id"],
+            "options": [{"name": "alice", "description": null, "values": {"user_id": "42"}}],
+            "selected": "alice",
+        }])
+    );
+    assert_eq!(v["warnings"], serde_json::json!([]));
+
+    let out = home.run(&["vars", "-p", s(&root), "--text"]);
+    assert_ok(&out, "vars --text");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("https://dev") && text.contains("●●●●●●"), "{text}");
+    assert!(!text.contains("s3cr3t-value"), "{text}");
+
+    assert_eq!(tree(&root), before, "vars writes nothing, state.toml included");
+}
+
+#[test]
+fn vars_show_secrets_reveals() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let out = home.run(&["vars", "-p", s(&root), "--show-secrets"]);
+    assert_ok(&out, "vars --show-secrets");
+    assert_eq!(var(&json(&out), "token")["value"], "s3cr3t-value");
+    let out = home.run(&["vars", "-p", s(&root), "--show-secrets", "--text"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("s3cr3t-value"));
+}
+
+#[test]
+fn vars_env_by_display_name_and_unknown() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let meta = std::fs::read_to_string(root.join("project.toml")).unwrap();
+    std::fs::write(root.join("project.toml"), meta + "\n[environment.qa]\nname = \"QA\"\n")
+        .unwrap();
+    let before = tree(&root);
+
+    for name in ["QA", "qa"] {
+        let out = home.run(&["vars", "-p", s(&root), "--env", name]);
+        assert_ok(&out, name);
+        let v = json(&out);
+        assert_eq!(v["environment"]["slug"], "qa", "{name}");
+        assert_eq!(var(&v, "base")["value"], "https://qa");
+        assert_eq!(var(&v, "user_id")["source"], "needs_selection");
+        assert!(var(&v, "user_id")["value"].is_null());
+        assert_eq!(var(&v, "token")["source"], "missing_secret");
+        assert!(var(&v, "token")["value"].is_null());
+        assert_eq!(v["selectors"][0]["selected"], serde_json::Value::Null);
+    }
+
+    let out = home.run(&["vars", "-p", s(&root), "--env", "nope"]);
+    assert_eq!(out.status.code(), Some(2));
+    let error = json(&out)["error"].as_str().unwrap().to_string();
+    assert!(error.contains("nope") && error.contains("dev, qa"), "{error}");
+
+    assert_eq!(tree(&root), before, "picking an environment writes nothing");
+}
+
+/// A broken environment that was asked for is the error, naming its file.
+#[test]
+fn vars_env_with_a_broken_file_is_an_error() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("environments/qa.toml"), "[[").unwrap();
+    let out = home.run(&["vars", "-p", s(&root), "--env", "qa"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(json(&out)["file"], s(&root.join("environments/qa.toml")));
+}
+
+/// A project with no environments still resolves its variables.
+#[test]
+fn vars_without_environments() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::remove_dir_all(root.join("environments")).unwrap();
+    std::fs::remove_dir_all(root.join(".postui")).unwrap();
+    let before = tree(&root);
+
+    let out = home.run(&["vars", "-p", s(&root)]);
+    assert_ok(&out, "vars");
+    let v = json(&out);
+    assert!(v["environment"].is_null(), "{v}");
+    assert_eq!(var(&v, "region")["source"], "default");
+    assert_eq!(var(&v, "id")["source"], "unset");
+    assert_eq!(var(&v, "user_id")["source"], "needs_selection");
+    assert!(v["selectors"][0]["selected"].is_null());
+    assert!(v["selectors"][0]["options"].as_array().unwrap().is_empty());
+
+    let out = home.run(&["vars", "-p", s(&root), "--text"]);
+    assert_ok(&out, "vars --text");
+    let out = home.run(&["vars", "-p", s(&root), "--env", "dev"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(tree(&root), before);
 }
 
 #[test]
