@@ -123,6 +123,12 @@ pub(super) fn prepare_one(
     Ok(prepare::prepare(&req, &s.project.prepare_context()).map_err(|e| e.to_string()))
 }
 
+/// The URL as printed: what the screens show, or what the wire carries with
+/// `--show-secrets`; the mask then hides any secret value still in it.
+pub(super) fn shown_url(mask: &Mask, request: &PreparedRequest, show_secrets: bool) -> String {
+    mask.apply(if show_secrets { &request.url } else { &request.display_url })
+}
+
 /// `postui run`: one request, prepared and, unless `--dry-run`, sent. Every
 /// string in it has been through the session's mask.
 #[derive(Serialize)]
@@ -174,7 +180,7 @@ struct JqReport {
 }
 
 /// Whole milliseconds.
-fn millis(d: Duration) -> u64 {
+pub(super) fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -201,7 +207,7 @@ fn run_jq(
 
 /// Writes `bytes` to `file` (made absolute against the working directory)
 /// and gives the absolute path.
-fn write_output(file: &Path, bytes: &[u8]) -> Result<PathBuf, CliError> {
+pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<PathBuf, CliError> {
     let absolute = std::path::absolute(file)
         .map_err(|e| CliError::at(format!("can't write {}: {e}", file.display()), file.into()))?;
     hostfs::write_user_file(&absolute, bytes).map_err(|e| {
@@ -312,7 +318,7 @@ pub async fn run(
     // the mask then hides any secret value still in the text.
     let show = opts.show_secrets;
     report.method = Some(request.method);
-    report.url = Some(s.mask.apply(if show { &request.url } else { &request.display_url }));
+    report.url = Some(shown_url(&s.mask, &request, show));
     report.request_headers = request
         .wire
         .iter()

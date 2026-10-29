@@ -528,3 +528,169 @@ fn run_dry_run_sends_nothing() {
     assert_ok(&out, "run --dry-run");
     assert!(server.seen().is_empty());
 }
+
+/// A project with exactly the given request files (`space/name`, text), three
+/// spaces and the `dev` environment pointing `base` at `base`.
+fn write_suite_project(home: &Home, base: &str, requests: &[(&str, &str)]) -> PathBuf {
+    let root = home.path().join("suite");
+    let put = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    put(
+        "project.toml",
+        "name = \"Suite\"\nspaces = [\"main\", \"admin\", \"echoes\"]\n\n\
+         [environment.dev]\nname = \"Dev\"\n",
+    );
+    put("variables.toml", "[base]\n\n[token]\nsecret = true\n");
+    put("environments/dev.toml", &format!("base = \"{base}\"\n"));
+    put(".postui/secrets.toml", &format!("[dev]\ntoken = \"{SECRET}\"\n"));
+    for (name, text) in requests {
+        put(&format!("requests/{name}.toml"), text);
+    }
+    root
+}
+
+fn get(path: &str) -> String {
+    format!("method = \"GET\"\nurl = \"{{{{base}}}}{path}\"\n")
+}
+
+/// main: a-ok, b-missing, c-unresolved, d-broken, e-ok; admin: x.
+fn suite_project(home: &Home, base: &str) -> PathBuf {
+    write_suite_project(
+        home,
+        base,
+        &[
+            ("main/a-ok", &get("/ok")),
+            ("main/b-missing", &get("/missing")),
+            ("main/c-unresolved", "method = \"GET\"\nurl = \"{{bsae}}/x\"\n"),
+            ("main/d-broken", "nope = ["),
+            ("main/e-ok", &get("/ok")),
+            ("admin/x", &get("/ok")),
+        ],
+    )
+}
+
+#[test]
+fn suite_runs_in_sidebar_order_and_keeps_going() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = suite_project(&home, &server.base());
+
+    let listed = json(&home.run(&["requests", "-p", s(&root)]));
+    let order: Vec<&str> = listed["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["slug"].as_str().unwrap())
+        .collect();
+
+    let out = home.run(&["suite", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    assert_eq!(v["environment"], "dev");
+    assert!(v["space"].is_null());
+    let results = v["results"].as_array().unwrap();
+    let slugs: Vec<&str> = results.iter().map(|r| r["request"].as_str().unwrap()).collect();
+    assert_eq!(slugs, order);
+    assert_eq!(slugs.len(), 6);
+    assert_eq!(server.seen(), ["GET /ok", "GET /missing", "GET /ok", "GET /ok"]);
+
+    let by = |slug: &str| results.iter().find(|r| r["request"] == slug).unwrap();
+    assert_eq!(by("main/a-ok")["status"], 200);
+    assert_eq!(by("main/a-ok")["size"], 9);
+    assert!(by("main/a-ok")["elapsed_ms"].is_u64());
+    assert_eq!(by("main/b-missing")["status"], 404);
+    let unresolved = by("main/c-unresolved");
+    assert!(unresolved["error"].as_str().unwrap().contains("bsae"), "{unresolved}");
+    for key in ["status", "elapsed_ms", "size"] {
+        assert!(unresolved[key].is_null(), "{key}");
+    }
+    let broken = by("main/d-broken");
+    assert!(broken["method"].is_null() && broken["url"].is_null() && broken["status"].is_null());
+    assert!(broken["error"].as_str().unwrap().contains("d-broken.toml"), "{broken}");
+    assert_eq!(v["totals"]["requests"], 6);
+    assert_eq!(v["totals"]["passed"], 3);
+    assert_eq!(v["totals"]["failed"], 3);
+    let sum: u64 = results.iter().filter_map(|r| r["elapsed_ms"].as_u64()).sum();
+    assert_eq!(v["totals"]["elapsed_ms"], sum);
+}
+
+#[test]
+fn suite_one_space() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = suite_project(&home, &server.base());
+
+    let out = home.run(&["suite", "--space", "admin", "-p", s(&root)]);
+    assert_ok(&out, "suite --space admin");
+    let v = json(&out);
+    assert_eq!(v["space"], "admin");
+    assert_eq!(v["results"].as_array().unwrap().len(), 1);
+    assert_eq!(server.seen(), ["GET /ok"]);
+
+    let out = home.run(&["suite", "--space", "nope", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(json(&out)["error"].as_str().unwrap().contains("nope"));
+}
+
+#[test]
+fn suite_output_file_matches_stdout() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = suite_project(&home, &server.base());
+    let file = home.path().join("r.json");
+
+    let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "-p", s(&root)]);
+    assert_ok(&out, "suite -o");
+    assert_eq!(std::fs::read(&file).unwrap(), out.stdout);
+
+    let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "--text", "-p", s(&root)]);
+    assert_ok(&out, "suite -o --text");
+    assert_eq!(std::fs::read(&file).unwrap(), out.stdout);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("admin/x") && text.contains("200") && text.contains("1 passed"),
+        "{text}"
+    );
+
+    // A file where a directory must be.
+    let bad = file.join("r.json");
+    let out = home.run(&["suite", "--space", "admin", "-o", s(&bad), "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(2));
+    // The report went out first; the envelope follows it.
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let (_, envelope) = printed.split_once("}\n{").expect("a report, then an envelope");
+    assert!(envelope.contains("\"error\"") && envelope.contains("r.json"), "{printed}");
+}
+
+#[test]
+fn suite_masks_and_writes_nothing() {
+    let home = Home::new();
+    let server = Server::start();
+    let echo = "method = \"POST\"\nurl = \"{{base}}/echo?key={{token}}\"\n\
+                substitute_body = true\n\n[headers]\n\
+                Authorization = \"Bearer {{token}}\"\n\n[body]\ntype = \"json\"\n\
+                text = '{\"t\": \"{{token}}\"}'\n";
+    let root = write_suite_project(
+        &home,
+        &server.base(),
+        &[("main/a-ok", &get("/ok")), ("echoes/echo", echo)],
+    );
+    let before = tree(&root);
+
+    for extra in [&[][..], &["--text"][..]] {
+        let mut args = vec!["suite", "-p", s(&root)];
+        args.extend_from_slice(extra);
+        let out = home.run(&args);
+        assert_ok(&out, "suite");
+        let printed = String::from_utf8_lossy(&out.stdout);
+        assert!(!printed.contains(SECRET), "{printed}");
+        assert!(printed.contains("echoes/echo"));
+    }
+    let v = json(&home.run(&["suite", "-p", s(&root)]));
+    assert!(v["results"][1]["url"].as_str().unwrap().contains(MASK));
+    assert_eq!(server.seen().len(), 6);
+    assert_eq!(tree(&root), before);
+}

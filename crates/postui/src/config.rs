@@ -1219,6 +1219,7 @@ commands (JSON on stdout, --text for people; postui help <command>):
   check             validate a project's files and variables
   init              start a project in a directory
   run               send a request and print the response
+  suite             send every request and report status and timing
   help              a command's usage
 
 A directory named like a command opens as ./name.

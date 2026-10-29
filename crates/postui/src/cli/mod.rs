@@ -9,6 +9,7 @@ pub mod mask;
 pub mod out;
 mod read;
 mod run;
+mod suite;
 pub mod target;
 
 use std::ffi::OsString;
@@ -64,6 +65,12 @@ pub enum Command {
         output: Option<PathBuf>,
         dry_run: bool,
     },
+    Suite {
+        g: Global,
+        space: Option<String>,
+        opts: RunOpts,
+        output: Option<PathBuf>,
+    },
 }
 
 /// What [`parse`] makes of a command line.
@@ -77,7 +84,7 @@ pub enum Parsed {
 /// The first arguments that are commands rather than a directory to open
 /// (R18: a directory of that name opens as `postui ./show`).
 pub const SUBCOMMANDS: &[&str] =
-    &["projects", "show", "requests", "vars", "check", "init", "run", "help"];
+    &["projects", "show", "requests", "vars", "check", "init", "run", "suite", "help"];
 
 /// Why a command could not give its report: the error envelope's
 /// `error` and, when it is about one file, `file`.
@@ -222,6 +229,33 @@ for a status of 400 or more, or when the request can't be prepared or sent.
     text_flag!()
 );
 
+const SUITE_USAGE: &str = concat!(
+    "\
+usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
+                    [--select <sel>=<opt>]... [-o <file>] [--timeout <secs>]
+                    [--show-secrets] [--text]
+
+Sends every request of the project (or of one space), one at a time in
+sidebar order, and prints each one's status and time, then the totals. A
+request that can't be read or prepared is reported and the suite goes on.
+Nothing is written to the project. Secrets are masked in everything printed.
+Exits 1 when any request failed to prepare or send or returned 400 or more.
+
+",
+    project_flag!(),
+    "  --space <space>           only this space's requests
+  --env <env>               the environment, by slug or name (default: the
+                            one postui has open, else the first)
+  --select <sel>=<opt>      pick an option of a selector for this run only;
+                            can be given more than once
+  -o, --output <file>       also write what is printed to <file>
+  --timeout <secs>          give up on a request after this long (default: 30;
+                            0: never)
+  --show-secrets            print secrets' values
+",
+    text_flag!()
+);
+
 /// One command: its name, the options it takes (by their long spelling;
 /// `-p` is `--project`, `-o` is `--output`), what positional argument it
 /// takes (`"dir"` or `"request"`), and its usage.
@@ -233,7 +267,7 @@ struct Spec {
 }
 
 #[rustfmt::skip]
-const SPECS: [Spec; 7] = [
+const SPECS: [Spec; 8] = [
     Spec { name: "projects", flags: &["--text"],                                          positional: None,            usage: PROJECTS_USAGE },
     Spec { name: "show",     flags: &["--project", "--text"],                             positional: None,            usage: SHOW_USAGE },
     Spec { name: "requests", flags: &["--project", "--text", "--space"],                  positional: None,            usage: REQUESTS_USAGE },
@@ -241,6 +275,7 @@ const SPECS: [Spec; 7] = [
     Spec { name: "check",    flags: &["--project", "--text", "--env"],                    positional: None,            usage: CHECK_USAGE },
     Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some("dir"),     usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some("request"), usage: RUN_USAGE },
+    Spec { name: "suite",    flags: &["--project", "--text", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"], positional: None, usage: SUITE_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
@@ -296,6 +331,12 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             name: options.name,
             text: g.text,
         },
+        "suite" => Command::Suite {
+            g,
+            space: options.space,
+            opts: run_opts(options.env, options.selects, options.show_secrets, options.timeout)?,
+            output: options.output.map(PathBuf::from),
+        },
         _ => {
             let request = positional("request")?;
             let request = request.to_str().ok_or("the request's slug is not UTF-8")?.to_string();
@@ -306,33 +347,42 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             if options.dry_run && options.jq.is_some() {
                 return Err("--jq needs a send; it can't go with --dry-run".into());
             }
-            let timeout = match options.timeout.as_deref() {
-                None => Some(DEFAULT_TIMEOUT),
-                Some(secs) => match secs.parse::<u64>() {
-                    Ok(0) => None,
-                    Ok(n) => Some(Duration::from_secs(n)),
-                    Err(_) => {
-                        return Err(format!(
-                            "--timeout takes a whole number of seconds, not '{secs}'"
-                        ));
-                    }
-                },
-            };
             Command::Run {
                 g,
                 request,
-                opts: RunOpts {
-                    env: options.env,
-                    selects: options.selects,
-                    show_secrets: options.show_secrets,
-                    timeout,
-                },
+                opts: run_opts(
+                    options.env,
+                    options.selects,
+                    options.show_secrets,
+                    options.timeout,
+                )?,
                 jq: options.jq,
                 output,
                 dry_run: options.dry_run,
             }
         }
     }))
+}
+
+/// The options `run` and `suite` share, with `--timeout` read: whole
+/// seconds, `0` for none, 30 when not given.
+fn run_opts(
+    env: Option<String>,
+    selects: Vec<String>,
+    show_secrets: bool,
+    timeout: Option<String>,
+) -> Result<RunOpts, String> {
+    let timeout = match timeout.as_deref() {
+        None => Some(DEFAULT_TIMEOUT),
+        Some(secs) => match secs.parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => {
+                return Err(format!("--timeout takes a whole number of seconds, not '{secs}'"));
+            }
+        },
+    };
+    Ok(RunOpts { env, selects, show_secrets, timeout })
 }
 
 /// Every option a command line can carry, before the command picks its own.
@@ -460,6 +510,25 @@ pub async fn run(cmd: Command) -> ExitCode {
             match run::run(&g, &request, &opts, jq.as_deref(), output.as_deref(), dry_run).await {
                 Ok(report) => {
                     out::emit(&report, g.text, run::RunReport::text).unwrap_or(report.status())
+                }
+                Err(e) => out::fail(&e, g.text),
+            }
+        }
+        Command::Suite { g, space, opts, output } => {
+            match suite::suite(&g, space.as_deref(), &opts).await {
+                Ok(report) => {
+                    let printed = match out::render(&report, g.text, suite::SuiteReport::text) {
+                        Ok(printed) => printed,
+                        Err(e) => return out::fail(&e, g.text),
+                    };
+                    if let Some(stopped) = crate::cli_out::print_out(&printed) {
+                        return stopped;
+                    }
+                    // What stdout got, written after it.
+                    match output.map(|file| run::write_output(&file, printed.as_bytes())) {
+                        Some(Err(e)) => out::fail(&e, g.text),
+                        _ => report.status(),
+                    }
                 }
                 Err(e) => out::fail(&e, g.text),
             }
