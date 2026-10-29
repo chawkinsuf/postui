@@ -236,7 +236,10 @@ fn select_mistakes_name_the_choices() {
     };
     assert!(error("nobody=x").contains("user"));
     assert!(error("user=nobody").contains("alice"));
-    assert!(error("user").contains("SELECTOR=OPTION"));
+    // No `=`: a usage error, caught when the line is read.
+    let out = dry(&home, &root, "main/me", &["--select", "user"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(json(&out)["error"].as_str().unwrap().contains("--select takes SELECTOR=OPTION"));
 }
 
 #[test]
@@ -636,7 +639,7 @@ fn suite_runs_in_sidebar_order_and_keeps_going() {
     assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
     assert_eq!(v["environment"], "dev");
-    assert!(v["space"].is_null());
+    assert!(v["space"].is_null() && v["output_file"].is_null());
     let results = v["results"].as_array().unwrap();
     let slugs: Vec<&str> = results.iter().map(|r| r["request"].as_str().unwrap()).collect();
     assert_eq!(slugs, order);
@@ -694,6 +697,7 @@ fn suite_output_file_matches_stdout() {
     let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "-p", s(&root)]);
     assert_ok(&out, "suite -o");
     assert_eq!(std::fs::read(&file).unwrap(), out.stdout);
+    assert_eq!(json(&out)["output_file"], s(&file));
 
     let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "--text", "-p", s(&root)]);
     assert_ok(&out, "suite -o --text");
@@ -711,6 +715,7 @@ fn suite_output_file_matches_stdout() {
     assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
     assert_eq!(v["results"].as_array().unwrap().len(), 1);
+    assert!(v["output_file"].is_null());
     let warnings = v["warnings"].as_array().unwrap();
     assert!(
         warnings.iter().any(|w| w.as_str().unwrap().starts_with("could not write")

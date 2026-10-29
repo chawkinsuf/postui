@@ -13,6 +13,7 @@ use super::{CliError, Global};
 use crate::http::send_raw;
 use postui_core::model::Method;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// `postui suite`. Every string in it has been through the session's mask.
@@ -23,12 +24,12 @@ pub struct SuiteReport {
     results: Vec<SuiteResult>,
     totals: Totals,
     warnings: Vec<String>,
+    /// The absolute path `-o` writes the report to; `null` without `-o`, or
+    /// when it could not be written.
+    output_file: Option<PathBuf>,
     /// `-o` could not be written (a warning says so): the run failed.
     #[serde(skip)]
     write_failed: bool,
-    /// The session's, for what is added after the run.
-    #[serde(skip)]
-    mask: Mask,
 }
 
 /// One request's outcome. `status`, `elapsed_ms` and `size` are `null` when
@@ -60,12 +61,14 @@ impl SuiteResult {
 }
 
 /// Runs the requests of `space` (every space when `None`) of the project `g`
-/// names, one at a time in the order `postui requests` lists them.
+/// names, one at a time in the order `postui requests` lists them. The
+/// session's mask comes back beside the report, for what is added to it
+/// after the run.
 pub async fn suite(
     g: &Global,
     space: Option<&str>,
     opts: &RunOpts,
-) -> Result<SuiteReport, CliError> {
+) -> Result<(SuiteReport, Mask), CliError> {
     let mut s = session(g, opts)?;
     let spaces = spaces_of(&s.project, space)?;
     let mut results = Vec::new();
@@ -121,15 +124,16 @@ pub async fn suite(
         failed: results.len() - passed,
         elapsed_ms: results.iter().filter_map(|r| r.elapsed_ms).sum(),
     };
-    Ok(SuiteReport {
+    let report = SuiteReport {
         environment: s.env.clone(),
         space: space.map(str::to_string),
         results,
         totals,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).chain(request_warnings).collect(),
+        output_file: None,
         write_failed: false,
-        mask: s.mask,
-    })
+    };
+    Ok((report, s.mask))
 }
 
 impl SuiteReport {
@@ -143,10 +147,16 @@ impl SuiteReport {
         }
     }
 
+    /// Names the file `-o` will write the report to, before it is rendered.
+    pub fn set_output_file(&mut self, file: PathBuf) {
+        self.output_file = Some(file);
+    }
+
     /// Records that `-o` could not be written: the requests were sent, so the
-    /// report still prints, with `message` as a warning.
-    pub fn note_write_failure(&mut self, message: &str) {
-        self.warnings.push(self.mask.apply(message));
+    /// report still prints, with `message` (already masked) as a warning.
+    pub fn note_write_failure(&mut self, message: String) {
+        self.output_file = None;
+        self.warnings.push(message);
         self.write_failed = true;
     }
 

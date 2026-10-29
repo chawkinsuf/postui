@@ -224,8 +224,9 @@ a status of 400 or more, when the request can't be prepared or sent, or when
                             can be given more than once
   --jq <filter>             print the filter's results instead of the body
   -o, --output <file>       write the body (or each jq result) to <file>
-  --timeout <secs>          give up when the server is silent this long
-                            (default: 30; 0: never)
+  --timeout <secs>          give up when the server is silent this long: until
+                            the response starts, then between reads of the
+                            body (default: 30; 0: never)
   --dry-run                 print the request that would be sent; send nothing
   --show-secrets            print secrets' values
 ",
@@ -254,7 +255,8 @@ request failed to prepare or send or returned 400 or more.
                             can be given more than once
   -o, --output <file>       also write what is printed to <file>
   --timeout <secs>          give up on a request when the server is silent
-                            this long (default: 30; 0: never)
+                            this long: until the response starts, then
+                            between reads of the body (default: 30; 0: never)
   --show-secrets            print secrets' values
 ",
     text_flag!()
@@ -291,14 +293,14 @@ impl Positional {
 
 #[rustfmt::skip]
 const SPECS: [Spec; 8] = [
-    Spec { name: "projects", flags: &["--text"],                                          positional: None,            usage: PROJECTS_USAGE },
-    Spec { name: "show",     flags: &["--project", "--text"],                             positional: None,            usage: SHOW_USAGE },
-    Spec { name: "requests", flags: &["--project", "--text", "--space"],                  positional: None,            usage: REQUESTS_USAGE },
-    Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"], positional: None,            usage: VARS_USAGE },
-    Spec { name: "check",    flags: &["--project", "--text", "--env"],                    positional: None,            usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some(Positional::Dir), usage: INIT_USAGE },
+    Spec { name: "projects", flags: &["--text"],                                                                                                   positional: None,                      usage: PROJECTS_USAGE },
+    Spec { name: "show",     flags: &["--project", "--text"],                                                                                      positional: None,                      usage: SHOW_USAGE },
+    Spec { name: "requests", flags: &["--project", "--text", "--space"],                                                                           positional: None,                      usage: REQUESTS_USAGE },
+    Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"],                                                           positional: None,                      usage: VARS_USAGE },
+    Spec { name: "check",    flags: &["--project", "--text", "--env"],                                                                             positional: None,                      usage: CHECK_USAGE },
+    Spec { name: "init",     flags: &["--text", "--name"],                                                                                         positional: Some(Positional::Dir),     usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some(Positional::Request), usage: RUN_USAGE },
-    Spec { name: "suite",    flags: &["--project", "--text", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"], positional: None, usage: SUITE_USAGE },
+    Spec { name: "suite",    flags: &["--project", "--text", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"],           positional: None,                      usage: SUITE_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
@@ -410,7 +412,7 @@ struct Options {
     /// The command's one positional argument, as the OS gave it
     /// (`init`'s directory, `run`'s request).
     positional: Option<OsString>,
-    selects: Vec<String>,
+    selects: Vec<(String, String)>,
     jq: Option<String>,
     output: Option<String>,
     timeout: Option<String>,
@@ -479,12 +481,13 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
         let slot = match flag {
             // The one option that repeats, once per selector.
             "--select" => {
-                let selector = |s: &str| s.split_once('=').map_or(s.to_string(), |(a, _)| a.into());
-                let name = selector(&value);
-                if o.selects.iter().any(|s| selector(s) == name) {
+                let (name, option) = value
+                    .split_once('=')
+                    .ok_or_else(|| format!("--select takes SELECTOR=OPTION, not '{value}'"))?;
+                if o.selects.iter().any(|(s, _)| s == name) {
                     return Err(format!("--select {name} is given twice"));
                 }
-                o.selects.push(value);
+                o.selects.push((name.to_string(), option.to_string()));
                 continue;
             }
             "--project" => &mut o.project,
@@ -536,7 +539,12 @@ pub async fn run(cmd: Command) -> ExitCode {
         }
         Command::Suite { g, space, opts, output } => {
             match suite::suite(&g, space.as_deref(), &opts).await {
-                Ok(mut report) => {
+                Ok((mut report, mask)) => {
+                    // The file is named before rendering, so the report in
+                    // it and on stdout are the same bytes.
+                    if let Some(Ok(absolute)) = output.as_deref().map(std::path::absolute) {
+                        report.set_output_file(absolute);
+                    }
                     let mut printed = match out::render(&report, g.text, suite::SuiteReport::text) {
                         Ok(printed) => printed,
                         Err(e) => return out::fail(&e, g.text),
@@ -547,7 +555,7 @@ pub async fn run(cmd: Command) -> ExitCode {
                     if let Some(Err(e)) =
                         output.map(|file| run::write_output(&file, printed.as_bytes()))
                     {
-                        report.note_write_failure(&e.message);
+                        report.note_write_failure(mask.apply(&e.message));
                         printed = match out::render(&report, g.text, suite::SuiteReport::text) {
                             Ok(printed) => printed,
                             Err(e) => return out::fail(&e, g.text),
@@ -683,7 +691,7 @@ mod tests {
                 request: "main/a".into(),
                 opts: RunOpts {
                     env: Some("dev".into()),
-                    selects: vec!["user=bob".into(), "org=x".into()],
+                    selects: vec![("user".into(), "bob".into()), ("org".into(), "x".into())],
                     show_secrets: false,
                     timeout: None,
                 },

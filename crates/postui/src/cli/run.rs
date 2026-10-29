@@ -33,8 +33,9 @@ pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 pub struct RunOpts {
     /// `--env`: a slug or display name; `None` is the TUI's saved one.
     pub env: Option<String>,
-    /// Each `--select SELECTOR=OPTION`, in the order given.
-    pub selects: Vec<String>,
+    /// Each `--select SELECTOR=OPTION` as (selector, option), in the order
+    /// given.
+    pub selects: Vec<(String, String)>,
     pub show_secrets: bool,
     /// `--timeout`, already defaulted: how long the server may be silent
     /// (connecting, or between reads); `None` is no limit.
@@ -65,10 +66,7 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     let (mut project, mut warnings) = open(&root)?;
     warnings.extend(project.listing_warning());
     let env = pick_env(&mut project, opts.env.as_deref())?;
-    for select in &opts.selects {
-        let (selector, option) = select.split_once('=').ok_or_else(|| {
-            CliError::new(format!("--select takes SELECTOR=OPTION, not \"{select}\""))
-        })?;
+    for (selector, option) in &opts.selects {
         select_option(&mut project, env.as_deref().unwrap_or_default(), selector, option)?;
     }
     let mask = if opts.show_secrets { Mask::none() } else { mask::of_env(&project) };
@@ -327,7 +325,9 @@ fn record(
     if show_body {
         let text = text();
         response.body = Some(mask.apply(text));
-        // Parsed from the unmasked text, then masked as a tree: masking the
+        // The body is given both as text and parsed (spec §5: a body that
+        // parses as JSON is also given as `body_json`). Parsed from the
+        // unmasked text, then masked as a tree: masking the
         // text first would break the JSON where a mask lands in a number or
         // an escape.
         response.body_json =

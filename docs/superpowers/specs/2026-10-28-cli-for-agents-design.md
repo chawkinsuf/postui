@@ -183,8 +183,9 @@ migration fails with "open it in postui once to migrate it". (mine)
 `-o` write that fails after the send prints the report with the body and
 `error` set (in `suite`, a warning), exit 1. `--select` naming one
 selector twice is a usage error. And (mine (approved)) `--timeout` is an
-idle timeout, for connecting and between reads, not a total deadline: a
-long download that keeps coming is never cut off. `-o` writes the file in
+timeout on how long the server may stay silent, not a total deadline:
+until the response starts, then between reads of the body; a long download
+that keeps coming is not cut off. `-o` writes the file in
 place (not atomically), so `/dev/null` and pipes work.
 
 `postui suite [-p] [--space S] [--env E] [--select SEL=OPT]... [--timeout SECS] [-o FILE]`
