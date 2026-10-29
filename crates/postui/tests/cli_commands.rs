@@ -125,6 +125,180 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
+/// A project at `<home>/<dir>` with two spaces, two environments and three
+/// requests, its name full of characters JSON must escape.
+fn write_project(home: &Home, dir: &str) -> PathBuf {
+    let root = home.path().join(dir);
+    let put = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    put(
+        "project.toml",
+        "name = \"Billing \\\"API\\\" {{x}} ✓\"\nspaces = [\"main\", \"admin\"]\n\n\
+         [space.admin]\nname = \"Admin\"\n\n[environment.dev]\nname = \"Dev\"\n",
+    );
+    put("variables.toml", "[base]\ndescription = \"API root\"\n");
+    put("environments/dev.toml", "base = \"https://dev\"\n");
+    put("environments/qa.toml", "base = \"https://qa\"\n");
+    put(
+        "requests/main/users/get-user.toml",
+        "name = \"Get user\"\nmethod = \"GET\"\nurl = \"{{base}}/users\"\n",
+    );
+    put("requests/main/list.toml", "name = \"List\"\nmethod = \"POST\"\nurl = \"{{base}}/list\"\n");
+    put("requests/admin/x.toml", "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{base}}/x\"\n");
+    root
+}
+
+#[test]
+fn show_reports_paths_envs_and_spaces() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let before = tree(&root);
+
+    let out = home.run(&["show", "-p", s(&root)]);
+    assert_ok(&out, "show");
+    let v = json(&out);
+    assert_eq!(v["name"], "Billing \"API\" {{x}} ✓");
+    assert_eq!(v["root"], s(&root));
+    assert_eq!(v["files"]["project"], s(&root.join("project.toml")));
+    assert_eq!(v["files"]["variables"], s(&root.join("variables.toml")));
+    assert_eq!(
+        v["environments"],
+        serde_json::json!([
+            {"slug": "dev", "name": "Dev", "file": s(&root.join("environments/dev.toml")),
+             "active": true},
+            {"slug": "qa", "name": "qa", "file": s(&root.join("environments/qa.toml")),
+             "active": false},
+        ])
+    );
+    assert_eq!(
+        v["spaces"],
+        serde_json::json!([
+            {"slug": "main", "name": "main", "dir": s(&root.join("requests/main")),
+             "requests": 2},
+            {"slug": "admin", "name": "Admin", "dir": s(&root.join("requests/admin")),
+             "requests": 1},
+        ])
+    );
+    assert_eq!(v["warnings"], serde_json::json!([]));
+
+    let out = home.run(&["show", "-p", s(&root), "--text"]);
+    assert_ok(&out, "show --text");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Billing \"API\" {{x}} ✓") && text.contains("Admin"), "{text}");
+
+    assert_eq!(tree(&root), before, "show writes nothing");
+}
+
+/// Review Focus 1: a broken environment that isn't the active one is
+/// listed, not fatal.
+#[test]
+fn show_survives_a_broken_inactive_env() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("environments/qa.toml"), "[[").unwrap();
+    let before = tree(&root);
+
+    let out = home.run(&["show", "-p", s(&root)]);
+    assert_ok(&out, "show");
+    let v = json(&out);
+    let slugs: Vec<&str> =
+        v["environments"].as_array().unwrap().iter().map(|e| e["slug"].as_str().unwrap()).collect();
+    assert_eq!(slugs, ["dev", "qa"]);
+    assert_eq!(tree(&root), before);
+}
+
+/// A broken active environment refuses the open, as the TUI does, naming
+/// the file.
+#[test]
+fn show_refuses_a_broken_active_env() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("environments/dev.toml"), "[[").unwrap();
+
+    let out = home.run(&["show", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(2));
+    let v = json(&out);
+    assert_eq!(v["file"], s(&root.join("environments/dev.toml")));
+}
+
+#[test]
+fn requests_in_sidebar_order_with_paths() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    // The space's order array puts `list` ahead of `alpha`: sidebar order,
+    // not alphabetical.
+    std::fs::write(
+        root.join("requests/main/alpha.toml"),
+        "name = \"Alpha\"\nmethod = \"GET\"\nurl = \"{{base}}/a\"\n",
+    )
+    .unwrap();
+    let meta = std::fs::read_to_string(root.join("project.toml")).unwrap();
+    std::fs::write(
+        root.join("project.toml"),
+        meta + "\n[space.main]\norder = [\"list\", \"alpha\"]\n",
+    )
+    .unwrap();
+    let before = tree(&root);
+
+    let out = home.run(&["requests", "-p", s(&root)]);
+    assert_ok(&out, "requests");
+    let v = json(&out);
+    let slugs: Vec<&str> =
+        v["requests"].as_array().unwrap().iter().map(|r| r["slug"].as_str().unwrap()).collect();
+    assert_eq!(slugs, ["main/list", "main/alpha", "main/users/get-user", "admin/x"]);
+    assert_eq!(
+        v["requests"][2],
+        serde_json::json!({
+            "slug": "main/users/get-user", "space": "main", "name": "Get user",
+            "method": "GET", "url": "{{base}}/users",
+            "file": s(&root.join("requests/main/users/get-user.toml")), "error": null,
+        })
+    );
+    assert_eq!(v["warnings"], serde_json::json!([]));
+
+    let out = home.run(&["requests", "-p", s(&root), "--space", "admin"]);
+    assert_ok(&out, "requests --space");
+    let v = json(&out);
+    assert_eq!(v["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(v["requests"][0]["slug"], "admin/x");
+
+    let out = home.run(&["requests", "-p", s(&root), "--space", "nope"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(json(&out)["error"].as_str().unwrap().contains("nope"));
+
+    let out = home.run(&["requests", "-p", s(&root), "--text"]);
+    assert_ok(&out, "requests --text");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("main/users/get-user") && text.contains("{{base}}/users"), "{text}");
+
+    assert_eq!(tree(&root), before, "requests writes nothing");
+}
+
+/// Review Focus 1: a request that doesn't parse is listed with what is
+/// wrong.
+#[test]
+fn requests_reports_a_broken_file() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("requests/main/list.toml"), "nope = [").unwrap();
+
+    let out = home.run(&["requests", "-p", s(&root)]);
+    assert_ok(&out, "requests");
+    let v = json(&out);
+    let broken = v["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["slug"] == "main/list")
+        .expect("the broken request is listed");
+    assert!(broken["method"].is_null() && broken["url"].is_null() && broken["name"].is_null());
+    assert!(broken["error"].as_str().is_some_and(|e| !e.is_empty()), "{broken}");
+    assert_eq!(broken["file"], s(&root.join("requests/main/list.toml")));
+}
+
 #[test]
 fn not_a_project_is_an_error_envelope() {
     let home = Home::new();
