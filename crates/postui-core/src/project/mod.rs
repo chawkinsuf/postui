@@ -997,6 +997,19 @@ impl Project {
     /// off (a stale saved space, a selection that no longer resolves)
     /// degrades into a warning.
     pub fn open(root: PathBuf) -> Result<(Project, Vec<Warning>), OpenError> {
+        Self::open_with(root, false)
+    }
+
+    /// [`open`](Self::open) for a command that must never write: the
+    /// `Disk` refuses every write, the trash is left alone, a project with
+    /// no environments is reported (`no environments`) rather than given
+    /// one, and a pending variables migration refuses the open (it is the
+    /// TUI's to offer). Setters that persist best effort fail silently.
+    pub fn open_read_only(root: PathBuf) -> Result<(Project, Vec<Warning>), OpenError> {
+        Self::open_with(root, true)
+    }
+
+    fn open_with(root: PathBuf, read_only: bool) -> Result<(Project, Vec<Warning>), OpenError> {
         if root.as_os_str().is_empty() {
             // An empty root is "no project", never the process's cwd:
             // `"".join("project.toml")` is `./project.toml`, which the
@@ -1009,12 +1022,15 @@ impl Project {
             });
         }
         let mut disk = Self::disk_for(root);
+        if read_only {
+            disk.set_read_only();
+        }
         let mut warnings = Vec::new();
 
         let meta: ProjectMeta = Self::read_doc(&mut disk, PROJECT_TOML, |t| {
             toml::from_str(t).map_err(|e| e.to_string())
         })?;
-        if let Err(e) = disk.empty_trash() {
+        if !read_only && let Err(e) = disk.empty_trash() {
             warnings.push(format!("could not empty {TRASH_DIR}: {e}"));
         }
         let (spaces, space_warnings) = Self::list_spaces(&mut disk, &meta);
@@ -1023,6 +1039,14 @@ impl Project {
 
         let (legacy_vars, pending_migration, migration_warnings) = migration::probe(&mut disk);
         warnings.extend(migration_warnings);
+        if read_only && pending_migration.is_some() {
+            return Err(OpenError {
+                root: disk.root().to_path_buf(),
+                file: VARIABLES_TOML.to_string(),
+                error: "variables use the old format; open it in postui once to migrate it"
+                    .to_string(),
+            });
+        }
         let model = if legacy_vars {
             VarModel::default()
         } else {
@@ -1043,7 +1067,11 @@ impl Project {
             Self::list_environments(&mut disk, &meta).map_err(&list_failed)?;
         let environments_warning = join_warnings(&env_warnings);
         warnings.extend(env_warnings);
-        if environments.is_empty() && !legacy_vars && Self::is_project(disk.root()) {
+        if read_only {
+            if environments.is_empty() && !legacy_vars {
+                warnings.push("no environments".to_string());
+            }
+        } else if environments.is_empty() && !legacy_vars && Self::is_project(disk.root()) {
             let path = RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))
                 .expect("constant path");
             match disk.write_new(
@@ -1374,6 +1402,58 @@ mod tests {
         assert_eq!(p.env_name("dev"), "Dev");
         assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("dev.local"));
         assert_eq!(p.local().active_space, "main");
+    }
+
+    /// Every path under `root` with its bytes (`None` for a directory).
+    fn tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn walk(dir: &Path, out: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    out.insert(path.clone(), None);
+                    walk(&path, out);
+                } else {
+                    out.insert(path.clone(), Some(std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(root, &mut out);
+        out
+    }
+
+    #[test]
+    fn open_read_only_writes_nothing() {
+        let (dir, p) = fixture();
+        drop(p);
+        std::fs::create_dir_all(dir.path().join(".postui/trash")).unwrap();
+        std::fs::write(dir.path().join(".postui/trash/1"), "gone").unwrap();
+        std::fs::remove_dir_all(dir.path().join("environments")).unwrap();
+        let before = tree(dir.path());
+        let (mut p, warnings) = Project::open_read_only(dir.path().to_path_buf()).unwrap();
+        let _ = p.set_active_env(Some("dev".to_string()));
+        assert_eq!(tree(dir.path()), before, "not a path or byte changed");
+        assert!(p.environments().is_empty());
+        assert!(warnings.iter().any(|w| w.contains("no environments")), "{warnings:?}");
+    }
+
+    #[test]
+    fn open_read_only_refuses_a_pending_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[groups.region]\nmembers = [\"host\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        let before = tree(dir.path());
+        let err =
+            Project::open_read_only(dir.path().to_path_buf()).map(|_| ()).expect_err("refused");
+        assert_eq!(err.file, "variables.toml");
+        assert!(err.error.contains("open it in postui once to migrate it"), "{}", err.error);
+        assert_eq!(tree(dir.path()), before);
     }
 
     #[test]
