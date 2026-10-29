@@ -40,6 +40,13 @@ async fn main() -> anyhow::Result<ExitCode> {
             );
             return Ok(print_out(&setup).unwrap_or(ExitCode::SUCCESS));
         }
+        postui::config::CliParse::CommandHelp(text) => {
+            return Ok(print_out(text).unwrap_or(ExitCode::SUCCESS));
+        }
+        postui::config::CliParse::Command(command) => return Ok(postui::cli::run(command).await),
+        postui::config::CliParse::CommandUsage { reason, text, usage } => {
+            return Ok(postui::cli::out::fail_usage(&reason, text, usage));
+        }
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
 

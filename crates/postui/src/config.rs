@@ -1191,13 +1191,36 @@ pub enum CliParse {
     /// itself pushes", so a plain `--keydump` reproduces the app's exact
     /// input conditions.
     Keydump { flags: Option<u8> },
+    /// A command (`postui show`, ...): run it, print its report, and exit
+    /// with its status.
+    Command(crate::cli::Command),
+    /// `postui help <cmd>` or `<cmd> --help`: print this usage to stdout
+    /// and exit 0.
+    CommandHelp(&'static str),
+    /// A mistake on a command's line, said in `reason`: the error envelope
+    /// on stdout, or, with `--text` on the line, the reason and the
+    /// command's `usage` on stderr; exit 2 either way (spec 2026-10-28 §5).
+    CommandUsage { reason: String, text: bool, usage: &'static str },
 }
 
 /// What `--help` prints to stdout, and a usage error to stderr after its
-/// reason. Every flag [`parse_cli`] reads is listed (a test checks).
+/// reason. Every flag [`parse_cli`] reads and every command is listed (a
+/// test checks each).
 pub const USAGE: &str = "\
 usage: postui [--debug-ai] [directory]
+       postui <command> [options]
        postui --setup | --version | --keydump[=BITS] | --help
+
+commands (JSON on stdout, --text for people; postui help <command>):
+  projects          the projects postui knows
+  show              a project's files, environments and spaces
+  requests          a project's requests
+  vars              an environment's variables and selectors
+  check             validate a project's files and variables
+  init              start a project in a directory
+  help              a command's usage
+
+A directory named like a command opens as ./name.
 
   --debug-ai        log every AI filter prompt and reply to a file
   --setup           terminal keyboard setup (macOS opt/cmd keys)
@@ -1219,7 +1242,23 @@ usage: postui [--debug-ai] [directory]
 /// which no flag spelling has, so it is never taken for a valid flag (a
 /// `--keydump=` with such a value is a malformed one). The directory keeps
 /// the original bytes.
+///
+/// A first argument that is one of [`crate::cli::SUBCOMMANDS`] makes the
+/// line a command, which [`crate::cli::parse`] reads whole (R18).
 pub fn parse_cli(args: Vec<OsString>) -> CliParse {
+    if let Some(first) = args.first()
+        && crate::cli::SUBCOMMANDS.contains(&&*first.to_string_lossy())
+    {
+        return match crate::cli::parse(&args) {
+            Ok(crate::cli::Parsed::Run(command)) => CliParse::Command(command),
+            Ok(crate::cli::Parsed::Help(text)) => CliParse::CommandHelp(text),
+            Err(reason) => CliParse::CommandUsage {
+                reason,
+                text: args.iter().any(|a| a == "--text"),
+                usage: crate::cli::usage(&first.to_string_lossy()),
+            },
+        };
+    }
     let is_help = |a: &OsString| a == "--help" || a == "-h";
     let help = args.iter().any(is_help);
     let parsed = parse_cli_line(args.into_iter().filter(|a| !is_help(a)).collect());
@@ -2217,6 +2256,50 @@ osc52_limit = 1024
         assert_eq!(cli(&["--debug-ai"]), CliParse::Root { root: None, debug_ai: true });
         // Once, like the directory.
         assert_eq!(mistake(&["--debug-ai", "--debug-ai"]), "--debug-ai is given twice");
+    }
+
+    /// R18: a first argument that names a command runs it; a directory
+    /// that shares the name opens as `./show`, and any other directory
+    /// still opens the app.
+    #[test]
+    fn parse_cli_routes_a_command() {
+        assert!(matches!(cli(&["show"]), CliParse::Command(crate::cli::Command::Show(_))));
+        assert!(
+            matches!(cli(&["help", "vars"]), CliParse::CommandHelp(t) if t.starts_with("usage: postui vars"))
+        );
+        // A command's mistake is the command's: an envelope, or with
+        // `--text` its own usage.
+        assert_eq!(
+            cli(&["show", "--bogus"]),
+            CliParse::CommandUsage {
+                reason: "unknown option '--bogus'".into(),
+                text: false,
+                usage: crate::cli::usage("show"),
+            }
+        );
+        assert!(matches!(
+            cli(&["show", "--bogus", "--text"]),
+            CliParse::CommandUsage { text: true, usage, .. } if usage.starts_with("usage: postui show")
+        ));
+        assert!(matches!(cli(&["help", "bogus"]), CliParse::CommandUsage { usage: USAGE, .. }));
+        assert_eq!(
+            cli(&["./show"]),
+            CliParse::Root { root: Some(PathBuf::from("./show")), debug_ai: false }
+        );
+        assert_eq!(
+            cli(&["my-api"]),
+            CliParse::Root { root: Some(PathBuf::from("my-api")), debug_ai: false }
+        );
+        assert_eq!(cli(&["--help"]), CliParse::Help);
+    }
+
+    /// The usage names every command.
+    #[test]
+    fn usage_lists_every_command() {
+        let words: Vec<&str> = USAGE.split_whitespace().collect();
+        for command in crate::cli::SUBCOMMANDS {
+            assert!(words.contains(command), "{command} missing from:\n{USAGE}");
+        }
     }
 
     #[test]
