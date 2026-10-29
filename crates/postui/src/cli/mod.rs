@@ -521,14 +521,14 @@ pub async fn run(cmd: Command) -> ExitCode {
                         Ok(printed) => printed,
                         Err(e) => return out::fail(&e, g.text),
                     };
-                    if let Some(stopped) = crate::cli_out::print_out(&printed) {
-                        return stopped;
+                    // Written first: a failed write is the one thing stdout
+                    // then says (one document per command).
+                    if let Some(Err(e)) =
+                        output.map(|file| run::write_output(&file, printed.as_bytes()))
+                    {
+                        return out::fail(&e, g.text);
                     }
-                    // What stdout got, written after it.
-                    match output.map(|file| run::write_output(&file, printed.as_bytes())) {
-                        Some(Err(e)) => out::fail(&e, g.text),
-                        _ => report.status(),
-                    }
+                    crate::cli_out::print_out(&printed).unwrap_or(report.status())
                 }
                 Err(e) => out::fail(&e, g.text),
             }

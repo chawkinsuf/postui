@@ -659,10 +659,29 @@ fn suite_output_file_matches_stdout() {
     let bad = file.join("r.json");
     let out = home.run(&["suite", "--space", "admin", "-o", s(&bad), "-p", s(&root)]);
     assert_eq!(out.status.code(), Some(2));
-    // The report went out first; the envelope follows it.
-    let printed = String::from_utf8_lossy(&out.stdout);
-    let (_, envelope) = printed.split_once("}\n{").expect("a report, then an envelope");
-    assert!(envelope.contains("\"error\"") && envelope.contains("r.json"), "{printed}");
+    // One document: the envelope, no report.
+    let v = json(&out);
+    assert!(v["error"].as_str().unwrap().contains("r.json"), "{v}");
+    assert!(v["results"].is_null());
+}
+
+#[test]
+fn suite_lists_each_requests_prepare_warnings() {
+    let home = Home::new();
+    let server = Server::start();
+    let warned = "method = \"GET\"\nurl = \"{{base}}/ok?a=1\"\n\n[params]\na = \"2\"\n";
+    let root = write_suite_project(
+        &home,
+        &server.base(),
+        &[("main/a-ok", &get("/ok")), ("main/w", warned)],
+    );
+    let out = home.run(&["suite", "-p", s(&root)]);
+    assert_ok(&out, "suite");
+    let warnings = json(&out)["warnings"].clone();
+    let warnings = warnings.as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let w = warnings[0].as_str().unwrap();
+    assert!(w.starts_with("main/w: ") && w.contains("`a`"), "{w}");
 }
 
 #[test]

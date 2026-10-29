@@ -72,6 +72,8 @@ pub async fn suite(
         }
     };
     let mut results = Vec::new();
+    // What `run` would warn of for each request, in suite order.
+    let mut request_warnings = Vec::new();
     for space in spaces {
         for slug in displayed(&s.project, &space) {
             let mut result = SuiteResult {
@@ -90,7 +92,10 @@ pub async fn suite(
                     result.error = Some(s.mask.apply(&format!("{}{at}", e.message)));
                 }
                 Ok(Err(message)) => result.error = Some(s.mask.apply(&message)),
-                Ok(Ok((request, _))) => {
+                Ok(Ok((request, prepare_warnings))) => {
+                    request_warnings.extend(
+                        prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
+                    );
                     result.method = Some(request.method);
                     result.url = Some(shown_url(&s.mask, &request, opts.show_secrets));
                     match send_raw(s.clients.for_request(&request), &request).await {
@@ -118,7 +123,7 @@ pub async fn suite(
         space: space.map(str::to_string),
         results,
         totals,
-        warnings: s.warnings.iter().map(|w| s.mask.apply(w)).collect(),
+        warnings: s.warnings.iter().map(|w| s.mask.apply(w)).chain(request_warnings).collect(),
     })
 }
 
