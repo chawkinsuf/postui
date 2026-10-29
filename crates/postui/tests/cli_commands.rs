@@ -708,6 +708,52 @@ fn check_undeclared_is_error_missing_secret_is_warning() {
     assert_eq!(warnings, [(file, "need a selection: user_id".to_string())]);
 }
 
+/// Run and suite can't mask a secret under 4 characters, so `check` says
+/// so, naming the secret and never its value.
+#[test]
+fn check_warns_about_a_secret_too_short_to_mask() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join(".postui/secrets.toml"), "[dev]\ntoken = \"abc\"\n").unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    let v = json(&out);
+    assert_eq!(v["ok"], true);
+    let warnings = findings(&v, "warnings");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].0, s(&root.join(".postui/secrets.toml")));
+    assert_eq!(
+        warnings[0].1,
+        "secret token is shorter than 4 characters, so run and suite output can't mask it"
+    );
+    assert!(!warnings[0].1.contains("abc"), "{warnings:?}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("\"abc\""));
+}
+
+/// A name only a disabled request variable gives is not a typo: the error
+/// says the variable is switched off.
+#[test]
+fn check_disabled_request_variable_is_not_declared_wording() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let x = root.join("requests/admin/x.toml");
+    std::fs::write(
+        &x,
+        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{base}}/{{x}}\"\n\n\
+         [variables]\nx = { value = \"1\", enabled = false }\n",
+    )
+    .unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let errors = findings(&json(&out), "errors");
+    assert_eq!(
+        errors,
+        [(s(&x).to_string(), "{{x}} is disabled in the request's [variables]".to_string())]
+    );
+}
+
 /// Spec §4: an invalid name in `project.toml` is an error on that file,
 /// not also the open's warning.
 #[test]

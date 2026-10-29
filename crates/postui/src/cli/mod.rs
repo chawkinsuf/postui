@@ -5,6 +5,7 @@
 //! Read commands open the project read-only, so they write nothing (R16).
 
 mod check;
+pub mod mask;
 pub mod out;
 mod read;
 pub mod target;

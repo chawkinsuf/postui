@@ -6,11 +6,13 @@
 //! Everything else is a warning, a missing selection or secret among them
 //! (both live in `.postui/`, which a fresh clone doesn't have).
 
+use super::mask::MASK_MIN_CHARS;
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
 use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
+use postui_core::varmodel::VarMeta;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -115,6 +117,20 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
         Err(e) => return Err(e),
     };
+    // A secret too short to mask would show in run and suite output.
+    for (name, meta) in &project.resolved().meta {
+        let short =
+            project.resolved().values.get(name).is_some_and(|v| v.chars().count() < MASK_MIN_CHARS);
+        if *meta == VarMeta::Secret && short {
+            warnings.push(Finding::at(
+                root.join(project::SECRETS_TOML),
+                format!(
+                    "secret {name} is shorter than {MASK_MIN_CHARS} characters, \
+                     so run and suite output can't mask it"
+                ),
+            ));
+        }
+    }
     let ctx = project.prepare_context();
     for slug in parsed {
         let file = storage::request_path(&root, &slug);
@@ -132,6 +148,19 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
             causes.into_iter().partition(|(name, cause)| {
                 *cause == UnresolvedCause::Undefined && !declared(&project, name)
             });
+        // A name only a disabled request variable gives is switched off,
+        // not misspelled.
+        let (off, undeclared): (BTreeMap<_, _>, BTreeMap<_, _>) = undeclared
+            .into_iter()
+            .partition(|(name, _)| req.variables.get(name).is_some_and(|e| !e.enabled));
+        if !off.is_empty() {
+            let names: Vec<String> = off.keys().map(|n| format!("{{{{{n}}}}}")).collect();
+            let verb = if names.len() == 1 { "is" } else { "are" };
+            errors.push(Finding::at(
+                file.clone(),
+                format!("{} {verb} disabled in the request's [variables]", names.join(", ")),
+            ));
+        }
         if !undeclared.is_empty() {
             let names: Vec<String> = undeclared.keys().map(|n| format!("{{{{{n}}}}}")).collect();
             errors.push(Finding::at(file.clone(), format!("{} not declared", names.join(", "))));
