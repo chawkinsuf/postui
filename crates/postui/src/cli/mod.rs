@@ -8,11 +8,18 @@ mod check;
 pub mod mask;
 pub mod out;
 mod read;
+mod run;
 pub mod target;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
+
+pub use run::RunOpts;
+
+/// The `--timeout` a send gets when none is given.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The options every project command takes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -27,12 +34,36 @@ pub struct Global {
 /// A parsed command line, one variant per command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Projects { text: bool },
+    Projects {
+        text: bool,
+    },
     Show(Global),
-    Requests { g: Global, space: Option<String> },
-    Vars { g: Global, env: Option<String>, show_secrets: bool },
-    Check { g: Global, env: Option<String> },
-    Init { dir: PathBuf, name: Option<String>, text: bool },
+    Requests {
+        g: Global,
+        space: Option<String>,
+    },
+    Vars {
+        g: Global,
+        env: Option<String>,
+        show_secrets: bool,
+    },
+    Check {
+        g: Global,
+        env: Option<String>,
+    },
+    Init {
+        dir: PathBuf,
+        name: Option<String>,
+        text: bool,
+    },
+    Run {
+        g: Global,
+        request: String,
+        opts: RunOpts,
+        jq: Option<String>,
+        output: Option<PathBuf>,
+        dry_run: bool,
+    },
 }
 
 /// What [`parse`] makes of a command line.
@@ -45,7 +76,8 @@ pub enum Parsed {
 
 /// The first arguments that are commands rather than a directory to open
 /// (R18: a directory of that name opens as `postui ./show`).
-pub const SUBCOMMANDS: &[&str] = &["projects", "show", "requests", "vars", "check", "init", "help"];
+pub const SUBCOMMANDS: &[&str] =
+    &["projects", "show", "requests", "vars", "check", "init", "run", "help"];
 
 /// Why a command could not give its report: the error envelope's
 /// `error` and, when it is about one file, `file`.
@@ -164,23 +196,51 @@ overwrites a file.
     text_flag!()
 );
 
+const RUN_USAGE: &str = concat!(
+    "\
+usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]...
+                   [--jq <filter>] [-o <file>] [--timeout <secs>] [--dry-run]
+                   [--show-secrets] [--text]
+
+Sends one request and prints what came back: its status, timings, headers
+and body. <request> is a slug as `postui requests` lists it. Nothing is
+written to the project. Secrets are masked in everything printed. Exits 1
+for a status of 400 or more, or when the request can't be prepared or sent.
+
+",
+    project_flag!(),
+    "  --env <env>               the environment, by slug or name (default: the
+                            one postui has open, else the first)
+  --select <sel>=<opt>      pick an option of a selector for this run only;
+                            can be given more than once
+  --jq <filter>             print the filter's results instead of the body
+  -o, --output <file>       write the body (or each jq result) to <file>
+  --timeout <secs>          give up after this long (default: 30; 0: never)
+  --dry-run                 print the request that would be sent; send nothing
+  --show-secrets            print secrets' values
+",
+    text_flag!()
+);
+
 /// One command: its name, the options it takes (by their long spelling;
-/// `-p` is `--project`), whether it takes a directory, and its usage.
+/// `-p` is `--project`, `-o` is `--output`), what positional argument it
+/// takes (`"dir"` or `"request"`), and its usage.
 struct Spec {
     name: &'static str,
     flags: &'static [&'static str],
-    takes_dir: bool,
+    positional: Option<&'static str>,
     usage: &'static str,
 }
 
 #[rustfmt::skip]
-const SPECS: [Spec; 6] = [
-    Spec { name: "projects", flags: &["--text"],                                          takes_dir: false, usage: PROJECTS_USAGE },
-    Spec { name: "show",     flags: &["--project", "--text"],                             takes_dir: false, usage: SHOW_USAGE },
-    Spec { name: "requests", flags: &["--project", "--text", "--space"],                  takes_dir: false, usage: REQUESTS_USAGE },
-    Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"], takes_dir: false, usage: VARS_USAGE },
-    Spec { name: "check",    flags: &["--project", "--text", "--env"],                    takes_dir: false, usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--text", "--name"],                                takes_dir: true,  usage: INIT_USAGE },
+const SPECS: [Spec; 7] = [
+    Spec { name: "projects", flags: &["--text"],                                          positional: None,            usage: PROJECTS_USAGE },
+    Spec { name: "show",     flags: &["--project", "--text"],                             positional: None,            usage: SHOW_USAGE },
+    Spec { name: "requests", flags: &["--project", "--text", "--space"],                  positional: None,            usage: REQUESTS_USAGE },
+    Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"], positional: None,            usage: VARS_USAGE },
+    Spec { name: "check",    flags: &["--project", "--text", "--env"],                    positional: None,            usage: CHECK_USAGE },
+    Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some("dir"),     usage: INIT_USAGE },
+    Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some("request"), usage: RUN_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
@@ -223,17 +283,52 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
         return Ok(Parsed::Help(spec.usage));
     }
     let g = Global { project: options.project, text: options.text };
+    let positional =
+        |what: &str| options.positional.clone().ok_or(format!("{} needs a {what}", spec.name));
     Ok(Parsed::Run(match spec.name {
         "projects" => Command::Projects { text: g.text },
         "show" => Command::Show(g),
         "requests" => Command::Requests { g, space: options.space },
         "vars" => Command::Vars { g, env: options.env, show_secrets: options.show_secrets },
         "check" => Command::Check { g, env: options.env },
-        _ => Command::Init {
-            dir: options.dir.ok_or("init needs a directory")?,
+        "init" => Command::Init {
+            dir: PathBuf::from(positional("directory")?),
             name: options.name,
             text: g.text,
         },
+        _ => {
+            let request = positional("request")?;
+            let request = request.to_str().ok_or("the request's slug is not UTF-8")?.to_string();
+            let output = options.output.map(PathBuf::from);
+            if options.dry_run && output.is_some() {
+                return Err("-o needs a send; it can't go with --dry-run".into());
+            }
+            let timeout = match options.timeout.as_deref() {
+                None => Some(DEFAULT_TIMEOUT),
+                Some(secs) => match secs.parse::<u64>() {
+                    Ok(0) => None,
+                    Ok(n) => Some(Duration::from_secs(n)),
+                    Err(_) => {
+                        return Err(format!(
+                            "--timeout takes a whole number of seconds, not '{secs}'"
+                        ));
+                    }
+                },
+            };
+            Command::Run {
+                g,
+                request,
+                opts: RunOpts {
+                    env: options.env,
+                    selects: options.selects,
+                    show_secrets: options.show_secrets,
+                    timeout,
+                },
+                jq: options.jq,
+                output,
+                dry_run: options.dry_run,
+            }
+        }
     }))
 }
 
@@ -246,7 +341,14 @@ struct Options {
     env: Option<String>,
     show_secrets: bool,
     name: Option<String>,
-    dir: Option<PathBuf>,
+    /// The command's one positional argument, as the OS gave it
+    /// (`init`'s directory, `run`'s request).
+    positional: Option<OsString>,
+    selects: Vec<String>,
+    jq: Option<String>,
+    output: Option<String>,
+    timeout: Option<String>,
+    dry_run: bool,
 }
 
 /// Reads `args` (help flags already out) against what `spec` takes.
@@ -257,15 +359,16 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy();
         if !text.starts_with('-') {
-            if !spec.takes_dir {
+            let Some(what) = spec.positional else {
                 return Err(format!("unexpected argument '{text}'"));
+            };
+            if o.positional.is_some() {
+                let noun = if what == "dir" { "directory" } else { what };
+                return Err(format!("one {noun} at most; '{text}' is a second"));
             }
-            if o.dir.is_some() {
-                return Err(format!("one directory at most; '{text}' is a second"));
-            }
-            o.dir = Some(match arg.to_str() {
-                Some(s) => crate::config::expand_tilde(s),
-                None => PathBuf::from(arg),
+            o.positional = Some(match arg.to_str() {
+                Some(s) if what == "dir" => crate::config::expand_tilde(s).into_os_string(),
+                _ => (*arg).clone(),
             });
             continue;
         }
@@ -273,13 +376,18 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
             _ => (&*text, None),
         };
-        let flag = if spelled == "-p" { "--project" } else { spelled };
+        let flag = match spelled {
+            "-p" => "--project",
+            "-o" => "--output",
+            other => other,
+        };
         if !spec.flags.contains(&flag) {
             return Err(format!("unknown option '{text}'"));
         }
         let switch = match flag {
             "--text" => Some(&mut o.text),
             "--show-secrets" => Some(&mut o.show_secrets),
+            "--dry-run" => Some(&mut o.dry_run),
             _ => None,
         };
         if let Some(on) = switch {
@@ -302,9 +410,17 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
         }
         .ok_or(format!("{spelled}'s value is not UTF-8"))?;
         let slot = match flag {
+            // The one option that repeats.
+            "--select" => {
+                o.selects.push(value);
+                continue;
+            }
             "--project" => &mut o.project,
             "--space" => &mut o.space,
             "--env" => &mut o.env,
+            "--jq" => &mut o.jq,
+            "--output" => &mut o.output,
+            "--timeout" => &mut o.timeout,
             _ => &mut o.name,
         };
         if slot.is_some() {
@@ -316,8 +432,8 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
 }
 
 /// Runs `cmd`, printing its report (or the error envelope), and gives the
-/// status to exit with: 0 on success, 1 when `check` finds an error, 2 on
-/// an error.
+/// status to exit with: 0 on success, 1 when `check` finds an error or a
+/// `run` fails, 2 on an error.
 pub async fn run(cmd: Command) -> ExitCode {
     match cmd {
         Command::Projects { text } => finish(read::projects(), text, read::ProjectsReport::text),
@@ -336,6 +452,14 @@ pub async fn run(cmd: Command) -> ExitCode {
         },
         Command::Init { dir, name, text } => {
             finish(read::init(&dir, name.as_deref()), text, read::InitReport::text)
+        }
+        Command::Run { g, request, opts, dry_run, .. } => {
+            match run::run(&g, &request, &opts, dry_run).await {
+                Ok(report) => {
+                    out::emit(&report, g.text, run::RunReport::text).unwrap_or(report.status())
+                }
+                Err(e) => out::fail(&e, g.text),
+            }
         }
     }
 }
@@ -415,6 +539,87 @@ mod tests {
             Command::Init { dir: PathBuf::from("kit"), name: Some("Kit".into()), text: false }
         );
         assert_eq!(command(&["projects"]), Command::Projects { text: false });
+    }
+
+    #[test]
+    fn run_takes_a_request_and_its_options() {
+        assert_eq!(
+            command(&[
+                "run",
+                "main/a",
+                "--env",
+                "dev",
+                "--select",
+                "user=bob",
+                "--select",
+                "org=x",
+                "--timeout",
+                "0",
+                "--dry-run"
+            ]),
+            Command::Run {
+                g: Global::default(),
+                request: "main/a".into(),
+                opts: RunOpts {
+                    env: Some("dev".into()),
+                    selects: vec!["user=bob".into(), "org=x".into()],
+                    show_secrets: false,
+                    timeout: None,
+                },
+                jq: None,
+                output: None,
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            command(&[
+                "run",
+                "a",
+                "-p",
+                "api",
+                "--jq",
+                ".id",
+                "-o",
+                "out.bin",
+                "--show-secrets",
+                "--timeout=5",
+                "--text"
+            ]),
+            Command::Run {
+                g: Global { project: Some("api".into()), text: true },
+                request: "a".into(),
+                opts: RunOpts {
+                    env: None,
+                    selects: vec![],
+                    show_secrets: true,
+                    timeout: Some(Duration::from_secs(5)),
+                },
+                jq: Some(".id".into()),
+                output: Some(PathBuf::from("out.bin")),
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn run_sends_with_a_thirty_second_timeout_by_default() {
+        match command(&["run", "a"]) {
+            Command::Run { opts, .. } => assert_eq!(opts.timeout, Some(Duration::from_secs(30))),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_mistakes_say_what_is_wrong() {
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(err(&["run"]), "run needs a request");
+        assert_eq!(err(&["run", "a", "b"]), "one request at most; 'b' is a second");
+        assert!(err(&["run", "a", "--timeout", "soon"]).contains("--timeout"));
+        assert!(err(&["run", "a", "--timeout", "-1"]).contains("--timeout"));
+        assert!(err(&["run", "a", "-o", "out.bin", "--dry-run"]).contains("-o needs a send"));
+        assert_eq!(err(&["run", "a", "--env", "x", "--env", "y"]), "--env is given twice");
+        assert_eq!(err(&["run", "a", "--space", "x"]), "unknown option '--space'");
+        assert_eq!(err(&["show", "--select", "a=b"]), "unknown option '--select'");
     }
 
     #[test]

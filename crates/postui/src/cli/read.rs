@@ -299,7 +299,7 @@ impl InitReport {
 }
 
 /// A `warnings` section for `--text`; nothing when there are none.
-fn warnings_text(warnings: &[String]) -> String {
+pub(super) fn warnings_text(warnings: &[String]) -> String {
     if warnings.is_empty() {
         return String::new();
     }

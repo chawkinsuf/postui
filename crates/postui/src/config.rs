@@ -1218,6 +1218,7 @@ commands (JSON on stdout, --text for people; postui help <command>):
   vars              an environment's variables and selectors
   check             validate a project's files and variables
   init              start a project in a directory
+  run               send a request and print the response
   help              a command's usage
 
 A directory named like a command opens as ./name.
@@ -2291,6 +2292,17 @@ osc52_limit = 1024
             CliParse::Root { root: Some(PathBuf::from("my-api")), debug_ai: false }
         );
         assert_eq!(cli(&["--help"]), CliParse::Help);
+    }
+
+    /// `run` is a command when it is the first argument, a directory when
+    /// it is `./run`.
+    #[test]
+    fn parse_cli_routes_run() {
+        assert!(matches!(cli(&["run", "x"]), CliParse::Command(crate::cli::Command::Run { .. })));
+        assert_eq!(
+            cli(&["./run"]),
+            CliParse::Root { root: Some(PathBuf::from("./run")), debug_ai: false }
+        );
     }
 
     /// The usage names every command.

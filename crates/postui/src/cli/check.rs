@@ -203,7 +203,7 @@ fn env_file(root: &Path, slug: &str) -> PathBuf {
 
 /// What is wrong with a file, without the relative path the finding's
 /// `file` already gives.
-fn reason(e: project::Error) -> String {
+pub(super) fn reason(e: project::Error) -> String {
     match e {
         project::Error::Parse { error, .. } => error,
         other => other.to_string(),
