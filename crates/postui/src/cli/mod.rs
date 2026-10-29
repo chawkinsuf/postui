@@ -4,6 +4,7 @@
 //! [`run`] runs it and prints one JSON report, or `--text` for people.
 //! Read commands open the project read-only, so they write nothing (R16).
 
+mod check;
 pub mod out;
 mod read;
 pub mod target;
@@ -314,7 +315,8 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
 }
 
 /// Runs `cmd`, printing its report (or the error envelope), and gives the
-/// status to exit with: 0 on success, 2 on an error.
+/// status to exit with: 0 on success, 1 when `check` finds an error, 2 on
+/// an error.
 pub async fn run(cmd: Command) -> ExitCode {
     match cmd {
         Command::Projects { text } => finish(read::projects(), text, read::ProjectsReport::text),
@@ -325,7 +327,12 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Vars { g, env, show_secrets } => {
             finish(read::vars(&g, env.as_deref(), show_secrets), g.text, read::VarsReport::text)
         }
-        Command::Check { g, .. } => not_yet("check", g.text),
+        Command::Check { g, env } => match check::check(&g, env.as_deref()) {
+            Ok(report) => {
+                out::emit(&report, g.text, check::CheckReport::text).unwrap_or(report.status())
+            }
+            Err(e) => out::fail(&e, g.text),
+        },
         Command::Init { text, .. } => not_yet("init", text),
     }
 }

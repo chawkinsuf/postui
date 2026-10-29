@@ -244,7 +244,7 @@ fn warnings_text(warnings: &[String]) -> String {
 }
 
 /// `space`'s requests as full slugs, in the order the sidebar draws them.
-fn displayed(project: &Project, space: &str) -> Vec<String> {
+pub(super) fn displayed(project: &Project, space: &str) -> Vec<String> {
     order::displayed_slugs(project.requests(), order::space_order(project.meta(), space), space)
 }
 

@@ -560,6 +560,215 @@ fn registered_name_resolves() {
     assert!(error.contains(s(&proj)) && error.contains(s(&twin)), "{error}");
 }
 
+/// `check`'s findings in `list` (`errors` or `warnings`) as
+/// `(file, message)`, `file` empty when the finding names none.
+fn findings(v: &serde_json::Value, list: &str) -> Vec<(String, String)> {
+    v[list]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {list} in {v}"))
+        .iter()
+        .map(|f| {
+            let file = f["file"].as_str().unwrap_or_default().to_string();
+            (file, f["message"].as_str().unwrap().to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn check_clean_project_is_ok() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let before = tree(&root);
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    let v = json(&out);
+    assert_eq!(
+        v,
+        serde_json::json!({"ok": true, "environment": "dev", "errors": [], "warnings": []})
+    );
+
+    let out = home.run(&["check", "-p", s(&root), "--text"]);
+    assert_ok(&out, "check --text");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("dev") && text.contains("ok"), "{text}");
+
+    assert_eq!(tree(&root), before, "check writes nothing");
+}
+
+/// Review Focus 1: each broken file is an error naming that file, and the
+/// rest of the project is still checked.
+#[test]
+fn check_reports_each_broken_file() {
+    let cases: [(&str, &str); 3] = [
+        ("requests/main/list.toml", "nope = ["),
+        ("environments/qa.toml", "[["),
+        // The active environment's option lacks the selector's field.
+        ("environments/dev.toml", "base = \"https://dev\"\n\n[options.user.alice]\nnote = \"x\"\n"),
+    ];
+    for (rel, text) in cases {
+        let home = Home::new();
+        let root = write_project(&home, "api");
+        std::fs::write(root.join(rel), text).unwrap();
+        let before = tree(&root);
+
+        let out = home.run(&["check", "-p", s(&root)]);
+        assert_eq!(out.status.code(), Some(1), "{rel}: {}", String::from_utf8_lossy(&out.stdout));
+        let v = json(&out);
+        assert_eq!(v["ok"], false, "{rel}");
+        let errors = findings(&v, "errors");
+        let file = s(&root.join(rel)).to_string();
+        assert!(errors.iter().any(|(f, m)| *f == file && !m.is_empty()), "{rel}: {errors:?}");
+        assert_eq!(tree(&root), before, "{rel}: check writes nothing");
+    }
+
+    // Asking for the broken environment reports it once and checks the
+    // rest; an environment that doesn't exist is a mistake on the line.
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("environments/qa.toml"), "[[").unwrap();
+    std::fs::write(root.join("requests/main/list.toml"), "nope = [").unwrap();
+    let out = home.run(&["check", "-p", s(&root), "--env", "qa"]);
+    assert_eq!(out.status.code(), Some(1));
+    let errors = findings(&json(&out), "errors");
+    let qa = s(&root.join("environments/qa.toml")).to_string();
+    assert_eq!(errors.iter().filter(|(f, _)| *f == qa).count(), 1, "{errors:?}");
+    let list = s(&root.join("requests/main/list.toml")).to_string();
+    assert!(errors.iter().any(|(f, _)| *f == list), "{errors:?}");
+
+    let out = home.run(&["check", "-p", s(&root), "--env", "nope"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(json(&out)["error"].as_str().unwrap().contains("nope"));
+}
+
+/// A project that won't open is a finding on the file that refused it,
+/// not the error envelope.
+#[test]
+fn check_reports_an_unopenable_project() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("variables.toml"), "[[").unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    assert_eq!(v["ok"], false);
+    let errors = findings(&v, "errors");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].0, s(&root.join("variables.toml")));
+
+    let out = home.run(&["check", "-p", s(&root), "--text"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(s(&root.join("variables.toml"))), "{text}");
+
+    // Not a project at all is still the envelope.
+    let empty = home.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let out = home.run(&["check", "-p", s(&empty)]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(json(&out)["error"].as_str().unwrap().contains("not a postui project"));
+}
+
+#[test]
+fn check_undeclared_is_error_missing_secret_is_warning() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let x = root.join("requests/admin/x.toml");
+    let file = s(&x).to_string();
+    std::fs::write(&x, "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{bsae}}/x\"\n").unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let errors = findings(&json(&out), "errors");
+    assert_eq!(errors, [(file.clone(), "{{bsae}} not declared".to_string())]);
+
+    // A secret this checkout lacks, or a variable this environment gives
+    // no value, is a warning: the run would fail, the files are fine.
+    std::fs::write(&x, "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{base}}/{{token}}/{{id}}\"\n")
+        .unwrap();
+    std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    let v = json(&out);
+    assert_eq!(v["ok"], true);
+    let warnings = findings(&v, "warnings");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].0, file);
+    assert!(warnings[0].1.contains("missing secret: token"), "{warnings:?}");
+    assert!(warnings[0].1.contains("unresolved: id"), "{warnings:?}");
+
+    std::fs::write(&x, "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{base}}/{{user_id}}\"\n")
+        .unwrap();
+    let out = home.run(&["check", "-p", s(&root), "--env", "qa"]);
+    assert_ok(&out, "check --env qa");
+    let v = json(&out);
+    assert_eq!(v["environment"], "qa");
+    let warnings = findings(&v, "warnings");
+    assert_eq!(warnings, [(file, "need a selection: user_id".to_string())]);
+}
+
+/// Spec §4: an invalid name in `project.toml` is an error on that file,
+/// not also the open's warning.
+#[test]
+fn check_invalid_name_is_an_error_on_project_toml() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let meta = std::fs::read_to_string(root.join("project.toml")).unwrap();
+    std::fs::write(
+        root.join("project.toml"),
+        meta.replace("spaces = [\"main\", \"admin\"]", "spaces = [\"main\", \"Bad Name\"]"),
+    )
+    .unwrap();
+
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    let errors = findings(&v, "errors");
+    let project_toml = s(&root.join("project.toml")).to_string();
+    assert!(errors.iter().any(|(f, m)| *f == project_toml && m.contains("Bad Name")), "{errors:?}");
+    let warnings = findings(&v, "warnings");
+    assert!(!warnings.iter().any(|(_, m)| m.contains("Bad Name")), "{warnings:?}");
+}
+
+/// R16: no read command writes anything, in the project (its trash and a
+/// missing `environments/` included) or the config dir.
+#[test]
+fn every_read_command_writes_nothing() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::remove_dir_all(root.join("environments")).unwrap();
+    std::fs::create_dir_all(root.join(".postui/trash/1")).unwrap();
+    std::fs::write(root.join(".postui/trash/1/x.toml"), "name = \"gone\"\n").unwrap();
+    home.register(&[&root]);
+    let project = tree(&root);
+    let config = tree(&home.config_dir());
+
+    for args in [
+        &["projects"][..],
+        &["show", "-p", s(&root)],
+        &["requests", "-p", s(&root)],
+        &["vars", "-p", s(&root)],
+        &["check", "-p", s(&root)],
+    ] {
+        for text in [false, true] {
+            let mut args = args.to_vec();
+            if text {
+                args.push("--text");
+            }
+            let out = home.run(&args);
+            assert_ne!(
+                out.status.code(),
+                Some(2),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert_eq!(tree(&root), project, "{args:?} writes nothing in the project");
+            assert_eq!(tree(&home.config_dir()), config, "{args:?} writes nothing in the config");
+        }
+    }
+}
+
 /// Review Focus 5: a reader that stopped ends the run quietly.
 #[test]
 fn closed_stdout_ends_quietly() {
