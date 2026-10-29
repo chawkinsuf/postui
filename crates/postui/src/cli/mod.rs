@@ -333,7 +333,9 @@ pub async fn run(cmd: Command) -> ExitCode {
             }
             Err(e) => out::fail(&e, g.text),
         },
-        Command::Init { text, .. } => not_yet("init", text),
+        Command::Init { dir, name, text } => {
+            finish(read::init(&dir, name.as_deref()), text, read::InitReport::text)
+        }
     }
 }
 
@@ -347,11 +349,6 @@ fn finish<T: serde::Serialize>(
         Ok(report) => out::emit(&report, text, render_text).unwrap_or(ExitCode::SUCCESS),
         Err(e) => out::fail(&e, text),
     }
-}
-
-/// A command whose report is still to come (#214's later steps).
-fn not_yet(name: &str, text: bool) -> ExitCode {
-    out::fail(&CliError::new(format!("postui {name} is not implemented yet")), text)
 }
 
 #[cfg(test)]

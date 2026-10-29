@@ -901,3 +901,52 @@ fn command_help_and_mistakes() {
     assert!(stderr.contains("usage: postui show "), "the command's own usage: {stderr}");
     assert!(!stderr.contains("commands ("), "not the general usage: {stderr}");
 }
+
+#[test]
+fn init_makes_a_checkable_project() {
+    let home = Home::new();
+    let root = home.path().join("kit");
+    let before = home.config_dir().exists();
+    let out = home.run(&["init", s(&root), "--name", "Kit"]);
+    assert_ok(&out, "init");
+    let v = json(&out);
+    assert_eq!(v["root"], s(&root));
+    assert_eq!(v["warnings"], serde_json::json!([]));
+    for (key, rel) in [
+        ("project", "project.toml"),
+        ("variables", "variables.toml"),
+        ("environments", "environments"),
+        ("requests", "requests"),
+    ] {
+        assert_eq!(v["files"][key], s(&root.join(rel)));
+        assert!(root.join(rel).exists(), "{key} exists");
+    }
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    assert_eq!(json(&out)["ok"], true);
+    assert_eq!(json(&home.run(&["show", "-p", s(&root)]))["name"], "Kit");
+    assert_eq!(home.config_dir().exists(), before, "init does not register the project");
+}
+
+#[test]
+fn init_refuses_an_existing_project() {
+    let home = Home::new();
+    let root = home.project("kit", "Kit");
+    let before = std::fs::read(root.join("project.toml")).unwrap();
+    let out = home.run(&["init", s(&root), "--name", "Other"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v = json(&out);
+    assert!(v["error"].as_str().unwrap().contains("already a postui project"), "{v}");
+    assert_eq!(std::fs::read(root.join("project.toml")).unwrap(), before);
+}
+
+#[test]
+fn init_creates_a_missing_directory() {
+    let home = Home::new();
+    let root = home.path().join("a").join("b");
+    let out = home.run(&["init", s(&root)]);
+    assert_ok(&out, "init");
+    assert_eq!(json(&out)["root"], s(&root));
+    assert!(root.join("project.toml").is_file());
+    assert_ok(&home.run(&["check", "-p", s(&root)]), "check");
+}

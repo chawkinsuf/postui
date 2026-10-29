@@ -241,6 +241,63 @@ impl ShowReport {
     }
 }
 
+/// `postui init`.
+#[derive(Serialize)]
+pub struct InitReport {
+    root: PathBuf,
+    files: InitFiles,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct InitFiles {
+    project: PathBuf,
+    variables: PathBuf,
+    environments: PathBuf,
+    requests: PathBuf,
+}
+
+/// Makes `dir` (and any missing parents) a project. The one command that
+/// writes, and the one that doesn't register the project in the config. A
+/// directory that already holds a `project.toml` is refused untouched.
+pub fn init(dir: &Path, name: Option<&str>) -> Result<InitReport, CliError> {
+    let dir = std::path::absolute(dir)
+        .map_err(|e| CliError::new(format!("can't resolve \"{}\": {e}", dir.display())))?;
+    if Project::is_project(&dir) {
+        return Err(CliError::at("already a postui project", dir.join("project.toml")));
+    }
+    let (_, warnings) = Project::init(&dir, name)
+        .map_err(|e| CliError { message: e.to_string(), file: Some(dir.clone()) })?;
+    // Canonical like every other command's root, which needs it to exist.
+    let root = dir
+        .canonicalize()
+        .map_err(|e| CliError::new(format!("can't resolve \"{}\": {e}", dir.display())))?;
+    Ok(InitReport {
+        files: InitFiles {
+            project: root.join("project.toml"),
+            variables: root.join("variables.toml"),
+            environments: root.join("environments"),
+            requests: root.join("requests"),
+        },
+        root,
+        warnings,
+    })
+}
+
+impl InitReport {
+    pub fn text(&self) -> String {
+        let mut out = table(&[
+            vec!["root".to_string(), self.root.display().to_string()],
+            vec!["project".to_string(), self.files.project.display().to_string()],
+            vec!["variables".to_string(), self.files.variables.display().to_string()],
+            vec!["environments".to_string(), self.files.environments.display().to_string()],
+            vec!["requests".to_string(), self.files.requests.display().to_string()],
+        ]);
+        out.push_str(&warnings_text(&self.warnings));
+        out
+    }
+}
+
 /// A `warnings` section for `--text`; nothing when there are none.
 fn warnings_text(warnings: &[String]) -> String {
     if warnings.is_empty() {
