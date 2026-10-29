@@ -119,8 +119,12 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
     };
     // A secret too short to mask would show in run and suite output.
     for (name, meta) in &project.resolved().meta {
-        let short =
-            project.resolved().values.get(name).is_some_and(|v| v.chars().count() < MASK_MIN_CHARS);
+        // An empty value can't leak, so it isn't warned of.
+        let short = project
+            .resolved()
+            .values
+            .get(name)
+            .is_some_and(|v| !v.is_empty() && v.chars().count() < MASK_MIN_CHARS);
         if *meta == VarMeta::Secret && short {
             warnings.push(Finding::at(
                 root.join(project::SECRETS_TOML),

@@ -165,7 +165,7 @@ struct ShownHeader {
 }
 
 /// What came back, masked. `body` and `body_json` are `null` when `--jq`
-/// or `-o` took the body.
+/// or `-o` took the body; a failing `--jq` leaves them filled.
 #[derive(Serialize)]
 struct ResponseReport {
     status: u16,
@@ -250,6 +250,7 @@ fn record(
     };
     // What `-o` would write, and whether the body is shown.
     let mut file_bytes = None;
+    let mut show_body = false;
     match jq {
         Some(filter) => match run_jq(filter, &plain, mask) {
             Ok(results) => {
@@ -264,7 +265,10 @@ fn record(
                     error: None,
                 });
             }
+            // The filter failed: the body is shown (nothing is written to
+            // `-o`), so the caller needn't send the request again.
             Err(message) => {
+                show_body = true;
                 report.jq = Some(JqReport {
                     filter: mask.apply(filter),
                     output: None,
@@ -273,13 +277,16 @@ fn record(
             }
         },
         None if output.is_some() => file_bytes = Some(raw.bytes),
-        None => {
-            response.body_json = serde_json::from_str(&plain).ok().map(|v| mask.apply_json(v));
-            // The mask covers a secret as sent, as a JSON string spells it
-            // and with `/` as `\/`. Any other spelling (`-` for `-`)
-            // stays as sent here; `body_json` has it masked once parsed.
-            response.body = Some(mask.apply(&plain));
-        }
+        None => show_body = true,
+    }
+    if show_body {
+        response.body_json = serde_json::from_str(&plain).ok().map(|v| mask.apply_json(v));
+        // The mask covers a secret as sent, JSON-escaped (also `/` as `\/`
+        // and non-ASCII as `\uXXXX`) and percent-encoded for a query string.
+        // Other encodings (a path segment's percent-encoding, any transform
+        // the server applies) stay as sent in `body`; `body_json` has the
+        // parsed strings masked.
+        response.body = Some(mask.apply(&plain));
     }
     if let (Some(file), Some(bytes)) = (output, file_bytes) {
         report.output_file = Some(write_output(file, &bytes)?);
@@ -326,27 +333,29 @@ pub async fn run(
             return Ok(report);
         }
     };
+    // The session's mask plus what this request derives from its secrets.
+    let mask = s.mask.with_sent(&request);
     // What the screens show, or what the wire carries with --show-secrets;
     // the mask then hides any secret value still in the text.
     let show = opts.show_secrets;
     report.method = Some(request.method);
-    report.url = Some(shown_url(&s.mask, &request, show));
+    report.url = Some(shown_url(&mask, &request, show));
     report.request_headers = request
         .wire
         .iter()
         .map(|h| ShownHeader {
-            name: s.mask.apply(if show { &h.name } else { &h.display_name }),
-            value: s.mask.apply(if show { &h.value } else { &h.display }),
+            name: mask.apply(if show { &h.name } else { &h.display_name }),
+            value: mask.apply(if show { &h.value } else { &h.display }),
         })
         .collect();
-    report.request_body = request.body.as_deref().map(|b| s.mask.apply(b));
-    report.warnings.extend(warnings.iter().map(|w| s.mask.apply(&w.to_string())));
+    report.request_body = request.body.as_deref().map(|b| mask.apply(b));
+    report.warnings.extend(warnings.iter().map(|w| mask.apply(&w.to_string())));
     if dry_run {
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, &s.mask, raw, jq, output)?,
-        Err(message) => report.error = Some(s.mask.apply(&message)),
+        Ok(raw) => record(&mut report, &mask, raw, jq, output)?,
+        Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)
 }

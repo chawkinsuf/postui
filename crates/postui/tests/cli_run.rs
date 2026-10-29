@@ -424,6 +424,9 @@ fn run_jq_prints_the_filters_output() {
     let v = json(&out);
     assert!(v["jq"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{}", v["jq"]);
     assert!(v["jq"]["output"].is_null());
+    // The response is not lost: the caller needn't send the request again.
+    assert_eq!(v["response"]["status"], 200);
+    assert_eq!(v["response"]["body"], "ok\u{fffd}\u{fffd}");
 
     let file = home.path().join("id.txt");
     let out = send(&home, &root, "main/ok", &["--jq", ".id", "-o", s(&file)]);
@@ -438,7 +441,57 @@ fn run_jq_prints_the_filters_output() {
     let out = send(&home, &root, "main/ok", &["--jq", ".id.x", "-o", s(&none)]);
     assert_eq!(out.status.code(), Some(1));
     assert!(!none.exists());
-    assert!(json(&out)["output_file"].is_null());
+    let v = json(&out);
+    assert!(v["output_file"].is_null());
+    assert_eq!(v["response"]["body"], r#"{"id":42}"#);
+    assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
+}
+
+/// A secret with `+` and `/` goes out percent-encoded in a query string and
+/// comes back that way from an echoing server; it must be masked.
+#[test]
+fn run_masks_a_secret_echoed_percent_encoded() {
+    let (home, server, root) = served();
+    std::fs::write(
+        root.join(".postui/secrets.toml"),
+        "[dev]\ntoken = \"a+b/c=dd\"\n\n[qa]\ntoken = \"a+b/c=dd\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("requests/main/echo-url.toml"),
+        "name = \"EchoUrl\"\nmethod = \"GET\"\nurl = \"{{base}}/echo-url?k={{token}}&z=1\"\n",
+    )
+    .unwrap();
+
+    let out = send(&home, &root, "main/echo-url", &[]);
+    assert_ok(&out, "run main/echo-url");
+    let body = json(&out)["response"]["body"].as_str().unwrap().to_string();
+    assert_eq!(body, format!("/echo-url?k={MASK}&z=1"));
+    assert!(server.seen().contains(&"GET /echo-url".to_string()));
+}
+
+/// A secret in the URL's userinfo goes out as a derived `Authorization:
+/// Basic <base64>`; a server echoing it back must not reveal it.
+#[test]
+fn run_masks_a_basic_header_derived_from_the_url() {
+    let (home, server, root) = served();
+    let url = server.base().replacen("http://", "http://user:{{token}}@", 1);
+    std::fs::write(
+        root.join("requests/main/basic.toml"),
+        format!("name = \"Basic\"\nmethod = \"GET\"\nurl = \"{url}/echo\"\n"),
+    )
+    .unwrap();
+
+    let out = send(&home, &root, "main/basic", &[]);
+    assert_ok(&out, "run main/basic");
+    let v = json(&out);
+    let echoed = v["response"]["headers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["name"] == "x-echo")
+        .unwrap_or_else(|| panic!("no x-echo in {v}"));
+    assert_eq!(echoed["value"], format!("Basic {MASK}"), "{v}");
 }
 
 #[test]

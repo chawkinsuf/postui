@@ -133,7 +133,7 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// request's `authorization` in `x-echo` and its body back; `/bytes` 200
 /// `ok\xff\xfe`; `/escaped` 200 JSON holding the
 /// fixture's secret with its hyphen written as a JSON escape;
-/// `/escaped-slash` 200 JSON holding `ab/cd/ef-gh` written `ab\/cd\/ef-gh`; `/hang` never
+/// `/echo-url` 200 with the request target as the body; `/escaped-slash` 200 JSON holding `ab/cd/ef-gh` written `ab\/cd\/ef-gh`; `/hang` never
 /// answers; anything else 200, empty.
 pub struct Server {
     port: u16,
@@ -218,6 +218,8 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
             // A backslash, `u`, `002d`: six characters on the wire.
             b"{\"t\":\"s3cr3t\\u002dvalue\"}".to_vec(),
         ),
+        // The request target, query string included, back as the body.
+        "/echo-url" => ("200 OK", String::new(), target.as_bytes().to_vec()),
         // `ab/cd/ef-gh` with its slashes written `\/`, as PHP's json_encode does.
         "/escaped-slash" => (
             "200 OK",

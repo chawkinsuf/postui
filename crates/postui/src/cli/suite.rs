@@ -90,15 +90,16 @@ pub async fn suite(
                     request_warnings.extend(
                         prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
                     );
+                    let mask = s.mask.with_sent(&request);
                     result.method = Some(request.method);
-                    result.url = Some(shown_url(&s.mask, &request, opts.show_secrets));
+                    result.url = Some(shown_url(&mask, &request, opts.show_secrets));
                     match send_raw(s.clients.for_request(&request), &request).await {
                         Ok(raw) => {
                             result.status = Some(raw.status);
                             result.elapsed_ms = Some(millis(raw.elapsed));
                             result.size = Some(raw.bytes.len());
                         }
-                        Err(message) => result.error = Some(s.mask.apply(&message)),
+                        Err(message) => result.error = Some(mask.apply(&message)),
                     }
                 }
             }

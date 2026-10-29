@@ -259,7 +259,7 @@ Exits 1 when any request failed to prepare or send or returned 400 or more.
 
 /// One command: its name, the options it takes (by their long spelling;
 /// `-p` is `--project`, `-o` is `--output`), what positional argument it
-/// takes (`"dir"` or `"request"`), and its usage.
+/// takes, as the noun the user reads (`"directory"` or `"request"`), and its usage.
 struct Spec {
     name: &'static str,
     flags: &'static [&'static str],
@@ -274,7 +274,7 @@ const SPECS: [Spec; 8] = [
     Spec { name: "requests", flags: &["--project", "--text", "--space"],                  positional: None,            usage: REQUESTS_USAGE },
     Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"], positional: None,            usage: VARS_USAGE },
     Spec { name: "check",    flags: &["--project", "--text", "--env"],                    positional: None,            usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some("dir"),     usage: INIT_USAGE },
+    Spec { name: "init",     flags: &["--text", "--name"],                                positional: Some("directory"), usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some("request"), usage: RUN_USAGE },
     Spec { name: "suite",    flags: &["--project", "--text", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"], positional: None, usage: SUITE_USAGE },
 ];
@@ -318,6 +318,8 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
     if wants_help {
         return Ok(Parsed::Help(spec.usage));
     }
+    // Only `run` and `suite` take these options; the rest ignore the value.
+    let opts = run_opts(&options)?;
     let g = Global { project: options.project, text: options.text };
     let positional =
         |what: &str| options.positional.clone().ok_or(format!("{} needs a {what}", spec.name));
@@ -335,7 +337,7 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
         "suite" => Command::Suite {
             g,
             space: options.space,
-            opts: run_opts(options.env, options.selects, options.show_secrets, options.timeout)?,
+            opts,
             output: options.output.map(PathBuf::from),
         },
         _ => {
@@ -348,32 +350,15 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             if options.dry_run && options.jq.is_some() {
                 return Err("--jq needs a send; it can't go with --dry-run".into());
             }
-            Command::Run {
-                g,
-                request,
-                opts: run_opts(
-                    options.env,
-                    options.selects,
-                    options.show_secrets,
-                    options.timeout,
-                )?,
-                jq: options.jq,
-                output,
-                dry_run: options.dry_run,
-            }
+            Command::Run { g, request, opts, jq: options.jq, output, dry_run: options.dry_run }
         }
     }))
 }
 
 /// The options `run` and `suite` share, with `--timeout` read: whole
 /// seconds, `0` for none, 30 when not given.
-fn run_opts(
-    env: Option<String>,
-    selects: Vec<String>,
-    show_secrets: bool,
-    timeout: Option<String>,
-) -> Result<RunOpts, String> {
-    let timeout = match timeout.as_deref() {
+fn run_opts(o: &Options) -> Result<RunOpts, String> {
+    let timeout = match o.timeout.as_deref() {
         None => Some(DEFAULT_TIMEOUT),
         Some(secs) => match secs.parse::<u64>() {
             Ok(0) => None,
@@ -383,7 +368,12 @@ fn run_opts(
             }
         },
     };
-    Ok(RunOpts { env, selects, show_secrets, timeout })
+    Ok(RunOpts {
+        env: o.env.clone(),
+        selects: o.selects.clone(),
+        show_secrets: o.show_secrets,
+        timeout,
+    })
 }
 
 /// Every option a command line can carry, before the command picks its own.
@@ -417,11 +407,10 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
                 return Err(format!("unexpected argument '{text}'"));
             };
             if o.positional.is_some() {
-                let noun = if what == "dir" { "directory" } else { what };
-                return Err(format!("one {noun} at most; '{text}' is a second"));
+                return Err(format!("one {what} at most; '{text}' is a second"));
             }
             o.positional = Some(match arg.to_str() {
-                Some(s) if what == "dir" => crate::config::expand_tilde(s).into_os_string(),
+                Some(s) if what == "directory" => crate::config::expand_tilde(s).into_os_string(),
                 _ => (*arg).clone(),
             });
             continue;

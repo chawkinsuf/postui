@@ -41,7 +41,22 @@ pub fn client() -> reqwest::Client {
     // it only sets up connection pooling/TLS config, and does not touch I/O
     // until the first request is actually sent. Verified with a plain
     // `#[test]` (no `#[tokio::test]`) below.
-    reqwest::Client::new()
+    build_client(false, None)
+}
+
+/// The one client builder: `insecure` skips TLS certificate verification,
+/// `timeout` is a total timeout. `build()` can only fail on TLS backend
+/// initialization; the fallback is the plain default client, so a failed
+/// insecure build fails closed (a verifying client).
+fn build_client(insecure: bool, timeout: Option<Duration>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if insecure {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    if let Some(d) = timeout {
+        builder = builder.timeout(d);
+    }
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// The two clients a send can go out on: the normal verifying one and one
@@ -68,20 +83,7 @@ impl Clients {
     /// Both clients with a total timeout when given (the command line's
     /// `--timeout`).
     pub fn with_timeout(timeout: Option<Duration>) -> Self {
-        // Same fallback story as `client_with_timeout`: `build()` only fails
-        // on TLS backend init, and if the insecure variant somehow can't be
-        // built, failing closed (a verifying client) is the safe default.
-        let build = |insecure: bool| {
-            let mut builder = reqwest::Client::builder();
-            if insecure {
-                builder = builder.danger_accept_invalid_certs(true);
-            }
-            if let Some(d) = timeout {
-                builder = builder.timeout(d);
-            }
-            builder.build().unwrap_or_else(|_| reqwest::Client::new())
-        };
-        Self { verifying: build(false), insecure: build(true) }
+        Self { verifying: build_client(false, timeout), insecure: build_client(true, timeout) }
     }
 
     /// Picks the client `req` should be sent on.
@@ -93,11 +95,7 @@ impl Clients {
 /// Like [`client`] but with a total timeout, for tests that need a request
 /// to die quickly on its own (the real client never times out).
 pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
-    // `build()` can only fail on TLS backend initialization; with the config
-    // here (no custom certs/proxies) that's practically unreachable. Fall
-    // back to the plain default client rather than panicking if it ever
-    // does.
-    reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new())
+    build_client(false, Some(timeout))
 }
 
 /// A response with its body left as the bytes that arrived — what the
@@ -121,15 +119,19 @@ pub struct RawResponse {
 /// alike come back as `Err(String)`.
 pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<ResponseData, String> {
     let raw = send_raw(client, req).await?;
+    let size = raw.bytes.len();
+    // Valid UTF-8 (the usual case) keeps the buffer; only a bad body copies.
+    let body = String::from_utf8(raw.bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     Ok(ResponseData {
         status: raw.status,
         url: raw.url,
         headers: raw.headers,
         sent_headers: raw.sent_headers,
-        body: String::from_utf8_lossy(&raw.bytes).into_owned(),
+        body,
         ttfb: raw.ttfb,
         elapsed: raw.elapsed,
-        size: raw.bytes.len(),
+        size,
         content_type: raw.content_type,
     })
 }
@@ -171,7 +173,7 @@ pub async fn send_raw(
         url: req.display_url.clone(),
         headers,
         sent_headers: req.wire.clone(),
-        bytes: bytes.to_vec(),
+        bytes: Vec::from(bytes),
         ttfb,
         elapsed,
         content_type,
