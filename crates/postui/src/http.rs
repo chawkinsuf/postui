@@ -59,17 +59,28 @@ impl Default for Clients {
 }
 
 impl Clients {
+    /// No timeout, as the TUI wants it.
     pub fn new() -> Self {
+        Self::with_timeout(None)
+    }
+
+    /// Both clients with a total timeout when given (the command line's
+    /// `--timeout`).
+    pub fn with_timeout(timeout: Option<Duration>) -> Self {
         // Same fallback story as `client_with_timeout`: `build()` only fails
         // on TLS backend init, and if the insecure variant somehow can't be
         // built, failing closed (a verifying client) is the safe default.
-        Self {
-            verifying: client(),
-            insecure: reqwest::Client::builder()
-                .danger_accept_invalid_certs(true)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
-        }
+        let build = |insecure: bool| {
+            let mut builder = reqwest::Client::builder();
+            if insecure {
+                builder = builder.danger_accept_invalid_certs(true);
+            }
+            if let Some(d) = timeout {
+                builder = builder.timeout(d);
+            }
+            builder.build().unwrap_or_else(|_| reqwest::Client::new())
+        };
+        Self { verifying: build(false), insecure: build(true) }
     }
 
     /// Picks the client `req` should be sent on.
@@ -88,10 +99,45 @@ pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// A response with its body left as the bytes that arrived — what the
+/// command line needs to write a body out exactly. [`send`] is this plus a
+/// lossy decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawResponse {
+    pub status: u16,
+    /// As [`ResponseData::url`]: masked.
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub sent_headers: Vec<SentHeader>,
+    pub bytes: Vec<u8>,
+    pub ttfb: Duration,
+    pub elapsed: Duration,
+    pub content_type: Option<String>,
+}
+
 /// Sends `req` and shapes the result (or the error chain) for the UI.
 /// Never panics: header/method construction errors and transport errors
 /// alike come back as `Err(String)`.
 pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<ResponseData, String> {
+    let raw = send_raw(client, req).await?;
+    Ok(ResponseData {
+        status: raw.status,
+        url: raw.url,
+        headers: raw.headers,
+        sent_headers: raw.sent_headers,
+        body: String::from_utf8_lossy(&raw.bytes).into_owned(),
+        ttfb: raw.ttfb,
+        elapsed: raw.elapsed,
+        size: raw.bytes.len(),
+        content_type: raw.content_type,
+    })
+}
+
+/// [`send`] without the decode: the body comes back as the raw bytes.
+pub async fn send_raw(
+    client: &reqwest::Client,
+    req: &PreparedRequest,
+) -> Result<RawResponse, String> {
     let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
         .map_err(|e| format!("invalid method: {e}"))?;
     let mut builder = client.request(method, &req.url);
@@ -118,18 +164,15 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).map(text);
     let bytes = response.bytes().await.map_err(|e| error_chain(&e, req))?;
     let elapsed = started.elapsed();
-    let size = bytes.len();
-    let body = String::from_utf8_lossy(&bytes).into_owned();
 
-    Ok(ResponseData {
+    Ok(RawResponse {
         status,
         url: req.display_url.clone(),
         headers,
         sent_headers: req.wire.clone(),
-        body,
+        bytes: bytes.to_vec(),
         ttfb,
         elapsed,
-        size,
         content_type,
     })
 }
@@ -268,6 +311,79 @@ mod tests {
             std::ptr::eq(clients.for_request(&req), &clients.insecure),
             "flagged request uses the insecure client"
         );
+
+        let timed = Clients::with_timeout(Some(Duration::from_secs(5)));
+        req.insecure = false;
+        assert!(
+            std::ptr::eq(timed.for_request(&req), &timed.verifying),
+            "unflagged request uses the verifying client"
+        );
+        req.insecure = true;
+        assert!(
+            std::ptr::eq(timed.for_request(&req), &timed.insecure),
+            "flagged request uses the insecure client"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_raw_keeps_the_bodys_bytes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let _ = sock.read(&mut buf).await.unwrap();
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\nok\xff\xfe")
+                    .await
+                    .unwrap();
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: url.clone(),
+            display_url: url,
+            headers: vec![],
+            wire: vec![],
+            body: None,
+            insecure: false,
+        };
+        let raw = send_raw(&client(), &req).await.unwrap();
+        assert_eq!(raw.bytes, b"ok\xff\xfe");
+        assert_eq!(raw.status, 200);
+        let data = send(&client(), &req).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(data.body, "ok\u{fffd}\u{fffd}");
+        assert_eq!(data.size, 4);
+    }
+
+    #[tokio::test]
+    async fn a_timeout_client_gives_up_on_a_silent_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            drop(sock);
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: url.clone(),
+            display_url: url,
+            headers: vec![],
+            wire: vec![],
+            body: None,
+            insecure: false,
+        };
+        let clients = Clients::with_timeout(Some(Duration::from_millis(200)));
+        let started = Instant::now();
+        let err = send_raw(clients.for_request(&req), &req).await.expect_err("never answered");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(err.contains("timed out"), "{err}");
+        server.abort();
     }
 
     /// A server that sends its headers immediately but stalls before the
