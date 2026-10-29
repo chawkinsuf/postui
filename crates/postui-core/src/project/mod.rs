@@ -14,7 +14,7 @@ mod undo;
 mod varedit_ops;
 mod variables;
 pub use meta::*;
-pub use requests::HeldDrift;
+pub use requests::{HeldDrift, ListingWarning};
 pub use undo::Undone;
 pub use varedit_ops::{VarEdit, pasted_option_name};
 
@@ -131,7 +131,7 @@ pub struct Project {
     /// joined; re-derived by every `refresh_environments`.
     environments_warning: Option<String>,
     listing: Vec<RequestListing>,
-    listing_warning: Option<String>,
+    listing_warnings: Vec<ListingWarning>,
     /// Requests loaded on demand, held while open (Task 7).
     open_requests: IndexMap<String, Held>,
     local: Local,
@@ -236,6 +236,45 @@ pub(crate) fn env_rel(env: &str) -> Result<RelPath, Error> {
         return Err(Error::BadName(env.to_string()));
     }
     rel(&format!("{ENVIRONMENTS_DIR}/{env}.toml"))
+}
+
+/// A name postui leaves out because it can't be a space's or an
+/// environment's (a-z 0-9 - _), as the listing that skips it found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Skipped {
+    /// An entry of `project.toml`'s `spaces`.
+    ListedSpace(String),
+    /// An entry of `project.toml`'s `environments`.
+    ListedEnvironment(String),
+    /// A file under `environments/`, by its file name.
+    EnvironmentFile(String),
+    /// A directory under `requests/`, by its name.
+    SpaceDir(String),
+}
+
+impl Skipped {
+    /// The file it is in (a listed name), or the file or directory it is,
+    /// relative to the root.
+    pub fn rel(&self) -> String {
+        match self {
+            Skipped::ListedSpace(_) | Skipped::ListedEnvironment(_) => PROJECT_TOML.to_string(),
+            Skipped::EnvironmentFile(file) => format!("{ENVIRONMENTS_DIR}/{file}"),
+            Skipped::SpaceDir(dir) => format!("{REQUESTS_DIR}/{dir}"),
+        }
+    }
+
+    /// The warning opening the project gives for it: one for a listed
+    /// name; none for a file or directory, which are passed over quietly.
+    pub fn warning(&self) -> Option<Warning> {
+        let (name, kind) = match self {
+            Skipped::ListedSpace(name) => (name, "space"),
+            Skipped::ListedEnvironment(name) => (name, "environment"),
+            Skipped::EnvironmentFile(_) | Skipped::SpaceDir(_) => return None,
+        };
+        Some(format!(
+            "project.toml lists {name:?}, which is not a valid {kind} name ({kind} names are a-z 0-9 - _)"
+        ))
+    }
 }
 
 /// The `list_spaces` warnings as one line, or `None` when there are
@@ -909,16 +948,25 @@ impl Project {
     /// take it for "no environments" and create a `default` the user
     /// never asked for.
     fn environment_files(disk: &mut Disk) -> Result<Vec<String>, DiskError> {
+        Ok(Self::scan_environment_files(disk)?.0)
+    }
+
+    /// [`environment_files`](Self::environment_files), and the `.toml`
+    /// files it skips for their names, alphabetically.
+    fn scan_environment_files(disk: &mut Disk) -> Result<(Vec<String>, Vec<Skipped>), DiskError> {
         let dir = RelPath::new(ENVIRONMENTS_DIR)?;
-        let mut out: Vec<String> = disk
-            .list(&dir)?
-            .into_iter()
-            .filter(|e| !e.is_dir)
-            .filter_map(|e| e.name.strip_suffix(".toml").map(str::to_string))
-            .filter(|stem| meta::valid_env_name(stem))
-            .collect();
+        let mut out = Vec::new();
+        let mut skipped = Vec::new();
+        for e in disk.list(&dir)?.into_iter().filter(|e| !e.is_dir) {
+            match e.name.strip_suffix(".toml") {
+                Some(stem) if meta::valid_env_name(stem) => out.push(stem.to_string()),
+                Some(_) => skipped.push(e.name),
+                None => {}
+            }
+        }
         out.sort();
-        Ok(out)
+        skipped.sort();
+        Ok((out, skipped.into_iter().map(Skipped::EnvironmentFile).collect()))
     }
 
     /// `meta.environments` first (invalid names skipped, duplicates
@@ -928,13 +976,24 @@ impl Project {
         disk: &mut Disk,
         meta: &ProjectMeta,
     ) -> Result<(Vec<String>, Vec<Warning>), DiskError> {
-        let files = Self::environment_files(disk)?;
+        let (out, skipped) = Self::scan_environments(disk, meta)?;
+        Ok((out, skipped.iter().filter_map(Skipped::warning).collect()))
+    }
+
+    /// [`list_environments`](Self::list_environments), with what it skips
+    /// for its name: the listed names (each once), then the files.
+    fn scan_environments(
+        disk: &mut Disk,
+        meta: &ProjectMeta,
+    ) -> Result<(Vec<String>, Vec<Skipped>), DiskError> {
+        let (files, skipped_files) = Self::scan_environment_files(disk)?;
         let mut out: Vec<String> = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
+        let mut skipped: Vec<Skipped> = Vec::new();
         for name in &meta.environments {
             if !meta::valid_env_name(name) {
-                if !skipped.contains(name) {
-                    skipped.push(name.clone());
+                let entry = Skipped::ListedEnvironment(name.clone());
+                if !skipped.contains(&entry) {
+                    skipped.push(entry);
                 }
                 continue;
             }
@@ -942,27 +1001,38 @@ impl Project {
                 out.push(name.clone());
             }
         }
-        let warnings: Vec<Warning> = skipped
-            .into_iter()
-            .map(|n| format!("project.toml lists {n:?}, which is not a valid environment name (environment names are a-z 0-9 - _)"))
-            .collect();
         for name in files {
             if !out.contains(&name) {
                 out.push(name);
             }
         }
-        Ok((out, warnings))
+        skipped.extend(skipped_files);
+        Ok((out, skipped))
     }
 
     /// `meta.spaces` first (invalid names skipped, duplicates dropped),
     /// then unlisted directories under `requests/`, alphabetically.
     fn list_spaces(disk: &mut Disk, meta: &ProjectMeta) -> (Vec<String>, Vec<Warning>) {
+        let (out, skipped, list_failed) = Self::scan_spaces(disk, meta);
+        let mut warnings: Vec<Warning> = skipped.iter().filter_map(Skipped::warning).collect();
+        warnings.extend(list_failed);
+        (out, warnings)
+    }
+
+    /// [`list_spaces`](Self::list_spaces), with what it skips for its name
+    /// (the listed names, each once, then the directories, alphabetically)
+    /// and the warning a `requests/` that won't list gives.
+    fn scan_spaces(
+        disk: &mut Disk,
+        meta: &ProjectMeta,
+    ) -> (Vec<String>, Vec<Skipped>, Option<Warning>) {
         let mut out: Vec<String> = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
+        let mut skipped: Vec<Skipped> = Vec::new();
         for name in &meta.spaces {
             if !meta::valid_space_name(name) {
-                if !skipped.contains(name) {
-                    skipped.push(name.clone());
+                let entry = Skipped::ListedSpace(name.clone());
+                if !skipped.contains(&entry) {
+                    skipped.push(entry);
                 }
                 continue;
             }
@@ -971,25 +1041,43 @@ impl Project {
             }
         }
         let mut unlisted = Vec::new();
-        let mut warnings: Vec<Warning> = skipped
-            .into_iter()
-            .map(|n| format!("project.toml lists {n:?}, which is not a valid space name (space names are a-z 0-9 - _)"))
-            .collect();
+        let mut bad_dirs = Vec::new();
+        let mut list_failed = None;
         if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
             match disk.list(&dir) {
                 Ok(entries) => {
-                    for e in entries {
-                        if e.is_dir && meta::valid_space_name(&e.name) && !out.contains(&e.name) {
+                    for e in entries.into_iter().filter(|e| e.is_dir) {
+                        if !meta::valid_space_name(&e.name) {
+                            bad_dirs.push(e.name);
+                        } else if !out.contains(&e.name) {
                             unlisted.push(e.name);
                         }
                     }
                 }
-                Err(e) => warnings.push(format!("could not list {REQUESTS_DIR}/: {e}")),
+                Err(e) => list_failed = Some(format!("could not list {REQUESTS_DIR}/: {e}")),
             }
         }
         unlisted.sort();
         out.extend(unlisted);
-        (out, warnings)
+        bad_dirs.sort();
+        skipped.extend(bad_dirs.into_iter().map(Skipped::SpaceDir));
+        (out, skipped, list_failed)
+    }
+
+    /// What this project's files name that postui leaves out for its name:
+    /// names `project.toml` lists, then environment files, then space
+    /// directories. Read from disk now, by the listings `open` uses.
+    pub fn skipped(&mut self) -> Vec<Skipped> {
+        let (_, spaces, _) = Self::scan_spaces(&mut self.disk, &self.meta);
+        let (listed_spaces, dirs): (Vec<Skipped>, Vec<Skipped>) =
+            spaces.into_iter().partition(|s| matches!(s, Skipped::ListedSpace(_)));
+        let (listed_envs, files): (Vec<Skipped>, Vec<Skipped>) =
+            Self::scan_environments(&mut self.disk, &self.meta)
+                .map(|(_, skipped)| skipped)
+                .unwrap_or_default()
+                .into_iter()
+                .partition(|s| matches!(s, Skipped::ListedEnvironment(_)));
+        [listed_spaces, listed_envs, files, dirs].concat()
     }
 
     /// Opens `root`. A missing file is its default; a file that exists but
@@ -1148,7 +1236,7 @@ impl Project {
             }
         }
 
-        let (listing, listing_warning) = requests::list(&mut disk);
+        let (listing, listing_warnings) = requests::list(&mut disk);
 
         let mut project = Project {
             disk,
@@ -1163,7 +1251,7 @@ impl Project {
             spaces_warning,
             environments_warning,
             listing,
-            listing_warning,
+            listing_warnings,
             open_requests: IndexMap::new(),
             local: Local {
                 active_space,
@@ -1890,6 +1978,63 @@ mod tests {
         p.invalidate_stamps();
         assert!(p.poll().0);
         assert_eq!(p.spaces_warning(), None);
+    }
+
+    /// `skipped` names every name the listings pass over (listed names
+    /// once each, files, directories), and the open's warnings for the
+    /// listed ones are exactly theirs.
+    #[test]
+    fn skipped_names_what_the_listings_leave_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"Bad Space\", \"Bad Space\"]\nenvironments = [\"Bad Env\"]\n",
+        )
+        .unwrap();
+        for d in ["requests/main", "requests/Main", "requests/Z z", "environments"] {
+            std::fs::create_dir_all(dir.path().join(d)).unwrap();
+        }
+        for f in ["environments/dev.toml", "environments/Staging.toml", "environments/notes.txt"] {
+            std::fs::write(dir.path().join(f), "").unwrap();
+        }
+        std::fs::write(dir.path().join("requests/Main/x.toml"), "").unwrap();
+        std::fs::write(dir.path().join("requests/loose.toml"), "").unwrap();
+        let (mut p, warnings) = Project::open_read_only(dir.path().to_path_buf()).unwrap();
+        let skipped = p.skipped();
+        assert_eq!(
+            skipped,
+            [
+                Skipped::ListedSpace("Bad Space".into()),
+                Skipped::ListedEnvironment("Bad Env".into()),
+                Skipped::EnvironmentFile("Staging.toml".into()),
+                Skipped::SpaceDir("Main".into()),
+                Skipped::SpaceDir("Z z".into()),
+            ]
+        );
+        let rels: Vec<String> = skipped.iter().map(Skipped::rel).collect();
+        assert_eq!(
+            rels,
+            [
+                "project.toml",
+                "project.toml",
+                "environments/Staging.toml",
+                "requests/Main",
+                "requests/Z z"
+            ]
+        );
+        for s in &skipped[..2] {
+            assert!(warnings.contains(&s.warning().unwrap()), "{s:?} in {warnings:?}");
+        }
+        assert_eq!(skipped[2].warning(), None);
+        assert_eq!(p.environments(), ["dev"]);
+        assert_eq!(p.spaces(), ["main"]);
+
+        let files: Vec<Option<&str>> =
+            p.listing_warnings().iter().map(|w| w.file.as_deref()).collect();
+        assert_eq!(files, [Some("requests/Main/x.toml"), Some("requests/loose.toml")]);
+        let joined = p.listing_warning().unwrap();
+        assert!(joined.contains("requests/Main/x.toml is not in a valid space"), "{joined}");
+        assert!(joined.contains("; requests/loose.toml is not in a space"), "{joined}");
     }
 
     #[test]

@@ -717,7 +717,10 @@ fn check_invalid_name_is_an_error_on_project_toml() {
     let meta = std::fs::read_to_string(root.join("project.toml")).unwrap();
     std::fs::write(
         root.join("project.toml"),
-        meta.replace("spaces = [\"main\", \"admin\"]", "spaces = [\"main\", \"Bad Name\"]"),
+        meta.replace(
+            "spaces = [\"main\", \"admin\"]",
+            "spaces = [\"main\", \"Bad Name\"]\nenvironments = [\"dev\", \"Bad Env\"]",
+        ),
     )
     .unwrap();
 
@@ -726,9 +729,92 @@ fn check_invalid_name_is_an_error_on_project_toml() {
     let v = json(&out);
     let errors = findings(&v, "errors");
     let project_toml = s(&root.join("project.toml")).to_string();
-    assert!(errors.iter().any(|(f, m)| *f == project_toml && m.contains("Bad Name")), "{errors:?}");
+    for name in ["Bad Name", "Bad Env"] {
+        assert!(errors.iter().any(|(f, m)| *f == project_toml && m.contains(name)), "{errors:?}");
+    }
     let warnings = findings(&v, "warnings");
-    assert!(!warnings.iter().any(|(_, m)| m.contains("Bad Name")), "{warnings:?}");
+    assert!(!warnings.iter().any(|(_, m)| m.contains("Bad ")), "{warnings:?}");
+}
+
+/// Spec §4: an environment file or space directory whose name postui
+/// can't use is an error on it, not passed over; what is inside is not
+/// checked, and the walk's warnings about it are not repeated.
+#[test]
+fn check_invalid_file_and_dir_names_are_errors() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join("environments/Staging.toml"), "base = [").unwrap();
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let v = json(&out);
+    let staging = s(&root.join("environments/Staging.toml")).to_string();
+    let errors = findings(&v, "errors");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].0, staging);
+    assert!(errors[0].1.contains("not a valid environment name"), "{errors:?}");
+    std::fs::remove_file(root.join("environments/Staging.toml")).unwrap();
+
+    std::fs::create_dir_all(root.join("requests/Main")).unwrap();
+    std::fs::write(
+        root.join("requests/Main/x.toml"),
+        "name = \"X\"\nmethod = \"GET\"\nurl = \"{{nope}}\"\n",
+    )
+    .unwrap();
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let v = json(&out);
+    let errors = findings(&v, "errors");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].0, s(&root.join("requests/Main")));
+    assert!(errors[0].1.contains("not a valid space name"), "{errors:?}");
+    assert_eq!(
+        findings(&v, "warnings"),
+        [],
+        "the walk's warning about Main/x.toml is not repeated"
+    );
+
+    // A request outside any space is still a warning, now on its file.
+    std::fs::remove_dir_all(root.join("requests/Main")).unwrap();
+    std::fs::write(root.join("requests/loose.toml"), "name = \"L\"\n").unwrap();
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_ok(&out, "check");
+    let warnings = findings(&json(&out), "warnings");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].0, s(&root.join("requests/loose.toml")));
+}
+
+/// A `secrets.toml` that won't parse is named, but nothing of its text is
+/// printed: the parser's message quotes the line, secret value and all.
+#[test]
+fn a_broken_secrets_file_never_prints_its_values() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let secret = "sk-live-SUPERSECRET";
+    for text in [format!("[dev]\ntoken = \"{secret}\n"), format!("token = \"{secret}\"\n")] {
+        std::fs::write(root.join(".postui/secrets.toml"), &text).unwrap();
+        for command in ["check", "show", "vars", "requests"] {
+            for text_flag in [false, true] {
+                let mut args = vec![command, "-p", s(&root)];
+                if text_flag {
+                    args.push("--text");
+                }
+                let out = home.run(&args);
+                let printed = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                assert!(!printed.contains(secret), "{args:?}: {printed}");
+                assert!(printed.contains("secrets.toml"), "{args:?} names the file: {printed}");
+                let status = if command == "check" { 1 } else { 2 };
+                assert_eq!(out.status.code(), Some(status), "{args:?}: {printed}");
+            }
+        }
+        let out = home.run(&["check", "-p", s(&root)]);
+        let errors = findings(&json(&out), "errors");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].0, s(&root.join(".postui/secrets.toml")));
+    }
 }
 
 /// R16: no read command writes anything, in the project (its trash and a

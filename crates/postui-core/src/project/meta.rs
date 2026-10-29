@@ -301,8 +301,7 @@ pub fn display_name(root: &Path, meta: &ProjectMeta) -> String {
     })
 }
 
-/// A name that can be a `requests/<name>/` space directory.
-pub fn valid_space_name(name: &str) -> bool {
+pub(crate) fn valid_space_name(name: &str) -> bool {
     !name.contains('/') && crate::storage::validate_slug(name).is_ok()
 }
 
@@ -313,7 +312,7 @@ pub fn space_dir(root: &Path, name: &str) -> PathBuf {
 
 /// A name that can be an `environments/<name>.toml` file: the rule
 /// `env_rel` enforces.
-pub fn valid_env_name(name: &str) -> bool {
+pub(crate) fn valid_env_name(name: &str) -> bool {
     !name.contains('/') && crate::storage::validate_slug(name).is_ok()
 }
 

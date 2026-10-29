@@ -7,18 +7,25 @@ use super::{CliError, Global, target};
 use indexmap::IndexMap;
 use postui_core::model::Method;
 use postui_core::prepare::SECRET_MASK;
-use postui_core::project::{Project, Warning};
+use postui_core::project::{Project, SECRETS_TOML, Warning};
 use postui_core::varmodel::{self, VarMeta};
 use postui_core::{order, storage};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// Opens `root` read-only. A refused open is the error, naming the file
-/// that refused it.
+/// that refused it. For `secrets.toml` the reason is withheld: a parser's
+/// message quotes the file's text, and that text is secret values.
 pub(super) fn open(root: &Path) -> Result<(Project, Vec<Warning>), CliError> {
     Project::open_read_only(root.to_path_buf()).map_err(|e| {
         let file = (!e.file.is_empty()).then(|| e.root.join(&e.file));
-        CliError { message: e.error, file }
+        let message = if e.file == SECRETS_TOML {
+            "could not be read or parsed (details withheld: the file holds secret values)"
+                .to_string()
+        } else {
+            e.error
+        };
+        CliError { message, file }
     })
 }
 
@@ -158,7 +165,7 @@ struct ShownSpace {
 pub fn show(g: &Global) -> Result<ShowReport, CliError> {
     let root = target::resolve(g.project.as_deref())?;
     let (project, mut warnings) = open(&root)?;
-    warnings.extend(project.listing_warning().map(str::to_string));
+    warnings.extend(project.listing_warning());
     let environments = project
         .environments()
         .iter()
@@ -272,7 +279,7 @@ struct ListedRequest {
 pub fn requests(g: &Global, space: Option<&str>) -> Result<RequestsReport, CliError> {
     let root = target::resolve(g.project.as_deref())?;
     let (mut project, mut warnings) = open(&root)?;
-    warnings.extend(project.listing_warning().map(str::to_string));
+    warnings.extend(project.listing_warning());
     let spaces: Vec<String> = match space {
         None => project.spaces().to_vec(),
         Some(wanted) if project.spaces().iter().any(|s| s == wanted) => vec![wanted.to_string()],
@@ -398,7 +405,7 @@ struct OptionEntry {
 pub fn vars(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<VarsReport, CliError> {
     let root = target::resolve(g.project.as_deref())?;
     let (mut project, mut warnings) = open(&root)?;
-    warnings.extend(project.listing_warning().map(str::to_string));
+    warnings.extend(project.listing_warning());
     let slug = pick_env(&mut project, env)?;
 
     let model = project.variables();

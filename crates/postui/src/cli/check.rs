@@ -9,7 +9,7 @@
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
-use postui_core::project::{self, Project};
+use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -48,8 +48,9 @@ impl Finding {
 }
 
 /// Checks the project: a project that won't open is one error on the file
-/// that refused it; otherwise the names in `project.toml`, every
-/// environment, every request file, and every request's variables against
+/// that refused it; otherwise every name postui passes over (in
+/// `project.toml`, or a file or directory's), every environment, every
+/// request file, and every request's variables against
 /// `env` (as `vars` picks it). Only a project that isn't one, or an `env`
 /// that doesn't exist, is the error rather than a report.
 pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
@@ -64,22 +65,26 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
     };
 
-    let bad_names = invalid_names(&project);
-    for (name, kind) in &bad_names {
-        let message = format!("{name:?} is not a valid {kind} name ({kind} names are a-z 0-9 - _)");
-        errors.push(Finding::at(root.join("project.toml"), message));
+    // Each name postui passes over is an error on where it is written; the
+    // open's warning for it, and the walk's for the files in a skipped
+    // directory, would only say it again.
+    let skipped = project.skipped();
+    for s in &skipped {
+        errors.push(Finding::at(root.join(s.rel()), skipped_message(s)));
     }
-    // The open warned about each bad name; the error above says it.
-    let about_bad_name = |w: &String| {
-        bad_names.iter().any(|(name, _)| w.starts_with(&format!("project.toml lists {name:?},")))
+    let said = |w: &String| skipped.iter().any(|s| s.warning().as_ref() == Some(w));
+    warnings.extend(opened_warnings.into_iter().filter(|w| !said(w)).map(Finding::general));
+    let in_skipped_dir = |file: &str| {
+        skipped.iter().any(|s| {
+            matches!(s, Skipped::SpaceDir(_)) && file.starts_with(&format!("{}/", s.rel()))
+        })
     };
-    warnings.extend(
-        opened_warnings
-            .into_iter()
-            .chain(project.listing_warning().map(str::to_string))
-            .filter(|w| !about_bad_name(w))
-            .map(Finding::general),
-    );
+    for w in project.listing_warnings() {
+        if !w.file.as_deref().is_some_and(in_skipped_dir) {
+            let file = w.file.as_ref().map(|f| root.join(f));
+            warnings.push(Finding { file, message: w.message.clone() });
+        }
+    }
 
     for slug in project.environments().to_vec() {
         if let Err(e) = project.load_environment(&slug) {
@@ -139,23 +144,20 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
     Ok(CheckReport::new(environment, errors, warnings))
 }
 
-/// The names `project.toml` lists that can't be a space or an environment,
-/// each once, with which kind it was listed as.
-fn invalid_names(project: &Project) -> Vec<(String, &'static str)> {
-    let meta = project.meta();
-    let spaces = meta.spaces.iter().filter(|n| !project::valid_space_name(n)).map(|n| (n, "space"));
-    let envs = meta
-        .environments
-        .iter()
-        .filter(|n| !project::valid_env_name(n))
-        .map(|n| (n, "environment"));
-    let mut out: Vec<(String, &'static str)> = Vec::new();
-    for (name, kind) in spaces.chain(envs) {
-        if !out.iter().any(|(n, k)| n == name && *k == kind) {
-            out.push((name.clone(), kind));
+/// What is wrong with a name postui passes over.
+fn skipped_message(s: &Skipped) -> String {
+    match s {
+        Skipped::ListedSpace(name) => format!("{name:?} is not a valid space name (a-z 0-9 - _)"),
+        Skipped::ListedEnvironment(name) => {
+            format!("{name:?} is not a valid environment name (a-z 0-9 - _)")
+        }
+        Skipped::EnvironmentFile(_) => {
+            "not a valid environment name (a-z 0-9 - _); postui ignores this file".to_string()
+        }
+        Skipped::SpaceDir(_) => {
+            "not a valid space name (a-z 0-9 - _); postui ignores this directory".to_string()
         }
     }
-    out
 }
 
 /// Whether `variables.toml` declares `name`, as a variable or a selector's

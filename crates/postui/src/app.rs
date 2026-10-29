@@ -9997,7 +9997,7 @@ impl App {
         };
         p.relist();
         let listing = p.requests().to_vec();
-        let warning = p.listing_warning().map(str::to_string);
+        let warning = p.listing_warning();
         let spaces_warning = p.spaces_warning().map(str::to_string);
         let environments_warning = p.environments_warning().map(str::to_string);
         let mut expanded = p.local().expanded.clone();

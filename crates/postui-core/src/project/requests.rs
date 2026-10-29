@@ -33,12 +33,20 @@ pub enum HeldDrift {
     Vanished,
 }
 
+/// A warning from walking `requests/`, with the file it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingWarning {
+    /// Relative to the root; `None` when it is about no one file.
+    pub file: Option<String>,
+    pub message: Warning,
+}
+
 /// Walks `requests/` through `Disk`: every `.toml` in a valid space,
 /// parsed for its method and name; broken files listed with the error.
-/// The warning names the first unreadable directory and every loose file.
-pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
+/// The warnings name the first unreadable directory and every loose file.
+pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Vec<ListingWarning>) {
     let Ok(base) = RelPath::new(REQUESTS_DIR) else {
-        return (Vec::new(), None);
+        return (Vec::new(), Vec::new());
     };
     let (files, walk_warning) = disk.walk_files(&base, "toml");
     let mut out = Vec::new();
@@ -46,20 +54,17 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
     for path in files {
         let rel = path.as_str().strip_prefix("requests/").unwrap_or(path.as_str());
         let slug = rel.strip_suffix(".toml").unwrap_or(rel).to_string();
-        match crate::storage::space_of(&slug) {
-            None => {
-                loose.push(format!(
-                    "requests/{rel} is not in a space (move it into a space directory)"
-                ));
-                continue;
-            }
+        let why = match crate::storage::space_of(&slug) {
+            None => Some("is not in a space (move it into a space directory)"),
             Some(space) if crate::storage::validate_slug(space).is_err() => {
-                loose.push(format!(
-                    "requests/{rel} is not in a valid space (space names are a-z 0-9 - _)"
-                ));
-                continue;
+                Some("is not in a valid space (space names are a-z 0-9 - _)")
             }
-            Some(_) => {}
+            Some(_) => None,
+        };
+        if let Some(why) = why {
+            let file = format!("requests/{rel}");
+            loose.push(ListingWarning { message: format!("{file} {why}"), file: Some(file) });
+            continue;
         }
         let (method, name, broken) = match disk.read(&path) {
             Ok(Some(text)) => match HttpRequest::from_toml_str(&text) {
@@ -72,10 +77,10 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
         out.push(RequestListing { slug, broken, method, name });
     }
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
-    let mut warnings: Vec<String> = walk_warning.into_iter().collect();
+    let mut warnings: Vec<ListingWarning> =
+        walk_warning.into_iter().map(|message| ListingWarning { file: None, message }).collect();
     warnings.extend(loose);
-    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
-    (out, warning)
+    (out, warnings)
 }
 
 impl Project {
@@ -83,16 +88,24 @@ impl Project {
         &self.listing
     }
 
-    pub fn listing_warning(&self) -> Option<&str> {
-        self.listing_warning.as_deref()
+    /// The walk's warnings as one line; `None` when there are none.
+    pub fn listing_warning(&self) -> Option<String> {
+        let messages: Vec<Warning> =
+            self.listing_warnings.iter().map(|w| w.message.clone()).collect();
+        join_warnings(&messages)
+    }
+
+    /// The walk's warnings, each with the file it is about.
+    pub fn listing_warnings(&self) -> &[ListingWarning] {
+        &self.listing_warnings
     }
 
     /// Re-walks `requests/`. Called by every request op and by the app's
     /// sidebar refresh, as `list_requests` was.
     pub fn relist(&mut self) {
-        let (listing, warning) = list(&mut self.disk);
+        let (listing, warnings) = list(&mut self.disk);
         self.listing = listing;
-        self.listing_warning = warning;
+        self.listing_warnings = warnings;
     }
 
     pub fn request_exists(&self, slug: &str) -> bool {
