@@ -109,8 +109,12 @@ user picked; `mine` = my call, open to veto (§8).
 | R14 | *(Ad-hoc curl requests: moved to #213.)* | you |
 | R15 | Built in three pieces: read and check → run → edit flag and skill. | mine (approved) |
 | R16 | Read commands write nothing anywhere. | mine |
-| R17 | Output is JSON by default; `--text` is for people. | mine |
+| R17 | Output is text by default; `--json` is for scripts. *(Amended 2026-10-29, #217: was JSON by default with `--text` for people. You: JSON is "harder for humans to read and it wastes tokens for agents".)* A JSON response body is given once, as `body_json` or as `body`. | you (the reason, "maybe only json body?"), mine (approved) (the flip, two keys) |
 | R18 | `postui [dir]` still opens the TUI; subcommands take the first argument. | mine |
+| R19 | The text output carries everything the JSON does, except `body_json` and `ok`, so the skill documents one format. `vars` lists option keys only; `vars <name>` gives one variable or selector in full. | mine (approved) (#217); `vars <name>`: you (idea), mine (approved) (positional form) |
+| R20 | Text prints the project root once, near the top, and every other path in the project relative to it. A path outside the project (`-o`) stays absolute, `projects` prints absolute roots, and `--json` stays absolute. | mine (approved) (#217) |
+| R21 | A value that runs over several lines (a parse error) prints on its own lines, indented under its row, so the table stays aligned. Only its first line counts toward column widths. A broken request's error goes under its row rather than in a column. | mine (approved) (#217) |
+| R22 | A text-mode error is `postui: <file>: <message>` on stderr, with the file first as in `check`, and the file is absolute, since an error prints no `root` line. | mine (approved) (#217) |
 
 ## 4. Commands
 
@@ -332,11 +336,122 @@ second (one stat), and before opening or switching to a project.
   and a later key change updates the skill in the same commit; there's
   no compatibility promise before 1.0. (mine)
   Paths are absolute. Bodies are strings; a body that parses as JSON is
-  also given as `body_json`. Errors in JSON mode print
+  also given as `body_json` *(#217: only as `body_json`, see below)*. Errors in JSON mode print
   `{"error": "...", "file": "..."?}` on stdout and exit 2 (1 for
   `check`/run failures, which are results, not errors). (mine)
 - **`--text`**: a readable layout for people. The builder designs it,
   plainly.
+
+*Amended 2026-10-29 (#217).* Text is the default and `--json` gives the
+JSON above, with the same keys and the error envelope on stdout, except
+for one change to the body. A response body is given once: as
+`body_json` when it parses as JSON, otherwise as the string `body`, and
+the other key is `null`. Two keys, so a body that is a JSON string
+(`"ok"`) can't be mistaken for the text `ok`. A JSON body loses its
+exact text (whitespace, and duplicate keys, where the last one wins);
+key order and numbers survive (`preserve_order`, `arbitrary_precision`),
+and `-o` keeps the exact bytes. (You: "maybe only json body?" Splitting
+it into two keys was my addition, and you approved it.) `--text` is gone (no compatibility promise before 1.0, and
+no release has shipped the CLI). The reason is yours: JSON is "harder
+for humans to read and it wastes tokens for agents". Making text the
+default is my proposal, and you approved it. On the fixture project,
+`vars` prints 1547 bytes of JSON against 244 bytes of text, and `show`
+1329 against 986.
+
+Because the agent now reads the text, the text has to be complete
+(R19). Today it leaves out:
+
+- in `requests`, each request's file (R13);
+- in `vars`, the environment's file, `variables.toml`, and which
+  selector a field belongs to;
+- in `suite`, each result's method, URL and size, and every line of an
+  error after the first.
+
+`secret` and `space` aren't printed: the source column says `secret`,
+and the slug starts with the space.
+
+**`vars <name>`** (you: "just list the name and id by default with an
+option to list all options and or a command for a specific var that
+lists them all"; the positional form, chosen over a flag, is mine and
+you approved it). `vars` lists each selector's option keys (the id
+`--select` takes) on one line, with no values and no descriptions.
+`vars <name>` reports one variable or selector in full. For a selector
+that means its description, whether it is shared, its fields, the
+selection, the file its options live in (the environment's file, or
+`variables.toml` for a shared selector), and every option with its
+description and values. For a
+variable it means its value, source, description and selector. The
+same split holds under `--json`: `vars` has no `options` values or
+descriptions, and `vars <name>` has them. `variables.toml` already
+refuses a name that is both a variable and a selector (`varmodel.rs`),
+so a name means one thing. A name that is neither is an error naming
+the choices, exit 2.
+
+The layout (mine):
+
+```
+$ postui requests
+root  /home/me/api/postui
+  main/users/get-user  GET     {{base}}/users/{{user_id}}  Get user  requests/main/users/get-user.toml
+  main/list            broken                                         requests/main/list.toml
+    TOML parse error at line 4, column 8
+      |
+    4 | body = 1
+  admin/x              DELETE  {{base}}/x                  X         requests/admin/x.toml
+
+$ postui vars
+root         /home/me/api/postui
+environment  dev  Dev  environments/dev.toml
+variables    variables.toml
+
+variables
+  base     env            https://dev  API root
+  token    secret         ●●●●●●
+  id       unset          -
+  user_id  selector user  42
+
+selectors
+  user  selected alice  fields user_id  options alice, bob
+
+$ postui vars user
+root      /home/me/api/postui
+selector  user  shared  The account the requests act as
+fields    user_id
+selected  alice
+
+options   environments/dev.toml
+  alice  user_id=42  Alice, admin
+  bob    user_id=7
+```
+
+- Paths are relative to the root printed at the top (R20). `projects`
+  prints absolute roots, because each project has its own.
+- A value that runs over several lines continues on lines indented
+  under its row (R21). This is a rule of the one `table` helper.
+- `run` prints the response body raw, once, after the response headers,
+  and `--jq` prints its results one per line. There is no `body_json`.
+  It prints `root` and the file relative to it; a `-o` file is
+  absolute. `suite` prints each result's status, time, method, slug,
+  URL and size, and puts an error on the lines under its row. A broken
+  file's error is `<absolute file>: <message>`, and `suite` prints no
+  `root`. (mine (approved))
+
+```
+$ postui suite
+suite  environment dev  space (all)
+  200    120 ms  GET     main/users/get-user  https://dev/users/42  512 bytes
+  error          POST    main/list            https://dev/list
+    {{id}} has no value
+  404     35 ms  DELETE  admin/x              https://dev/x         9 bytes
+
+3 requests, 1 passed, 2 failed, 155 ms
+```
+- Errors go to stderr as `postui: <file>: <message>` (R22), exit 2.
+  The file is absolute: an error has no `root` line to be relative to.
+  `check`'s findings are part of its report, which has a `root` line,
+  so they are relative.
+  Usage mistakes print the reason and the command's usage to stderr, as
+  `--text` did. Exit codes are unchanged.
 
 ## 6. Layers that change
 
@@ -389,7 +504,8 @@ both profiles.
    `skill install|show`.
 2. `-p/--project` takes a path or a registered name, defaulting to the
    current directory.
-3. JSON by default, `--text` for people.
+3. ~~JSON by default, `--text` for people.~~ Text by default, `--json`
+   for scripts (#217, R17).
 4. Read commands never write: a read-only open, which refuses a project
    still waiting to migrate.
 5. A run uses the TUI's saved env and selections unless overridden;
