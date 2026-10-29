@@ -77,18 +77,16 @@ pub async fn suite(
                 // A broken file is this request's result, naming the file.
                 Err(e) => {
                     let at = e.file.map(|f| format!(" ({})", f.display())).unwrap_or_default();
-                    result.error = Some(s.mask.apply(&format!("{}{at}", e.message.trim_end())));
+                    result.error = Some(format!("{}{at}", e.message.trim_end()));
                 }
                 // The file read; only the variables failed: it keeps its
                 // method and URL as written.
-                Ok(Err(message)) => {
-                    if let Ok(req) = s.project.read_request(&slug) {
-                        result.method = Some(req.method);
-                        result.url = Some(s.mask.apply(&req.url));
-                    }
+                Ok((read, Err(message))) => {
+                    result.method = Some(read.method);
+                    result.url = Some(s.mask.apply(&read.url));
                     result.error = Some(s.mask.apply(&message));
                 }
-                Ok(Ok((request, prepare_warnings))) => {
+                Ok((_, Ok((request, prepare_warnings)))) => {
                     request_warnings.extend(
                         prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
                     );

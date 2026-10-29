@@ -59,7 +59,7 @@ text = '{"t": "{{token}}", "u": "{{user_id}}"}'
         "requests/main/org.toml",
         "name = \"Org\"\nmethod = \"GET\"\nurl = \"{{base}}/org/{{org_id}}\"\n",
     );
-    for name in ["ok", "missing", "bytes", "hang", "escaped"] {
+    for name in ["ok", "missing", "bytes", "hang", "escaped", "escaped-slash"] {
         put(
             &format!("requests/main/{name}.toml"),
             &format!("name = \"{name}\"\nmethod = \"GET\"\nurl = \"{{{{base}}}}/{name}\"\n"),
@@ -266,6 +266,9 @@ fn unresolved_variable_is_a_failed_result() {
     assert!(v["error"].as_str().unwrap().contains("bsae"), "{}", v["error"]);
     assert!(v["response"].is_null());
     assert_eq!(v["request"], "main/typo");
+    // Refused, it still shows the method and the URL as written.
+    assert_eq!(v["method"], "GET");
+    assert_eq!(v["url"], "{{bsae}}/x");
 }
 
 #[test]
@@ -471,6 +474,26 @@ fn run_masks_a_json_escaped_secret_in_parsed_output() {
     let out = send(&home, &root, "main/escaped", &["--jq", ".t", "-o", s(&file)]);
     assert_ok(&out, "run main/escaped --jq .t -o");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("\"{MASK}\"\n"));
+}
+
+/// A secret holding `/` that the server echoes as `\/` (PHP's json_encode)
+/// is masked in `response.body` too, not only once parsed.
+#[test]
+fn run_masks_a_secret_the_server_escapes_its_slashes_in() {
+    let (home, _server, root) = served();
+    let secret = "ab/cd/ef-gh";
+    std::fs::write(
+        root.join(".postui/secrets.toml"),
+        format!("[dev]\ntoken = \"{secret}\"\n\n[qa]\ntoken = \"{secret}\"\n"),
+    )
+    .unwrap();
+
+    let out = send(&home, &root, "main/escaped-slash", &[]);
+    assert_ok(&out, "run main/escaped-slash");
+    let v = json(&out);
+    assert_eq!(v["response"]["body"], format!("{{\"t\":\"{MASK}\"}}"));
+    assert_eq!(v["response"]["body_json"], serde_json::json!({"t": MASK}));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ef-gh"));
 }
 
 /// A jq error that quotes the secret, and a filter that holds it, are

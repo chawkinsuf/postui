@@ -17,11 +17,24 @@ pub struct Mask {
 
 impl Mask {
     /// A mask for `values`, leaving out those under [`MASK_MIN_CHARS`]
-    /// characters and repeats. Longest first, so a secret that contains
-    /// another is masked whole.
+    /// characters and repeats. Each kept value is also masked as a JSON
+    /// string spells it (`"`, `\` and control characters escaped) and with
+    /// its `/` written `\/`, as PHP's `json_encode` does. Longest first, so
+    /// a secret that contains another is masked whole.
     pub fn new(values: impl IntoIterator<Item = String>) -> Mask {
-        let mut values: Vec<String> =
-            values.into_iter().filter(|v| v.chars().count() >= MASK_MIN_CHARS).collect();
+        let mut spellings: Vec<String> = Vec::new();
+        for v in values.into_iter().filter(|v| v.chars().count() >= MASK_MIN_CHARS) {
+            let quoted = serde_json::to_string(&v).unwrap_or_default();
+            let escaped = quoted.trim_matches('"').to_string();
+            if escaped != v && !escaped.is_empty() {
+                spellings.push(escaped.clone());
+            }
+            if v.contains('/') {
+                spellings.push(escaped.replace('/', "\\/"));
+            }
+            spellings.push(v);
+        }
+        let mut values = spellings;
         values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         values.dedup();
         Mask { values }
@@ -139,6 +152,18 @@ mod tests {
             m.apply_json(value),
             serde_json::json!({"a": SECRET_MASK, "b": 12, "c": [format!("{SECRET_MASK}.5"), 0.25]})
         );
+    }
+
+    #[test]
+    fn json_escaped_spellings_are_masked() {
+        let m = mask(&["ab/cd\"ef\\gh"]);
+        assert_eq!(m.apply("ab/cd\"ef\\gh"), SECRET_MASK);
+        assert_eq!(m.apply(r#"ab/cd\"ef\\gh"#), SECRET_MASK);
+        assert_eq!(m.apply(r#"ab\/cd\"ef\\gh"#), SECRET_MASK);
+        let slash = mask(&["ab/cd/ef"]);
+        assert_eq!(slash.apply(r"x ab\/cd\/ef y"), format!("x {SECRET_MASK} y"));
+        // A value with nothing to escape adds no spelling.
+        assert_eq!(mask(&["plain-1"]).values.len(), 1);
     }
 
     #[test]

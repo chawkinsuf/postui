@@ -212,7 +212,8 @@ usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]
 Sends one request and prints what came back: its status, timings, headers
 and body. <request> is a slug as `postui requests` lists it. Nothing is
 written to the project. Secrets are masked in everything printed. Exits 1
-for a status of 400 or more, or when the request can't be prepared or sent.
+for a status of 400 or more, when the request can't be prepared or sent, or
+when --jq fails.
 
 ",
     project_flag!(),

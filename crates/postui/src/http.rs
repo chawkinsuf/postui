@@ -31,7 +31,8 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
-/// Builds the client used for all requests. Deliberately no timeout of any
+/// Builds the plain verifying client with no timeout (used by tests;
+/// `Clients` builds its own the same way). Deliberately no timeout of any
 /// kind: a slow request stays in flight until the server answers or the
 /// user cancels it (Esc) — the UI warns when a request has been waiting a
 /// long time instead of killing it.

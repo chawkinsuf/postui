@@ -11,7 +11,7 @@ use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
-use postui_core::model::Method;
+use postui_core::model::{HttpRequest, Method};
 use postui_core::prepare::{self, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
@@ -103,24 +103,32 @@ fn select_option(
     Ok(())
 }
 
+/// What `prepare` made of a request: it and its warnings, or why it refused.
+pub(super) type Prepared = Result<(PreparedRequest, Vec<PrepareWarning>), String>;
+
 /// What `prepare` makes of request `slug` against the session's
 /// environment. The outer `Err` is a request that can't be read (not in the
 /// project, or its file is broken: exit 2, naming its file); the inner
 /// `Err` is `prepare` refusing it (an unresolved variable), which is a
-/// result of the run, not a mistake on its line.
+/// result of the run, not a mistake on its line. The request as read comes
+/// back beside the outcome, so a refused one still has its method and URL.
+/// The outer errors' messages have been through the mask.
 pub(super) fn prepare_one(
     s: &mut Session,
     slug: &str,
-) -> Result<Result<(PreparedRequest, Vec<PrepareWarning>), String>, CliError> {
+) -> Result<(HttpRequest, Prepared), CliError> {
     let file = storage::request_path(&s.root, slug);
     let Some(listing) = s.project.requests().iter().find(|l| l.slug == slug) else {
-        return Err(CliError::new(format!("no request \"{slug}\"; postui requests lists them")));
+        let message = format!("no request \"{slug}\"; postui requests lists them");
+        return Err(CliError::new(s.mask.apply(&message)));
     };
     if let Some(error) = &listing.broken {
-        return Err(CliError::at(error.clone(), file));
+        return Err(CliError::at(s.mask.apply(error), file));
     }
-    let req = s.project.read_request(slug).map_err(|e| CliError::at(reason(e), file))?;
-    Ok(prepare::prepare(&req, &s.project.prepare_context()).map_err(|e| e.to_string()))
+    let req =
+        s.project.read_request(slug).map_err(|e| CliError::at(s.mask.apply(&reason(e)), file))?;
+    let outcome = prepare::prepare(&req, &s.project.prepare_context()).map_err(|e| e.to_string());
+    Ok((req, outcome))
 }
 
 /// The URL as printed: what the screens show, or what the wire carries with
@@ -267,8 +275,9 @@ fn record(
         None if output.is_some() => file_bytes = Some(raw.bytes),
         None => {
             response.body_json = serde_json::from_str(&plain).ok().map(|v| mask.apply_json(v));
-            // A secret the server wrote with JSON escapes stays as sent
-            // here; masking every spelling of it is unbounded.
+            // The mask covers a secret as sent, as a JSON string spells it
+            // and with `/` as `\/`. Any other spelling (`-` for `-`)
+            // stays as sent here; `body_json` has it masked once parsed.
             response.body = Some(mask.apply(&plain));
         }
     }
@@ -291,7 +300,7 @@ pub async fn run(
     dry_run: bool,
 ) -> Result<RunReport, CliError> {
     let mut s = session(g, opts)?;
-    let prepared = prepare_one(&mut s, slug)?;
+    let (read, prepared) = prepare_one(&mut s, slug)?;
     let mut report = RunReport {
         request: slug.to_string(),
         file: storage::request_path(&s.root, slug),
@@ -310,6 +319,9 @@ pub async fn run(
     let (request, warnings) = match prepared {
         Ok(prepared) => prepared,
         Err(message) => {
+            // Refused: the method and URL as written.
+            report.method = Some(read.method);
+            report.url = Some(s.mask.apply(&read.url));
             report.error = Some(s.mask.apply(&message));
             return Ok(report);
         }
