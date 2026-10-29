@@ -7,6 +7,7 @@
 //! (both live in `.postui/`, which a fresh clone doesn't have).
 
 use super::mask::MASK_MIN_CHARS;
+use super::out::{count, fields, rel, table};
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
@@ -14,7 +15,7 @@ use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// The status a report with an error ends the run with.
@@ -28,6 +29,9 @@ pub struct CheckReport {
     environment: Option<String>,
     errors: Vec<Finding>,
     warnings: Vec<Finding>,
+    /// What the text's paths are relative to; the JSON's are absolute.
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 /// One thing `check` found, and the file it is in (`None` when it is about
@@ -62,7 +66,7 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         Ok(opened) => opened,
         Err(e) => {
             errors.push(Finding { file: e.file, message: e.message });
-            return Ok(CheckReport::new(None, errors, warnings));
+            return Ok(CheckReport::new(root, None, errors, warnings));
         }
     };
 
@@ -88,7 +92,7 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
 
     for slug in project.environments().to_vec() {
         if let Err(e) = project.load_environment(&slug) {
-            errors.push(Finding::at(env_file(&root, &slug), reason(e)));
+            errors.push(Finding::at(project::environment_path(&root, &slug), reason(e)));
         }
     }
 
@@ -134,7 +138,7 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
             if !errors.iter().any(|f| f.file == e.file) {
                 errors.push(Finding { file: e.file, message: e.message });
             }
-            return Ok(CheckReport::new(None, errors, warnings));
+            return Ok(CheckReport::new(root, None, errors, warnings));
         }
         Err(e) => return Err(e),
     };
@@ -176,7 +180,7 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
             warnings.push(Finding::at(file, PrepareError::Unresolved(rest).to_string()));
         }
     }
-    Ok(CheckReport::new(environment, errors, warnings))
+    Ok(CheckReport::new(root, environment, errors, warnings))
 }
 
 /// What is wrong with a name postui passes over.
@@ -204,10 +208,6 @@ fn declared(project: &Project, name: &str) -> bool {
         || model.selectors.values().any(|s| s.fields.iter().any(|f| f == name))
 }
 
-fn env_file(root: &Path, slug: &str) -> PathBuf {
-    root.join("environments").join(format!("{slug}.toml"))
-}
-
 /// What is wrong with a file, without the relative path the finding's
 /// `file` already gives.
 pub(super) fn reason(e: project::Error) -> String {
@@ -218,8 +218,13 @@ pub(super) fn reason(e: project::Error) -> String {
 }
 
 impl CheckReport {
-    fn new(environment: Option<String>, errors: Vec<Finding>, warnings: Vec<Finding>) -> Self {
-        CheckReport { ok: errors.is_empty(), environment, errors, warnings }
+    fn new(
+        root: PathBuf,
+        environment: Option<String>,
+        errors: Vec<Finding>,
+        warnings: Vec<Finding>,
+    ) -> Self {
+        CheckReport { ok: errors.is_empty(), environment, errors, warnings, root }
     }
 
     /// 1 when an error was found, else 0.
@@ -227,21 +232,26 @@ impl CheckReport {
         if self.ok { ExitCode::SUCCESS } else { ExitCode::from(FOUND_ERRORS) }
     }
 
-    /// Each finding as `file: message`, compiler style, then a verdict.
+    /// The root, each finding as `file: message` (compiler style, the file
+    /// relative to the root), then a verdict.
     pub fn text(&self) -> String {
-        let env = self.environment.as_deref().unwrap_or("(none)");
-        let mut out = format!("environment  {env}\n");
+        let mut out = fields(&[
+            ("root", self.root.display().to_string()),
+            ("environment", self.environment.clone().unwrap_or_else(|| "(none)".to_string())),
+        ]);
         for (heading, findings) in [("errors", &self.errors), ("warnings", &self.warnings)] {
             if findings.is_empty() {
                 continue;
             }
+            let rows: Vec<Vec<String>> = findings
+                .iter()
+                .map(|f| match &f.file {
+                    Some(file) => vec![format!("{}: {}", rel(&self.root, file), f.message)],
+                    None => vec![f.message.clone()],
+                })
+                .collect();
             out.push_str(&format!("\n{heading}\n"));
-            for f in findings {
-                match &f.file {
-                    Some(file) => out.push_str(&format!("  {}: {}\n", file.display(), f.message)),
-                    None => out.push_str(&format!("  {}\n", f.message)),
-                }
-            }
+            out.push_str(&table(&rows));
         }
         let verdict = match (self.errors.len(), self.warnings.len()) {
             (0, 0) => "ok".to_string(),
@@ -251,9 +261,4 @@ impl CheckReport {
         out.push_str(&format!("\n{verdict}\n"));
         out
     }
-}
-
-/// `n` `thing`s, the plural when `n` isn't 1.
-fn count(n: usize, thing: &str) -> String {
-    if n == 1 { format!("1 {thing}") } else { format!("{n} {thing}s") }
 }

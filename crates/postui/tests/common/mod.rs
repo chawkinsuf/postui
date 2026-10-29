@@ -59,6 +59,13 @@ impl Home {
         self.run_in(&self.path, args, |_| {})
     }
 
+    /// [`Home::run`] with `--json` added: the report as one JSON document.
+    pub fn run_json<S: AsRef<OsStr>>(&self, args: &[S]) -> Output {
+        let mut args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
+        args.push(OsStr::new("--json"));
+        self.run(&args)
+    }
+
     /// Runs the binary from `cwd`, with stdin closed and the command
     /// adjusted first (a stream sent elsewhere).
     pub fn run_in<S: AsRef<OsStr>>(

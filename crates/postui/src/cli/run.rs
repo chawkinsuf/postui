@@ -6,7 +6,7 @@
 
 use super::check::reason;
 use super::mask::{self, Mask};
-use super::out::table;
+use super::out::{count, fields, rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
@@ -170,6 +170,9 @@ pub struct RunReport {
     /// Why there is no response (an unresolved variable, a send error).
     error: Option<String>,
     warnings: Vec<String>,
+    /// What the text's paths are relative to; the JSON's are absolute.
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -178,8 +181,11 @@ struct ShownHeader {
     value: String,
 }
 
-/// What came back, masked. `body` and `body_json` are `null` when `--jq`
-/// or `-o` took the body; a failing `--jq` leaves them filled.
+/// What came back, masked. The text prints the body as it came, in `body`.
+/// The JSON gives it once: as `body_json` when it parses as JSON, else as
+/// the string `body` (spec §5, #217). Both are `null` when `--jq` or `-o`
+/// took the body (their own keys say so); a failing `--jq` leaves the body
+/// shown.
 #[derive(Serialize)]
 struct ResponseReport {
     status: u16,
@@ -188,9 +194,11 @@ struct ResponseReport {
     /// The raw length in bytes.
     size: usize,
     headers: Vec<ShownHeader>,
+    /// The body as text: always for the text, and for the JSON when it
+    /// doesn't parse as JSON.
     body: Option<String>,
     /// The body parsed as JSON (from the unmasked text), then masked as a
-    /// tree; `null` when it doesn't parse.
+    /// tree; only for the JSON.
     body_json: Option<serde_json::Value>,
 }
 
@@ -243,13 +251,15 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
 
 /// Fills `report` from `raw`: the response, the jq results, the `-o` file.
 /// A file that can't be written is the report's `error`, with the response
-/// shown as if there were no `-o`.
+/// shown as if there were no `-o`. The body takes the form the report will
+/// print in: text, or with `json` parsed when it parses.
 fn record(
     report: &mut RunReport,
     mask: &Mask,
     raw: RawResponse,
     jq: Option<&str>,
     output: Option<&Path>,
+    json: bool,
 ) {
     // The body as text, decoded once and only when something reads it (a
     // byte-exact `-o` that succeeds never does).
@@ -325,14 +335,19 @@ fn record(
     }
     if show_body {
         let text = text();
-        response.body = Some(mask.apply(text));
-        // The body is given both as text and parsed (spec §5: a body that
-        // parses as JSON is also given as `body_json`). Parsed from the
-        // unmasked text, then masked as a tree: masking the
+        // Parsed from the unmasked text, then masked as a tree: masking the
         // text first would break the JSON where a mask lands in a number or
-        // an escape.
-        response.body_json =
-            serde_json::from_str::<serde_json::Value>(text).ok().map(|v| mask.apply_json(v));
+        // an escape. A body that parses is given only parsed (its exact
+        // spacing and duplicate keys are lost; `-o` keeps the bytes).
+        let parsed = json.then(|| serde_json::from_str::<serde_json::Value>(text).ok()).flatten();
+        match parsed {
+            Some(value) => response.body_json = Some(mask.apply_json(value)),
+            // Masked by exact value, so a secret the server echoes
+            // re-encoded (JSON-escaped, percent-encoded) is not caught: the
+            // masking was cut back to a plain replace (user-approved, spec
+            // §4), and the skill tells the agent so.
+            None => response.body = Some(mask.apply(text)),
+        }
     }
     report.response = Some(response);
 }
@@ -364,6 +379,7 @@ pub async fn run(
         output_file: None,
         error: None,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).collect(),
+        root: s.root.clone(),
     };
     let (request, warnings) = match prepared {
         Ok(prepared) => prepared,
@@ -396,7 +412,7 @@ pub async fn run(
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, mask, raw, jq, output),
+        Ok(raw) => record(&mut report, mask, raw, jq, output, g.json),
         Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)
@@ -416,21 +432,23 @@ impl RunReport {
     }
 
     /// The request line, what identifies the run, the request's headers and
-    /// body, then the error and warnings.
+    /// body, the response with its body exactly as it came (or the jq
+    /// results), then the error and warnings.
     pub fn text(&self) -> String {
         let mut out = match (&self.method, &self.url) {
             (Some(method), Some(url)) => format!("{} {url}\n", method.as_str()),
             _ => format!("{}\n", self.request),
         };
-        let mut rows = vec![
-            vec!["request".to_string(), self.request.clone()],
-            vec!["file".to_string(), self.file.display().to_string()],
-            vec!["environment".to_string(), self.environment.as_deref().unwrap_or("(none)").into()],
+        let mut facts = vec![
+            ("request", self.request.clone()),
+            ("root", self.root.display().to_string()),
+            ("file", rel(&self.root, &self.file)),
+            ("environment", self.environment.clone().unwrap_or_else(|| "(none)".to_string())),
         ];
         if self.dry_run {
-            rows.push(vec!["dry run".to_string(), "nothing was sent".to_string()]);
+            facts.push(("dry run", "nothing was sent".to_string()));
         }
-        out.push_str(&table(&rows));
+        out.push_str(&fields(&facts));
         if !self.request_headers.is_empty() {
             let rows: Vec<Vec<String>> = self
                 .request_headers
@@ -445,8 +463,11 @@ impl RunReport {
         }
         if let Some(r) = &self.response {
             out.push_str(&format!(
-                "\nresponse\n  {} in {} ms (first byte {} ms), {} bytes\n",
-                r.status, r.elapsed_ms, r.ttfb_ms, r.size
+                "\nresponse\n  {} in {} ms (first byte {} ms), {}\n",
+                r.status,
+                r.elapsed_ms,
+                r.ttfb_ms,
+                count(r.size, "byte")
             ));
             let rows: Vec<Vec<String>> =
                 r.headers.iter().map(|h| vec![h.name.clone(), h.value.clone()]).collect();
@@ -464,14 +485,17 @@ impl RunReport {
                 out.push_str(&format!("{value}\n"));
             }
             if let Some(error) = &j.error {
-                out.push_str(&format!("  error: {error}\n"));
+                out.push_str(&table(&[vec![format!("error: {error}")]]));
             }
         }
         if let Some(file) = &self.output_file {
+            // Absolute: the file is the user's, named from their working
+            // directory, not the project's (R20).
             out.push_str(&format!("\nwritten to {}\n", file.display()));
         }
         if let Some(error) = &self.error {
-            out.push_str(&format!("\nerror\n  {error}\n"));
+            out.push_str("\nerror\n");
+            out.push_str(&table(&[vec![error.clone()]]));
         }
         out.push_str(&warnings_text(&self.warnings));
         out
