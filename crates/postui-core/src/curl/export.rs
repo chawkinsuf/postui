@@ -109,6 +109,7 @@ mod tests {
             wire: Vec::new(),
             body: body.map(str::to_string),
             insecure: false,
+            secret_wire: Vec::new(),
         }
     }
 

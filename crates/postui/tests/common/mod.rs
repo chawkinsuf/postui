@@ -67,6 +67,14 @@ impl Home {
         args: &[S],
         adjust: impl FnOnce(&mut Command),
     ) -> Output {
+        let mut command = self.command(cwd, args);
+        adjust(&mut command);
+        command.output().expect("the binary runs")
+    }
+
+    /// The binary as [`Home::run_in`] runs it, not yet started, for a test
+    /// that handles the process itself.
+    pub fn command<S: AsRef<OsStr>>(&self, cwd: &Path, args: &[S]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_postui"));
         command
             .args(args)
@@ -76,8 +84,7 @@ impl Home {
             .env("XDG_DATA_HOME", self.path.join("data"))
             .env("XDG_STATE_HOME", self.path.join("state"))
             .stdin(Stdio::null());
-        adjust(&mut command);
-        command.output().expect("the binary runs")
+        command
     }
 }
 
@@ -133,8 +140,10 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// request's `authorization` in `x-echo` and its body back; `/bytes` 200
 /// `ok\xff\xfe`; `/escaped` 200 JSON holding the
 /// fixture's secret with its hyphen written as a JSON escape;
-/// `/echo-url` 200 with the request target as the body; `/escaped-slash` 200 JSON holding `ab/cd/ef-gh` written `ab\/cd\/ef-gh`; `/hang` never
-/// answers; anything else 200, empty.
+/// `/echo-url` 200 with the request target as the body; `/escaped-slash`
+/// 200 JSON holding `ab/cd/ef-gh` written `ab\/cd\/ef-gh`; `/echo-go` 200
+/// JSON `{"auth": <the request's authorization>}` as Go escapes it; `/hang`
+/// never answers; anything else 200, empty.
 pub struct Server {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
@@ -220,6 +229,13 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
         ),
         // The request target, query string included, back as the body.
         "/echo-url" => ("200 OK", String::new(), target.as_bytes().to_vec()),
+        // The request's `authorization` in JSON as Go's encoder writes it.
+        "/echo-go" => (
+            "200 OK",
+            "content-type: application/json\r\n".into(),
+            format!("{{\"auth\":\"{}\"}}", go_json(&header("authorization").unwrap_or_default()))
+                .into_bytes(),
+        ),
         // `ab/cd/ef-gh` with its slashes written `\/`, as PHP's json_encode does.
         "/escaped-slash" => (
             "200 OK",
@@ -239,6 +255,20 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
     );
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(&payload);
+}
+
+/// `text` as the inside of a JSON string the way Go's `encoding/json`
+/// writes it: `"` and `\` escaped, and `&`, `<`, `>` as `&`, `<`,
+/// `>`.
+fn go_json(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '"' => "\\\"".to_string(),
+            '\\' => "\\\\".to_string(),
+            '&' | '<' | '>' => format!("\\u{:04x}", c as u32),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 /// A project at `<home>/<dir>` with two spaces, two environments and three

@@ -13,7 +13,6 @@ postui-core = { path = "../postui-core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-form_urlencoded.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 ratatui = "0.30"

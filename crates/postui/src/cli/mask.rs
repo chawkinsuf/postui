@@ -1,6 +1,7 @@
 //! The one mask for secret values in `run` and `suite` output (spec
-//! 2026-10-28 R11): every string printed passes through [`Mask::apply`],
-//! which swaps each of the environment's secret values for `SECRET_MASK`.
+//! 2026-10-28 R11): every string printed passes through [`Mask::apply`] (or
+//! one of the ways in below that end in it), which swaps each of the
+//! environment's secret values for `SECRET_MASK`.
 
 use postui_core::prepare::{PreparedRequest, SECRET_MASK};
 use postui_core::project::Project;
@@ -10,118 +11,47 @@ use postui_core::varmodel::VarMeta;
 /// mangle ordinary text. `check` warns about such secrets.
 pub const MASK_MIN_CHARS: usize = 4;
 
-/// The secret values to hide, in every spelling, longest first.
+/// The secret values to hide.
 pub struct Mask {
-    /// The secret values themselves (those long enough), for
-    /// [`Mask::with_sent`] to build on.
-    secrets: Vec<String>,
-    /// Every spelling of them.
+    /// The values themselves, those long enough, each once.
     values: Vec<String>,
     /// `--show-secrets`: nothing is hidden, and nothing is added later.
     shows_all: bool,
 }
 
-/// `v` as a JSON string spells it between the quotes (`"`, `\` and control
-/// characters escaped).
-fn json_spelling(v: &str) -> String {
-    let quoted = serde_json::to_string(v).unwrap_or_default();
-    let inner = quoted.strip_prefix('"').unwrap_or(&quoted);
-    inner.strip_suffix('"').unwrap_or(inner).to_string()
-}
-
-/// `text` with every non-ASCII character as lowercase `\uXXXX` (a surrogate
-/// pair for an astral one), as Python's `json.dumps` writes by default.
-fn ascii_only(text: &str) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if c.is_ascii() {
-            out.push(c);
-        } else {
-            let mut units = [0u16; 2];
-            for unit in c.encode_utf16(&mut units) {
-                out.push_str(&format!("\\u{unit:04x}"));
-            }
-        }
-    }
-    out
-}
-
-/// The spellings of `v` an echoing server may send back.
-fn spellings(v: &str, into: &mut Vec<String>) {
-    let json = json_spelling(v);
-    let mut forms = vec![v.to_string(), json.clone()];
-    if !v.is_ascii() {
-        forms.push(ascii_only(&json));
-    }
-    for form in forms {
-        if form.contains('/') {
-            into.push(form.replace('/', "\\/"));
-        }
-        into.push(form);
-    }
-    // What `prepare` puts in a query string.
-    into.push(form_urlencoded::byte_serialize(v.as_bytes()).collect());
-}
-
 impl Mask {
     /// A mask for `values`, leaving out those under [`MASK_MIN_CHARS`]
-    /// characters and repeats. Each kept value is also masked as a JSON
-    /// string spells it (`"`, `\` and control characters escaped; with `/`
-    /// as `\/`, as PHP's `json_encode` does; non-ASCII as `\uXXXX`, as
-    /// Python's does) and as a query string carries it (percent-encoded).
-    /// Other encodings are not covered. Longest first, so a secret that
-    /// contains another is masked whole.
+    /// characters and repeats. Only the values as they are: a request adds
+    /// what it sends of them in other spellings ([`Mask::with_wire`]), and
+    /// JSON's escapes are read through ([`Mask::apply_literals`]).
     pub fn new(values: impl IntoIterator<Item = String>) -> Mask {
-        let mut secrets: Vec<String> =
+        let mut values: Vec<String> =
             values.into_iter().filter(|v| v.chars().count() >= MASK_MIN_CHARS).collect();
-        secrets.sort();
-        secrets.dedup();
-        let mut values = Vec::new();
-        for v in &secrets {
-            spellings(v, &mut values);
-        }
-        values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        values.sort_unstable();
         values.dedup();
-        Mask { secrets, values, shows_all: false }
+        Mask { values, shows_all: false }
     }
 
     /// A mask that hides nothing (`--show-secrets`).
     pub fn none() -> Mask {
-        Mask { secrets: Vec::new(), values: Vec::new(), shows_all: true }
+        Mask { values: Vec::new(), shows_all: true }
     }
 
-    /// This mask plus what `request` sends that is derived from a secret: a
-    /// wire header whose `display` differs from its `value` (reqwest's
-    /// `Authorization: Basic <base64>` from URL userinfo, say) carries a
-    /// secret in some derived form, so the part of the value that differs
-    /// from the display, past their common prefix and suffix, is hidden too.
-    /// A header whose display is wholly masked (`Host`, when prepare masks it
-    /// fail-closed) masks its whole value everywhere: coarser, never a leak,
-    /// and it follows prepare's own decision.
-    pub fn with_sent(&self, request: &PreparedRequest) -> Mask {
+    /// This mask plus what `request` sends of a secret in another spelling
+    /// (the Basic credentials of a URL's userinfo, a query's encoding, the
+    /// client's percent-encoding of the URL): `prepare` lists each exactly
+    /// as it goes out ([`PreparedRequest::secret_wire`]).
+    pub fn with_wire(&self, request: &PreparedRequest) -> Mask {
         if self.shows_all {
             return Mask::none();
         }
-        let mut all = self.secrets.clone();
-        for h in request.wire.iter().filter(|h| h.value != h.display) {
-            let (value, display): (Vec<char>, Vec<char>) =
-                (h.value.chars().collect(), h.display.chars().collect());
-            let prefix = value.iter().zip(&display).take_while(|(a, b)| a == b).count();
-            let suffix = value[prefix..]
-                .iter()
-                .rev()
-                .zip(display[prefix..].iter().rev())
-                .take_while(|(a, b)| a == b)
-                .count();
-            all.push(value[prefix..value.len() - suffix].iter().collect());
-        }
-        Mask::new(all)
+        Mask::new(self.values.iter().chain(&request.secret_wire).cloned())
     }
 
     /// `text` with every secret value replaced by `SECRET_MASK`: one pass,
-    /// all matches of every spelling found in `text` itself, overlapping or
+    /// all matches of every value found in `text` itself, overlapping or
     /// adjacent ones merged, one mask written per merged range. (Replacing
-    /// spelling by spelling would leave the tail of a secret that overlaps
+    /// value by value would leave the tail of a secret that overlaps
     /// another one, or match inside a mask already written.)
     pub fn apply(&self, text: &str) -> String {
         let mut ranges: Vec<(usize, usize)> = self
@@ -150,6 +80,43 @@ impl Mask {
         out.push_str(&text[done..start]);
         out.push_str(SECRET_MASK);
         out.push_str(&text[end..]);
+        out
+    }
+
+    /// `text` masked JSON string literal by literal: each well-formed one
+    /// (a key too) is decoded, masked, and only when that changed it written
+    /// back as serde_json writes the masked text; the text between them
+    /// (numbers, punctuation) gets [`Mask::apply`]. A secret a server wrote
+    /// with escapes (`\u002d`, `\/`, `\u0026`) is caught however it was
+    /// escaped, and what the mask doesn't touch stays byte for byte. A `"`
+    /// that doesn't open a well-formed literal is plain text. For a JSON
+    /// body's raw text, and for text that quotes JSON values (jq's errors).
+    pub fn apply_literals(&self, text: &str) -> String {
+        if self.values.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        // Where the text not yet written starts, and where to look next.
+        let (mut written, mut at) = (0, 0);
+        while let Some(offset) = text[at..].find('"') {
+            let start = at + offset;
+            let mut literals =
+                serde_json::Deserializer::from_str(&text[start..]).into_iter::<String>();
+            let Some(Ok(decoded)) = literals.next() else {
+                at = start + 1;
+                continue;
+            };
+            let end = start + literals.byte_offset();
+            out.push_str(&self.apply(&text[written..start]));
+            let masked = self.apply(&decoded);
+            if masked == decoded {
+                out.push_str(&text[start..end]);
+            } else {
+                out.push_str(&serde_json::to_string(&masked).unwrap_or_default());
+            }
+            (written, at) = (end, end);
+        }
+        out.push_str(&self.apply(&text[written..]));
         out
     }
 
@@ -228,6 +195,7 @@ mod tests {
     #[test]
     fn none_masks_nothing() {
         assert_eq!(Mask::none().apply("s3cret"), "s3cret");
+        assert_eq!(Mask::none().apply_literals(r#"{"t":"s3cret"}"#), r#"{"t":"s3cret"}"#);
     }
 
     #[test]
@@ -260,76 +228,79 @@ mod tests {
         );
     }
 
+    /// However a server escapes a secret in a JSON string, decoding the
+    /// literal reads through it: JSON escapes, `\/`, `\uXXXX` for ASCII
+    /// and non-ASCII alike, and Go's `\u0026`, `\u003c`, `\u003e`.
     #[test]
-    fn json_escaped_spellings_are_masked() {
+    fn apply_literals_reads_through_every_escape() {
         let m = mask(&["ab/cd\"ef\\gh"]);
-        assert_eq!(m.apply("ab/cd\"ef\\gh"), SECRET_MASK);
-        assert_eq!(m.apply(r#"ab/cd\"ef\\gh"#), SECRET_MASK);
-        assert_eq!(m.apply(r#"ab\/cd\"ef\\gh"#), SECRET_MASK);
-        let slash = mask(&["ab/cd/ef"]);
-        assert_eq!(slash.apply(r"x ab\/cd\/ef y"), format!("x {SECRET_MASK} y"));
-        // A value with nothing to escape adds no spelling.
-        assert_eq!(mask(&["plain-1"]).values.len(), 1);
-    }
-
-    #[test]
-    fn a_secret_ending_in_a_quote_keeps_its_escaped_quote() {
-        // Only the JSON string's own two quotes are cut, not the escaped one.
-        let m = mask(&["ab\"cd\""]);
-        assert_eq!(m.apply(r#"x ab\"cd\" y"#), format!("x {SECRET_MASK} y"));
-        assert_eq!(m.apply("x ab\"cd\" y"), format!("x {SECRET_MASK} y"));
-    }
-
-    #[test]
-    fn the_query_string_spelling_is_masked() {
-        let m = mask(&["a+b/c d=e&f"]);
-        assert_eq!(m.apply("?k=a%2Bb%2Fc+d%3De%26f&z=1"), format!("?k={SECRET_MASK}&z=1"));
-    }
-
-    #[test]
-    fn the_ascii_only_json_spelling_is_masked() {
+        for spelled in [r#"ab/cd\"ef\\gh"#, r#"ab\/cd\"ef\\gh"#, r#"\u0061b/cd\"ef\\gh"#] {
+            let body = format!(r#"{{"t":"{spelled}"}}"#);
+            assert_eq!(m.apply_literals(&body), format!(r#"{{"t":"{SECRET_MASK}"}}"#), "{body}");
+        }
         let m = mask(&["pässwörd😀"]);
-        assert_eq!(m.apply(r"pässwörd😀"), SECRET_MASK);
-        assert_eq!(m.apply("pässwörd😀"), SECRET_MASK);
+        let body = r#"["p\u00e4ssw\u00f6rd\ud83d\ude00"]"#;
+        assert_eq!(m.apply_literals(body), format!(r#"["{SECRET_MASK}"]"#));
+        let m = mask(&["a&b<c>d"]);
+        let body = r#"{"t":"a\u0026b\u003cc\u003ed"}"#;
+        assert_eq!(m.apply_literals(body), format!(r#"{{"t":"{SECRET_MASK}"}}"#));
     }
 
-    fn sent(value: &str, display: &str) -> PreparedRequest {
-        use postui_core::prepare::SentHeader;
-        let header = SentHeader {
-            name: "authorization".into(),
-            display_name: "authorization".into(),
-            value: value.into(),
-            display: display.into(),
-        };
+    /// What the mask doesn't change stays byte for byte, escapes and
+    /// spacing included; a masked literal is written as serde_json writes
+    /// it; keys and numbers are masked too.
+    #[test]
+    fn apply_literals_leaves_untouched_text_as_it_was() {
+        let m = mask(&["s3cret", "123456"]);
+        let body = "{ \"keep\" : \"a\\/b \\u00e9\",\n  \"s3cret\": [123456, 7, \"x s3cret \\/\"] }";
+        assert_eq!(
+            m.apply_literals(body),
+            format!(
+                "{{ \"keep\" : \"a\\/b \\u00e9\",\n  \"{SECRET_MASK}\": \
+                 [{SECRET_MASK}, 7, \"x {SECRET_MASK} /\"] }}"
+            )
+        );
+        assert_eq!(m.apply_literals(r#"{"a":"plain"}"#), r#"{"a":"plain"}"#);
+    }
+
+    /// Text that isn't JSON: each well-formed literal in it is read through,
+    /// the rest masked as plain text, a stray quote left as it is.
+    #[test]
+    fn apply_literals_in_text_that_quotes_json() {
+        let m = mask(&["ab\"cd"]);
+        assert_eq!(
+            m.apply_literals(r#"cannot use "ab\"cd" (ab"cd) as a number"#),
+            format!(r#"cannot use "{SECRET_MASK}" ({SECRET_MASK}) as a number"#)
+        );
+        let m = mask(&["s3cret"]);
+        assert_eq!(m.apply_literals("a \" s3cret"), format!("a \" {SECRET_MASK}"));
+    }
+
+    fn sent(secret_wire: &[&str]) -> PreparedRequest {
         PreparedRequest {
             method: Default::default(),
             url: String::new(),
             display_url: String::new(),
             headers: Vec::new(),
-            wire: vec![header],
+            wire: Vec::new(),
             body: None,
             insecure: false,
+            secret_wire: secret_wire.iter().map(|s| s.to_string()).collect(),
         }
     }
 
     #[test]
-    fn with_sent_masks_the_part_of_a_header_that_differs_from_its_display() {
-        let m = mask(&["s3cret"]);
-        let request = sent("Basic dXNlcjpzM2NyZXQ=", &format!("Basic {SECRET_MASK}"));
-        let m = m.with_sent(&request);
+    fn with_wire_adds_what_prepare_lists_under_the_same_minimum() {
+        let m = mask(&["s3cret"]).with_wire(&sent(&["dXNlcjpzM2NyZXQ=", "ab"]));
         assert_eq!(m.apply("Basic dXNlcjpzM2NyZXQ="), format!("Basic {SECRET_MASK}"));
         assert_eq!(m.apply("s3cret"), SECRET_MASK);
-        // Common suffix too, and a derived part under the minimum is left.
-        let m = mask(&[]).with_sent(&sent("Token ABCDEFGH; v=1", "Token ●; v=1"));
-        assert_eq!(m.apply("Token ABCDEFGH; v=1"), format!("Token {SECRET_MASK}; v=1"));
-        let m = mask(&[]).with_sent(&sent("Token ab", "Token ●"));
-        assert_eq!(m.apply("Token ab"), "Token ab");
+        assert_eq!(m.apply("ab"), "ab", "a spelling under the minimum is left");
     }
 
     #[test]
-    fn with_sent_leaves_show_secrets_alone() {
-        let request = sent("Basic dXNlcjpzM2NyZXQ=", &format!("Basic {SECRET_MASK}"));
-        assert_eq!(Mask::none().with_sent(&request).apply("dXNlcjpzM2NyZXQ="), "dXNlcjpzM2NyZXQ=");
+    fn with_wire_leaves_show_secrets_alone() {
+        let m = Mask::none().with_wire(&sent(&["dXNlcjpzM2NyZXQ="]));
+        assert_eq!(m.apply("dXNlcjpzM2NyZXQ="), "dXNlcjpzM2NyZXQ=");
     }
 
     #[test]

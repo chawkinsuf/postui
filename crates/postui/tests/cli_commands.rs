@@ -556,26 +556,34 @@ fn check_undeclared_is_error_missing_secret_is_warning() {
 }
 
 /// Run and suite can't mask a secret under 4 characters, so `check` says
-/// so, naming the secret and never its value.
+/// so for every environment's, naming the secret and its environment and
+/// never its value.
 #[test]
 fn check_warns_about_a_secret_too_short_to_mask() {
     let home = Home::new();
     let root = write_project(&home, "api");
-    std::fs::write(root.join(".postui/secrets.toml"), "[dev]\ntoken = \"abc\"\n").unwrap();
+    std::fs::write(
+        root.join(".postui/secrets.toml"),
+        "[dev]\ntoken = \"abc\"\n\n[qa]\ntoken = \"xy\"\n",
+    )
+    .unwrap();
 
     let out = home.run(&["check", "-p", s(&root)]);
     assert_ok(&out, "check");
     let v = json(&out);
     assert_eq!(v["ok"], true);
+    assert_eq!(v["environment"], "dev");
     let warnings = findings(&v, "warnings");
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert_eq!(warnings[0].0, s(&root.join(".postui/secrets.toml")));
-    assert_eq!(
-        warnings[0].1,
-        "secret token is shorter than 4 characters, so run and suite output can't mask it"
-    );
-    assert!(!warnings[0].1.contains("abc"), "{warnings:?}");
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("\"abc\""));
+    let file = s(&root.join(".postui/secrets.toml")).to_string();
+    let says = |env: &str| {
+        format!(
+            "secret token of environment {env} is shorter than 4 characters, \
+             so run and suite output can't mask it"
+        )
+    };
+    assert_eq!(warnings, [(file.clone(), says("dev")), (file, says("qa"))]);
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(!printed.contains("\"abc\"") && !printed.contains("\"xy\""), "{printed}");
 }
 
 /// A name only a disabled request variable gives is not a typo: the error

@@ -2099,7 +2099,6 @@ dependencies = [
  "crossterm",
  "directories",
  "edtui",
- "form_urlencoded",
  "futures",
  "indexmap",
  "postui",

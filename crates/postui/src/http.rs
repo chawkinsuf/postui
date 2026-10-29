@@ -45,16 +45,18 @@ pub fn client() -> reqwest::Client {
 }
 
 /// The one client builder: `insecure` skips TLS certificate verification,
-/// `timeout` is a total timeout. `build()` can only fail on TLS backend
-/// initialization; the fallback is the plain default client, so a failed
-/// insecure build fails closed (a verifying client).
-fn build_client(insecure: bool, timeout: Option<Duration>) -> reqwest::Client {
+/// `idle` is an idle timeout: how long connecting, and then the wait for
+/// each read (the response's head, every chunk of its body), may take. A
+/// long download that keeps coming is never cut off. `build()` can only
+/// fail on TLS backend initialization; the fallback is the plain default
+/// client, so a failed insecure build fails closed (a verifying client).
+fn build_client(insecure: bool, idle: Option<Duration>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
     if insecure {
         builder = builder.danger_accept_invalid_certs(true);
     }
-    if let Some(d) = timeout {
-        builder = builder.timeout(d);
+    if let Some(d) = idle {
+        builder = builder.connect_timeout(d).read_timeout(d);
     }
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -80,10 +82,10 @@ impl Clients {
         Self::with_timeout(None)
     }
 
-    /// Both clients with a total timeout when given (the command line's
-    /// `--timeout`).
-    pub fn with_timeout(timeout: Option<Duration>) -> Self {
-        Self { verifying: build_client(false, timeout), insecure: build_client(true, timeout) }
+    /// Both clients with an idle timeout when given (the command line's
+    /// `--timeout`; see [`build_client`]).
+    pub fn with_timeout(idle: Option<Duration>) -> Self {
+        Self { verifying: build_client(false, idle), insecure: build_client(true, idle) }
     }
 
     /// Picks the client `req` should be sent on.
@@ -92,8 +94,9 @@ impl Clients {
     }
 }
 
-/// Like [`client`] but with a total timeout, for tests that need a request
-/// to die quickly on its own (the real client never times out).
+/// Like [`client`] but with an idle timeout, for tests that need a request
+/// to a silent server to die quickly on its own (the real client never
+/// times out).
 pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     build_client(false, Some(timeout))
 }
@@ -304,6 +307,7 @@ mod tests {
             wire: vec![],
             body: None,
             insecure: false,
+            secret_wire: vec![],
         };
         assert!(
             std::ptr::eq(clients.for_request(&req), &clients.verifying),
@@ -352,6 +356,7 @@ mod tests {
             wire: vec![],
             body: None,
             insecure: false,
+            secret_wire: vec![],
         };
         let raw = send_raw(&client(), &req).await.unwrap();
         assert_eq!(raw.bytes, b"ok\xff\xfe");
@@ -380,6 +385,7 @@ mod tests {
             wire: vec![],
             body: None,
             insecure: false,
+            secret_wire: vec![],
         };
         let clients = Clients::with_timeout(Some(Duration::from_millis(200)));
         let started = Instant::now();
@@ -387,6 +393,42 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
         assert!(err.contains("timed out"), "{err}");
         server.abort();
+    }
+
+    /// The timeout is idle time, not a deadline: a body that keeps coming
+    /// in chunks closer together than it is may take longer in all.
+    #[tokio::test]
+    async fn a_timeout_client_lets_a_steady_body_run_past_it() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\n").await.unwrap();
+            for chunk in [b"ab", b"cd", b"ef"] {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                sock.write_all(chunk).await.unwrap();
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: url.clone(),
+            display_url: url,
+            headers: vec![],
+            wire: vec![],
+            body: None,
+            insecure: false,
+            secret_wire: vec![],
+        };
+        let clients = Clients::with_timeout(Some(Duration::from_millis(600)));
+        let started = Instant::now();
+        let raw = send_raw(clients.for_request(&req), &req).await.expect("each read is in time");
+        assert!(started.elapsed() > Duration::from_millis(600), "{:?}", started.elapsed());
+        assert_eq!(raw.bytes, b"abcdef");
+        server.await.unwrap();
     }
 
     /// A server that sends its headers immediately but stalls before the
@@ -412,6 +454,7 @@ mod tests {
             wire: vec![],
             body: None,
             insecure: false,
+            secret_wire: vec![],
         };
         let err = send(&client(), &req).await.expect_err("nothing listens on port 1");
         assert!(!err.contains("sk-live-REAL"), "{err}");
@@ -443,6 +486,7 @@ mod tests {
             wire: vec![],
             body: None,
             insecure: false,
+            secret_wire: vec![],
         };
         let resp = send(&client, &req).await.unwrap();
         server.join().unwrap();
@@ -588,6 +632,7 @@ mod tests {
             wire: vec![],
             body: None,
             insecure: false,
+            secret_wire: vec![],
         };
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();

@@ -223,7 +223,8 @@ when --jq fails.
                             can be given more than once
   --jq <filter>             print the filter's results instead of the body
   -o, --output <file>       write the body (or each jq result) to <file>
-  --timeout <secs>          give up after this long (default: 30; 0: never)
+  --timeout <secs>          give up when the server is silent this long
+                            (default: 30; 0: never)
   --dry-run                 print the request that would be sent; send nothing
   --show-secrets            print secrets' values
 ",
@@ -250,8 +251,8 @@ Exits 1 when any request failed to prepare or send or returned 400 or more.
   --select <sel>=<opt>      pick an option of a selector for this run only;
                             can be given more than once
   -o, --output <file>       also write what is printed to <file>
-  --timeout <secs>          give up on a request after this long (default: 30;
-                            0: never)
+  --timeout <secs>          give up on a request when the server is silent
+                            this long (default: 30; 0: never)
   --show-secrets            print secrets' values
 ",
     text_flag!()
@@ -504,7 +505,8 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Run { g, request, opts, jq, output, dry_run } => {
             match run::run(&g, &request, &opts, jq.as_deref(), output.as_deref(), dry_run).await {
                 Ok(report) => {
-                    out::emit(&report, g.text, run::RunReport::text).unwrap_or(report.status())
+                    let printed = out::emit(&report, g.text, run::RunReport::text);
+                    sent_status(printed, report.status())
                 }
                 Err(e) => out::fail(&e, g.text),
             }
@@ -528,11 +530,22 @@ pub async fn run(cmd: Command) -> ExitCode {
                             Err(e) => return out::fail(&e, g.text),
                         };
                     }
-                    crate::cli_out::print_out(&printed).unwrap_or(report.status())
+                    sent_status(crate::cli_out::print_out(&printed), report.status())
                 }
                 Err(e) => out::fail(&e, g.text),
             }
         }
+    }
+}
+
+/// The status a `run` or `suite` ends with, given what printing its report
+/// gave (`None` when it all went out) and the report's own `status`. A
+/// reader that stopped (a closed pipe, which printing calls a success)
+/// doesn't make a failed run succeed; printing that failed otherwise wins.
+fn sent_status(printed: Option<ExitCode>, status: ExitCode) -> ExitCode {
+    match printed {
+        Some(code) if code != ExitCode::SUCCESS => code,
+        _ => status,
     }
 }
 
@@ -692,6 +705,18 @@ mod tests {
             Command::Run { opts, .. } => assert_eq!(opts.timeout, Some(Duration::from_secs(30))),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A closed stdout doesn't turn a failed run into a success; a write
+    /// error otherwise is the status, and a full print keeps the run's.
+    #[test]
+    fn a_failed_run_keeps_its_status_whatever_printing_gave() {
+        let failed = ExitCode::from(1);
+        let closed_pipe = Some(ExitCode::SUCCESS);
+        assert_eq!(sent_status(closed_pipe, failed), failed);
+        assert_eq!(sent_status(closed_pipe, ExitCode::SUCCESS), ExitCode::SUCCESS);
+        assert_eq!(sent_status(None, failed), failed);
+        assert_eq!(sent_status(Some(ExitCode::from(2)), ExitCode::SUCCESS), ExitCode::from(2));
     }
 
     #[test]

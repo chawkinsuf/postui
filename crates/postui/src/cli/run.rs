@@ -12,10 +12,11 @@ use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
 use postui_core::model::{HttpRequest, Method};
-use postui_core::prepare::{self, PrepareWarning, PreparedRequest};
+use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -34,7 +35,8 @@ pub struct RunOpts {
     /// Each `--select SELECTOR=OPTION`, in the order given.
     pub selects: Vec<String>,
     pub show_secrets: bool,
-    /// `--timeout`, already defaulted: `None` is no limit.
+    /// `--timeout`, already defaulted: how long the server may be silent
+    /// (connecting, or between reads); `None` is no limit.
     pub timeout: Option<Duration>,
 }
 
@@ -45,6 +47,9 @@ pub(super) struct Session {
     /// The environment's slug; `None` when the project has none.
     pub env: Option<String>,
     pub mask: Mask,
+    /// What `prepare` needs of the project: the selections are fixed
+    /// before any request is prepared, so it is built once.
+    pub context: PrepareContext,
     pub clients: Clients,
     /// What opening the project warned about.
     pub warnings: Vec<String>,
@@ -52,8 +57,8 @@ pub(super) struct Session {
 
 /// Opens the project read-only, makes `--env` the environment and applies
 /// the `--select`s, then builds the mask (from the secrets of the
-/// environment as selected) and the clients. A selector or option that
-/// doesn't exist is the error, naming the choices.
+/// environment as selected), the prepare context and the clients. A
+/// selector or option that doesn't exist is the error, naming the choices.
 pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     let root = target::resolve(g.project.as_deref())?;
     let (mut project, mut warnings) = open(&root)?;
@@ -66,7 +71,9 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
         select_option(&mut project, env.as_deref().unwrap_or_default(), selector, option)?;
     }
     let mask = if opts.show_secrets { Mask::none() } else { mask::of_env(&project) };
-    Ok(Session { project, root, env, mask, clients: Clients::with_timeout(opts.timeout), warnings })
+    let context = project.prepare_context();
+    let clients = Clients::with_timeout(opts.timeout);
+    Ok(Session { project, root, env, mask, context, clients, warnings })
 }
 
 /// Picks `option` of `selector` for this run: in memory only.
@@ -127,7 +134,7 @@ pub(super) fn prepare_one(
     }
     let req =
         s.project.read_request(slug).map_err(|e| CliError::at(s.mask.apply(&reason(e)), file))?;
-    let outcome = prepare::prepare(&req, &s.project.prepare_context()).map_err(|e| e.to_string());
+    let outcome = prepare::prepare(&req, &s.context).map_err(|e| e.to_string());
     Ok((req, outcome))
 }
 
@@ -235,9 +242,9 @@ fn record(
     jq: Option<&str>,
     output: Option<&Path>,
 ) {
-    // Parsed unmasked (a mask inside JSON text can break it, a number for
-    // one), then masked as values.
-    let plain = String::from_utf8_lossy(&raw.bytes).into_owned();
+    // The body as text, only when something reads it; parsed unmasked (a
+    // mask inside JSON text can break it, a number for one), then masked.
+    let plain = || String::from_utf8_lossy(&raw.bytes);
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -253,39 +260,44 @@ fn record(
     };
     // What `-o` would write, the jq results it would take, and whether the
     // body is shown.
-    let mut file_bytes = None;
+    let mut file_bytes: Option<Cow<[u8]>> = None;
     let mut taken_results = None;
     let mut show_body = false;
     match jq {
-        Some(filter) => match run_jq(filter, &plain, mask) {
+        Some(filter) => match run_jq(filter, &plain(), mask) {
             Ok(results) => {
                 let (lines, values): (Vec<String>, Vec<serde_json::Value>) =
                     results.into_iter().unzip();
-                file_bytes = output.map(|_| {
-                    lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect::<String>().into_bytes()
-                });
-                report.jq = Some(JqReport {
-                    filter: mask.apply(filter),
-                    output: output.is_none().then_some(values.clone()),
-                    error: None,
-                });
-                taken_results = output.map(|_| values);
+                // The results go to the file or into the report, not both.
+                let (shown, taken) = match output {
+                    Some(_) => {
+                        let text: String = lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
+                        file_bytes = Some(Cow::Owned(text.into_bytes()));
+                        (None, Some(values))
+                    }
+                    None => (Some(values), None),
+                };
+                report.jq =
+                    Some(JqReport { filter: mask.apply(filter), output: shown, error: None });
+                taken_results = taken;
             }
             // The filter failed: the body is shown (nothing is written to
-            // `-o`), so the caller needn't send the request again.
+            // `-o`), so the caller needn't send the request again. jq's
+            // message quotes values as JSON, so their literals are read
+            // through.
             Err(message) => {
                 show_body = true;
                 report.jq = Some(JqReport {
                     filter: mask.apply(filter),
                     output: None,
-                    error: Some(mask.apply(&message)),
+                    error: Some(mask.apply_literals(&message)),
                 });
             }
         },
         // The file is the response itself, kept byte-exact (a binary
         // download), so it is not masked (spec §4, §8 #9); `--jq -o` writes
         // masked text because it is derived output.
-        None if output.is_some() => file_bytes = Some(raw.bytes),
+        None if output.is_some() => file_bytes = Some(Cow::Borrowed(&raw.bytes)),
         None => show_body = true,
     }
     if let (Some(file), Some(bytes)) = (output, file_bytes) {
@@ -303,13 +315,15 @@ fn record(
         }
     }
     if show_body {
-        response.body_json = serde_json::from_str(&plain).ok().map(|v| mask.apply_json(v));
-        // The mask covers a secret as sent, JSON-escaped (also `/` as `\/`
-        // and non-ASCII as `\uXXXX`) and percent-encoded for a query string.
-        // Other encodings (a path segment's percent-encoding, any transform
-        // the server applies) stay as sent in `body`; `body_json` has the
-        // parsed strings masked.
-        response.body = Some(mask.apply(&plain));
+        let plain = plain();
+        let parsed: Option<serde_json::Value> = serde_json::from_str(&plain).ok();
+        // A JSON body is masked literal by literal, so a secret the server
+        // escaped is caught however it did, and the rest stays as it came;
+        // any other body as plain text. Other transforms the server applies
+        // stay as sent.
+        response.body =
+            Some(if parsed.is_some() { mask.apply_literals(&plain) } else { mask.apply(&plain) });
+        response.body_json = parsed.map(|v| mask.apply_json(v));
     }
     report.response = Some(response);
 }
@@ -352,8 +366,9 @@ pub async fn run(
             return Ok(report);
         }
     };
-    // The session's mask plus what this request derives from its secrets.
-    let mask = s.mask.with_sent(&request);
+    // The session's mask plus what this request sends of its secrets in
+    // other spellings.
+    let mask = s.mask.with_wire(&request);
     // What the screens show, or what the wire carries with --show-secrets;
     // the mask then hides any secret value still in the text.
     let show = opts.show_secrets;

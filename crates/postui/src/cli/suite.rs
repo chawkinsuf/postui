@@ -90,10 +90,12 @@ pub async fn suite(
                     result.error = Some(s.mask.apply(&message));
                 }
                 Ok((_, Ok((request, prepare_warnings)))) => {
+                    // As `run` masks: the session's mask plus what this
+                    // request sends of its secrets in other spellings.
+                    let mask = s.mask.with_wire(&request);
                     request_warnings.extend(
-                        prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
+                        prepare_warnings.iter().map(|w| mask.apply(&format!("{slug}: {w}"))),
                     );
-                    let mask = s.mask.with_sent(&request);
                     result.method = Some(request.method);
                     result.url = Some(shown_url(&mask, &request, opts.show_secrets));
                     match send_raw(s.clients.for_request(&request), &request).await {

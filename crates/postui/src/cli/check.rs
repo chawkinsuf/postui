@@ -6,7 +6,7 @@
 //! Everything else is a warning, a missing selection or secret among them
 //! (both live in `.postui/`, which a fresh clone doesn't have).
 
-use super::mask::{MASK_MIN_CHARS, secret_values};
+use super::mask::MASK_MIN_CHARS;
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
@@ -116,17 +116,20 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
         Err(e) => return Err(e),
     };
-    // A secret too short to mask would show in run and suite output.
-    for (name, value) in secret_values(&project) {
-        // An empty value can't leak, so it isn't warned of.
-        if !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
-            warnings.push(Finding::at(
-                root.join(project::SECRETS_TOML),
-                format!(
-                    "secret {name} is shorter than {MASK_MIN_CHARS} characters, \
-                     so run and suite output can't mask it"
-                ),
-            ));
+    // A secret too short to mask would show in run and suite output, in
+    // whichever environment they run: every environment's is checked.
+    for (env_slug, secrets) in project.secrets() {
+        for (name, value) in secrets {
+            // An empty value can't leak, so it isn't warned of.
+            if !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
+                warnings.push(Finding::at(
+                    root.join(project::SECRETS_TOML),
+                    format!(
+                        "secret {name} of environment {env_slug} is shorter than \
+                         {MASK_MIN_CHARS} characters, so run and suite output can't mask it"
+                    ),
+                ));
+            }
         }
     }
     let ctx = project.prepare_context();
