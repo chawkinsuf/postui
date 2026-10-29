@@ -6,6 +6,7 @@
 //! Everything else is a warning, a missing selection or secret among them
 //! (both live in `.postui/`, which a fresh clone doesn't have).
 
+use super::mask::MASK_MIN_CHARS;
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
@@ -91,6 +92,28 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
     }
 
+    // A secret too short to mask would show in run and suite output, in
+    // whichever environment they run: every environment's is checked, even
+    // when the environment asked for fails to load. Only names
+    // `variables.toml` declares secret count: an entry it doesn't is never
+    // used.
+    let model = project.variables();
+    for (env_slug, secrets) in project.secrets() {
+        for (name, value) in secrets {
+            let declared_secret = model.vars.get(name).is_some_and(|v| v.secret);
+            // An empty value can't leak, so it isn't warned of.
+            if declared_secret && !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
+                warnings.push(Finding::at(
+                    root.join(project::SECRETS_TOML),
+                    format!(
+                        "secret {name} of environment {env_slug} is shorter than \
+                         {MASK_MIN_CHARS} characters, so run and suite output can't mask it"
+                    ),
+                ));
+            }
+        }
+    }
+
     let mut parsed = Vec::new();
     for space in project.spaces().to_vec() {
         for slug in displayed(&project, &space) {
@@ -132,6 +155,19 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
             causes.into_iter().partition(|(name, cause)| {
                 *cause == UnresolvedCause::Undefined && !declared(&project, name)
             });
+        // A name only a disabled request variable gives is switched off,
+        // not misspelled.
+        let (off, undeclared): (BTreeMap<_, _>, BTreeMap<_, _>) = undeclared
+            .into_iter()
+            .partition(|(name, _)| req.variables.get(name).is_some_and(|e| !e.enabled));
+        if !off.is_empty() {
+            let names: Vec<String> = off.keys().map(|n| format!("{{{{{n}}}}}")).collect();
+            let verb = if names.len() == 1 { "is" } else { "are" };
+            errors.push(Finding::at(
+                file.clone(),
+                format!("{} {verb} disabled in the request's [variables]", names.join(", ")),
+            ));
+        }
         if !undeclared.is_empty() {
             let names: Vec<String> = undeclared.keys().map(|n| format!("{{{{{n}}}}}")).collect();
             errors.push(Finding::at(file.clone(), format!("{} not declared", names.join(", "))));
@@ -174,7 +210,7 @@ fn env_file(root: &Path, slug: &str) -> PathBuf {
 
 /// What is wrong with a file, without the relative path the finding's
 /// `file` already gives.
-fn reason(e: project::Error) -> String {
+pub(super) fn reason(e: project::Error) -> String {
     match e {
         project::Error::Parse { error, .. } => error,
         other => other.to_string(),

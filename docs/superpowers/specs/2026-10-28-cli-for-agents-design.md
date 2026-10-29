@@ -178,6 +178,17 @@ migration fails with "open it in postui once to migrate it". (mine)
   Bash tool) can't, and one hung endpoint would stall a whole `suite`. A
   timeout is a send error. The TUI's client stays as it is. (mine)
 
+*Amended 2026-10-29 (#215, mine):* a `--jq` error still shows
+`response.body` and `body_json`, so the request needn't be sent again. A
+`-o` write that fails after the send prints the report with the body and
+`error` set (in `suite`, a warning), exit 1. `--select` naming one
+selector twice is a usage error. And (mine (approved)) `--timeout` is not a
+total deadline: the request (connect, upload and any redirects) must get
+its final response started within SECS; after that each gap between reads
+of the body may last SECS, so a long download that keeps coming is not cut
+off. `-o` writes the file in place (not atomically), so `/dev/null` and
+pipes work.
+
 `postui suite [-p] [--space S] [--env E] [--select SEL=OPT]... [--timeout SECS] [-o FILE]`
 
 - Runs every request in the project, or in space S, **one at a time in
@@ -207,6 +218,8 @@ through one mask that replaces each of the env's secret values with
 that echoes a token back. Secret values shorter than 4 characters are
 not masked (they would mask unrelated text); `check` warns about them.
 (mine)
+
+*Amended 2026-10-29 (#215, mine (approved); the user: "we can still adjust it if it is adding a lot of code and complication"):* the request side is masked as the TUI shows it (prepare's display forms); everything else printed has each secret's exact value replaced; a secret the server echoes back re-encoded or escaped is not caught, and the skill (piece 3) tells Claude so.
 
 ### Piece 3 — edit flag, TUI blocking screen, skill
 

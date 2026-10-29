@@ -299,7 +299,7 @@ impl InitReport {
 }
 
 /// A `warnings` section for `--text`; nothing when there are none.
-fn warnings_text(warnings: &[String]) -> String {
+pub(super) fn warnings_text(warnings: &[String]) -> String {
     if warnings.is_empty() {
         return String::new();
     }
@@ -310,6 +310,18 @@ fn warnings_text(warnings: &[String]) -> String {
 /// `space`'s requests as full slugs, in the order the sidebar draws them.
 pub(super) fn displayed(project: &Project, space: &str) -> Vec<String> {
     order::displayed_slugs(project.requests(), order::space_order(project.meta(), space), space)
+}
+
+/// The spaces a `--space` names: that one, or every space in project order
+/// when `None`. A space the project doesn't have is the error.
+pub(super) fn spaces_of(project: &Project, space: Option<&str>) -> Result<Vec<String>, CliError> {
+    match space {
+        None => Ok(project.spaces().to_vec()),
+        Some(wanted) if project.spaces().iter().any(|s| s == wanted) => {
+            Ok(vec![wanted.to_string()])
+        }
+        Some(wanted) => Err(CliError::new(format!("no such space \"{wanted}\" in this project"))),
+    }
 }
 
 /// `postui requests`.
@@ -337,13 +349,7 @@ pub fn requests(g: &Global, space: Option<&str>) -> Result<RequestsReport, CliEr
     let root = target::resolve(g.project.as_deref())?;
     let (mut project, mut warnings) = open(&root)?;
     warnings.extend(project.listing_warning());
-    let spaces: Vec<String> = match space {
-        None => project.spaces().to_vec(),
-        Some(wanted) if project.spaces().iter().any(|s| s == wanted) => vec![wanted.to_string()],
-        Some(wanted) => {
-            return Err(CliError::new(format!("no such space \"{wanted}\" in this project")));
-        }
-    };
+    let spaces = spaces_of(&project, space)?;
     let mut requests = Vec::new();
     for space in spaces {
         for slug in displayed(&project, &space) {

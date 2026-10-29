@@ -12,26 +12,33 @@ use std::process::ExitCode;
 /// The status every error ends the run with.
 const ERROR: u8 = 2;
 
-/// Prints `report`: pretty JSON, or `render_text`'s lines with `text`.
-/// `None` when it all went out; otherwise the status to end the run with
-/// (see [`print_out`]). A report JSON can't hold (a path that isn't
-/// UTF-8) is an error rather than a guess at the bytes.
+/// What [`emit`] prints for `report`: pretty JSON, or `render_text`'s lines
+/// with `text`. A report JSON can't hold (a path that isn't UTF-8) is an
+/// error rather than a guess at the bytes.
+pub fn render<T: Serialize>(
+    report: &T,
+    text: bool,
+    render_text: impl FnOnce(&T) -> String,
+) -> Result<String, CliError> {
+    if text {
+        return Ok(render_text(report));
+    }
+    serde_json::to_string_pretty(report)
+        .map(|json| json + "\n")
+        .map_err(|e| CliError::new(format!("can't print the report: {e}")))
+}
+
+/// Prints `report` as [`render`] makes it. `None` when it all went out;
+/// otherwise the status to end the run with (see [`print_out`]).
 pub fn emit<T: Serialize>(
     report: &T,
     text: bool,
     render_text: impl FnOnce(&T) -> String,
 ) -> Option<ExitCode> {
-    let printed = if text {
-        render_text(report)
-    } else {
-        match serde_json::to_string_pretty(report) {
-            Ok(json) => json + "\n",
-            Err(e) => {
-                return Some(fail(&CliError::new(format!("can't print the report: {e}")), text));
-            }
-        }
-    };
-    print_out(&printed)
+    match render(report, text, render_text) {
+        Ok(printed) => print_out(&printed),
+        Err(e) => Some(fail(&e, text)),
+    }
 }
 
 /// The JSON error envelope; `file` is left out when the error names none.

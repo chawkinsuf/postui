@@ -5,13 +5,22 @@
 //! Read commands open the project read-only, so they write nothing (R16).
 
 mod check;
+pub mod mask;
 pub mod out;
 mod read;
+mod run;
+mod suite;
 pub mod target;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
+
+pub use run::RunOpts;
+
+/// The `--timeout` a send gets when none is given.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The options every project command takes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,12 +35,42 @@ pub struct Global {
 /// A parsed command line, one variant per command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Projects { text: bool },
+    Projects {
+        text: bool,
+    },
     Show(Global),
-    Requests { g: Global, space: Option<String> },
-    Vars { g: Global, env: Option<String>, show_secrets: bool },
-    Check { g: Global, env: Option<String> },
-    Init { dir: PathBuf, name: Option<String>, text: bool },
+    Requests {
+        g: Global,
+        space: Option<String>,
+    },
+    Vars {
+        g: Global,
+        env: Option<String>,
+        show_secrets: bool,
+    },
+    Check {
+        g: Global,
+        env: Option<String>,
+    },
+    Init {
+        dir: PathBuf,
+        name: Option<String>,
+        text: bool,
+    },
+    Run {
+        g: Global,
+        request: String,
+        opts: RunOpts,
+        jq: Option<String>,
+        output: Option<PathBuf>,
+        dry_run: bool,
+    },
+    Suite {
+        g: Global,
+        space: Option<String>,
+        opts: RunOpts,
+        output: Option<PathBuf>,
+    },
 }
 
 /// What [`parse`] makes of a command line.
@@ -44,7 +83,8 @@ pub enum Parsed {
 
 /// The first arguments that are commands rather than a directory to open
 /// (R18: a directory of that name opens as `postui ./show`).
-pub const SUBCOMMANDS: &[&str] = &["projects", "show", "requests", "vars", "check", "init", "help"];
+pub const SUBCOMMANDS: &[&str] =
+    &["projects", "show", "requests", "vars", "check", "init", "run", "suite", "help"];
 
 /// Why a command could not give its report: the error envelope's
 /// `error` and, when it is about one file, `file`.
@@ -163,23 +203,106 @@ overwrites a file.
     text_flag!()
 );
 
+const RUN_USAGE: &str = concat!(
+    "\
+usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]...
+                   [--jq <filter>] [-o <file>] [--timeout <secs>] [--dry-run]
+                   [--show-secrets] [--text]
+
+Sends one request and prints what came back: its status, timings, headers
+and body. <request> is a slug as `postui requests` lists it. Nothing is
+written to the project. Each secret's exact value is masked in everything
+printed; a value the server or a --jq filter transforms is not. Exits 1 for
+a status of 400 or more, when the request can't be prepared or sent, or when
+--jq fails.
+
+",
+    project_flag!(),
+    "  --env <env>               the environment, by slug or name (default: the
+                            one postui has open, else the first)
+  --select <sel>=<opt>      pick an option of a selector for this run only;
+                            can be given more than once
+  --jq <filter>             print the filter's results instead of the body
+  -o, --output <file>       write the body (or each jq result) to <file>
+  --timeout <secs>          give up if the response hasn't started after this
+                            long (connect, upload and redirects included),
+                            or the body stalls this long between reads
+                            (default: 30; 0: never)
+  --dry-run                 print the request that would be sent; send nothing
+  --show-secrets            print secrets' values
+",
+    text_flag!()
+);
+
+const SUITE_USAGE: &str = concat!(
+    "\
+usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
+                    [--select <sel>=<opt>]... [-o <file>] [--timeout <secs>]
+                    [--show-secrets] [--text]
+
+Sends every request of the project (or of one space), one at a time in
+sidebar order, and prints each one's status and time, then the totals. A
+request that can't be read or prepared is reported and the suite goes on.
+Nothing is written to the project. Each secret's exact value is masked in
+everything printed; a value the server transforms is not. Exits 1 when any
+request failed to prepare or send or returned 400 or more.
+
+",
+    project_flag!(),
+    "  --space <space>           only this space's requests
+  --env <env>               the environment, by slug or name (default: the
+                            one postui has open, else the first)
+  --select <sel>=<opt>      pick an option of a selector for this run only;
+                            can be given more than once
+  -o, --output <file>       also write what is printed to <file>
+  --timeout <secs>          give up on a request if its response hasn't
+                            started after this long (connect, upload and
+                            redirects included), or the body stalls this
+                            long between reads (default: 30; 0: never)
+  --show-secrets            print secrets' values
+",
+    text_flag!()
+);
+
 /// One command: its name, the options it takes (by their long spelling;
-/// `-p` is `--project`), whether it takes a directory, and its usage.
+/// `-p` is `--project`, `-o` is `--output`), what positional argument it
+/// takes, and its usage.
 struct Spec {
     name: &'static str,
     flags: &'static [&'static str],
-    takes_dir: bool,
+    positional: Option<Positional>,
     usage: &'static str,
 }
 
+/// A command's positional argument.
+#[derive(Clone, Copy, PartialEq)]
+enum Positional {
+    /// `init`'s directory (`~` expands).
+    Dir,
+    /// `run`'s request slug.
+    Request,
+}
+
+impl Positional {
+    /// The noun the user reads.
+    fn noun(self) -> &'static str {
+        match self {
+            Positional::Dir => "directory",
+            Positional::Request => "request",
+        }
+    }
+}
+
 #[rustfmt::skip]
-const SPECS: [Spec; 6] = [
-    Spec { name: "projects", flags: &["--text"],                                          takes_dir: false, usage: PROJECTS_USAGE },
-    Spec { name: "show",     flags: &["--project", "--text"],                             takes_dir: false, usage: SHOW_USAGE },
-    Spec { name: "requests", flags: &["--project", "--text", "--space"],                  takes_dir: false, usage: REQUESTS_USAGE },
-    Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"], takes_dir: false, usage: VARS_USAGE },
-    Spec { name: "check",    flags: &["--project", "--text", "--env"],                    takes_dir: false, usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--text", "--name"],                                takes_dir: true,  usage: INIT_USAGE },
+const SPECS: [Spec; 8] = [
+    Spec { name: "projects", flags: &["--text"],                                                                                                   positional: None,                      usage: PROJECTS_USAGE },
+    Spec { name: "show",     flags: &["--project", "--text"],                                                                                      positional: None,                      usage: SHOW_USAGE },
+    Spec { name: "requests", flags: &["--project", "--text", "--space"],                                                                           positional: None,                      usage: REQUESTS_USAGE },
+    Spec { name: "vars",     flags: &["--project", "--text", "--env", "--show-secrets"],                                                           positional: None,                      usage: VARS_USAGE },
+    Spec { name: "check",    flags: &["--project", "--text", "--env"],                                                                             positional: None,                      usage: CHECK_USAGE },
+    Spec { name: "init",     flags: &["--text", "--name"],                                                                                         positional: Some(Positional::Dir),     usage: INIT_USAGE },
+    Spec { name: "run",      flags: &["--project", "--text", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some(Positional::Request), usage: RUN_USAGE },
+    Spec { name: "suite",    flags: &["--project", "--text", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"],           positional: None,                      usage: SUITE_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
@@ -221,19 +344,62 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
     if wants_help {
         return Ok(Parsed::Help(spec.usage));
     }
+    // Only `run` and `suite` take these options; the rest ignore the value.
+    let opts = run_opts(&options)?;
     let g = Global { project: options.project, text: options.text };
+    let positional =
+        |what: &str| options.positional.clone().ok_or(format!("{} needs a {what}", spec.name));
     Ok(Parsed::Run(match spec.name {
         "projects" => Command::Projects { text: g.text },
         "show" => Command::Show(g),
         "requests" => Command::Requests { g, space: options.space },
         "vars" => Command::Vars { g, env: options.env, show_secrets: options.show_secrets },
         "check" => Command::Check { g, env: options.env },
-        _ => Command::Init {
-            dir: options.dir.ok_or("init needs a directory")?,
+        "init" => Command::Init {
+            dir: PathBuf::from(positional("directory")?),
             name: options.name,
             text: g.text,
         },
+        "suite" => Command::Suite {
+            g,
+            space: options.space,
+            opts,
+            output: options.output.map(PathBuf::from),
+        },
+        _ => {
+            let request = positional("request")?;
+            let request = request.to_str().ok_or("the request's slug is not UTF-8")?.to_string();
+            let output = options.output.map(PathBuf::from);
+            if options.dry_run && output.is_some() {
+                return Err("-o needs a send; it can't go with --dry-run".into());
+            }
+            if options.dry_run && options.jq.is_some() {
+                return Err("--jq needs a send; it can't go with --dry-run".into());
+            }
+            Command::Run { g, request, opts, jq: options.jq, output, dry_run: options.dry_run }
+        }
     }))
+}
+
+/// The options `run` and `suite` share, with `--timeout` read: whole
+/// seconds, `0` for none, 30 when not given.
+fn run_opts(o: &Options) -> Result<RunOpts, String> {
+    let timeout = match o.timeout.as_deref() {
+        None => Some(DEFAULT_TIMEOUT),
+        Some(secs) => match secs.parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => {
+                return Err(format!("--timeout takes a whole number of seconds, not '{secs}'"));
+            }
+        },
+    };
+    Ok(RunOpts {
+        env: o.env.clone(),
+        selects: o.selects.clone(),
+        show_secrets: o.show_secrets,
+        timeout,
+    })
 }
 
 /// Every option a command line can carry, before the command picks its own.
@@ -245,7 +411,14 @@ struct Options {
     env: Option<String>,
     show_secrets: bool,
     name: Option<String>,
-    dir: Option<PathBuf>,
+    /// The command's one positional argument, as the OS gave it
+    /// (`init`'s directory, `run`'s request).
+    positional: Option<OsString>,
+    selects: Vec<(String, String)>,
+    jq: Option<String>,
+    output: Option<String>,
+    timeout: Option<String>,
+    dry_run: bool,
 }
 
 /// Reads `args` (help flags already out) against what `spec` takes.
@@ -256,15 +429,17 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy();
         if !text.starts_with('-') {
-            if !spec.takes_dir {
+            let Some(what) = spec.positional else {
                 return Err(format!("unexpected argument '{text}'"));
+            };
+            if o.positional.is_some() {
+                return Err(format!("one {} at most; '{text}' is a second", what.noun()));
             }
-            if o.dir.is_some() {
-                return Err(format!("one directory at most; '{text}' is a second"));
-            }
-            o.dir = Some(match arg.to_str() {
-                Some(s) => crate::config::expand_tilde(s),
-                None => PathBuf::from(arg),
+            o.positional = Some(match arg.to_str() {
+                Some(s) if what == Positional::Dir => {
+                    crate::config::expand_tilde(s).into_os_string()
+                }
+                _ => (*arg).clone(),
             });
             continue;
         }
@@ -272,13 +447,18 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
             _ => (&*text, None),
         };
-        let flag = if spelled == "-p" { "--project" } else { spelled };
+        let flag = match spelled {
+            "-p" => "--project",
+            "-o" => "--output",
+            other => other,
+        };
         if !spec.flags.contains(&flag) {
             return Err(format!("unknown option '{text}'"));
         }
         let switch = match flag {
             "--text" => Some(&mut o.text),
             "--show-secrets" => Some(&mut o.show_secrets),
+            "--dry-run" => Some(&mut o.dry_run),
             _ => None,
         };
         if let Some(on) = switch {
@@ -301,9 +481,23 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
         }
         .ok_or(format!("{spelled}'s value is not UTF-8"))?;
         let slot = match flag {
+            // The one option that repeats, once per selector.
+            "--select" => {
+                let (name, option) = value
+                    .split_once('=')
+                    .ok_or_else(|| format!("--select takes SELECTOR=OPTION, not '{value}'"))?;
+                if o.selects.iter().any(|(s, _)| s == name) {
+                    return Err(format!("--select {name} is given twice"));
+                }
+                o.selects.push((name.to_string(), option.to_string()));
+                continue;
+            }
             "--project" => &mut o.project,
             "--space" => &mut o.space,
             "--env" => &mut o.env,
+            "--jq" => &mut o.jq,
+            "--output" => &mut o.output,
+            "--timeout" => &mut o.timeout,
             _ => &mut o.name,
         };
         if slot.is_some() {
@@ -315,8 +509,8 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
 }
 
 /// Runs `cmd`, printing its report (or the error envelope), and gives the
-/// status to exit with: 0 on success, 1 when `check` finds an error, 2 on
-/// an error.
+/// status to exit with: 0 on success, 1 when `check` finds an error or a
+/// `run` fails, 2 on an error.
 pub async fn run(cmd: Command) -> ExitCode {
     match cmd {
         Command::Projects { text } => finish(read::projects(), text, read::ProjectsReport::text),
@@ -336,6 +530,57 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Init { dir, name, text } => {
             finish(read::init(&dir, name.as_deref()), text, read::InitReport::text)
         }
+        Command::Run { g, request, opts, jq, output, dry_run } => {
+            match run::run(&g, &request, &opts, jq.as_deref(), output.as_deref(), dry_run).await {
+                Ok(report) => {
+                    let printed = out::emit(&report, g.text, run::RunReport::text);
+                    sent_status(printed, report.status())
+                }
+                Err(e) => out::fail(&e, g.text),
+            }
+        }
+        Command::Suite { g, space, opts, output } => {
+            match suite::suite(&g, space.as_deref(), &opts).await {
+                Ok((mut report, mask)) => {
+                    // The file is named (made absolute once) before
+                    // rendering, so the report in it and on stdout are the
+                    // same bytes.
+                    let file = output.as_deref().map(run::absolute);
+                    if let Some(Ok(path)) = &file {
+                        report.set_output_file(path.clone());
+                    }
+                    let mut printed = match out::render(&report, g.text, suite::SuiteReport::text) {
+                        Ok(printed) => printed,
+                        Err(e) => return out::fail(&e, g.text),
+                    };
+                    // Written before printing, so stdout can say whether it
+                    // worked. The requests are sent, so a failed write is a
+                    // warning on the one report, not an error envelope.
+                    if let Some(Err(e)) = file
+                        .map(|path| path.and_then(|p| run::write_output(&p, printed.as_bytes())))
+                    {
+                        report.note_write_failure(mask.apply(&e.message));
+                        printed = match out::render(&report, g.text, suite::SuiteReport::text) {
+                            Ok(printed) => printed,
+                            Err(e) => return out::fail(&e, g.text),
+                        };
+                    }
+                    sent_status(crate::cli_out::print_out(&printed), report.status())
+                }
+                Err(e) => out::fail(&e, g.text),
+            }
+        }
+    }
+}
+
+/// The status a `run` or `suite` ends with, given what printing its report
+/// gave (`None` when it all went out) and the report's own `status`. A
+/// reader that stopped (a closed pipe, which printing calls a success)
+/// doesn't make a failed run succeed; printing that failed otherwise wins.
+fn sent_status(printed: Option<ExitCode>, status: ExitCode) -> ExitCode {
+    match printed {
+        Some(code) if code != ExitCode::SUCCESS => code,
+        _ => status,
     }
 }
 
@@ -414,6 +659,113 @@ mod tests {
             Command::Init { dir: PathBuf::from("kit"), name: Some("Kit".into()), text: false }
         );
         assert_eq!(command(&["projects"]), Command::Projects { text: false });
+    }
+
+    #[test]
+    fn a_selector_is_selected_once() {
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(
+            err(&["run", "a", "--select", "user=bob", "--select", "user=alice"]),
+            "--select user is given twice"
+        );
+        assert_eq!(
+            err(&["suite", "--select", "user=bob", "--select", "user=bob"]),
+            "--select user is given twice"
+        );
+    }
+
+    #[test]
+    fn run_takes_a_request_and_its_options() {
+        assert_eq!(
+            command(&[
+                "run",
+                "main/a",
+                "--env",
+                "dev",
+                "--select",
+                "user=bob",
+                "--select",
+                "org=x",
+                "--timeout",
+                "0",
+                "--dry-run"
+            ]),
+            Command::Run {
+                g: Global::default(),
+                request: "main/a".into(),
+                opts: RunOpts {
+                    env: Some("dev".into()),
+                    selects: vec![("user".into(), "bob".into()), ("org".into(), "x".into())],
+                    show_secrets: false,
+                    timeout: None,
+                },
+                jq: None,
+                output: None,
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            command(&[
+                "run",
+                "a",
+                "-p",
+                "api",
+                "--jq",
+                ".id",
+                "-o",
+                "out.bin",
+                "--show-secrets",
+                "--timeout=5",
+                "--text"
+            ]),
+            Command::Run {
+                g: Global { project: Some("api".into()), text: true },
+                request: "a".into(),
+                opts: RunOpts {
+                    env: None,
+                    selects: vec![],
+                    show_secrets: true,
+                    timeout: Some(Duration::from_secs(5)),
+                },
+                jq: Some(".id".into()),
+                output: Some(PathBuf::from("out.bin")),
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn run_sends_with_a_thirty_second_timeout_by_default() {
+        match command(&["run", "a"]) {
+            Command::Run { opts, .. } => assert_eq!(opts.timeout, Some(Duration::from_secs(30))),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A closed stdout doesn't turn a failed run into a success; a write
+    /// error otherwise is the status, and a full print keeps the run's.
+    #[test]
+    fn a_failed_run_keeps_its_status_whatever_printing_gave() {
+        let failed = ExitCode::from(1);
+        let closed_pipe = Some(ExitCode::SUCCESS);
+        assert_eq!(sent_status(closed_pipe, failed), failed);
+        assert_eq!(sent_status(closed_pipe, ExitCode::SUCCESS), ExitCode::SUCCESS);
+        assert_eq!(sent_status(None, failed), failed);
+        assert_eq!(sent_status(Some(ExitCode::from(2)), ExitCode::SUCCESS), ExitCode::from(2));
+    }
+
+    #[test]
+    fn run_mistakes_say_what_is_wrong() {
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(err(&["run"]), "run needs a request");
+        assert_eq!(err(&["run", "a", "b"]), "one request at most; 'b' is a second");
+        assert!(err(&["run", "a", "--timeout", "soon"]).contains("--timeout"));
+        assert!(err(&["run", "a", "--timeout", "-1"]).contains("--timeout"));
+        assert!(err(&["run", "a", "-o", "out.bin", "--dry-run"]).contains("-o needs a send"));
+        assert!(err(&["run", "a", "--jq", ".id", "--dry-run"]).contains("--jq needs a send"));
+        assert_eq!(err(&["run", "a", "--env", "x", "--env", "y"]), "--env is given twice");
+        assert_eq!(err(&["run", "a", "--space", "x"]), "unknown option '--space'");
+        assert_eq!(err(&["show", "--select", "a=b"]), "unknown option '--select'");
     }
 
     #[test]
