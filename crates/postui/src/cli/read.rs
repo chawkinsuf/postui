@@ -417,13 +417,7 @@ impl RequestsReport {
                 }
             })
             .collect();
-        let listed = if rows.is_empty() {
-            "  (none)\n".to_string()
-        } else {
-            let rows: Vec<(&[String], &str)> =
-                rows.iter().map(|(c, u)| (c.as_slice(), *u)).collect();
-            table_under(&rows)
-        };
+        let listed = if rows.is_empty() { "  (none)\n".to_string() } else { table_under(&rows) };
         format!(
             "{}{listed}{}",
             fields(&[("root", self.root.display().to_string())]),
@@ -771,8 +765,14 @@ impl VarReport {
                 .options
                 .iter()
                 .map(|o| {
+                    // A column a field, in the selector's order, so the
+                    // columns line up whatever order each option is written
+                    // in. `varmodel` makes an option set every field and no
+                    // other key, so the `-` is only a guard.
                     let mut row = vec![o.name.clone()];
-                    row.extend(o.values.iter().map(|(field, value)| format!("{field}={value}")));
+                    row.extend(s.fields.iter().map(|field| {
+                        format!("{field}={}", o.values.get(field).map_or("-", String::as_str))
+                    }));
                     row.push(o.description.clone().unwrap_or_default());
                     row
                 })

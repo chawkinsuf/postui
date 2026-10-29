@@ -350,7 +350,9 @@ fn vars_name_reports_one_in_full() {
     assert_eq!(tree(&root), before);
 }
 
-/// A shared selector's options are written in `variables.toml`.
+/// A shared selector's options are written in `variables.toml`. Each
+/// option's values print in the selector's field order, whatever order
+/// the option is written in, so the columns line up.
 #[test]
 fn vars_name_of_a_shared_selector_names_variables_toml() {
     let home = Home::new();
@@ -358,13 +360,26 @@ fn vars_name_of_a_shared_selector_names_variables_toml() {
     let vars = std::fs::read_to_string(root.join("variables.toml")).unwrap();
     std::fs::write(
         root.join("variables.toml"),
-        vars + "\n[selectors.org]\nshared = true\nfields = [\"org_id\"]\n\n\
-                [options.org.acme]\norg_id = \"A1\"\n",
+        vars + "\n[selectors.org]\nshared = true\nfields = [\"org_id\", \"zone\"]\n\n\
+                [options.org.acme]\nzone = \"eu\"\norg_id = \"A1\"\ndescription = \"Acme\"\n\n\
+                [options.org.other]\norg_id = \"O2\"\nzone = \"us\"\n",
     )
     .unwrap();
     let out = home.run_json(&["vars", "org", "-p", s(&root)]);
     assert_ok(&out, "vars org");
     assert_eq!(json(&out)["selector"]["file"], s(&root.join("variables.toml")));
+
+    let out = home.run(&["vars", "org", "-p", s(&root)]);
+    assert_ok(&out, "vars org");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.ends_with(
+            "options   variables.toml\n\
+             \x20 acme   org_id=A1  zone=eu  Acme\n\
+             \x20 other  org_id=O2  zone=us\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

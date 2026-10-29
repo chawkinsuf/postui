@@ -398,6 +398,12 @@ fn run_output_file_gets_raw_bytes() {
     assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
     assert_eq!(v["response"]["size"], 4);
 
+    // R20: the text names the file absolute, even one inside the project:
+    // it is the user's, named from their working directory.
+    let inside = root.join("out.bin");
+    let text = send_text(&home, &root, "main/bytes", &["-o", s(&inside)]);
+    assert!(text.contains(&format!("\nwritten to {}\n", s(&inside))), "{text}");
+
     // A relative name lands in the working directory and is reported absolute.
     let out = home.run_json(&["run", "main/bytes", "-p", s(&root), "--output", "rel.bin"]);
     assert_ok(&out, "run --output rel.bin");
@@ -721,6 +727,8 @@ fn suite_output_file_matches_stdout() {
         text.contains("admin/x") && text.contains("200") && text.contains("1 passed"),
         "{text}"
     );
+    // R19: the text says where the report went, as the JSON's output_file.
+    assert!(text.contains(&format!("\nwritten to {}\n", s(&file))), "{text}");
 
     // A file where a directory must be.
     let bad = file.join("r.json");

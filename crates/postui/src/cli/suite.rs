@@ -162,31 +162,27 @@ impl SuiteReport {
     }
 
     /// A heading, a row a request (status, time, method, slug, URL, size)
-    /// with what failed under it, then the totals.
+    /// with what failed under it, the totals, and where `-o` wrote it.
     pub fn text(&self) -> String {
         let mut out = format!(
             "suite  environment {}  space {}\n",
             self.environment.as_deref().unwrap_or("(none)"),
             self.space.as_deref().unwrap_or("(all)")
         );
-        let rows: Vec<Vec<String>> = self
+        let rows: Vec<(Vec<String>, &str)> = self
             .results
             .iter()
             .map(|r| {
-                vec![
+                let cells = vec![
                     r.status.map_or_else(|| "error".to_string(), |s| s.to_string()),
                     r.elapsed_ms.map_or_else(String::new, |ms| format!("{ms} ms")),
                     r.method.map_or("", Method::as_str).to_string(),
                     r.request.clone(),
                     r.url.clone().unwrap_or_default(),
                     r.size.map_or_else(String::new, |n| count(n, "byte")),
-                ]
+                ];
+                (cells, r.error.as_deref().unwrap_or_default())
             })
-            .collect();
-        let rows: Vec<(&[String], &str)> = rows
-            .iter()
-            .zip(&self.results)
-            .map(|(cells, r)| (cells.as_slice(), r.error.as_deref().unwrap_or_default()))
             .collect();
         out.push_str(&table_under(&rows));
         let t = &self.totals;
@@ -194,6 +190,11 @@ impl SuiteReport {
             "\n{} requests, {} passed, {} failed, {} ms\n",
             t.requests, t.passed, t.failed, t.elapsed_ms
         ));
+        // Absolute: the file is the user's, named from their working
+        // directory, not the project's (R20).
+        if let Some(file) = &self.output_file {
+            out.push_str(&format!("written to {}\n", file.display()));
+        }
         out.push_str(&warnings_text(&self.warnings));
         out
     }

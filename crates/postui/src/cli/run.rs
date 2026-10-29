@@ -198,8 +198,8 @@ struct ResponseReport {
     /// The body parsed as JSON (from the unmasked text), then masked as a
     /// tree.
     body_json: Option<serde_json::Value>,
-    /// The body as text whichever way the JSON gives it: what the text
-    /// prints, exactly as it came.
+    /// A JSON body's text, exactly as it came: what the text prints, where
+    /// the JSON gives the body only parsed.
     #[serde(skip)]
     raw: Option<String>,
 }
@@ -336,16 +336,24 @@ fn record(
     }
     if show_body {
         let text = text();
+        // The text is masked by exact value, so a secret the server echoes
+        // re-encoded (JSON-escaped, percent-encoded) is not caught: the
+        // masking cut back to a plain replace (user-approved, spec §4), and
+        // the skill tells the agent. The parsed tree below can catch an
+        // escaped one; the text the agent reads by default can't.
         let masked = mask.apply(text);
         // Parsed from the unmasked text, then masked as a tree: masking the
         // text first would break the JSON where a mask lands in a number or
         // an escape. A body that parses is given only parsed (its exact
-        // spacing and duplicate keys are lost; `-o` keeps the bytes).
+        // spacing and duplicate keys are lost; `-o` keeps the bytes), and the
+        // text it prints as is kept beside it for the text report.
         match serde_json::from_str::<serde_json::Value>(text) {
-            Ok(value) => response.body_json = Some(mask.apply_json(value)),
-            Err(_) => response.body = Some(masked.clone()),
+            Ok(value) => {
+                response.body_json = Some(mask.apply_json(value));
+                response.raw = Some(masked);
+            }
+            Err(_) => response.body = Some(masked),
         }
-        response.raw = Some(masked);
     }
     report.response = Some(response);
 }
@@ -470,7 +478,7 @@ impl RunReport {
                 out.push_str("\nresponse headers\n");
                 out.push_str(&table(&rows));
             }
-            if let Some(body) = &r.raw {
+            if let Some(body) = r.raw.as_ref().or(r.body.as_ref()) {
                 out.push_str(&format!("\nresponse body\n{body}\n"));
             }
         }
@@ -484,7 +492,9 @@ impl RunReport {
             }
         }
         if let Some(file) = &self.output_file {
-            out.push_str(&format!("\nwritten to {}\n", rel(&self.root, file)));
+            // Absolute: the file is the user's, named from their working
+            // directory, not the project's (R20).
+            out.push_str(&format!("\nwritten to {}\n", file.display()));
         }
         if let Some(error) = &self.error {
             out.push_str("\nerror\n");

@@ -93,7 +93,10 @@ pub fn rel(root: &Path, path: &Path) -> String {
 pub fn fields(rows: &[(&str, String)]) -> String {
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     rows.iter()
-        .map(|(label, value)| format!("{label:width$}  {value}").trim_end().to_string() + "\n")
+        .map(|(label, value)| match value.as_str() {
+            "" => format!("{label}\n"),
+            value => format!("{label:width$}  {value}\n"),
+        })
         .collect()
 }
 
@@ -103,25 +106,26 @@ pub fn count(n: usize, thing: &str) -> String {
 }
 
 /// `rows` as aligned columns, two spaces apart and indented by two, one
-/// row per line; the last column is not padded. Widths are display cells.
-/// A cell that runs over several lines puts its first line in the row and
-/// the rest on the lines under it, indented by four, so one long value
-/// doesn't push the columns apart (R21).
-pub fn table(rows: &[Vec<String>]) -> String {
-    let rows: Vec<(&[String], &str)> = rows.iter().map(|r| (r.as_slice(), "")).collect();
+/// row per line; a row stops after its last non-empty cell, unpadded, so a
+/// value's own trailing spaces are kept and no padding trails. Widths are
+/// display cells. A cell that runs over several lines puts its first line
+/// in the row and the rest on the lines under it, indented by four, so one
+/// long value doesn't push the columns apart (R21).
+pub fn table<R: AsRef<[String]>>(rows: &[R]) -> String {
+    let rows: Vec<(&[String], &str)> = rows.iter().map(|r| (r.as_ref(), "")).collect();
     table_under(&rows)
 }
 
 /// [`table`], each row with text printed whole on the lines under it,
 /// indented by four (nothing when empty): what doesn't fit a column, such
 /// as a broken file's error.
-pub fn table_under(rows: &[(&[String], &str)]) -> String {
+pub fn table_under<R: AsRef<[String]>>(rows: &[(R, &str)]) -> String {
     let first = |cell: &str| cell.lines().next().unwrap_or_default().to_string();
-    let columns = rows.iter().map(|(cells, _)| cells.len()).max().unwrap_or(0);
+    let columns = rows.iter().map(|(cells, _)| cells.as_ref().len()).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| {
             rows.iter()
-                .filter_map(|(cells, _)| cells.get(c))
+                .filter_map(|(cells, _)| cells.as_ref().get(c))
                 .map(|s| crate::ui::cells(&first(s)))
                 .max()
                 .unwrap_or(0)
@@ -129,19 +133,24 @@ pub fn table_under(rows: &[(&[String], &str)]) -> String {
         .collect();
     let mut out = String::new();
     for (cells, under) in rows {
+        let cells = cells.as_ref();
+        let shown = cells.iter().rposition(|c| !first(c).is_empty()).map_or(0, |last| last + 1);
         let mut line = String::from("  ");
-        for (c, cell) in cells.iter().enumerate() {
+        for (c, cell) in cells[..shown].iter().enumerate() {
             let cell = first(cell);
             line.push_str(&cell);
-            if c + 1 < cells.len() {
+            if c + 1 < shown {
                 line.push_str(&" ".repeat(widths[c] - crate::ui::cells(&cell) + 2));
             }
         }
-        out.push_str(line.trim_end());
+        out.push_str(if shown == 0 { "" } else { &line });
         out.push('\n');
         let rest = cells.iter().flat_map(|cell| cell.lines().skip(1));
         for extra in rest.chain(under.lines()) {
-            out.push_str(format!("    {extra}").trim_end());
+            if !extra.is_empty() {
+                out.push_str("    ");
+                out.push_str(extra);
+            }
             out.push('\n');
         }
     }
@@ -170,6 +179,18 @@ mod tests {
             vec!["bb".to_string(), "x".to_string(), "z".to_string()],
         ];
         assert_eq!(table(&rows), "  a   one  end\n      |\n\n    three\n  bb  x    z\n");
+    }
+
+    /// A row stops after its last non-empty cell, so padding never trails
+    /// and a value's own trailing spaces are kept.
+    #[test]
+    fn a_row_keeps_its_values_trailing_spaces_and_trails_no_padding() {
+        let rows = vec![
+            vec!["a".to_string(), "x ".to_string(), String::new()],
+            vec!["bb".to_string(), "y".to_string(), "z".to_string()],
+        ];
+        assert_eq!(table(&rows), "  a   x \n  bb  y   z\n");
+        assert_eq!(fields(&[("k", "v ".to_string())]), "k  v \n");
     }
 
     #[test]
