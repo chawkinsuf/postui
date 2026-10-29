@@ -1,8 +1,9 @@
 //! The read commands' reports: what each one finds, as the `Serialize`
-//! shape its JSON takes, and its `--text` rendering. Every project is
-//! opened read-only ([`open`]), so nothing here can write (R16).
+//! shape its JSON takes, and its text rendering, which carries the same
+//! facts with paths relative to the root it names once (R19, R20). Every
+//! project is opened read-only ([`open`]), so nothing here can write (R16).
 
-use super::out::table;
+use super::out::{count, fields, rel, table, table_under};
 use super::{CliError, Global, target};
 use indexmap::IndexMap;
 use postui_core::model::Method;
@@ -172,7 +173,7 @@ pub fn show(g: &Global) -> Result<ShowReport, CliError> {
         .map(|slug| ShownEnv {
             slug: slug.clone(),
             name: project.env_name(slug),
-            file: root.join("environments").join(format!("{slug}.toml")),
+            file: env_file(&root, slug),
             active: project.active_env() == Some(slug.as_str()),
         })
         .collect();
@@ -201,23 +202,19 @@ pub fn show(g: &Global) -> Result<ShowReport, CliError> {
 
 impl ShowReport {
     pub fn text(&self) -> String {
-        let mut out = table(&[
-            vec!["name".to_string(), self.name.clone()],
-            vec!["root".to_string(), self.root.display().to_string()],
-            vec!["project".to_string(), self.files.project.display().to_string()],
-            vec!["variables".to_string(), self.files.variables.display().to_string()],
+        let root = &self.root;
+        let mut out = fields(&[
+            ("name", self.name.clone()),
+            ("root", root.display().to_string()),
+            ("project", rel(root, &self.files.project)),
+            ("variables", rel(root, &self.files.variables)),
         ]);
         let envs: Vec<Vec<String>> = self
             .environments
             .iter()
             .map(|e| {
                 let active = if e.active { "(active)" } else { "" };
-                vec![
-                    e.slug.clone(),
-                    e.name.clone(),
-                    active.to_string(),
-                    e.file.display().to_string(),
-                ]
+                vec![e.slug.clone(), e.name.clone(), active.to_string(), rel(root, &e.file)]
             })
             .collect();
         out.push_str("\nenvironments\n");
@@ -229,8 +226,8 @@ impl ShowReport {
                 vec![
                     s.slug.clone(),
                     s.name.clone(),
-                    format!("{} requests", s.requests),
-                    s.dir.display().to_string(),
+                    count(s.requests, "request"),
+                    rel(root, &s.dir),
                 ]
             })
             .collect();
@@ -286,19 +283,20 @@ pub fn init(dir: &Path, name: Option<&str>) -> Result<InitReport, CliError> {
 
 impl InitReport {
     pub fn text(&self) -> String {
-        let mut out = table(&[
-            vec!["root".to_string(), self.root.display().to_string()],
-            vec!["project".to_string(), self.files.project.display().to_string()],
-            vec!["variables".to_string(), self.files.variables.display().to_string()],
-            vec!["environments".to_string(), self.files.environments.display().to_string()],
-            vec!["requests".to_string(), self.files.requests.display().to_string()],
+        let root = &self.root;
+        let mut out = fields(&[
+            ("root", root.display().to_string()),
+            ("project", rel(root, &self.files.project)),
+            ("variables", rel(root, &self.files.variables)),
+            ("environments", rel(root, &self.files.environments)),
+            ("requests", rel(root, &self.files.requests)),
         ]);
         out.push_str(&warnings_text(&self.warnings));
         out
     }
 }
 
-/// A `warnings` section for `--text`; nothing when there are none.
+/// A `warnings` section for the text; nothing when there are none.
 pub(super) fn warnings_text(warnings: &[String]) -> String {
     if warnings.is_empty() {
         return String::new();
@@ -329,6 +327,9 @@ pub(super) fn spaces_of(project: &Project, space: Option<&str>) -> Result<Vec<St
 pub struct RequestsReport {
     requests: Vec<ListedRequest>,
     warnings: Vec<String>,
+    /// What the text's paths are relative to; the JSON's are absolute.
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -386,26 +387,48 @@ pub fn requests(g: &Global, space: Option<&str>) -> Result<RequestsReport, CliEr
             });
         }
     }
-    Ok(RequestsReport { requests, warnings })
+    Ok(RequestsReport { requests, warnings, root })
 }
 
 impl RequestsReport {
+    /// The root, then a row a request: slug, method, URL, name and file; a
+    /// broken one's error goes under its row.
     pub fn text(&self) -> String {
-        let rows: Vec<Vec<String>> = self
+        let rows: Vec<(Vec<String>, &str)> = self
             .requests
             .iter()
-            .map(|r| match &r.error {
-                Some(error) => vec![r.slug.clone(), "(broken)".to_string(), error.clone()],
-                None => vec![
-                    r.slug.clone(),
-                    r.method.map_or("", Method::as_str).to_string(),
-                    r.url.clone().unwrap_or_default(),
-                    r.name.clone().unwrap_or_default(),
-                ],
+            .map(|r| {
+                let file = rel(&self.root, &r.file);
+                match &r.error {
+                    Some(error) => (
+                        vec![r.slug.clone(), "broken".into(), String::new(), String::new(), file],
+                        error.as_str(),
+                    ),
+                    None => (
+                        vec![
+                            r.slug.clone(),
+                            r.method.map_or("", Method::as_str).to_string(),
+                            r.url.clone().unwrap_or_default(),
+                            r.name.clone().unwrap_or_default(),
+                            file,
+                        ],
+                        "",
+                    ),
+                }
             })
             .collect();
-        let listed = if rows.is_empty() { "  (none)\n".to_string() } else { table(&rows) };
-        format!("{listed}{}", warnings_text(&self.warnings))
+        let listed = if rows.is_empty() {
+            "  (none)\n".to_string()
+        } else {
+            let rows: Vec<(&[String], &str)> =
+                rows.iter().map(|(c, u)| (c.as_slice(), *u)).collect();
+            table_under(&rows)
+        };
+        format!(
+            "{}{listed}{}",
+            fields(&[("root", self.root.display().to_string())]),
+            warnings_text(&self.warnings)
+        )
     }
 }
 
@@ -417,6 +440,22 @@ pub struct VarsReport {
     variables: Vec<VarEntry>,
     selectors: Vec<SelectorEntry>,
     warnings: Vec<String>,
+    /// What the text's paths are relative to; the JSON's are absolute.
+    #[serde(skip)]
+    root: PathBuf,
+}
+
+/// `postui vars <name>`: one variable, or one selector with its options in
+/// full; the other is `null`.
+#[derive(Serialize)]
+pub struct VarReport {
+    environment: Option<VarsEnv>,
+    files: VarsFiles,
+    variable: Option<VarEntry>,
+    selector: Option<SelectorDetail>,
+    warnings: Vec<String>,
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -443,14 +482,30 @@ struct VarEntry {
     selector: Option<String>,
 }
 
+/// A selector as `vars` lists it: its options by name, the name
+/// `--select` takes; `vars <name>` gives them in full.
 #[derive(Serialize)]
 struct SelectorEntry {
     name: String,
     description: Option<String>,
     shared: bool,
     fields: Vec<String>,
-    options: Vec<OptionEntry>,
+    options: Vec<String>,
     /// The option picked, `null` when none (or a stale pick) is.
+    selected: Option<String>,
+}
+
+/// A selector as `vars <name>` gives it.
+#[derive(Serialize)]
+struct SelectorDetail {
+    name: String,
+    description: Option<String>,
+    shared: bool,
+    fields: Vec<String>,
+    /// The file its options are written in: `variables.toml` for a shared
+    /// selector, else the environment's (`null` with no environment).
+    file: Option<PathBuf>,
+    options: Vec<OptionEntry>,
     selected: Option<String>,
 }
 
@@ -461,11 +516,71 @@ struct OptionEntry {
     values: IndexMap<String, String>,
 }
 
+/// What `vars` and `vars <name>` both report: every selector in full.
+struct Gathered {
+    root: PathBuf,
+    environment: Option<VarsEnv>,
+    files: VarsFiles,
+    variables: Vec<VarEntry>,
+    selectors: Vec<SelectorDetail>,
+    warnings: Vec<String>,
+}
+
 /// Every variable's value in an environment and where it comes from, and
-/// every selector with its options and the one selected. A secret's value
-/// is masked unless `show_secrets`. A project with no environments gives
-/// `environment: null` and resolves against nothing.
+/// every selector with its options' names and the one selected. A secret's
+/// value is masked unless `show_secrets`. A project with no environments
+/// gives `environment: null` and resolves against nothing.
 pub fn vars(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<VarsReport, CliError> {
+    let all = gather(g, env, show_secrets)?;
+    let selectors = all
+        .selectors
+        .into_iter()
+        .map(|s| SelectorEntry {
+            name: s.name,
+            description: s.description,
+            shared: s.shared,
+            fields: s.fields,
+            options: s.options.into_iter().map(|o| o.name).collect(),
+            selected: s.selected,
+        })
+        .collect();
+    Ok(VarsReport {
+        environment: all.environment,
+        files: all.files,
+        variables: all.variables,
+        selectors,
+        warnings: all.warnings,
+        root: all.root,
+    })
+}
+
+/// [`vars`] for the one variable or selector called `name`, a selector with
+/// its options' values. `variables.toml` refuses a name that is both. A
+/// name that is neither is the error, naming the choices.
+pub fn var(
+    g: &Global,
+    env: Option<&str>,
+    show_secrets: bool,
+    name: &str,
+) -> Result<VarReport, CliError> {
+    let Gathered { root, environment, files, mut variables, mut selectors, warnings } =
+        gather(g, env, show_secrets)?;
+    let variable = variables.iter().position(|v| v.name == name).map(|i| variables.remove(i));
+    let selector = selectors.iter().position(|s| s.name == name).map(|i| selectors.remove(i));
+    if variable.is_none() && selector.is_none() {
+        let names = |list: Vec<&str>| {
+            if list.is_empty() { "(none)".to_string() } else { list.join(", ") }
+        };
+        return Err(CliError::new(format!(
+            "no variable or selector \"{name}\"; the variables are {}; the selectors are {}",
+            names(variables.iter().map(|v| v.name.as_str()).collect()),
+            names(selectors.iter().map(|s| s.name.as_str()).collect()),
+        )));
+    }
+    Ok(VarReport { environment, files, variable, selector, warnings, root })
+}
+
+fn gather(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<Gathered, CliError> {
     let root = target::resolve(g.project.as_deref())?;
     let (mut project, mut warnings) = open(&root)?;
     warnings.extend(project.listing_warning());
@@ -521,11 +636,17 @@ pub fn vars(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<VarsRep
             } else {
                 project.selections_for(key).get(name)
             };
-            SelectorEntry {
+            let file = if decl.shared {
+                Some(root.join("variables.toml"))
+            } else {
+                slug.as_ref().map(|slug| env_file(&root, slug))
+            };
+            SelectorDetail {
                 name: name.clone(),
                 description: decl.description.clone(),
                 shared: decl.shared,
                 fields: decl.fields.clone(),
+                file,
                 options: options
                     .into_iter()
                     .flatten()
@@ -540,56 +661,124 @@ pub fn vars(g: &Global, env: Option<&str>, show_secrets: bool) -> Result<VarsRep
         })
         .collect();
 
-    Ok(VarsReport {
+    Ok(Gathered {
         environment: slug.map(|slug| VarsEnv {
             name: project.env_name(&slug),
-            file: root.join("environments").join(format!("{slug}.toml")),
+            file: env_file(&root, &slug),
             slug,
         }),
         files: VarsFiles { variables: root.join("variables.toml") },
         variables,
         selectors,
         warnings,
+        root,
     })
 }
 
+/// Where environment `slug` is written.
+pub(super) fn env_file(root: &Path, slug: &str) -> PathBuf {
+    root.join("environments").join(format!("{slug}.toml"))
+}
+
+/// The lines `vars` and `vars <name>` start with: the root, the
+/// environment and `variables.toml`.
+fn vars_head(root: &Path, environment: &Option<VarsEnv>, files: &VarsFiles) -> String {
+    let env = match environment {
+        Some(e) => format!("{}  {}  {}", e.slug, e.name, rel(root, &e.file)),
+        None => "(none)".to_string(),
+    };
+    fields(&[
+        ("root", root.display().to_string()),
+        ("environment", env),
+        ("variables", rel(root, &files.variables)),
+    ])
+}
+
+/// A variable as a row: name, source (with its selector), value, description.
+fn var_row(v: &VarEntry) -> Vec<String> {
+    let source = match &v.selector {
+        Some(selector) => format!("{} {selector}", v.source),
+        None => v.source.to_string(),
+    };
+    vec![
+        v.name.clone(),
+        source,
+        v.value.clone().unwrap_or_else(|| "-".to_string()),
+        v.description.clone().unwrap_or_default(),
+    ]
+}
+
+/// `rows` as a table, or `(none)`.
+fn table_or_none(rows: &[Vec<String>]) -> String {
+    if rows.is_empty() { "  (none)\n".to_string() } else { table(rows) }
+}
+
 impl VarsReport {
+    /// The head, a row a variable, then a row a selector with its options'
+    /// names.
     pub fn text(&self) -> String {
-        let env = match &self.environment {
-            Some(e) => format!("{} ({})", e.name, e.slug),
-            None => "(none)".to_string(),
-        };
-        let mut out = format!("environment  {env}\n");
-        let rows: Vec<Vec<String>> = self
-            .variables
-            .iter()
-            .map(|v| {
-                vec![
-                    v.name.clone(),
-                    v.source.to_string(),
-                    v.value.clone().unwrap_or_else(|| "-".to_string()),
-                    v.description.clone().unwrap_or_default(),
-                ]
-            })
-            .collect();
+        let mut out = vars_head(&self.root, &self.environment, &self.files);
+        let rows: Vec<Vec<String>> = self.variables.iter().map(var_row).collect();
         out.push_str("\nvariables\n");
-        out.push_str(&if rows.is_empty() { "  (none)\n".to_string() } else { table(&rows) });
+        out.push_str(&table_or_none(&rows));
         let rows: Vec<Vec<String>> = self
             .selectors
             .iter()
             .map(|s| {
-                let options: Vec<&str> = s.options.iter().map(|o| o.name.as_str()).collect();
+                let options =
+                    if s.options.is_empty() { "(none)".to_string() } else { s.options.join(", ") };
                 vec![
                     s.name.clone(),
-                    s.selected.clone().unwrap_or_else(|| "-".to_string()),
+                    format!("selected {}", s.selected.as_deref().unwrap_or("-")),
                     format!("fields {}", s.fields.join(", ")),
-                    format!("options {}", options.join(", ")),
+                    format!("options {options}"),
                     if s.shared { "shared".to_string() } else { String::new() },
+                    s.description.clone().unwrap_or_default(),
                 ]
             })
             .collect();
         out.push_str("\nselectors\n");
-        out.push_str(&if rows.is_empty() { "  (none)\n".to_string() } else { table(&rows) });
+        out.push_str(&table_or_none(&rows));
+        out.push_str(&warnings_text(&self.warnings));
+        out
+    }
+}
+
+impl VarReport {
+    /// The head, then the variable's row, or the selector's facts and a row
+    /// an option with its values.
+    pub fn text(&self) -> String {
+        let root = &self.root;
+        let mut out = vars_head(root, &self.environment, &self.files);
+        if let Some(v) = &self.variable {
+            out.push_str("\nvariable\n");
+            out.push_str(&table(&[var_row(v)]));
+        }
+        if let Some(s) = &self.selector {
+            out.push('\n');
+            let mut facts = vec![("selector", s.name.clone())];
+            if let Some(description) = &s.description {
+                facts.push(("description", description.clone()));
+            }
+            facts.extend([
+                ("shared", if s.shared { "yes" } else { "no" }.to_string()),
+                ("fields", s.fields.join(", ")),
+                ("selected", s.selected.clone().unwrap_or_else(|| "-".to_string())),
+                ("options", s.file.as_ref().map_or_else(|| "-".to_string(), |f| rel(root, f))),
+            ]);
+            out.push_str(&fields(&facts));
+            let rows: Vec<Vec<String>> = s
+                .options
+                .iter()
+                .map(|o| {
+                    let mut row = vec![o.name.clone()];
+                    row.extend(o.values.iter().map(|(field, value)| format!("{field}={value}")));
+                    row.push(o.description.clone().unwrap_or_default());
+                    row
+                })
+                .collect();
+            out.push_str(&table_or_none(&rows));
+        }
         out.push_str(&warnings_text(&self.warnings));
         out
     }

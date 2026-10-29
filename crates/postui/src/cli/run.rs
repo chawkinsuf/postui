@@ -6,7 +6,7 @@
 
 use super::check::reason;
 use super::mask::{self, Mask};
-use super::out::table;
+use super::out::{rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
@@ -170,6 +170,9 @@ pub struct RunReport {
     /// Why there is no response (an unresolved variable, a send error).
     error: Option<String>,
     warnings: Vec<String>,
+    /// What the text's paths are relative to; the JSON's are absolute.
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -178,8 +181,10 @@ struct ShownHeader {
     value: String,
 }
 
-/// What came back, masked. `body` and `body_json` are `null` when `--jq`
-/// or `-o` took the body; a failing `--jq` leaves them filled.
+/// What came back, masked. The body is given once: as `body_json` when it
+/// parses as JSON, else as the string `body` (spec §5, #217). Both are
+/// `null` when `--jq` or `-o` took the body; a failing `--jq` leaves the
+/// body shown.
 #[derive(Serialize)]
 struct ResponseReport {
     status: u16,
@@ -188,10 +193,15 @@ struct ResponseReport {
     /// The raw length in bytes.
     size: usize,
     headers: Vec<ShownHeader>,
+    /// The body as text, when it doesn't parse as JSON.
     body: Option<String>,
     /// The body parsed as JSON (from the unmasked text), then masked as a
-    /// tree; `null` when it doesn't parse.
+    /// tree.
     body_json: Option<serde_json::Value>,
+    /// The body as text whichever way the JSON gives it: what the text
+    /// prints, exactly as it came.
+    #[serde(skip)]
+    raw: Option<String>,
 }
 
 /// What `--jq` made of the body: each result parsed as JSON, or why not.
@@ -267,6 +277,7 @@ fn record(
             .collect(),
         body: None,
         body_json: None,
+        raw: None,
     };
     // What `-o` would write, the jq results it would take, and whether the
     // body is shown.
@@ -325,14 +336,16 @@ fn record(
     }
     if show_body {
         let text = text();
-        response.body = Some(mask.apply(text));
-        // The body is given both as text and parsed (spec §5: a body that
-        // parses as JSON is also given as `body_json`). Parsed from the
-        // unmasked text, then masked as a tree: masking the
+        let masked = mask.apply(text);
+        // Parsed from the unmasked text, then masked as a tree: masking the
         // text first would break the JSON where a mask lands in a number or
-        // an escape.
-        response.body_json =
-            serde_json::from_str::<serde_json::Value>(text).ok().map(|v| mask.apply_json(v));
+        // an escape. A body that parses is given only parsed (its exact
+        // spacing and duplicate keys are lost; `-o` keeps the bytes).
+        match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) => response.body_json = Some(mask.apply_json(value)),
+            Err(_) => response.body = Some(masked.clone()),
+        }
+        response.raw = Some(masked);
     }
     report.response = Some(response);
 }
@@ -364,6 +377,7 @@ pub async fn run(
         output_file: None,
         error: None,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).collect(),
+        root: s.root.clone(),
     };
     let (request, warnings) = match prepared {
         Ok(prepared) => prepared,
@@ -416,7 +430,8 @@ impl RunReport {
     }
 
     /// The request line, what identifies the run, the request's headers and
-    /// body, then the error and warnings.
+    /// body, the response with its body exactly as it came (or the jq
+    /// results), then the error and warnings.
     pub fn text(&self) -> String {
         let mut out = match (&self.method, &self.url) {
             (Some(method), Some(url)) => format!("{} {url}\n", method.as_str()),
@@ -424,7 +439,8 @@ impl RunReport {
         };
         let mut rows = vec![
             vec!["request".to_string(), self.request.clone()],
-            vec!["file".to_string(), self.file.display().to_string()],
+            vec!["root".to_string(), self.root.display().to_string()],
+            vec!["file".to_string(), rel(&self.root, &self.file)],
             vec!["environment".to_string(), self.environment.as_deref().unwrap_or("(none)").into()],
         ];
         if self.dry_run {
@@ -454,7 +470,7 @@ impl RunReport {
                 out.push_str("\nresponse headers\n");
                 out.push_str(&table(&rows));
             }
-            if let Some(body) = &r.body {
+            if let Some(body) = &r.raw {
                 out.push_str(&format!("\nresponse body\n{body}\n"));
             }
         }
@@ -464,14 +480,15 @@ impl RunReport {
                 out.push_str(&format!("{value}\n"));
             }
             if let Some(error) = &j.error {
-                out.push_str(&format!("  error: {error}\n"));
+                out.push_str(&table(&[vec![format!("error: {error}")]]));
             }
         }
         if let Some(file) = &self.output_file {
-            out.push_str(&format!("\nwritten to {}\n", file.display()));
+            out.push_str(&format!("\nwritten to {}\n", rel(&self.root, file)));
         }
         if let Some(error) = &self.error {
-            out.push_str(&format!("\nerror\n  {error}\n"));
+            out.push_str("\nerror\n");
+            out.push_str(&table(&[vec![error.clone()]]));
         }
         out.push_str(&warnings_text(&self.warnings));
         out

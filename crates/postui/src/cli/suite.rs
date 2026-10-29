@@ -4,7 +4,7 @@
 //! request's result, and the suite goes on.
 
 use super::mask::Mask;
-use super::out::table;
+use super::out::{count, table_under};
 use super::read::{displayed, spaces_of, warnings_text};
 use super::run::{
     FAILED, FIRST_FAILING_STATUS, RunOpts, millis, prepare_one, refused, session, shown_url,
@@ -86,10 +86,11 @@ pub async fn suite(
                 error: None,
             };
             match prepare_one(&mut s, &slug) {
-                // A broken file is this request's result, naming the file.
+                // A broken file is this request's result, naming the file
+                // first and absolute, as an error does (R22).
                 Err(e) => {
-                    let at = e.file.map(|f| format!(" ({})", f.display())).unwrap_or_default();
-                    result.error = Some(format!("{}{at}", e.message.trim_end()));
+                    let at = e.file.map(|f| format!("{}: ", f.display())).unwrap_or_default();
+                    result.error = Some(format!("{at}{}", e.message.trim_end()));
                 }
                 // The file read; only the variables failed: it keeps its
                 // method and URL as written.
@@ -160,8 +161,8 @@ impl SuiteReport {
         self.write_failed = true;
     }
 
-    /// A heading, one line per request (status, time, what failed), then the
-    /// totals.
+    /// A heading, a row a request (status, time, method, slug, URL, size)
+    /// with what failed under it, then the totals.
     pub fn text(&self) -> String {
         let mut out = format!(
             "suite  environment {}  space {}\n",
@@ -175,13 +176,19 @@ impl SuiteReport {
                 vec![
                     r.status.map_or_else(|| "error".to_string(), |s| s.to_string()),
                     r.elapsed_ms.map_or_else(String::new, |ms| format!("{ms} ms")),
+                    r.method.map_or("", Method::as_str).to_string(),
                     r.request.clone(),
-                    // One line a row; the JSON has the whole text.
-                    r.error.as_deref().and_then(|e| e.lines().next()).unwrap_or_default().into(),
+                    r.url.clone().unwrap_or_default(),
+                    r.size.map_or_else(String::new, |n| count(n, "byte")),
                 ]
             })
             .collect();
-        out.push_str(&table(&rows));
+        let rows: Vec<(&[String], &str)> = rows
+            .iter()
+            .zip(&self.results)
+            .map(|(cells, r)| (cells.as_slice(), r.error.as_deref().unwrap_or_default()))
+            .collect();
+        out.push_str(&table_under(&rows));
         let t = &self.totals;
         out.push_str(&format!(
             "\n{} requests, {} passed, {} failed, {} ms\n",

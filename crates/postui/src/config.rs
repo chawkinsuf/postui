@@ -1197,10 +1197,10 @@ pub enum CliParse {
     /// `postui help <cmd>` or `<cmd> --help`: print this usage to stdout
     /// and exit 0.
     CommandHelp(&'static str),
-    /// A mistake on a command's line, said in `reason`: the error envelope
-    /// on stdout, or, with `--text` on the line, the reason and the
-    /// command's `usage` on stderr; exit 2 either way (spec 2026-10-28 §5).
-    CommandUsage { reason: String, text: bool, usage: &'static str },
+    /// A mistake on a command's line, said in `reason`: the reason and the
+    /// command's `usage` on stderr, or, with `--json` on the line, the
+    /// error envelope on stdout; exit 2 either way (spec 2026-10-28 §5).
+    CommandUsage { reason: String, json: bool, usage: &'static str },
 }
 
 /// What `--help` prints to stdout, and a usage error to stderr after its
@@ -1211,7 +1211,7 @@ usage: postui [--debug-ai] [directory]
        postui <command> [options]
        postui --setup | --version | --keydump[=BITS] | --help
 
-commands (JSON on stdout, --text for people; postui help <command>):
+commands (text on stdout, --json for scripts; postui help <command>):
   projects          the projects postui knows
   show              a project's files, environments and spaces
   requests          a project's requests
@@ -1256,7 +1256,7 @@ pub fn parse_cli(args: Vec<OsString>) -> CliParse {
             Ok(crate::cli::Parsed::Help(text)) => CliParse::CommandHelp(text),
             Err(reason) => CliParse::CommandUsage {
                 reason,
-                text: args.iter().any(|a| a == "--text"),
+                json: args.iter().any(|a| a == "--json"),
                 usage: crate::cli::usage(&first.to_string_lossy()),
             },
         };
@@ -2269,19 +2269,19 @@ osc52_limit = 1024
         assert!(
             matches!(cli(&["help", "vars"]), CliParse::CommandHelp(t) if t.starts_with("usage: postui vars"))
         );
-        // A command's mistake is the command's: an envelope, or with
-        // `--text` its own usage.
+        // A command's mistake is the command's: its own usage, or with
+        // `--json` an envelope.
         assert_eq!(
             cli(&["show", "--bogus"]),
             CliParse::CommandUsage {
                 reason: "unknown option '--bogus'".into(),
-                text: false,
+                json: false,
                 usage: crate::cli::usage("show"),
             }
         );
         assert!(matches!(
-            cli(&["show", "--bogus", "--text"]),
-            CliParse::CommandUsage { text: true, usage, .. } if usage.starts_with("usage: postui show")
+            cli(&["show", "--bogus", "--json"]),
+            CliParse::CommandUsage { json: true, usage, .. } if usage.starts_with("usage: postui show")
         ));
         assert!(matches!(cli(&["help", "bogus"]), CliParse::CommandUsage { usage: USAGE, .. }));
         assert_eq!(

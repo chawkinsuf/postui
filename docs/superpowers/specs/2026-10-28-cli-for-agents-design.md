@@ -414,15 +414,24 @@ selectors
   user  selected alice  fields user_id  options alice, bob
 
 $ postui vars user
-root      /home/me/api/postui
-selector  user  shared  The account the requests act as
-fields    user_id
-selected  alice
+root         /home/me/api/postui
+environment  dev  Dev  environments/dev.toml
+variables    variables.toml
 
-options   environments/dev.toml
+selector     user
+description  The account the requests act as
+shared       no
+fields       user_id
+selected     alice
+options      environments/dev.toml
   alice  user_id=42  Alice, admin
   bob    user_id=7
 ```
+
+The `vars` head (root, environment, `variables.toml`) starts
+`vars <name>` too, and the selector's facts are one aligned block,
+`description` only when it has one. That's how it was built, which
+differs from the first sketch (mine).
 
 - Paths are relative to the root printed at the top (R20). `projects`
   prints absolute roots, because each project has its own.

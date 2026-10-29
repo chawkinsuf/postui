@@ -87,11 +87,18 @@ text = '{"t": "{{token}}", "u": "{{user_id}}"}'
     root
 }
 
-/// `run <slug> -p <root>` and then `extra`, against a server.
+/// `run <slug> -p <root> --json` and then `extra`, against a server.
 fn send(home: &Home, root: &Path, slug: &str, extra: &[&str]) -> Output {
     let mut args = vec!["run", slug, "-p", s(root)];
     args.extend_from_slice(extra);
-    home.run(&args)
+    home.run_json(&args)
+}
+
+/// [`send`] printing text.
+fn send_text(home: &Home, root: &Path, slug: &str, extra: &[&str]) -> String {
+    let mut args = vec!["run", slug, "-p", s(root)];
+    args.extend_from_slice(extra);
+    String::from_utf8_lossy(&home.run(&args).stdout).into_owned()
 }
 
 fn served() -> (Home, Server, PathBuf) {
@@ -101,11 +108,11 @@ fn served() -> (Home, Server, PathBuf) {
     (home, server, root)
 }
 
-/// `run <slug> --dry-run -p <root>` and then `extra`.
+/// `run <slug> --dry-run -p <root> --json` and then `extra`.
 fn dry(home: &Home, root: &Path, slug: &str, extra: &[&str]) -> Output {
     let mut args = vec!["run", slug, "--dry-run", "-p", s(root)];
     args.extend_from_slice(extra);
-    home.run(&args)
+    home.run_json(&args)
 }
 
 fn state(root: &Path, text: &str) {
@@ -140,10 +147,18 @@ fn dry_run_prints_the_prepared_request_masked() {
     assert!(body.contains(MASK) && body.contains("\"u\": \"42\""), "{body}");
     assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
 
-    let out = dry(&home, &root, "main/me", &["--text"]);
-    assert_ok(&out, "run --dry-run --text");
+    let out = home.run(&["run", "main/me", "--dry-run", "-p", s(&root)]);
+    assert_ok(&out, "run --dry-run");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("POST") && text.contains(MASK) && !text.contains(SECRET), "{text}");
+    // R20: the file relative to the root the text names.
+    assert!(
+        text.contains(&format!(
+            "  root         {}\n  file         requests/main/me.toml\n",
+            s(&root)
+        )),
+        "{text}"
+    );
 }
 
 #[test]
@@ -282,11 +297,11 @@ fn run_finds_its_project_like_the_other_commands() {
     home.register(&[&root, &empty]);
     let config = tree(&home.config_dir());
 
-    let out = home.run_in(&root, &["run", "main/me", "--dry-run"], |_| {});
+    let out = home.run_in(&root, &["run", "main/me", "--dry-run", "--json"], |_| {});
     assert_ok(&out, "from the project directory");
     assert_eq!(json(&out)["request"], "main/me");
 
-    let out = home.run(&["run", "main/me", "--dry-run", "-p", "Empty"]);
+    let out = home.run_json(&["run", "main/me", "--dry-run", "-p", "Empty"]);
     assert_eq!(out.status.code(), Some(2), "a registered project without that request");
     assert!(json(&out)["error"].as_str().unwrap().contains("postui requests"));
 
@@ -303,7 +318,8 @@ fn run_reports_the_response() {
     let v = json(&out);
     let r = &v["response"];
     assert_eq!(r["status"], 200);
-    assert_eq!(r["body"], "{\"id\":42}");
+    // A JSON body is given once, parsed.
+    assert!(r["body"].is_null(), "{}", r["body"]);
     assert_eq!(r["body_json"], serde_json::json!({"id": 42}));
     assert_eq!(r["size"], 9);
     assert!(r["ttfb_ms"].as_u64().unwrap() <= r["elapsed_ms"].as_u64().unwrap());
@@ -318,10 +334,10 @@ fn run_reports_the_response() {
     assert_eq!(server.seen(), ["GET /ok"]);
     assert_eq!(tree(&root), before, "a send writes nothing into the project");
 
-    let out = send(&home, &root, "main/ok", &["--text"]);
-    assert_ok(&out, "run --text");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("200") && text.contains("{\"id\":42}"), "{text}");
+    // The text prints the body exactly as it came, once.
+    let text = send_text(&home, &root, "main/ok", &[]);
+    assert!(text.contains("\nresponse\n  200 in "), "{text}");
+    assert!(text.ends_with("\nresponse body\n{\"id\":42}\n"), "{text}");
 }
 
 #[test]
@@ -355,19 +371,17 @@ fn run_masks_an_echoed_secret() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
     let v = json(&out);
     assert_eq!(header_value(&v), format!("Bearer {MASK}"));
-    assert!(v["response"]["body"].as_str().unwrap().contains(MASK));
+    assert!(v["response"]["body"].is_null());
     assert!(v["response"]["body_json"]["t"] == MASK, "{}", v["response"]["body_json"]);
 
-    let out = send(&home, &root, "main/echo", &["--text"]);
-    assert_ok(&out, "run main/echo --text");
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = send_text(&home, &root, "main/echo", &[]);
     assert!(text.contains(MASK) && !text.contains(SECRET), "{text}");
 
     let out = send(&home, &root, "main/echo", &["--show-secrets"]);
     assert_ok(&out, "run main/echo --show-secrets");
     let v = json(&out);
     assert_eq!(header_value(&v), format!("Bearer {SECRET}"));
-    assert!(v["response"]["body"].as_str().unwrap().contains(SECRET));
+    assert_eq!(v["response"]["body_json"]["t"], SECRET);
     assert!(!String::from_utf8_lossy(&out.stdout).contains(MASK));
 }
 
@@ -385,7 +399,7 @@ fn run_output_file_gets_raw_bytes() {
     assert_eq!(v["response"]["size"], 4);
 
     // A relative name lands in the working directory and is reported absolute.
-    let out = home.run(&["run", "main/bytes", "-p", s(&root), "--output", "rel.bin"]);
+    let out = home.run_json(&["run", "main/bytes", "-p", s(&root), "--output", "rel.bin"]);
     assert_ok(&out, "run --output rel.bin");
     assert_eq!(json(&out)["output_file"], s(&home.path().join("rel.bin")));
     assert_eq!(std::fs::read(home.path().join("rel.bin")).unwrap(), b"ok\xff\xfe");
@@ -409,7 +423,7 @@ fn run_output_file_failure_keeps_the_response() {
     assert!(v["output_file"].is_null());
     // The request was sent, so what came back is in the report.
     assert_eq!(v["response"]["status"], 200);
-    assert_eq!(v["response"]["body"], r#"{"id":42}"#);
+    assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
 
     // Under a file, with --jq: the results show.
     let blocker = home.path().join("blocker");
@@ -479,7 +493,7 @@ fn run_jq_prints_the_filters_output() {
     assert!(!none.exists());
     let v = json(&out);
     assert!(v["output_file"].is_null());
-    assert_eq!(v["response"]["body"], r#"{"id":42}"#);
+    assert!(v["response"]["body"].is_null());
     assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
 }
 
@@ -542,8 +556,8 @@ fn run_jq_error_and_filter_are_masked() {
     assert_eq!(out.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
     assert_eq!(json(&out)["jq"]["filter"], format!("\"{MASK}\" | tonumber"));
-    let out = send(&home, &root, "main/ok", &["--jq", &filter, "--text"]);
-    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
+    let text = send_text(&home, &root, "main/ok", &["--jq", &filter]);
+    assert!(!text.contains(SECRET) && text.contains(MASK), "{text}");
 }
 
 #[test]
@@ -627,7 +641,7 @@ fn suite_runs_in_sidebar_order_and_keeps_going() {
     let server = Server::start();
     let root = suite_project(&home, &server.base());
 
-    let listed = json(&home.run(&["requests", "-p", s(&root)]));
+    let listed = json(&home.run_json(&["requests", "-p", s(&root)]));
     let order: Vec<&str> = listed["requests"]
         .as_array()
         .unwrap()
@@ -635,7 +649,7 @@ fn suite_runs_in_sidebar_order_and_keeps_going() {
         .map(|r| r["slug"].as_str().unwrap())
         .collect();
 
-    let out = home.run(&["suite", "-p", s(&root)]);
+    let out = home.run_json(&["suite", "-p", s(&root)]);
     assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
     assert_eq!(v["environment"], "dev");
@@ -675,14 +689,14 @@ fn suite_one_space() {
     let server = Server::start();
     let root = suite_project(&home, &server.base());
 
-    let out = home.run(&["suite", "--space", "admin", "-p", s(&root)]);
+    let out = home.run_json(&["suite", "--space", "admin", "-p", s(&root)]);
     assert_ok(&out, "suite --space admin");
     let v = json(&out);
     assert_eq!(v["space"], "admin");
     assert_eq!(v["results"].as_array().unwrap().len(), 1);
     assert_eq!(server.seen(), ["GET /ok"]);
 
-    let out = home.run(&["suite", "--space", "nope", "-p", s(&root)]);
+    let out = home.run_json(&["suite", "--space", "nope", "-p", s(&root)]);
     assert_eq!(out.status.code(), Some(2));
     assert!(json(&out)["error"].as_str().unwrap().contains("nope"));
 }
@@ -694,13 +708,13 @@ fn suite_output_file_matches_stdout() {
     let root = suite_project(&home, &server.base());
     let file = home.path().join("r.json");
 
-    let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "-p", s(&root)]);
+    let out = home.run_json(&["suite", "--space", "admin", "-o", s(&file), "-p", s(&root)]);
     assert_ok(&out, "suite -o");
     assert_eq!(std::fs::read(&file).unwrap(), out.stdout);
     assert_eq!(json(&out)["output_file"], s(&file));
 
-    let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "--text", "-p", s(&root)]);
-    assert_ok(&out, "suite -o --text");
+    let out = home.run(&["suite", "--space", "admin", "-o", s(&file), "-p", s(&root)]);
+    assert_ok(&out, "suite -o, text");
     assert_eq!(std::fs::read(&file).unwrap(), out.stdout);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -710,7 +724,7 @@ fn suite_output_file_matches_stdout() {
 
     // A file where a directory must be.
     let bad = file.join("r.json");
-    let out = home.run(&["suite", "--space", "admin", "-o", s(&bad), "-p", s(&root)]);
+    let out = home.run_json(&["suite", "--space", "admin", "-o", s(&bad), "-p", s(&root)]);
     // The requests were sent: one document, the report, with a warning.
     assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
@@ -726,32 +740,39 @@ fn suite_output_file_matches_stdout() {
 
     // The write warning is masked like the rest: a path holding a secret.
     let secret_path = file.join(SECRET).join("r.json");
-    let out = home.run(&["suite", "--space", "admin", "-o", s(&secret_path), "-p", s(&root)]);
+    let out = home.run_json(&["suite", "--space", "admin", "-o", s(&secret_path), "-p", s(&root)]);
     assert_eq!(out.status.code(), Some(1));
     let printed = String::from_utf8_lossy(&out.stdout);
     assert!(!printed.contains(SECRET) && printed.contains(MASK), "{printed}");
 }
 
-/// A multi-line error is one line in the `--text` table; the JSON keeps all.
+/// R19, R21: a row a request with its method, URL and size, and an error
+/// whole under its row; a broken file's error names it first, absolute.
 #[test]
-fn suite_text_shows_the_first_line_of_an_error() {
+fn suite_text_puts_each_error_under_its_row() {
     let home = Home::new();
     let server = Server::start();
     let root = suite_project(&home, &server.base());
 
-    let v = json(&home.run(&["suite", "-p", s(&root)]));
+    let v = json(&home.run_json(&["suite", "-p", s(&root)]));
     let broken =
         v["results"].as_array().unwrap().iter().find(|r| r["request"] == "main/d-broken").unwrap()
             ["error"]
             .as_str()
             .unwrap()
             .to_string();
-    let mut lines = broken.lines();
-    let (first, second) = (lines.next().unwrap(), lines.next().expect("a multi-line error"));
+    let file = s(&root.join("requests/main/d-broken.toml")).to_string();
+    assert!(broken.starts_with(&format!("{file}: ")), "{broken}");
+    assert!(broken.lines().nth(1).is_some(), "a multi-line error: {broken}");
 
-    let out = home.run(&["suite", "--text", "-p", s(&root)]);
+    let out = home.run(&["suite", "-p", s(&root)]);
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains(first) && !text.contains(second), "{text}");
+    let under: String =
+        broken.lines().map(|l| format!("    {l}").trim_end().to_string() + "\n").collect();
+    assert!(text.contains(&format!("main/d-broken\n{under}")), "{text}");
+    let base = server.base();
+    assert!(text.contains(&format!("GET  main/a-ok          {base}/ok       9 bytes\n")), "{text}");
+    assert!(text.contains("main/c-unresolved  {{bsae}}/x\n    unresolved: bsae\n"), "{text}");
 }
 
 #[test]
@@ -759,7 +780,7 @@ fn suite_masks_a_secret_written_in_a_refused_request() {
     let home = Home::new();
     let leaky = format!("method = \"GET\"\nurl = \"http://h/{SECRET}/{{{{bsae}}}}\"\n");
     let root = write_suite_project(&home, "http://h", &[("main/leaky", &leaky)]);
-    for extra in [&[][..], &["--text"][..]] {
+    for extra in [&[][..], &["--json"][..]] {
         let mut args = vec!["suite", "-p", s(&root)];
         args.extend_from_slice(extra);
         let out = home.run(&args);
@@ -767,7 +788,7 @@ fn suite_masks_a_secret_written_in_a_refused_request() {
         let printed = String::from_utf8_lossy(&out.stdout);
         assert!(!printed.contains(SECRET), "{printed}");
     }
-    let v = json(&home.run(&["suite", "-p", s(&root)]));
+    let v = json(&home.run_json(&["suite", "-p", s(&root)]));
     let url = v["results"][0]["url"].as_str().unwrap();
     assert!(url.contains(MASK) && url.contains("{{bsae}}"), "{url}");
 }
@@ -782,7 +803,7 @@ fn suite_lists_each_requests_prepare_warnings() {
         &server.base(),
         &[("main/a-ok", &get("/ok")), ("main/w", warned)],
     );
-    let out = home.run(&["suite", "-p", s(&root)]);
+    let out = home.run_json(&["suite", "-p", s(&root)]);
     assert_ok(&out, "suite");
     let warnings = json(&out)["warnings"].clone();
     let warnings = warnings.as_array().unwrap();
@@ -806,7 +827,7 @@ fn suite_masks_and_writes_nothing() {
     );
     let before = tree(&root);
 
-    for extra in [&[][..], &["--text"][..]] {
+    for extra in [&[][..], &["--json"][..]] {
         let mut args = vec!["suite", "-p", s(&root)];
         args.extend_from_slice(extra);
         let out = home.run(&args);
@@ -815,7 +836,7 @@ fn suite_masks_and_writes_nothing() {
         assert!(!printed.contains(SECRET), "{printed}");
         assert!(printed.contains("echoes/echo"));
     }
-    let v = json(&home.run(&["suite", "-p", s(&root)]));
+    let v = json(&home.run_json(&["suite", "-p", s(&root)]));
     assert!(v["results"][1]["url"].as_str().unwrap().contains(MASK));
     assert_eq!(server.seen().len(), 6);
     assert_eq!(tree(&root), before);
