@@ -455,7 +455,12 @@ fn run_masks_a_json_escaped_secret_in_parsed_output() {
 
     let out = send(&home, &root, "main/escaped", &[]);
     assert_ok(&out, "run main/escaped");
-    assert_eq!(json(&out)["response"]["body_json"], serde_json::json!({"t": MASK}));
+    let v = json(&out);
+    assert_eq!(v["response"]["body_json"], serde_json::json!({"t": MASK}));
+    // The raw body keeps the server's spelling: the known limit, and proof
+    // that the route really sends an escape the string mask can't see.
+    let body = v["response"]["body"].as_str().unwrap();
+    assert!(body.contains('\\') && !body.contains(MASK) && !body.contains(SECRET), "{body}");
 
     let out = send(&home, &root, "main/escaped", &["--jq", ".t"]);
     assert_ok(&out, "run main/escaped --jq .t");

@@ -41,7 +41,7 @@ impl Mask {
         out
     }
 
-    /// `value` with the mask applied to every string and every object key:
+    /// `value` with the mask applied to every string, number and object key:
     /// a secret the server wrote with JSON escapes (`-`, `\/`) is plain
     /// text once parsed, so masking the parsed value is what catches it.
     pub fn apply_json(&self, value: serde_json::Value) -> serde_json::Value {
@@ -54,6 +54,13 @@ impl Mask {
             Value::Object(map) => Value::Object(
                 map.into_iter().map(|(k, v)| (self.apply(&k), self.apply_json(v))).collect(),
             ),
+            // A number the mask would change (a numeric secret) is shown
+            // as the masked text.
+            Value::Number(n) => {
+                let text = n.to_string();
+                let masked = self.apply(&text);
+                if masked == text { Value::Number(n) } else { Value::String(masked) }
+            }
             other => other,
         }
     }
@@ -112,17 +119,26 @@ mod tests {
 
     #[test]
     fn apply_json_masks_strings_and_keys_at_any_depth() {
-        // Parsed from escapes: the text never held the secret as written.
-        let value: serde_json::Value = serde_json::from_str(
-            r#"{"s3cret": ["a s3cret", 1, null, {"k": "s3cret\"x"}], "n": true}"#,
-        )
-        .unwrap();
+        let value = serde_json::json!({
+            "s3cret": ["a s3cret", 1, null, {"k": "s3cret\"x"}],
+            "n": true
+        });
         let masked = mask(&["s3cret"]).apply_json(value);
         let want = serde_json::json!({
             SECRET_MASK: [format!("a {SECRET_MASK}"), 1, null, {"k": format!("{SECRET_MASK}\"x")}],
             "n": true
         });
         assert_eq!(masked, want);
+    }
+
+    #[test]
+    fn apply_json_masks_a_number_that_is_the_secret() {
+        let m = mask(&["123456"]);
+        let value = serde_json::json!({"a": 123456, "b": 12, "c": [123456.5, 0.25]});
+        assert_eq!(
+            m.apply_json(value),
+            serde_json::json!({"a": SECRET_MASK, "b": 12, "c": [format!("{SECRET_MASK}.5"), 0.25]})
+        );
     }
 
     #[test]
