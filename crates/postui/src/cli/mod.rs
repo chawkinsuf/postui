@@ -453,8 +453,13 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
         }
         .ok_or(format!("{spelled}'s value is not UTF-8"))?;
         let slot = match flag {
-            // The one option that repeats.
+            // The one option that repeats, once per selector.
             "--select" => {
+                let selector = |s: &str| s.split_once('=').map_or(s.to_string(), |(a, _)| a.into());
+                let name = selector(&value);
+                if o.selects.iter().any(|s| selector(s) == name) {
+                    return Err(format!("--select {name} is given twice"));
+                }
                 o.selects.push(value);
                 continue;
             }
@@ -506,17 +511,22 @@ pub async fn run(cmd: Command) -> ExitCode {
         }
         Command::Suite { g, space, opts, output } => {
             match suite::suite(&g, space.as_deref(), &opts).await {
-                Ok(report) => {
-                    let printed = match out::render(&report, g.text, suite::SuiteReport::text) {
+                Ok(mut report) => {
+                    let mut printed = match out::render(&report, g.text, suite::SuiteReport::text) {
                         Ok(printed) => printed,
                         Err(e) => return out::fail(&e, g.text),
                     };
-                    // Written first: a failed write is the one thing stdout
-                    // then says (one document per command).
+                    // Written before printing, so stdout can say whether it
+                    // worked. The requests are sent, so a failed write is a
+                    // warning on the one report, not an error envelope.
                     if let Some(Err(e)) =
                         output.map(|file| run::write_output(&file, printed.as_bytes()))
                     {
-                        return out::fail(&e, g.text);
+                        report.note_write_failure(e.message);
+                        printed = match out::render(&report, g.text, suite::SuiteReport::text) {
+                            Ok(printed) => printed,
+                            Err(e) => return out::fail(&e, g.text),
+                        };
                     }
                     crate::cli_out::print_out(&printed).unwrap_or(report.status())
                 }
@@ -601,6 +611,19 @@ mod tests {
             Command::Init { dir: PathBuf::from("kit"), name: Some("Kit".into()), text: false }
         );
         assert_eq!(command(&["projects"]), Command::Projects { text: false });
+    }
+
+    #[test]
+    fn a_selector_is_selected_once() {
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(
+            err(&["run", "a", "--select", "user=bob", "--select", "user=alice"]),
+            "--select user is given twice"
+        );
+        assert_eq!(
+            err(&["suite", "--select", "user=bob", "--select", "user=bob"]),
+            "--select user is given twice"
+        );
     }
 
     #[test]

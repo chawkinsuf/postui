@@ -216,22 +216,25 @@ fn run_jq(
 /// Writes `bytes` to `file` (made absolute against the working directory)
 /// and gives the absolute path.
 pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<PathBuf, CliError> {
-    let absolute = std::path::absolute(file)
-        .map_err(|e| CliError::at(format!("can't write {}: {e}", file.display()), file.into()))?;
+    let absolute = std::path::absolute(file).map_err(|e| {
+        CliError::at(format!("could not write {}: {e}", file.display()), file.into())
+    })?;
     hostfs::write_user_file(&absolute, bytes).map_err(|e| {
-        CliError::at(format!("can't write {}: {e}", absolute.display()), absolute.clone())
+        CliError::at(format!("could not write {}: {e}", absolute.display()), absolute.clone())
     })?;
     Ok(absolute)
 }
 
 /// Fills `report` from `raw`: the response, the jq results, the `-o` file.
+/// A file that can't be written is the report's `error`, with the response
+/// shown as if there were no `-o`.
 fn record(
     report: &mut RunReport,
     mask: &Mask,
     raw: RawResponse,
     jq: Option<&str>,
     output: Option<&Path>,
-) -> Result<(), CliError> {
+) {
     // Parsed unmasked (a mask inside JSON text can break it, a number for
     // one), then masked as values.
     let plain = String::from_utf8_lossy(&raw.bytes).into_owned();
@@ -248,8 +251,10 @@ fn record(
         body: None,
         body_json: None,
     };
-    // What `-o` would write, and whether the body is shown.
+    // What `-o` would write, the jq results it would take, and whether the
+    // body is shown.
     let mut file_bytes = None;
+    let mut taken_results = None;
     let mut show_body = false;
     match jq {
         Some(filter) => match run_jq(filter, &plain, mask) {
@@ -261,9 +266,10 @@ fn record(
                 });
                 report.jq = Some(JqReport {
                     filter: mask.apply(filter),
-                    output: output.is_none().then_some(values),
+                    output: output.is_none().then_some(values.clone()),
                     error: None,
                 });
+                taken_results = output.map(|_| values);
             }
             // The filter failed: the body is shown (nothing is written to
             // `-o`), so the caller needn't send the request again.
@@ -276,8 +282,25 @@ fn record(
                 });
             }
         },
+        // The file is the response itself, kept byte-exact (a binary
+        // download), so it is not masked (spec §4, §8 #9); `--jq -o` writes
+        // masked text because it is derived output.
         None if output.is_some() => file_bytes = Some(raw.bytes),
         None => show_body = true,
+    }
+    if let (Some(file), Some(bytes)) = (output, file_bytes) {
+        match write_output(file, &bytes) {
+            Ok(written) => report.output_file = Some(written),
+            // The request is sent and can't be resent safely: the report
+            // keeps what came back, as if there were no `-o`.
+            Err(e) => {
+                report.error = Some(mask.apply(&e.message));
+                match (taken_results, report.jq.as_mut()) {
+                    (Some(values), Some(j)) => j.output = Some(values),
+                    _ => show_body = true,
+                }
+            }
+        }
     }
     if show_body {
         response.body_json = serde_json::from_str(&plain).ok().map(|v| mask.apply_json(v));
@@ -288,11 +311,7 @@ fn record(
         // parsed strings masked.
         response.body = Some(mask.apply(&plain));
     }
-    if let (Some(file), Some(bytes)) = (output, file_bytes) {
-        report.output_file = Some(write_output(file, &bytes)?);
-    }
     report.response = Some(response);
-    Ok(())
 }
 
 /// Runs request `slug` of the project `g` names. With `dry_run` it only
@@ -354,7 +373,7 @@ pub async fn run(
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, &mask, raw, jq, output)?,
+        Ok(raw) => record(&mut report, &mask, raw, jq, output),
         Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)

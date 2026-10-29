@@ -95,6 +95,9 @@ impl Mask {
     /// `Authorization: Basic <base64>` from URL userinfo, say) carries a
     /// secret in some derived form, so the part of the value that differs
     /// from the display, past their common prefix and suffix, is hidden too.
+    /// A header whose display is wholly masked (`Host`, when prepare masks it
+    /// fail-closed) masks its whole value everywhere: coarser, never a leak,
+    /// and it follows prepare's own decision.
     pub fn with_sent(&self, request: &PreparedRequest) -> Mask {
         if self.shows_all {
             return Mask::none();
@@ -115,18 +118,46 @@ impl Mask {
         Mask::new(all)
     }
 
-    /// `text` with every secret value replaced by `SECRET_MASK`.
+    /// `text` with every secret value replaced by `SECRET_MASK`: one pass,
+    /// all matches of every spelling found in `text` itself, overlapping or
+    /// adjacent ones merged, one mask written per merged range. (Replacing
+    /// spelling by spelling would leave the tail of a secret that overlaps
+    /// another one, or match inside a mask already written.)
     pub fn apply(&self, text: &str) -> String {
-        let mut out = text.to_string();
-        for value in &self.values {
-            out = out.replace(value.as_str(), SECRET_MASK);
+        let mut ranges: Vec<(usize, usize)> = self
+            .values
+            .iter()
+            .flat_map(|v| text.match_indices(v.as_str()).map(|(at, m)| (at, at + m.len())))
+            .collect();
+        if ranges.is_empty() {
+            return text.to_string();
         }
+        ranges.sort_unstable();
+        let mut out = String::with_capacity(text.len());
+        let mut done = 0;
+        let mut iter = ranges.into_iter();
+        let (mut start, mut end) = iter.next().unwrap_or_default();
+        for (s, e) in iter {
+            if s <= end {
+                end = end.max(e);
+                continue;
+            }
+            out.push_str(&text[done..start]);
+            out.push_str(SECRET_MASK);
+            done = end;
+            (start, end) = (s, e);
+        }
+        out.push_str(&text[done..start]);
+        out.push_str(SECRET_MASK);
+        out.push_str(&text[end..]);
         out
     }
 
     /// `value` with the mask applied to every string, number and object key:
     /// a secret the server wrote with JSON escapes (`-`, `\/`) is plain
     /// text once parsed, so masking the parsed value is what catches it.
+    /// Two keys that mask to the same text collapse to one entry: accepted
+    /// (it takes secret-bearing keys), and `body` still shows the raw text.
     pub fn apply_json(&self, value: serde_json::Value) -> serde_json::Value {
         use serde_json::Value;
         match value {
@@ -149,16 +180,21 @@ impl Mask {
     }
 }
 
+/// The secrets of the environment `project` has active, as (name, value);
+/// a secret with no value isn't listed.
+pub fn secret_values(project: &Project) -> Vec<(String, String)> {
+    let resolved = project.resolved();
+    resolved
+        .meta
+        .iter()
+        .filter(|(_, meta)| **meta == VarMeta::Secret)
+        .filter_map(|(name, _)| Some((name.clone(), resolved.values.get(name)?.clone())))
+        .collect()
+}
+
 /// The mask for the secrets of the environment `project` has active.
 pub fn of_env(project: &Project) -> Mask {
-    let resolved = project.resolved();
-    Mask::new(
-        resolved
-            .meta
-            .iter()
-            .filter(|(_, meta)| **meta == VarMeta::Secret)
-            .filter_map(|(name, _)| resolved.values.get(name).cloned()),
-    )
+    Mask::new(secret_values(project).into_iter().map(|(_, value)| value))
 }
 
 #[cfg(test)]
@@ -294,6 +330,24 @@ mod tests {
     fn with_sent_leaves_show_secrets_alone() {
         let request = sent("Basic dXNlcjpzM2NyZXQ=", &format!("Basic {SECRET_MASK}"));
         assert_eq!(Mask::none().with_sent(&request).apply("dXNlcjpzM2NyZXQ="), "dXNlcjpzM2NyZXQ=");
+    }
+
+    #[test]
+    fn overlapping_secrets_are_masked_as_one_range() {
+        let m = mask(&["abcdef", "defghi"]);
+        assert_eq!(m.apply("x abcdefghi y"), format!("x {SECRET_MASK} y"));
+        // Adjacent ranges merge too; apart ones stay two.
+        assert_eq!(m.apply("abcdefdefghi"), SECRET_MASK);
+        assert_eq!(m.apply("abcdef abcdef"), format!("{SECRET_MASK} {SECRET_MASK}"));
+        assert_eq!(m.apply("no secret"), "no secret");
+    }
+
+    #[test]
+    fn a_secret_holding_the_mask_character_is_masked() {
+        let m = mask(&["pa●●word"]);
+        assert_eq!(m.apply("a pa●●word b"), format!("a {SECRET_MASK} b"));
+        // The text's own mask is not a secret.
+        assert_eq!(m.apply(SECRET_MASK), SECRET_MASK);
     }
 
     #[test]

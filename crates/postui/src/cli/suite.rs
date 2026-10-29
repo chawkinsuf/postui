@@ -20,6 +20,9 @@ pub struct SuiteReport {
     results: Vec<SuiteResult>,
     totals: Totals,
     warnings: Vec<String>,
+    /// `-o` could not be written (a warning says so): the run failed.
+    #[serde(skip)]
+    write_failed: bool,
 }
 
 /// One request's outcome. `status`, `elapsed_ms` and `size` are `null` when
@@ -119,13 +122,26 @@ pub async fn suite(
         results,
         totals,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).chain(request_warnings).collect(),
+        write_failed: false,
     })
 }
 
 impl SuiteReport {
-    /// 1 when any request failed to prepare or send or returned 400 or more.
+    /// 1 when any request failed to prepare or send or returned 400 or more,
+    /// or `-o` could not be written.
     pub fn status(&self) -> ExitCode {
-        if self.totals.failed > 0 { ExitCode::from(FAILED) } else { ExitCode::SUCCESS }
+        if self.totals.failed > 0 || self.write_failed {
+            ExitCode::from(FAILED)
+        } else {
+            ExitCode::SUCCESS
+        }
+    }
+
+    /// Records that `-o` could not be written: the requests were sent, so the
+    /// report still prints, with `message` as a warning.
+    pub fn note_write_failure(&mut self, message: String) {
+        self.warnings.push(message);
+        self.write_failed = true;
     }
 
     /// A heading, one line per request (status, time, what failed), then the
@@ -144,7 +160,8 @@ impl SuiteReport {
                     r.status.map_or_else(|| "error".to_string(), |s| s.to_string()),
                     r.elapsed_ms.map_or_else(String::new, |ms| format!("{ms} ms")),
                     r.request.clone(),
-                    r.error.clone().unwrap_or_default(),
+                    // One line a row; the JSON has the whole text.
+                    r.error.as_deref().and_then(|e| e.lines().next()).unwrap_or_default().into(),
                 ]
             })
             .collect();

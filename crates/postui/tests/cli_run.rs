@@ -396,14 +396,28 @@ fn run_output_file_gets_raw_bytes() {
 }
 
 #[test]
-fn run_output_file_failure_is_an_envelope() {
+fn run_output_file_failure_keeps_the_response() {
     let (home, _server, root) = served();
     // A directory can't be replaced by a file.
-    let out = send(&home, &root, "main/bytes", &["-o", s(&root)]);
-    assert_eq!(out.status.code(), Some(2));
+    let out = send(&home, &root, "main/ok", &["-o", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
-    assert!(v["error"].as_str().unwrap().contains("can't write"), "{}", v["error"]);
-    assert_eq!(v["file"], s(&root));
+    assert!(v["error"].as_str().unwrap().starts_with("could not write"), "{}", v["error"]);
+    assert!(v["output_file"].is_null());
+    // The request was sent, so what came back is in the report.
+    assert_eq!(v["response"]["status"], 200);
+    assert_eq!(v["response"]["body"], r#"{"id":42}"#);
+
+    // Under a file, with --jq: the results show.
+    let blocker = home.path().join("blocker");
+    std::fs::write(&blocker, "x").unwrap();
+    let missing = blocker.join("out.txt");
+    let out = send(&home, &root, "main/ok", &["--jq", ".id", "-o", s(&missing)]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    assert!(v["error"].as_str().unwrap().contains("out.txt"), "{}", v["error"]);
+    assert_eq!(v["jq"]["output"], serde_json::json!([42]));
+    assert!(v["response"]["body"].is_null());
 }
 
 #[test]
@@ -737,11 +751,39 @@ fn suite_output_file_matches_stdout() {
     // A file where a directory must be.
     let bad = file.join("r.json");
     let out = home.run(&["suite", "--space", "admin", "-o", s(&bad), "-p", s(&root)]);
-    assert_eq!(out.status.code(), Some(2));
-    // One document: the envelope, no report.
+    // The requests were sent: one document, the report, with a warning.
+    assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
-    assert!(v["error"].as_str().unwrap().contains("r.json"), "{v}");
-    assert!(v["results"].is_null());
+    assert_eq!(v["results"].as_array().unwrap().len(), 1);
+    let warnings = v["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| w.as_str().unwrap().starts_with("could not write")
+            && w.as_str().unwrap().contains("r.json")),
+        "{v}"
+    );
+    assert!(v["error"].is_null());
+}
+
+/// A multi-line error is one line in the `--text` table; the JSON keeps all.
+#[test]
+fn suite_text_shows_the_first_line_of_an_error() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = suite_project(&home, &server.base());
+
+    let v = json(&home.run(&["suite", "-p", s(&root)]));
+    let broken =
+        v["results"].as_array().unwrap().iter().find(|r| r["request"] == "main/d-broken").unwrap()
+            ["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let mut lines = broken.lines();
+    let (first, second) = (lines.next().unwrap(), lines.next().expect("a multi-line error"));
+
+    let out = home.run(&["suite", "--text", "-p", s(&root)]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(first) && !text.contains(second), "{text}");
 }
 
 #[test]

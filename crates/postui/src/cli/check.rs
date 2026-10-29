@@ -6,13 +6,12 @@
 //! Everything else is a warning, a missing selection or secret among them
 //! (both live in `.postui/`, which a fresh clone doesn't have).
 
-use super::mask::MASK_MIN_CHARS;
+use super::mask::{MASK_MIN_CHARS, secret_values};
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
 use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
-use postui_core::varmodel::VarMeta;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -118,14 +117,9 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         Err(e) => return Err(e),
     };
     // A secret too short to mask would show in run and suite output.
-    for (name, meta) in &project.resolved().meta {
+    for (name, value) in secret_values(&project) {
         // An empty value can't leak, so it isn't warned of.
-        let short = project
-            .resolved()
-            .values
-            .get(name)
-            .is_some_and(|v| !v.is_empty() && v.chars().count() < MASK_MIN_CHARS);
-        if *meta == VarMeta::Secret && short {
+        if !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
             warnings.push(Finding::at(
                 root.join(project::SECRETS_TOML),
                 format!(
