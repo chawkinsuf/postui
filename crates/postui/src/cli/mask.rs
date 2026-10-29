@@ -40,6 +40,23 @@ impl Mask {
         }
         out
     }
+
+    /// `value` with the mask applied to every string and every object key:
+    /// a secret the server wrote with JSON escapes (`-`, `\/`) is plain
+    /// text once parsed, so masking the parsed value is what catches it.
+    pub fn apply_json(&self, value: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::String(s) => Value::String(self.apply(&s)),
+            Value::Array(items) => {
+                Value::Array(items.into_iter().map(|v| self.apply_json(v)).collect())
+            }
+            Value::Object(map) => Value::Object(
+                map.into_iter().map(|(k, v)| (self.apply(&k), self.apply_json(v))).collect(),
+            ),
+            other => other,
+        }
+    }
 }
 
 /// The mask for the secrets of the environment `project` has active.
@@ -91,6 +108,21 @@ mod tests {
     fn length_counts_characters_not_bytes() {
         let m = mask(&["pässwörd", "äöü"]);
         assert_eq!(m.apply("pässwörd äöü"), format!("{SECRET_MASK} äöü"));
+    }
+
+    #[test]
+    fn apply_json_masks_strings_and_keys_at_any_depth() {
+        // Parsed from escapes: the text never held the secret as written.
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"s3cret": ["a s3cret", 1, null, {"k": "s3cret\"x"}], "n": true}"#,
+        )
+        .unwrap();
+        let masked = mask(&["s3cret"]).apply_json(value);
+        let want = serde_json::json!({
+            SECRET_MASK: [format!("a {SECRET_MASK}"), 1, null, {"k": format!("{SECRET_MASK}\"x")}],
+            "n": true
+        });
+        assert_eq!(masked, want);
     }
 
     #[test]

@@ -59,7 +59,7 @@ text = '{"t": "{{token}}", "u": "{{user_id}}"}'
         "requests/main/org.toml",
         "name = \"Org\"\nmethod = \"GET\"\nurl = \"{{base}}/org/{{org_id}}\"\n",
     );
-    for name in ["ok", "missing", "bytes", "hang"] {
+    for name in ["ok", "missing", "bytes", "hang", "escaped"] {
         put(
             &format!("requests/main/{name}.toml"),
             &format!("name = \"{name}\"\nmethod = \"GET\"\nurl = \"{{{{base}}}}/{name}\"\n"),
@@ -445,6 +445,51 @@ fn run_jq_output_is_masked() {
     assert_ok(&out, "run --jq .t");
     assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
     assert_eq!(json(&out)["jq"]["output"], serde_json::json!([MASK]));
+}
+
+/// A secret the server wrote with a JSON escape is plain text once parsed:
+/// `body_json`, `--jq` output and the `-o` lines must not show it.
+#[test]
+fn run_masks_a_json_escaped_secret_in_parsed_output() {
+    let (home, _server, root) = served();
+
+    let out = send(&home, &root, "main/escaped", &[]);
+    assert_ok(&out, "run main/escaped");
+    assert_eq!(json(&out)["response"]["body_json"], serde_json::json!({"t": MASK}));
+
+    let out = send(&home, &root, "main/escaped", &["--jq", ".t"]);
+    assert_ok(&out, "run main/escaped --jq .t");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
+    assert_eq!(json(&out)["jq"]["output"], serde_json::json!([MASK]));
+
+    let file = home.path().join("t.txt");
+    let out = send(&home, &root, "main/escaped", &["--jq", ".t", "-o", s(&file)]);
+    assert_ok(&out, "run main/escaped --jq .t -o");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("\"{MASK}\"\n"));
+}
+
+/// A jq error that quotes the secret, and a filter that holds it, are
+/// masked; with --show-secrets the same error does name it.
+#[test]
+fn run_jq_error_and_filter_are_masked() {
+    let (home, _server, root) = served();
+
+    let out = send(&home, &root, "main/echo", &["--jq", ".t | tonumber"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
+    let error = json(&out)["jq"]["error"].as_str().unwrap().to_string();
+    assert!(error.contains(MASK), "{error}");
+
+    let out = send(&home, &root, "main/echo", &["--jq", ".t | tonumber", "--show-secrets"]);
+    assert!(json(&out)["jq"]["error"].as_str().unwrap().contains(SECRET));
+
+    let filter = format!("\"{SECRET}\" | tonumber");
+    let out = send(&home, &root, "main/ok", &["--jq", &filter]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
+    assert_eq!(json(&out)["jq"]["filter"], format!("\"{MASK}\" | tonumber"));
+    let out = send(&home, &root, "main/ok", &["--jq", &filter, "--text"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
 }
 
 #[test]

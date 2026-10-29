@@ -131,7 +131,7 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// A local HTTP server for the commands that send. It answers by path:
 /// `/ok` 200 JSON `{"id":42}`; `/missing` 404 `nope`; `/echo` 200 with the
 /// request's `authorization` in `x-echo` and its body back; `/bytes` 200
-/// `ok\xff\xfe`; `/hang` never answers; anything else 200, empty.
+/// `ok\xff\xfe`; `/escaped` 200 JSON `{"t":"s3cr3t-value"}`; `/hang` never answers; anything else 200, empty.
 pub struct Server {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
@@ -207,6 +207,12 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
             "200 OK",
             format!("x-echo: {}\r\n", header("authorization").unwrap_or_default()),
             body.to_vec(),
+        ),
+        // The fixture's secret `s3cr3t-value`, its `-` written as an escape.
+        "/escaped" => (
+            "200 OK",
+            "content-type: application/json\r\n".into(),
+            br#"{"t":"s3cr3t-value"}"#.to_vec(),
         ),
         "/bytes" => ("200 OK", String::new(), b"ok\xff\xfe".to_vec()),
         "/hang" => {

@@ -178,8 +178,9 @@ fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Runs `filter` over the masked body `text`: each result masked, as the
-/// JSON text jq printed it and parsed.
+/// Runs `filter` over the masked body `text`: each result parsed as the
+/// JSON jq printed, then masked (strings and keys, so an escaped secret
+/// doesn't get through), with the JSON line it prints as.
 fn run_jq(
     filter: &str,
     text: &str,
@@ -190,10 +191,10 @@ fn run_jq(
     results
         .into_iter()
         .map(|r| {
-            let r = mask.apply(&r);
-            let value =
+            let value: serde_json::Value =
                 serde_json::from_str(&r).map_err(|e| format!("a result isn't JSON: {e}"))?;
-            Ok((r, value))
+            let value = mask.apply_json(value);
+            Ok((value.to_string(), value))
         })
         .collect()
 }
@@ -217,7 +218,9 @@ fn record(
     jq: Option<&str>,
     output: Option<&Path>,
 ) -> Result<(), CliError> {
-    let text = mask.apply(&String::from_utf8_lossy(&raw.bytes));
+    // Parsed unmasked (a mask inside JSON text can break it, a number for
+    // one), then masked as values.
+    let plain = String::from_utf8_lossy(&raw.bytes).into_owned();
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -234,7 +237,7 @@ fn record(
     // What `-o` would write, and whether the body is shown.
     let mut file_bytes = None;
     match jq {
-        Some(filter) => match run_jq(filter, &text, mask) {
+        Some(filter) => match run_jq(filter, &plain, mask) {
             Ok(results) => {
                 let (lines, values): (Vec<String>, Vec<serde_json::Value>) =
                     results.into_iter().unzip();
@@ -242,14 +245,14 @@ fn record(
                     lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect::<String>().into_bytes()
                 });
                 report.jq = Some(JqReport {
-                    filter: filter.to_string(),
+                    filter: mask.apply(filter),
                     output: output.is_none().then_some(values),
                     error: None,
                 });
             }
             Err(message) => {
                 report.jq = Some(JqReport {
-                    filter: filter.to_string(),
+                    filter: mask.apply(filter),
                     output: None,
                     error: Some(mask.apply(&message)),
                 });
@@ -257,8 +260,10 @@ fn record(
         },
         None if output.is_some() => file_bytes = Some(raw.bytes),
         None => {
-            response.body_json = serde_json::from_str(&text).ok();
-            response.body = Some(text);
+            response.body_json = serde_json::from_str(&plain).ok().map(|v| mask.apply_json(v));
+            // A secret the server wrote with JSON escapes stays as sent
+            // here; masking every spelling of it is unbounded.
+            response.body = Some(mask.apply(&plain));
         }
     }
     if let (Some(file), Some(bytes)) = (output, file_bytes) {
