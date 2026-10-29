@@ -211,9 +211,10 @@ usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]
 
 Sends one request and prints what came back: its status, timings, headers
 and body. <request> is a slug as `postui requests` lists it. Nothing is
-written to the project. Secrets are masked in everything printed. Exits 1
-for a status of 400 or more, when the request can't be prepared or sent, or
-when --jq fails.
+written to the project. Each secret's exact value is masked in everything
+printed; a value the server or a --jq filter transforms is not. Exits 1 for
+a status of 400 or more, when the request can't be prepared or sent, or when
+--jq fails.
 
 ",
     project_flag!(),
@@ -240,8 +241,9 @@ usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
 Sends every request of the project (or of one space), one at a time in
 sidebar order, and prints each one's status and time, then the totals. A
 request that can't be read or prepared is reported and the suite goes on.
-Nothing is written to the project. Secrets are masked in everything printed.
-Exits 1 when any request failed to prepare or send or returned 400 or more.
+Nothing is written to the project. Each secret's exact value is masked in
+everything printed; a value the server transforms is not. Exits 1 when any
+request failed to prepare or send or returned 400 or more.
 
 ",
     project_flag!(),

@@ -92,6 +92,24 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
     }
 
+    // A secret too short to mask would show in run and suite output, in
+    // whichever environment they run: every environment's is checked, even
+    // when the environment asked for fails to load.
+    for (env_slug, secrets) in project.secrets() {
+        for (name, value) in secrets {
+            // An empty value can't leak, so it isn't warned of.
+            if !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
+                warnings.push(Finding::at(
+                    root.join(project::SECRETS_TOML),
+                    format!(
+                        "secret {name} of environment {env_slug} is shorter than \
+                         {MASK_MIN_CHARS} characters, so run and suite output can't mask it"
+                    ),
+                ));
+            }
+        }
+    }
+
     let mut parsed = Vec::new();
     for space in project.spaces().to_vec() {
         for slug in displayed(&project, &space) {
@@ -116,22 +134,6 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
         Err(e) => return Err(e),
     };
-    // A secret too short to mask would show in run and suite output, in
-    // whichever environment they run: every environment's is checked.
-    for (env_slug, secrets) in project.secrets() {
-        for (name, value) in secrets {
-            // An empty value can't leak, so it isn't warned of.
-            if !value.is_empty() && value.chars().count() < MASK_MIN_CHARS {
-                warnings.push(Finding::at(
-                    root.join(project::SECRETS_TOML),
-                    format!(
-                        "secret {name} of environment {env_slug} is shorter than \
-                         {MASK_MIN_CHARS} characters, so run and suite output can't mask it"
-                    ),
-                ));
-            }
-        }
-    }
     let ctx = project.prepare_context();
     for slug in parsed {
         let file = storage::request_path(&root, &slug);

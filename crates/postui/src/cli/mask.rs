@@ -90,8 +90,11 @@ impl Mask {
             Value::Object(map) => Value::Object(
                 map.into_iter().map(|(k, v)| (self.apply(&k), self.apply_json(v))).collect(),
             ),
-            // A number the mask would change (a numeric secret) is shown
-            // as the masked text.
+            // A number whose text holds a secret becomes a masked string:
+            // the raw `body` text masks the same digits, and leaving them
+            // would print the secret's digits. The type change is accepted;
+            // it only happens for a number holding a numeric secret of 4 or
+            // more characters.
             Value::Number(n) => {
                 let text = n.to_string();
                 let masked = self.apply(&text);

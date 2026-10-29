@@ -6,7 +6,9 @@
 use super::mask::Mask;
 use super::out::table;
 use super::read::{displayed, spaces_of, warnings_text};
-use super::run::{FAILED, FIRST_FAILING_STATUS, RunOpts, millis, prepare_one, session, shown_url};
+use super::run::{
+    FAILED, FIRST_FAILING_STATUS, RunOpts, millis, prepare_one, refused, session, shown_url,
+};
 use super::{CliError, Global};
 use crate::http::send_raw;
 use postui_core::model::Method;
@@ -89,9 +91,9 @@ pub async fn suite(
                 // The file read; only the variables failed: it keeps its
                 // method and URL as written.
                 Ok((read, Err(message))) => {
-                    result.method = Some(read.method);
-                    result.url = Some(s.mask.apply(&read.url));
-                    result.error = Some(s.mask.apply(&message));
+                    let (method, url, error) = refused(&s.mask, &read, &message);
+                    (result.method, result.url, result.error) =
+                        (Some(method), Some(url), Some(error));
                 }
                 Ok((_, Ok((request, prepare_warnings)))) => {
                     request_warnings.extend(

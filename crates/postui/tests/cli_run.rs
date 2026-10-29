@@ -420,6 +420,25 @@ fn run_output_file_failure_keeps_the_response() {
     assert!(v["response"]["body"].is_null());
 }
 
+/// `-o` writes in place, like `curl -o`: `/dev/null` works, and a symlink is
+/// written through, not replaced.
+#[cfg(unix)]
+#[test]
+fn run_output_file_writes_in_place() {
+    let (home, _server, root) = served();
+    let out = send(&home, &root, "main/ok", &["-o", "/dev/null"]);
+    assert_ok(&out, "run -o /dev/null");
+
+    let target = home.path().join("target.txt");
+    std::fs::write(&target, "old old old old").unwrap();
+    let link = home.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let out = send(&home, &root, "main/ok", &["-o", s(&link)]);
+    assert_ok(&out, "run -o symlink");
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), r#"{"id":42}"#);
+}
+
 #[test]
 fn run_jq_prints_the_filters_output() {
     let (home, _server, root) = served();

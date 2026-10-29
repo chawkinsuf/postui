@@ -586,6 +586,25 @@ fn check_warns_about_a_secret_too_short_to_mask() {
     assert!(!printed.contains("\"abc\"") && !printed.contains("\"xy\""), "{printed}");
 }
 
+/// The short-secret warning does not depend on the asked-for environment
+/// loading: a broken `qa` is the error, `dev`'s short secret still warns.
+#[test]
+fn check_warns_about_a_short_secret_beside_a_broken_env() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::write(root.join(".postui/secrets.toml"), "[dev]\ntoken = \"abc\"\n").unwrap();
+    std::fs::write(root.join("environments/qa.toml"), "[[").unwrap();
+
+    let out = home.run(&["check", "-p", s(&root), "--env", "qa"]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    let warnings = findings(&v, "warnings");
+    assert!(
+        warnings.iter().any(|(_, m)| m.contains("secret token of environment dev is shorter")),
+        "{warnings:?}"
+    );
+}
+
 /// A name only a disabled request variable gives is not a typo: the error
 /// says the variable is switched off.
 #[test]

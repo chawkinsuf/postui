@@ -35,6 +35,16 @@ pub fn write_user_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Writes `bytes` to `path` in place, as `curl -o` does: created if missing,
+/// truncated if there, a symlink followed, the parent directory not made.
+/// Not atomic on purpose: a temp file and rename (as [`write_user_file`]
+/// does) would replace a symlink with a file, reset the file's mode, and
+/// fail for `/dev/null`, `/dev/stdout` and pipes, which the command line's
+/// `-o` has to accept.
+pub fn write_output_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
 /// The entries of `dir`, unsorted, with the platform hidden-attribute bits.
 pub fn list_dir(dir: &Path) -> std::io::Result<Vec<HostEntry>> {
     let mut entries = Vec::new();
@@ -110,6 +120,16 @@ mod tests {
         append_log(&p, "one\n").unwrap();
         append_log(&p, "two\n").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn write_output_file_writes_in_place_and_makes_no_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("out.txt");
+        write_output_file(&p, b"long text").unwrap();
+        write_output_file(&p, b"short").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "short");
+        assert!(write_output_file(&dir.path().join("no/such/out.txt"), b"x").is_err());
     }
 
     #[test]

@@ -17,6 +17,7 @@ use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
 use serde::Serialize;
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -139,6 +140,12 @@ pub(super) fn prepare_one(
     Ok((req, outcome))
 }
 
+/// A request `prepare` refused, as printed: the method and URL as read, the
+/// URL and the refusal masked.
+pub(super) fn refused(mask: &Mask, read: &HttpRequest, message: &str) -> (Method, String, String) {
+    (read.method, mask.apply(&read.url), mask.apply(message))
+}
+
 /// The URL as printed: what the screens show, or what the wire carries with
 /// `--show-secrets`.
 pub(super) fn shown_url(request: &PreparedRequest, show_secrets: bool) -> String {
@@ -183,7 +190,8 @@ struct ResponseReport {
     size: usize,
     headers: Vec<ShownHeader>,
     body: Option<String>,
-    /// The masked body parsed as JSON; `null` when it doesn't parse.
+    /// The body parsed as JSON (from the unmasked text), then masked as a
+    /// tree; `null` when it doesn't parse.
     body_json: Option<serde_json::Value>,
 }
 
@@ -200,9 +208,10 @@ pub(super) fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Runs `filter` over the masked body `text`: each result parsed as the
-/// JSON jq printed, then masked (strings and keys, so an escaped secret
-/// doesn't get through), with the JSON line it prints as.
+/// Runs `filter` over the body `text`, unmasked (masking first would break
+/// the JSON where a mask lands in a number or an escape): each result is
+/// parsed as the JSON jq printed, then masked as a tree, with the JSON line
+/// it prints as.
 fn run_jq(
     filter: &str,
     text: &str,
@@ -227,7 +236,7 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<PathBuf, CliErro
     let absolute = std::path::absolute(file).map_err(|e| {
         CliError::at(format!("could not write {}: {e}", file.display()), file.into())
     })?;
-    hostfs::write_user_file(&absolute, bytes).map_err(|e| {
+    hostfs::write_output_file(&absolute, bytes).map_err(|e| {
         CliError::at(format!("could not write {}: {e}", absolute.display()), absolute.clone())
     })?;
     Ok(absolute)
@@ -243,9 +252,10 @@ fn record(
     jq: Option<&str>,
     output: Option<&Path>,
 ) {
-    // The body as text, decoded once; parsed unmasked (a mask inside JSON
-    // text can break it, a number for one), then masked.
-    let text = String::from_utf8_lossy(&raw.bytes);
+    // The body as text, decoded once and only when something reads it (a
+    // byte-exact `-o` that succeeds never does).
+    let decoded = OnceCell::new();
+    let text = || decoded.get_or_init(|| String::from_utf8_lossy(&raw.bytes)).as_ref();
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -265,15 +275,16 @@ fn record(
     let mut taken_results = None;
     let mut show_body = false;
     match jq {
-        Some(filter) => match run_jq(filter, &text, mask) {
+        Some(filter) => match run_jq(filter, text(), mask) {
             Ok(results) => {
                 let (lines, values): (Vec<String>, Vec<serde_json::Value>) =
                     results.into_iter().unzip();
                 // The results go to the file or into the report, not both.
                 let (shown, taken) = match output {
                     Some(_) => {
-                        let text: String = lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
-                        file_bytes = Some(Cow::Owned(text.into_bytes()));
+                        let joined: String =
+                            lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
+                        file_bytes = Some(Cow::Owned(joined.into_bytes()));
                         (None, Some(values))
                     }
                     None => (Some(values), None),
@@ -314,9 +325,13 @@ fn record(
         }
     }
     if show_body {
-        response.body = Some(mask.apply(&text));
+        let text = text();
+        response.body = Some(mask.apply(text));
+        // Parsed from the unmasked text, then masked as a tree: masking the
+        // text first would break the JSON where a mask lands in a number or
+        // an escape.
         response.body_json =
-            serde_json::from_str::<serde_json::Value>(&text).ok().map(|v| mask.apply_json(v));
+            serde_json::from_str::<serde_json::Value>(text).ok().map(|v| mask.apply_json(v));
     }
     report.response = Some(response);
 }
@@ -352,10 +367,8 @@ pub async fn run(
     let (request, warnings) = match prepared {
         Ok(prepared) => prepared,
         Err(message) => {
-            // Refused: the method and URL as written.
-            report.method = Some(read.method);
-            report.url = Some(s.mask.apply(&read.url));
-            report.error = Some(s.mask.apply(&message));
+            let (method, url, error) = refused(&s.mask, &read, &message);
+            (report.method, report.url, report.error) = (Some(method), Some(url), Some(error));
             return Ok(report);
         }
     };
