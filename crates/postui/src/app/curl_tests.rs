@@ -232,6 +232,50 @@ fn a_batch_prompts_only_for_the_commands_that_need_it() {
     assert!(slug_named(&app, "B").is_some());
 }
 
+/// `n` named commands, `N1` … `Nn`.
+fn named_batch(n: usize) -> String {
+    (1..=n).map(|i| format!("# @name N{i}\ncurl https://x/{i}\n")).collect()
+}
+
+#[test]
+fn a_paste_at_the_limit_is_created_without_nesting() {
+    // Silent creates run one after another in a loop: nested, 20 of them
+    // overflowed a test thread's stack.
+    let n = super::curl_flow::CURL_IMPORT_LIMIT;
+    let mut app = app_with_clip(&named_batch(n));
+    import(&mut app);
+    assert!(app.modals.is_empty());
+    assert!(slug_named(&app, &format!("N{n}")).is_some());
+    assert_eq!(app.toasts.last_message(), Some(format!("imported {n} of {n}").as_str()));
+}
+
+#[test]
+fn a_paste_past_the_limit_imports_nothing() {
+    let n = super::curl_flow::CURL_IMPORT_LIMIT + 1;
+    let mut app = app_with_clip(&named_batch(n));
+    let before = app.proj().requests().len();
+    import(&mut app);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.proj().requests().len(), before);
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(
+        msg,
+        format!("the paste holds {n} curl commands; import at most {} at a time", n - 1)
+    );
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+}
+
+#[test]
+fn enter_on_a_prompt_goes_on_through_the_silent_creates_after_it() {
+    let mut app = app_with_clip(&format!("curl https://x/first\n{}", named_batch(30)));
+    import(&mut app);
+    assert_eq!(prompt(&app).0, "Import curl (1 of 31)");
+    app.update(Action::ConfirmTopModal);
+    assert!(app.modals.is_empty());
+    assert!(slug_named(&app, "N30").is_some());
+    assert_eq!(app.toasts.last_message(), Some("imported 31 of 31"));
+}
+
 #[test]
 fn a_name_an_earlier_command_of_the_batch_took_prompts() {
     let mut app = app_with_clip("# @name A\ncurl https://x/a\n# @name A\ncurl https://x/b");

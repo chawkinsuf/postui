@@ -30,6 +30,7 @@ trigger the modal."
 | S8 | A silent create the project refuses for any other reason (an unreadable environment file, a write that fails) toasts why, as today, and brings up that command's prompt, prefilled with the name, so the user can deal with it. A `# @name` that does not read as a request name (`sub/`) is not tried: it prompts, as a taken one does (review round 4). | mine |
 | S9 | The prompt, when it shows, is unchanged: method and URL, then `ignores …` with the whole ignored list, harmless flags included. | mine |
 | S10 | The summary toast is unchanged: harmless flags are still listed under `ignored:`, and still make it a warning (D3 names every dropped flag in a warning toast). | mine |
+| S12 | A paste of more than 50 curl commands imports nothing: an error toast says "the paste holds N curl commands; import at most 50 at a time", before the dirty gate. Every import path (palette, sidebar paste, button, folder menu). | the limit is you ("No one should really be importing hundreds like that"); refusing the paste, at 50, is mine (approved) |
 | S11 | Only the standard path skips the prompt: a paste holding any skipped line (anything but curl commands, comments and plain `NAME=value` assignments: `echo`, `alias`, `source`) prompts every command, since what such a line did is unknown, as for R7's values. A plain assignment line is read as a value only, even one curl would read itself (`export https_proxy=…`): that rare loss is accepted, and undo takes the request back. | the direction is you (after review round 3: "this was supposed to just be a simple update. i just want to keep it simple and make the standard path that doesnt need user input, not require user input"); the rule is mine |
 
 Rounds 1–2 had grown a list of curl's environment variables and a
@@ -63,17 +64,23 @@ next command) asks for a name, so the choice goes there:
 - If the current command is `named`, not `ignores_sent`, the paste has
   no skipped line, its name is free (`request_name_free`), and
   `curl_variables` sorts its variables with no empty secret, no `kept`
-  that differs and no reserved name, it dispatches Enter's own
-  `Action::ImportCurlCreate`, which creates it and moves on.
+  that differs and no reserved name, `create_current` (the create
+  Enter's `import_curl_create` also runs) creates it, and a loop in
+  `push_curl_prompt` goes on to the next command, so a long paste of
+  silent creates never nests (review round 6; round 5 had them dispatch
+  the action, one `update` deep per command, which overflowed a test
+  thread's stack at 20).
 - Otherwise, or when that create is refused (S8), it pushes the prompt
   as today.
-- The create's answer is read the codebase's way, `last_action_failed`
-  after the action (the #80 rule: writes go through their action), taken
-  first and put back as `commit_settings_edit` does: the silent create
-  can run inside `apply_modal_result`'s action loop (Enter on command k,
-  then k+1's create), and the flag left set would push k's prompt back
-  over k+1's. The action consumes its run, so the silent path hands it
-  a clone, kept for the prompt in case of a refusal (review round 5).
+- The silent create can run inside `apply_modal_result`'s action loop
+  (Enter on command k, then k+1's create), and a refusal's
+  `last_action_failed` would push k's prompt back over k+1's, so the
+  flag is taken first and put back, as `commit_settings_edit` does.
+
+Known limit (user, after review round 6: "Leave it"): a paste that
+assigns a variable a value it can't read (`export BASE=$(…)`) over a
+variable the project has reads as "no news" (curl R7's kept-the-same),
+so it does not stop the silent create.
 - Nothing is removed. The prompt, its actions and the summary stay as
   they are.
 
