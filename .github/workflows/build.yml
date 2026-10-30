@@ -29,8 +29,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # macos-14 runners are Apple Silicon (arm64) — native aarch64 build.
-          - os: macos-14
+          # macos-15 runners are Apple Silicon (arm64) — native aarch64 build.
+          - os: macos-15
             artifact: postui-macos-arm64
           - os: ubuntu-22.04
             artifact: postui-linux-x86_64
