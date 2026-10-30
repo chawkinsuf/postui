@@ -2008,8 +2008,9 @@ mod tests {
             "spaces = [\"main\", \"Bad Space\", \"Bad Space\"]\nenvironments = [\"Bad Env\"]\n",
         )
         .unwrap();
+        // Not `Main`: on a case-insensitive disk (macOS) that is `main`.
         for d in
-            ["requests/main", "requests/Main", "requests/Z z", "requests/.drafts", "environments"]
+            ["requests/main", "requests/Other", "requests/Z z", "requests/.drafts", "environments"]
         {
             std::fs::create_dir_all(dir.path().join(d)).unwrap();
         }
@@ -2024,7 +2025,7 @@ mod tests {
         ] {
             std::fs::write(dir.path().join(f), "").unwrap();
         }
-        std::fs::write(dir.path().join("requests/Main/x.toml"), "").unwrap();
+        std::fs::write(dir.path().join("requests/Other/x.toml"), "").unwrap();
         std::fs::write(dir.path().join("requests/loose.toml"), "").unwrap();
         let (mut p, warnings) = Project::open_read_only(dir.path().to_path_buf()).unwrap();
         let skipped = p.skipped();
@@ -2034,7 +2035,7 @@ mod tests {
                 Skipped::ListedSpace("Bad Space".into()),
                 Skipped::ListedEnvironment("Bad Env".into()),
                 Skipped::EnvironmentFile("Staging.toml".into()),
-                Skipped::SpaceDir("Main".into()),
+                Skipped::SpaceDir("Other".into()),
                 Skipped::SpaceDir("Z z".into()),
             ]
         );
@@ -2045,7 +2046,7 @@ mod tests {
                 "project.toml",
                 "project.toml",
                 "environments/Staging.toml",
-                "requests/Main",
+                "requests/Other",
                 "requests/Z z"
             ]
         );
@@ -2062,14 +2063,14 @@ mod tests {
             files,
             [
                 Some("requests/.drafts/x.toml"),
-                Some("requests/Main/x.toml"),
+                Some("requests/Other/x.toml"),
                 Some("requests/loose.toml")
             ]
         );
         let dirs: Vec<Option<&str>> = p.listing_warnings().iter().map(|w| w.space_dir()).collect();
-        assert_eq!(dirs, [Some(".drafts"), Some("Main"), None]);
+        assert_eq!(dirs, [Some(".drafts"), Some("Other"), None]);
         let joined = p.listing_warning().unwrap();
-        assert!(joined.contains("requests/Main/x.toml is not in a valid space"), "{joined}");
+        assert!(joined.contains("requests/Other/x.toml is not in a valid space"), "{joined}");
         assert!(joined.contains("; requests/loose.toml is not in a space"), "{joined}");
     }
 

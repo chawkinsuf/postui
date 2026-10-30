@@ -956,9 +956,10 @@ fn check_invalid_file_and_dir_names_are_errors() {
     assert!(errors[0].1.contains("not a valid environment name"), "{errors:?}");
     std::fs::remove_file(root.join("environments/Staging.toml")).unwrap();
 
-    std::fs::create_dir_all(root.join("requests/Main")).unwrap();
+    // Not `Main`: on a case-insensitive disk (macOS) that is `main`.
+    std::fs::create_dir_all(root.join("requests/Other")).unwrap();
     std::fs::write(
-        root.join("requests/Main/x.toml"),
+        root.join("requests/Other/x.toml"),
         "name = \"X\"\nmethod = \"GET\"\nurl = \"{{nope}}\"\n",
     )
     .unwrap();
@@ -967,16 +968,16 @@ fn check_invalid_file_and_dir_names_are_errors() {
     let v = json(&out);
     let errors = findings(&v, "errors");
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(errors[0].0, s(&root.join("requests/Main")));
+    assert_eq!(errors[0].0, s(&root.join("requests/Other")));
     assert!(errors[0].1.contains("not a valid space name"), "{errors:?}");
     assert_eq!(
         findings(&v, "warnings"),
         [],
-        "the walk's warning about Main/x.toml is not repeated"
+        "the walk's warning about Other/x.toml is not repeated"
     );
 
     // A request outside any space is still a warning, now on its file.
-    std::fs::remove_dir_all(root.join("requests/Main")).unwrap();
+    std::fs::remove_dir_all(root.join("requests/Other")).unwrap();
     std::fs::write(root.join("requests/loose.toml"), "name = \"L\"\n").unwrap();
     let out = home.run_json(&["check", "-p", s(&root)]);
     assert_ok(&out, "check");
