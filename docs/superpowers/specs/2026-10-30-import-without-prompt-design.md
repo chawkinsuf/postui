@@ -22,7 +22,7 @@ trigger the modal."
 |---|---|---|
 | S1 | A curl command with a `# @name` line and no issue (S2) is created at once, with no prompt: the same create, undo step, "Saved X" toast and opening as an Enter on its prompt. | you (#147; chat: "if the request has a name in it already, theres no need to use the popup to ask. the user can always just rename it after") |
 | S2 | An issue is any one of: something the import ignored that changes what the request sends (S3); the name taken (S4); a variable the request uses that this import declares as a secret with no value, that the project already has with a value other than the paste's, or under a reserved name (R7, the summary's warning parts). A variable the project already has, when the paste gives it no value, is no issue: the paste says nothing against what is there (the summary's plain "kept the existing X"). | you for the line ("yes, that's the line I had in mind"); the exact list is mine (approved) |
-| S3 | Ignored but harmless, so no issue: output and display flags (`-s`/`--silent`, `-S`/`--show-error`, `-v`/`--verbose`, `-i`/`--include`, `-o`/`--output`, `-O`/`--remote-name`, `-J`/`--remote-header-name`, `--output-dir`, `--create-dirs`, `-w`/`--write-out`, `-D`/`--dump-header`, `-f`/`--fail`, `--fail-with-body`, `-#`/`--progress-bar`, `--no-progress-meter`, `-N`/`--no-buffer`, `--trace`, `--trace-ascii`, `--trace-time`, `--stderr`, and since review round 4 `-c`/`--cookie-jar`, `-R`/`--remote-time`, `--remote-name-all`), `-L`/`--location` (postui follows redirects), `--compressed`, and a pipeline tail (`\| jq .`). Everything else the import ignores is an issue: any other flag, a redirect (`> out.json`: bash still hands curl the words after its target), assignments leading the command (`TOKEN=… curl`: curl's environment, which may be a proxy), an earlier URL a later one replaced, a dropped body, `-X` with an unknown method, a body the method doesn't send, `-u` dropped, `$(…) kept as text`. *Amended after review round 3:* see S11. | the line is you; the list is mine |
+| S3 | Ignored but harmless, so no issue: output and display flags (`-s`/`--silent`, `-S`/`--show-error`, `-v`/`--verbose`, `-i`/`--include`, `-o`/`--output`, `-O`/`--remote-name`, `-J`/`--remote-header-name`, `--output-dir`, `--create-dirs`, `-w`/`--write-out`, `-D`/`--dump-header`, `-f`/`--fail`, `--fail-with-body`, `-#`/`--progress-bar`, `--no-progress-meter`, `-N`/`--no-buffer`, `--trace`, `--trace-ascii`, `--trace-time`, `--stderr`, and since review round 4 `-R`/`--remote-time`, `--remote-name-all`; `-c`/`--cookie-jar` was taken back out in round 5: it turns on curl's cookie engine, which sends a redirect's cookies on), `-L`/`--location` (postui follows redirects), `--compressed`, and a pipeline tail (`\| jq .`). Everything else the import ignores is an issue: any other flag, a redirect (`> out.json`: bash still hands curl the words after its target), assignments leading the command (`TOKEN=… curl`: curl's environment, which may be a proxy), an earlier URL a later one replaced, a dropped body, `-X` with an unknown method, a body the method doesn't send, `-u` dropped, `$(…) kept as text`. *Amended after review round 3:* see S11. | the line is you; the list is mine |
 | S4 | A `# @name` already taken in its folder (by a request there, or one this paste created) brings the prompt up, prefilled with the R8 number (`List users 2`), as today. | you ("that can prompt. that is an issue the user needs to deal with") |
 | S5 | In a batch, each command decides for itself. Clean named ones are created silently and only the others prompt, keeping their `(n of N)` title. One summary toast after the last command covers the whole paste, as today (§4.3). | mine (approved, chat: "yes") |
 | S6 | A command with no `# @name` always prompts, as today. | you |
@@ -63,15 +63,17 @@ next command) asks for a name, so the choice goes there:
 - If the current command is `named`, not `ignores_sent`, the paste has
   no skipped line, its name is free (`request_name_free`), and
   `curl_variables` sorts its variables with no empty secret, no `kept`
-  that differs and no reserved name, `create_current` creates it and
-  `advance_curl_import` moves on, as an Enter does.
+  that differs and no reserved name, it dispatches Enter's own
+  `Action::ImportCurlCreate`, which creates it and moves on.
 - Otherwise, or when that create is refused (S8), it pushes the prompt
   as today.
-- `create_current` is the create both paths share. It answers by its
-  return value and leaves `last_action_failed` as it found it: the
-  silent create can run inside `apply_modal_result`'s action loop
-  (Enter on command k, then k+1's create), and the flag set would push
-  k's prompt back over k+1's. Only Enter's `import_curl_create` sets it.
+- The create's answer is read the codebase's way, `last_action_failed`
+  after the action (the #80 rule: writes go through their action), taken
+  first and put back as `commit_settings_edit` does: the silent create
+  can run inside `apply_modal_result`'s action loop (Enter on command k,
+  then k+1's create), and the flag left set would push k's prompt back
+  over k+1's. The action consumes its run, so the silent path hands it
+  a clone, kept for the prompt in case of a refusal (review round 5).
 - Nothing is removed. The prompt, its actions and the summary stay as
   they are.
 
