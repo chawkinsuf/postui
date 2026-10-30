@@ -173,8 +173,15 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 continue;
             }
         };
-        let values = req.variables.iter().map(|(name, e)| (name.clone(), e.value.as_str()));
-        warnings.extend(values_holding_tokens(&file, values));
+        // A disabled row is never used, as `prepare` skips it. A row the URL
+        // uses gets the request's error below too: the two checks are apart
+        // by design (the value's warning wherever it is written, the URL's
+        // refusal at send time), so each says its own thing.
+        let values = req.variables.iter().filter(|(_, e)| e.enabled);
+        warnings.extend(values_holding_tokens(
+            &file,
+            values.map(|(name, e)| (name.clone(), e.value.as_str())),
+        ));
         let causes = match prepare::prepare(&req, &ctx) {
             Ok(_) => continue,
             // The URL would go out with a value's braces in it (D1).

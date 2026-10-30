@@ -108,8 +108,7 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     let mask = if opts.show_secrets {
         Mask::none()
     } else {
-        let secrets = mask::secret_values(&project).into_iter().map(|(_, value)| value);
-        Mask::new(secrets.chain(given_secrets.iter().map(|(_, value)| value.clone())))
+        mask::of_env(&project, given_secrets.iter().map(|(_, value)| value.clone()))
     };
     let mut context = project.prepare_context();
     // A secret `--var` supplies (one with no stored value, on a fresh clone)
@@ -139,7 +138,11 @@ impl Session {
         if undeclared.is_empty() {
             return Ok(());
         }
-        // Read only when a name needs them: a broken file is the run's to
+        // Read only when a name needs them, which is the rare case (a name
+        // only a request's `[variables]` holds, or a misspelling); then each
+        // request file is read again here, a small TOML parse, rather than
+        // threading the names out of the send loop, which `suite` must run
+        // only after this check passes. A broken file is the run's to
         // report, so it has no names here.
         let mut local = std::collections::BTreeSet::new();
         for slug in slugs {
@@ -455,13 +458,15 @@ fn filter_text(
     slug: &str,
     file: &Path,
 ) -> Result<String, CliError> {
-    let views: Vec<&str> = read.jq_views.iter().map(|v| v.name.as_str()).collect();
-    let choices = if views.is_empty() {
-        "it has no saved views".to_string()
-    } else {
-        format!("its views are {}", views.join(", "))
+    let missing = |what: String| {
+        let views: Vec<&str> = read.jq_views.iter().map(|v| v.name.as_str()).collect();
+        let choices = if views.is_empty() {
+            "it has no saved views".to_string()
+        } else {
+            format!("its views are {}", views.join(", "))
+        };
+        CliError::at(format!("{what}; {choices}"), file.to_path_buf())
     };
-    let missing = |what: String| CliError::at(format!("{what}; {choices}"), file.to_path_buf());
     match filter {
         Filter::Jq(text) => Ok(text.clone()),
         // What the response pane applies. Whether the pane's switch is off

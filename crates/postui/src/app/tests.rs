@@ -9052,7 +9052,7 @@ async fn a_url_value_holding_a_token_blocks_send_with_toast() {
         app.toasts.last_message(),
         Some(
             "the URL uses wrap, whose value holds {{host}}: postui doesn't fill in variables \
-             inside a value"
+             inside a value (no env)"
         )
     );
 }

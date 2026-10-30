@@ -143,8 +143,8 @@ needs to happen at send time."
 
 | Rule | Test |
 |---|---|
-| D1 | `prepare` refuses a URL token, a param key and a param value whose value holds a token, naming the var and token, before an unresolved name; a secret's token is masked; the TUI's Send toasts the text and sends nothing; `check` reports an error naming the request file, a missing secret beside it too. |
-| D2 | `check` warns on the file for a default, a shared option, an environment value and option, and a request's `[variables]` holding a token; a header using one sends without a warning. |
+| D1 | `prepare` refuses a URL token, a param key and a param value whose value holds a token, naming the var and token, before an unresolved name; a secret's token is masked; the TUI's Send toasts the text (with the environment) and sends nothing; `check` reports an error naming the request file even when the request also lacks a secret (whose warning then waits for the URL's fix). |
+| D2 | `check` warns on the file for a default, a shared option, an environment value and option, and a request's enabled `[variables]` row holding a token (a disabled row is never used); a header using one sends without a warning. |
 | D3 | `--view` uses `jq_current`'s filter, else the scratch; `--view=NAME` a named view (name matched as views are); no filter, an unknown name, `--view` with `--jq` or `--dry-run` are errors. |
 | D4 | `--var` beats the env, a selection and the request's own `[variables]`; `suite --var` reaches every request; a name given twice, an invalid one and an undeclared one are errors; a secret given with `--var` is masked. |
 | D5 | Default prints only the body (and only the results with `--jq`); `-i` prints status, headers, blank line, body; `-v` prints today's report; `--dry-run` prints today's report. |

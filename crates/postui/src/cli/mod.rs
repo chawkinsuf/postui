@@ -711,6 +711,9 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             if inline == Some("") {
                 return Err("--view= needs a view's name".into());
             }
+            if inline.is_some() && arg.to_str().is_none() {
+                return Err("--view's value is not UTF-8".into());
+            }
             o.view = Some(inline.map(str::to_string));
             continue;
         }

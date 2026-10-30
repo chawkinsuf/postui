@@ -5213,9 +5213,12 @@ impl App {
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
-                    // Any other refusal says what is wrong on its own.
+                    // Any other refusal says what is wrong on its own, and in
+                    // which environment, as the unresolved one does: the
+                    // value at fault may be that environment's.
                     Err(e) => {
-                        self.toasts.push(e.to_string(), ToastKind::Error);
+                        let msg = format!("{e} ({})", self.env_label_display());
+                        self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
                 };

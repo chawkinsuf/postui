@@ -851,11 +851,13 @@ fn check_reports_a_value_holding_a_token() {
     )
     .unwrap();
     std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
+    // A disabled row is never used, so it isn't warned of.
     let list = root.join("requests/main/list.toml");
     std::fs::write(
         &list,
         "name = \"List\"\nmethod = \"POST\"\nurl = \"{{base}}/list\"\n\n\
-         [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n",
+         [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n\
+         off = { value = \"{{region}}\", enabled = false }\n",
     )
     .unwrap();
     let variables = root.join("variables.toml");

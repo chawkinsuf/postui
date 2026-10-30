@@ -75,7 +75,8 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   for this run only and never saves it. Pick an option name from `postui vars`.
 - `--var NAME=VALUE` gives a variable a value for this run only, over every
   other source, the request's own `[variables]` included. The name must be
-  declared in `variables.toml` or be in the request's `[variables]`.
+  one the request could use: declared in `variables.toml`, set by the
+  environment, or in the request's `[variables]`.
 - `suite` sends every request (or one space's) one at a time in sidebar
   order and prints each one's status, time and size, then totals. A request
   that can't be prepared is reported and skipped.
