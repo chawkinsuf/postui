@@ -135,6 +135,8 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         cmd.marks.drain(..lead);
         let mut import = parse_command(cmd)
             .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
+        import.ignores_sent |=
+            leading.iter().any(|l| l.split_once(['+', '=']).is_some_and(|(n, _)| curl_env(n)));
         import.named = name.take();
         import.ignored.splice(0..0, leading);
         import.variables =
@@ -178,6 +180,25 @@ fn assign(cmd: &ShellCommand, env: &mut IndexMap<String, Option<String>>) -> boo
     true
 }
 
+/// An environment variable curl reads that changes where or how the
+/// request goes: a proxy (`http_proxy`, `HTTPS_PROXY`, `NO_PROXY`, … in
+/// either case), the CA bundle, or where its `.curlrc` (which can add any
+/// flag) is read from. Set by an assignment leading the command, the
+/// request loses it (import-without-prompt spec S3; review round 1, mine
+/// (approved)). Any other leading assignment loses nothing curl sent.
+fn curl_env(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with("_proxy")
+        || matches!(
+            name,
+            "CURL_CA_BUNDLE"
+                | "SSL_CERT_FILE"
+                | "SSL_CERT_DIR"
+                | "CURL_HOME"
+                | "XDG_CONFIG_HOME"
+                | "HOME"
+        )
+}
+
 fn is_curl(word: &str) -> bool {
     let base = word.rsplit('/').next().unwrap_or(word);
     base == "curl" || base == "curl.exe"
@@ -215,9 +236,11 @@ const VALUE_FLAGS: &[&str] = &[
 ];
 
 /// curl's flags that change only what curl does with the response, or
-/// that postui does anyway (`location`: it follows redirects;
-/// `compressed`: the body arrives whole either way). Ignored, they lose
-/// nothing the request sent (import-without-prompt spec S3).
+/// whose difference leaves the request the same one (`location`: postui
+/// follows redirects anyway; `compressed`: curl adds an `Accept-Encoding`
+/// that postui does not send, so the server sends the same body
+/// unencoded). Ignored, they lose nothing the request asked for
+/// (import-without-prompt spec S3, mine (approved)).
 #[rustfmt::skip]
 const QUIET_FLAGS: &[&str] = &[
     "compressed", "create-dirs", "dump-header", "fail", "fail-with-body", "include",
@@ -453,7 +476,16 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
-    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _, name: _ } = cmd;
+    let ShellCommand {
+        words,
+        tail,
+        tail_args,
+        converted,
+        substitutions,
+        marks: _,
+        alone: _,
+        name: _,
+    } = cmd;
     let mut flags = Flags::default();
     let mut words = words.into_iter().skip(1);
     let mut options_done = false;
@@ -500,7 +532,10 @@ fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
             }
         }
     }
-    build(flags, tail, converted, substitutions)
+    let mut import = build(flags, tail, converted, substitutions)?;
+    // Words after a redirect's target are still curl's (`> out.json -H …`).
+    import.ignores_sent |= tail_args;
+    Ok(import)
 }
 
 fn build(
@@ -648,7 +683,8 @@ fn build(
         substitutions.into_iter().filter(|s| in_request(s)).map(|s| format!("{s} kept as text")),
     );
     let ignores_sent = ignores_sent || ignored.len() > from_flags;
-    // Where curl's output went: nothing it sent.
+    // Where curl's output went: nothing it sent, unless curl's own words
+    // sit in it (`parse_command`'s `tail_args`).
     ignored.extend(tail);
 
     Ok(CurlImport {
@@ -849,7 +885,11 @@ mod tests {
             "curl --no-buffer --trace t --trace-ascii t --trace-time --stderr e https://x/a",
             "curl https://x/a | jq .",
             "curl https://x/a > out.json",
+            "curl https://x/a > out.json 2>&1",
+            "curl https://x/a 2>&1 | jq -r .x > out.txt",
+            "curl https://x/a >& out.txt",
             "TOKEN=abc curl https://x/a",
+            "T+=x curl https://x/a",
         ] {
             let c = one(cmd);
             assert!(!c.ignored.is_empty(), "{cmd}: something is listed");
@@ -875,6 +915,14 @@ mod tests {
             r#"curl "https://x/a?d=$(date)""#,
             "curl -X GET -d x https://x/a",
             "curl -H 'X-Gone:' https://x/a",
+            // bash still hands curl the words after a redirect's target.
+            "curl https://x/a > out.json -H 'A: b'",
+            "curl https://x/a 2>&1 -X DELETE",
+            // curl's own environment (review round 1).
+            "HTTPS_PROXY=http://p:3128 curl https://x/a",
+            "no_proxy=x curl https://x/a",
+            "CURL_HOME=/c curl https://x/a",
+            "CURL_CA_BUNDLE=/ca.pem curl https://x/a",
         ] {
             assert!(one(cmd).ignores_sent, "{cmd}");
         }
