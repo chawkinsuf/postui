@@ -193,6 +193,17 @@ of the body may last SECS, so a long download that keeps coming is not cut
 off. `-o` writes the file in place (not atomically), so `/dev/null` and
 pipes work.
 
+*Amended 2026-10-30 (#223, mine (approved)):* `-o FILE` always writes the
+raw response bytes, with `--jq`/`--view` too, and the jq results still print
+(stdout, or `jq.output`): a file of results is what `> FILE` already gives.
+A failing filter no longer shows the body (`response.body` and `body_json`
+are `null`): the vLLM dogfood printed 24 KB of streamed body into an agent's
+context that way. Its stderr line ends `; -o FILE saves the body` when no
+`-o` kept it, and the skill tells the agent to add `-o` when trying a filter
+on a body it can't fetch again. A `-o` write that fails still shows the body.
+This replaces "With `--jq`, FILE gets the jq output instead" above and the
+#215 amendment's first sentence.
+
 `postui suite [-p] [--space S] [--env E] [--select SEL=OPT]... [--timeout SECS] [-o FILE]`
 
 - Runs every request in the project, or in space S, **one at a time in

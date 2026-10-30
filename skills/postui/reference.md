@@ -51,7 +51,9 @@ name = "Staging"
 - `[space.<name>]`: `name` (display name), and `order`, the sidebar order of
   the space's requests as slugs relative to the space (`["login",
   "orders/list-orders"]`). postui writes `order` when the user reorders;
-  leave it alone unless asked. A request it doesn't name still shows.
+  leave it alone unless asked. Within each level (the space's root or one
+  folder) the requests it names come first, in its order, then the rest
+  by display name; a level's folders follow its requests, by name.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
 
@@ -194,7 +196,11 @@ jq = ".status"
 - `[variables]`: values for this request alone. They win over every other
   source, and a name used only here needs no declaration.
 - `[body]`: `type = "json"` (the one type) and `text`, the body as written.
-  `GET` and `HEAD` keep a body but don't send it.
+  `GET` and `HEAD` keep a body but don't send it. `text` is a TOML string,
+  so in a `"""` string each backslash of the JSON is written twice (JSON
+  `"\n"` as `"\\n"`, a regex's `\\.` as `\\\\.`). A JSON body holding
+  backslashes is easier as a `'''` literal string, which TOML takes exactly
+  as written.
 - `insecure = true` skips certificate checks for this request (an
   environment's `tls` overrides it).
 - `jq`: a filter the response pane applies to the body (view only; nothing

@@ -99,7 +99,7 @@ the output mask (mine).
 
 | Mode | stdout | stderr |
 |---|---|---|
-| default | the body as it came (masked), or the jq results one per line; nothing with `-o` | `postui: …` lines (D6) |
+| default | the body as it came (masked), or the jq results one per line; no body with `-o` (#223: the results still print, and a failing filter prints no body) | `postui: …` lines (D6) |
 | `-i` | `200 OK  176 ms (first byte 135 ms), 3497 bytes`, then each response header as `name: value`, a blank line, then the body or results | errors and warnings as default |
 | `-v` | today's report, unchanged | nothing new |
 | `--dry-run` | today's report (the request side is what a dry run is for) | nothing new |

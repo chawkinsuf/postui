@@ -266,7 +266,8 @@ sent, or when the jq filter fails.
   --jq <filter>             print the filter's results instead of the body
   --view[=<name>]           filter with the request's own jq filter (the one
                             its response pane applies), or its view <name>
-  -o, --output <file>       write the body (or each jq result) to <file>
+  -o, --output <file>       write the body to <file>, as it came (with --jq or
+                            --view too, whose results still print)
   -i, --include             print the status and response headers first
   -v, --verbose             print the whole run: the request sent, the
                             status, timings and headers, then the body

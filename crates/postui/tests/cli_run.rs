@@ -446,7 +446,8 @@ fn run_output_file_failure_keeps_the_response() {
     assert_eq!(v["response"]["status"], 200);
     assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
 
-    // Under a file, with --jq: the results show.
+    // Under a file, with --jq: the results show, and so does the body the
+    // file was to keep.
     let blocker = home.path().join("blocker");
     std::fs::write(&blocker, "x").unwrap();
     let missing = blocker.join("out.txt");
@@ -455,7 +456,7 @@ fn run_output_file_failure_keeps_the_response() {
     let v = json(&out);
     assert!(v["error"].as_str().unwrap().contains("out.txt"), "{}", v["error"]);
     assert_eq!(v["jq"]["output"], serde_json::json!([42]));
-    assert!(v["response"]["body"].is_null());
+    assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
 }
 
 /// `-o` writes in place, like `curl -o`: `/dev/null` works, and a symlink is
@@ -495,27 +496,29 @@ fn run_jq_prints_the_filters_output() {
     let v = json(&out);
     assert!(v["jq"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{}", v["jq"]);
     assert!(v["jq"]["output"].is_null());
-    // The response is not lost: the caller needn't send the request again.
+    // A failed filter doesn't print the body either: `-o` is how to keep it.
     assert_eq!(v["response"]["status"], 200);
-    assert_eq!(v["response"]["body"], "ok\u{fffd}\u{fffd}");
+    assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
 
-    let file = home.path().join("id.txt");
+    // `-o` takes the body, byte-exact, and the results still print.
+    let file = home.path().join("body.txt");
     let out = send(&home, &root, "main/ok", &["--jq", ".id", "-o", s(&file)]);
     assert_ok(&out, "run --jq -o");
-    assert_eq!(std::fs::read(&file).unwrap(), b"42\n");
+    assert_eq!(std::fs::read(&file).unwrap(), br#"{"id":42}"#);
     let v = json(&out);
     assert_eq!(v["output_file"], s(&file));
-    assert!(v["jq"]["output"].is_null());
+    assert_eq!(v["jq"]["output"], serde_json::json!([42]));
+    assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
 
-    // A filter that fails writes no file.
-    let none = home.path().join("none.txt");
-    let out = send(&home, &root, "main/ok", &["--jq", ".id.x", "-o", s(&none)]);
+    // A filter that fails still has the body in the file.
+    let kept = home.path().join("kept.bin");
+    let out = send(&home, &root, "main/bytes", &["--jq", ".", "-o", s(&kept)]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(!none.exists());
+    assert_eq!(std::fs::read(&kept).unwrap(), b"ok\xff\xfe");
     let v = json(&out);
-    assert!(v["output_file"].is_null());
-    assert!(v["response"]["body"].is_null());
-    assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
+    assert_eq!(v["output_file"], s(&kept));
+    assert!(v["jq"]["error"].is_string());
+    assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
 }
 
 /// A failed run whose reader has gone (stdout a closed pipe) still exits 1.
@@ -547,14 +550,16 @@ fn run_jq_output_is_masked() {
     assert_eq!(json(&out)["jq"]["output"], serde_json::json!([MASK]));
 }
 
-/// `--jq -o` writes the masked results.
+/// `--jq -o` writes the body as it came, as `-o` alone does (the file is the
+/// user's own copy of the response); the printed results are masked.
 #[test]
-fn run_jq_output_file_is_masked() {
+fn run_jq_output_file_gets_the_raw_body() {
     let (home, _server, root) = served();
     let file = home.path().join("t.txt");
-    let out = send(&home, &root, "main/echo", &["--jq", ".t", "-o", s(&file)]);
-    assert_ok(&out, "run main/echo --jq .t -o");
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("\"{MASK}\"\n"));
+    let (code, out, _) = streams(&home, &root, "main/echo", &["--jq", ".t", "-o", s(&file)]);
+    assert_eq!(code, Some(0));
+    assert_eq!(out, format!("\"{MASK}\"\n"));
+    assert!(std::fs::read_to_string(&file).unwrap().contains(SECRET));
 }
 
 /// A jq error that quotes the secret, and a filter that holds it, are
@@ -649,10 +654,18 @@ fn run_says_on_stderr_what_failed() {
     let (code, out, err) = streams(&home, &root, "main/refused", &[]);
     assert_eq!((code, out.as_str()), (Some(1), ""));
     assert!(err.starts_with("postui: ") && !err.contains(SECRET), "{err}");
+    // A failed filter prints no body, and says how to keep it.
     let (code, out, err) = streams(&home, &root, "main/bytes", &["--jq", "."]);
-    assert_eq!(code, Some(1));
-    assert_eq!(out, "ok\u{fffd}\u{fffd}\n", "the body shows when the filter fails");
-    assert!(err.starts_with("postui: jq: "), "{err}");
+    assert_eq!((code, out.as_str()), (Some(1), ""));
+    assert!(
+        err.starts_with("postui: jq: ") && err.ends_with("; -o FILE saves the body\n"),
+        "{err}"
+    );
+    assert_eq!(err.lines().count(), 1, "{err}");
+    let file = home.path().join("kept.bin");
+    let (code, out, err) = streams(&home, &root, "main/bytes", &["--jq", ".", "-o", s(&file)]);
+    assert_eq!((code, out.as_str()), (Some(1), ""));
+    assert!(err.starts_with("postui: jq: ") && !err.contains("-o FILE"), "{err}");
 
     std::fs::write(
         root.join("requests/main/typo.toml"),
