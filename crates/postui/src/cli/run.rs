@@ -612,6 +612,11 @@ impl RunReport {
             // to see what the filter failed on (#215). The exit status and
             // the stderr note say it failed; a script wanting nothing on a
             // failure checks the status.
+            //
+            // The body is text (decoded lossily, masked), not bytes: masking
+            // needs text, and the reader is mostly an agent's pipe, not a
+            // terminal. A binary body is what `-o` is for, as the usage and
+            // the skill say; there is no curl-like refusal to print one.
             if let Some(body) = &r.body {
                 out.push_str(body);
                 // A body without a last newline would run into the next

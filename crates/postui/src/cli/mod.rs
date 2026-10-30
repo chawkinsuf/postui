@@ -592,9 +592,6 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             if options.dry_run && options.view.is_some() {
                 return Err("--view needs a send; it can't go with --dry-run".into());
             }
-            if options.dry_run && options.include {
-                return Err("-i needs a send; it can't go with --dry-run".into());
-            }
             if g.json && (options.include || options.verbose) {
                 return Err("--json prints the whole run; -i and -v are for the text".into());
             }
@@ -1133,11 +1130,12 @@ mod tests {
         assert_eq!(run_parts(&["run", "a", "--verbose", "-i"]).2, Shown::Verbose);
         assert_eq!(parsed(&["suite", "-i"]).unwrap_err(), "unknown option '-i'");
         let err = |args: &[&str]| parsed(args).unwrap_err();
-        assert!(err(&["run", "a", "-i", "--dry-run"]).contains("-i needs a send"));
         assert!(err(&["run", "a", "-v", "--json"]).contains("--json prints the whole run"));
         assert!(err(&["run", "a", "-i", "--json"]).contains("--json prints the whole run"));
-        // A dry run prints the whole report already; -v asks for no more.
+        // A dry run prints the whole report already; -i and -v ask for no
+        // more, so neither is refused.
         assert_eq!(run_parts(&["run", "a", "-v", "--dry-run"]).2, Shown::Verbose);
+        assert_eq!(run_parts(&["run", "a", "-i", "--dry-run"]).2, Shown::Include);
     }
 
     #[test]

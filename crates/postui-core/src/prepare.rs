@@ -273,6 +273,11 @@ pub fn prepare(
     ctx: &PrepareContext,
 ) -> Result<(PreparedRequest, Vec<PrepareWarning>), PrepareError> {
     let vars = overlaid_vars(req, ctx);
+    let secret_names = secret_names(ctx);
+    // First, so a missing secret or selection can't hide it from `check`.
+    if let Some(e) = url_holding_token(req, &vars, &secret_names) {
+        return Err(e);
+    }
 
     let mut missing = BTreeSet::new();
     let no_mask = BTreeSet::new();
@@ -283,7 +288,6 @@ pub fn prepare(
     // The same assembly again with secret values masked — what screens
     // show for the sent request (`PreparedRequest::display_url`). Its
     // warnings are duplicates of the real pass's, so they're dropped.
-    let secret_names = secret_names(ctx);
     let display_url = if secret_names.is_empty() {
         url.clone()
     } else {
@@ -322,10 +326,6 @@ pub fn prepare(
         })
         .collect();
 
-    // First, so a missing secret or selection can't hide it from `check`.
-    if let Some(e) = url_holding_token(req, &vars, &secret_names) {
-        return Err(e);
-    }
     if !missing.is_empty() {
         let causes = missing
             .into_iter()
