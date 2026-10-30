@@ -96,6 +96,15 @@ pub enum UnresolvedCause {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrepareError {
     Unresolved(BTreeMap<String, UnresolvedCause>),
+    /// The URL or a query parameter uses `var`, whose value holds
+    /// `{{token}}`: a value isn't a template, so the URL would go out with
+    /// the braces in it (spec 2026-10-30 D1). Asked before the unresolved
+    /// names, so a missing secret or selection (only a warning in `check`)
+    /// can't hide it. Never about a secret, whose value isn't looked into.
+    ValueHoldsVariable {
+        var: String,
+        token: String,
+    },
 }
 
 impl fmt::Display for PrepareError {
@@ -124,8 +133,38 @@ impl fmt::Display for PrepareError {
                 }
                 write!(f, "{}", groups.join(" · "))
             }
+            PrepareError::ValueHoldsVariable { var, token } => write!(
+                f,
+                "the URL uses {var}, whose value holds {{{{{token}}}}}: postui doesn't fill in \
+                 variables inside a value"
+            ),
         }
     }
+}
+
+/// D1: the refusal for a URL or query parameter using a value that holds a
+/// `{{token}}`, with `vars` overlaid. The URL is the one place checked at
+/// send time: a header's or a body's braces might be meant, and `check`
+/// warns about every such value where it is written (spec 2026-10-30, the
+/// amendment after review round 3). A secret's value is opaque data, not a
+/// value someone wrote as a template, so it is never looked into: braces
+/// in it go out as they are, and nothing of it is printed.
+fn url_holding_token(
+    req: &HttpRequest,
+    vars: &IndexMap<String, String>,
+    secrets: &BTreeSet<String>,
+) -> Option<PrepareError> {
+    let params = req.params.iter().filter(|(_, e)| e.enabled);
+    let mut parts = std::iter::once(req.url.as_str())
+        .chain(params.flat_map(|(k, e)| [k.as_str(), e.value.as_str()]));
+    parts.find_map(|text| {
+        crate::vars::find_tokens(text).into_iter().filter(|t| !secrets.contains(&t.name)).find_map(
+            |t| {
+                let inner = crate::vars::find_tokens(vars.get(&t.name)?).into_iter().next()?;
+                Some(PrepareError::ValueHoldsVariable { var: t.name, token: inner.name })
+            },
+        )
+    })
 }
 
 impl std::error::Error for PrepareError {}
@@ -235,6 +274,11 @@ pub fn prepare(
     ctx: &PrepareContext,
 ) -> Result<(PreparedRequest, Vec<PrepareWarning>), PrepareError> {
     let vars = overlaid_vars(req, ctx);
+    let secret_names = secret_names(ctx);
+    // First, so a missing secret or selection can't hide it from `check`.
+    if let Some(e) = url_holding_token(req, &vars, &secret_names) {
+        return Err(e);
+    }
 
     let mut missing = BTreeSet::new();
     let no_mask = BTreeSet::new();
@@ -245,7 +289,6 @@ pub fn prepare(
     // The same assembly again with secret values masked — what screens
     // show for the sent request (`PreparedRequest::display_url`). Its
     // warnings are duplicates of the real pass's, so they're dropped.
-    let secret_names = secret_names(ctx);
     let display_url = if secret_names.is_empty() {
         url.clone()
     } else {
@@ -561,7 +604,6 @@ fn rows(
     let client_row = |name: &str, value: String, display: String, unsent: Option<Unsent>| {
         fixed_row(name, value, display, HeaderOrigin::Client, unsent, None)
     };
-
     let mut rows = Vec::new();
 
     // Defaults merge UNDER the request's rows: a default is not sent when
@@ -884,15 +926,14 @@ mod tests {
         let mut r = base("http://x.test/{{gone}}");
         r.method = Method::Post;
         r.body = Some(Body::Json { text: "{{also_gone}}".into() });
-        let err = prepare(&r, &PrepareContext::default()).unwrap_err();
-        let PrepareError::Unresolved(causes) = err;
+        let causes = unresolved(prepare(&r, &PrepareContext::default()));
         assert_eq!(
             causes.into_keys().collect::<Vec<_>>(),
             vec!["gone".to_string()],
             "body ignored while flag off"
         );
         r.substitute_body = true;
-        let PrepareError::Unresolved(causes) = prepare(&r, &PrepareContext::default()).unwrap_err();
+        let causes = unresolved(prepare(&r, &PrepareContext::default()));
         assert_eq!(causes.len(), 2);
     }
 
@@ -1020,8 +1061,7 @@ mod tests {
     fn disabled_request_variable_does_not_resolve() {
         let mut r = base("http://x.test/{{name}}");
         r.variables.insert("name".into(), off("request-scoped"));
-        let err = prepare(&r, &PrepareContext::default()).unwrap_err();
-        let PrepareError::Unresolved(causes) = err;
+        let causes = unresolved(prepare(&r, &PrepareContext::default()));
         assert_eq!(causes.get("name"), Some(&UnresolvedCause::Undefined));
     }
 
@@ -1031,7 +1071,7 @@ mod tests {
         let mut c = PrepareContext::default();
         c.meta.insert("user".into(), varmodel::VarMeta::NeedsSelection);
         c.meta.insert("api_key".into(), varmodel::VarMeta::MissingSecret);
-        let PrepareError::Unresolved(causes) = prepare(&r, &c).unwrap_err();
+        let causes = unresolved(prepare(&r, &c));
         assert_eq!(causes.get("gone"), Some(&UnresolvedCause::Undefined));
         assert_eq!(causes.get("user"), Some(&UnresolvedCause::NeedsSelection));
         assert_eq!(causes.get("api_key"), Some(&UnresolvedCause::MissingSecret));
@@ -1057,6 +1097,90 @@ mod tests {
         causes.insert("only".to_string(), UnresolvedCause::NeedsSelection);
         let err = PrepareError::Unresolved(causes);
         assert_eq!(err.to_string(), "need a selection: only");
+    }
+
+    /// The causes of an `Unresolved` refusal; any other outcome fails the
+    /// test.
+    fn unresolved(
+        outcome: Result<(PreparedRequest, Vec<PrepareWarning>), PrepareError>,
+    ) -> BTreeMap<String, UnresolvedCause> {
+        match outcome {
+            Err(PrepareError::Unresolved(causes)) => causes,
+            other => panic!("expected an unresolved refusal, got {other:?}"),
+        }
+    }
+
+    fn holds(var: &str, token: &str) -> PrepareError {
+        PrepareError::ValueHoldsVariable { var: var.into(), token: token.into() }
+    }
+
+    /// D1 (spec 2026-10-30): a value isn't a template, so a URL token whose
+    /// value holds a `{{token}}` would go out with its braces; the send is
+    /// refused instead, naming both.
+    #[test]
+    fn a_url_token_whose_value_holds_a_token_refuses_the_send() {
+        let r = base("{{base}}/api");
+        let c = ctx(&[("base", "https://{{host}}"), ("host", "x.test")], &[]);
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("base", "host"));
+        assert_eq!(
+            holds("base", "host").to_string(),
+            "the URL uses base, whose value holds {{host}}: postui doesn't fill in variables \
+             inside a value"
+        );
+    }
+
+    /// D1: the query parameters are part of the URL, key and value alike;
+    /// a disabled one isn't sent, so it doesn't count.
+    #[test]
+    fn a_query_parameter_whose_value_holds_a_token_refuses_the_send() {
+        let c = ctx(&[("k", "{{a}}"), ("v", "x{{b}}")], &[]);
+        let mut r = base("http://x.test");
+        r.params.insert("{{k}}".into(), on("1"));
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("k", "a"));
+        let mut r = base("http://x.test");
+        r.params.insert("id".into(), on("{{v}}"));
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("v", "b"));
+        let mut r = base("http://x.test");
+        r.params.insert("id".into(), off("{{v}}"));
+        assert!(prepare(&r, &c).is_ok(), "a disabled parameter isn't sent");
+    }
+
+    /// D1 (amended): the URL's refusal comes before an unresolved name, so a
+    /// missing secret (only a warning in `check`) can't hide it.
+    #[test]
+    fn a_value_holding_a_token_is_reported_before_an_unresolved_name() {
+        let r = base("{{base}}/{{api_key}}");
+        let mut c = ctx(&[("base", "https://{{host}}")], &[]);
+        c.meta.insert("api_key".into(), varmodel::VarMeta::MissingSecret);
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("base", "host"));
+    }
+
+    /// D1: a secret's value is opaque data, never looked into: braces in it
+    /// go out as they are, and nothing of it is printed.
+    #[test]
+    fn a_secrets_value_is_never_looked_into() {
+        let r = base("http://x.test/{{key}}");
+        let mut c = ctx(&[("key", "ab{{cdEF12}}gh")], &[]);
+        c.meta.insert("key".into(), varmodel::VarMeta::Secret);
+        let (p, _) = prepare(&r, &c).unwrap();
+        assert_eq!(p.url, "http://x.test/ab{{cdEF12}}gh");
+    }
+
+    /// D2 (amended): a header or body using such a value is sent as
+    /// written, with no warning at send time: `check` warns where the value
+    /// is written.
+    #[test]
+    fn a_header_or_body_value_holding_a_token_is_sent_as_written() {
+        let c = ctx(&[("tok", "{{x}}"), ("doc", "{{z}}")], &[]);
+        let mut r = base("http://x.test");
+        r.method = Method::Post;
+        r.headers.insert("Authorization".into(), on("Bearer {{tok}}"));
+        r.body = Some(Body::Json { text: "{{doc}}".into() });
+        r.substitute_body = true;
+        let (p, warnings) = prepare(&r, &c).unwrap();
+        assert!(wire(&p).contains(&("Authorization".into(), "Bearer {{x}}".into())));
+        assert_eq!(p.body.as_deref(), Some("{{z}}"));
+        assert_eq!(warnings, vec![]);
     }
 
     fn base(url: &str) -> HttpRequest {
@@ -1468,7 +1592,7 @@ mod tests {
         prepare(&req, &c).expect("neither unsent row has to resolve");
 
         let c = ctx(&[], &[("X-Sent", "{{gone}}", true)]);
-        let PrepareError::Unresolved(causes) = prepare(&req, &c).unwrap_err();
+        let causes = unresolved(prepare(&req, &c));
         assert_eq!(causes.into_keys().collect::<Vec<_>>(), ["gone"]);
     }
 

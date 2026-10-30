@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-pub use run::RunOpts;
+pub use run::{Filter, RunOpts, Shown};
 
 /// The `--timeout` a send gets when none is given.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -66,9 +66,10 @@ pub enum Command {
         g: Global,
         request: String,
         opts: RunOpts,
-        jq: Option<String>,
+        filter: Option<Filter>,
         output: Option<PathBuf>,
         dry_run: bool,
+        shown: Shown,
     },
     Suite {
         g: Global,
@@ -240,15 +241,18 @@ overwrites a file.
 const RUN_USAGE: &str = concat!(
     "\
 usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]...
-                   [--jq <filter>] [-o <file>] [--timeout <secs>] [--dry-run]
+                   [--var <name>=<value>]... [--jq <filter> | --view[=<name>]]
+                   [-o <file>] [-i | -v] [--timeout <secs>] [--dry-run]
                    [--show-secrets] [--json]
 
-Sends one request and prints what came back: its status, timings, headers
-and body. <request> is a slug as `postui requests` lists it. Nothing is
-written to the project. Each secret's exact value is masked in everything
-printed; a value the server or a --jq filter transforms is not. Exits 1 for
-a status of 400 or more, when the request can't be prepared or sent, or when
---jq fails.
+Sends one request and prints the response body, as curl does, but as text
+(-o writes its exact bytes); -i adds the status and headers, -v the whole
+run. A status of 400 or more, errors and warnings go to stderr. <request> is
+a slug as `postui requests` lists it.
+Nothing is written to the project. Each secret's exact value is masked in
+everything printed; a value the server or a jq filter transforms is not.
+Exits 1 for a status of 400 or more, when the request can't be prepared or
+sent, or when the jq filter fails.
 
 ",
     project_flag!(),
@@ -256,8 +260,16 @@ a status of 400 or more, when the request can't be prepared or sent, or when
                             one postui has open, else the first)
   --select <sel>=<opt>      pick an option of a selector for this run only;
                             can be given more than once
+  --var <name>=<value>      give a variable this value for this run only,
+                            over every other source; can be given more than
+                            once
   --jq <filter>             print the filter's results instead of the body
+  --view[=<name>]           filter with the request's own jq filter (the one
+                            its response pane applies), or its view <name>
   -o, --output <file>       write the body (or each jq result) to <file>
+  -i, --include             print the status and response headers first
+  -v, --verbose             print the whole run: the request sent, the
+                            status, timings and headers, then the body
   --timeout <secs>          give up if the response hasn't started after this
                             long (connect, upload and redirects included),
                             or the body stalls this long between reads
@@ -271,8 +283,8 @@ a status of 400 or more, when the request can't be prepared or sent, or when
 const SUITE_USAGE: &str = concat!(
     "\
 usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
-                    [--select <sel>=<opt>]... [-o <file>] [--timeout <secs>]
-                    [--show-secrets] [--json]
+                    [--select <sel>=<opt>]... [--var <name>=<value>]...
+                    [-o <file>] [--timeout <secs>] [--show-secrets] [--json]
 
 Sends every request of the project (or of one space), one at a time in
 sidebar order, and prints each one's status and time, then the totals. A
@@ -288,6 +300,9 @@ request failed to prepare or send or returned 400 or more.
                             one postui has open, else the first)
   --select <sel>=<opt>      pick an option of a selector for this run only;
                             can be given more than once
+  --var <name>=<value>      give a variable this value for this run only,
+                            over every other source; can be given more than
+                            once
   -o, --output <file>       also write what is printed to <file>
   --timeout <secs>          give up on a request if its response hasn't
                             started after this long (connect, upload and
@@ -430,20 +445,20 @@ impl Positional {
 
 #[rustfmt::skip]
 const SPECS: [Spec; 13] = [
-    Spec { name: "projects", flags: &["--json"],                                                                                                   positional: None,                      usage: PROJECTS_USAGE },
-    Spec { name: "show",     flags: &["--project", "--json"],                                                                                      positional: None,                      usage: SHOW_USAGE },
-    Spec { name: "requests", flags: &["--project", "--json", "--space"],                                                                           positional: None,                      usage: REQUESTS_USAGE },
-    Spec { name: "vars",     flags: &["--project", "--json", "--env", "--show-secrets"],                                                           positional: Some(Positional::Name),    usage: VARS_USAGE },
-    Spec { name: "check",    flags: &["--project", "--json", "--env"],                                                                             positional: None,                      usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--json", "--name"],                                                                                         positional: Some(Positional::Dir),     usage: INIT_USAGE },
-    Spec { name: "run",      flags: &["--project", "--json", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some(Positional::Request), usage: RUN_USAGE },
-    Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"],           positional: None,                      usage: SUITE_USAGE },
-    Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                         positional: None,                      usage: EDIT_BEGIN_USAGE },
-    Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                        positional: None,                      usage: EDIT_END_USAGE },
-    Spec { name: "edit status", flags: &["--project", "--json"],                                                                                   positional: None,                      usage: EDIT_STATUS_USAGE },
+    Spec { name: "projects", flags: &["--json"],                                                                                                                                                positional: None,                      usage: PROJECTS_USAGE },
+    Spec { name: "show",     flags: &["--project", "--json"],                                                                                                                                   positional: None,                      usage: SHOW_USAGE },
+    Spec { name: "requests", flags: &["--project", "--json", "--space"],                                                                                                                        positional: None,                      usage: REQUESTS_USAGE },
+    Spec { name: "vars",     flags: &["--project", "--json", "--env", "--show-secrets"],                                                                                                        positional: Some(Positional::Name),    usage: VARS_USAGE },
+    Spec { name: "check",    flags: &["--project", "--json", "--env"],                                                                                                                          positional: None,                      usage: CHECK_USAGE },
+    Spec { name: "init",     flags: &["--json", "--name"],                                                                                                                                      positional: Some(Positional::Dir),     usage: INIT_USAGE },
+    Spec { name: "run",      flags: &["--project", "--json", "--env", "--select", "--var", "--show-secrets", "--timeout", "--jq", "--view", "--output", "--dry-run", "--include", "--verbose"], positional: Some(Positional::Request), usage: RUN_USAGE },
+    Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--var", "--show-secrets", "--timeout", "--output"],                                               positional: None,                      usage: SUITE_USAGE },
+    Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                                                                      positional: None,                      usage: EDIT_BEGIN_USAGE },
+    Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                                                                     positional: None,                      usage: EDIT_END_USAGE },
+    Spec { name: "edit status", flags: &["--project", "--json"],                                                                                                                                positional: None,                      usage: EDIT_STATUS_USAGE },
     // `--project` is a switch here (into this directory), not `-p`'s project.
-    Spec { name: "skill install", flags: &["--user", "--project", "--force", "--json"],                                                            positional: None,                      usage: SKILL_INSTALL_USAGE },
-    Spec { name: "skill show",    flags: &[],                                                                                                      positional: None,                      usage: SKILL_SHOW_USAGE },
+    Spec { name: "skill install", flags: &["--user", "--project", "--force", "--json"],                                                                                                         positional: None,                      usage: SKILL_INSTALL_USAGE },
+    Spec { name: "skill show",    flags: &[],                                                                                                                                                   positional: None,                      usage: SKILL_SHOW_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
@@ -574,7 +589,27 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             if options.dry_run && options.jq.is_some() {
                 return Err("--jq needs a send; it can't go with --dry-run".into());
             }
-            Command::Run { g, request, opts, jq: options.jq, output, dry_run: options.dry_run }
+            if options.dry_run && options.view.is_some() {
+                return Err("--view needs a send; it can't go with --dry-run".into());
+            }
+            if g.json && (options.include || options.verbose) {
+                return Err("--json prints the whole run; -i and -v are for the text".into());
+            }
+            let filter = match (options.jq, options.view) {
+                (Some(_), Some(_)) => {
+                    return Err("--view and --jq both pick a filter; give one".into());
+                }
+                (Some(jq), None) => Some(Filter::Jq(jq)),
+                (None, Some(view)) => Some(Filter::View(view)),
+                (None, None) => None,
+            };
+            // `-v` shows everything `-i` does.
+            let shown = match (options.verbose, options.include) {
+                (true, _) => Shown::Verbose,
+                (false, true) => Shown::Include,
+                (false, false) => Shown::Body,
+            };
+            Command::Run { g, request, opts, filter, output, dry_run: options.dry_run, shown }
         }
     }))
 }
@@ -595,6 +630,7 @@ fn run_opts(o: &Options) -> Result<RunOpts, String> {
     Ok(RunOpts {
         env: o.env.clone(),
         selects: o.selects.clone(),
+        vars: o.vars.clone(),
         show_secrets: o.show_secrets,
         timeout,
     })
@@ -613,10 +649,15 @@ struct Options {
     /// (`init`'s directory, `run`'s request, `vars`' name).
     positional: Option<OsString>,
     selects: Vec<(String, String)>,
+    vars: Vec<(String, String)>,
     jq: Option<String>,
+    /// `--view` (`Some(None)`) or `--view=NAME`.
+    view: Option<Option<String>>,
     output: Option<String>,
     timeout: Option<String>,
     dry_run: bool,
+    include: bool,
+    verbose: bool,
     note: Option<String>,
     force: bool,
     user: bool,
@@ -654,15 +695,34 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             // could name.
             "-p" if spec.name != "skill install" => "--project",
             "-o" => "--output",
+            "-i" => "--include",
+            "-v" => "--verbose",
             other => other,
         };
         if !spec.flags.contains(&flag) {
             return Err(format!("unknown option '{text}'"));
         }
+        // A name only after `=`, so the request slug after a bare `--view`
+        // is never read as one (as `--keydump[=BITS]`).
+        if flag == "--view" {
+            if o.view.is_some() {
+                return Err("--view is given twice".into());
+            }
+            if inline == Some("") {
+                return Err("--view= needs a view's name".into());
+            }
+            if inline.is_some() && arg.to_str().is_none() {
+                return Err("--view's value is not UTF-8".into());
+            }
+            o.view = Some(inline.map(str::to_string));
+            continue;
+        }
         let switch = match flag {
             "--json" => Some(&mut o.json),
             "--show-secrets" => Some(&mut o.show_secrets),
             "--dry-run" => Some(&mut o.dry_run),
+            "--include" => Some(&mut o.include),
+            "--verbose" => Some(&mut o.verbose),
             "--force" => Some(&mut o.force),
             "--user" => Some(&mut o.user),
             // `skill install`'s place, where every other command's is a
@@ -699,6 +759,21 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
                     return Err(format!("--select {name} is given twice"));
                 }
                 o.selects.push((name.to_string(), option.to_string()));
+                continue;
+            }
+            "--var" => {
+                let (name, var_value) = value
+                    .split_once('=')
+                    .ok_or_else(|| format!("--var takes NAME=VALUE, not '{value}'"))?;
+                if !postui_core::vars::is_valid_var_name(name) {
+                    return Err(format!(
+                        "--var: '{name}' is not a variable name (letters, digits, _ and -)"
+                    ));
+                }
+                if o.vars.iter().any(|(n, _)| n == name) {
+                    return Err(format!("--var {name} is given twice"));
+                }
+                o.vars.push((name.to_string(), var_value.to_string()));
                 continue;
             }
             "--project" => &mut o.project,
@@ -745,12 +820,9 @@ pub async fn run(cmd: Command) -> ExitCode {
         Command::Init { dir, name, json } => {
             finish(read::init(&dir, name.as_deref()), json, read::InitReport::text)
         }
-        Command::Run { g, request, opts, jq, output, dry_run } => {
-            match run::run(&g, &request, &opts, jq.as_deref(), output.as_deref(), dry_run).await {
-                Ok(report) => {
-                    let printed = out::emit(&report, g.json, run::RunReport::text);
-                    sent_status(printed, report.status())
-                }
+        Command::Run { g, request, opts, filter, output, dry_run, shown } => {
+            match run::run(&g, &request, &opts, filter.as_ref(), output.as_deref(), dry_run).await {
+                Ok(report) => sent_status(report.print(g.json, shown), report.status()),
                 Err(e) => out::fail(&e, g.json),
             }
         }
@@ -952,12 +1024,14 @@ mod tests {
                 opts: RunOpts {
                     env: Some("dev".into()),
                     selects: vec![("user".into(), "bob".into()), ("org".into(), "x".into())],
+                    vars: vec![],
                     show_secrets: false,
                     timeout: None,
                 },
-                jq: None,
+                filter: None,
                 output: None,
                 dry_run: true,
+                shown: Shown::Body,
             }
         );
         assert_eq!(
@@ -980,14 +1054,91 @@ mod tests {
                 opts: RunOpts {
                     env: None,
                     selects: vec![],
+                    vars: vec![],
                     show_secrets: true,
                     timeout: Some(Duration::from_secs(5)),
                 },
-                jq: Some(".id".into()),
+                filter: Some(Filter::Jq(".id".into())),
                 output: Some(PathBuf::from("out.bin")),
                 dry_run: false,
+                shown: Shown::Body,
             }
         );
+    }
+
+    fn run_parts(args: &[&str]) -> (RunOpts, Option<Filter>, Shown) {
+        match command(args) {
+            Command::Run { opts, filter, shown, .. } => (opts, filter, shown),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// D3: bare `--view` is the pane's filter, and a name comes only after
+    /// `=`, so a slug after `--view` stays the request.
+    #[test]
+    fn view_takes_a_name_only_after_equals() {
+        assert_eq!(run_parts(&["run", "a", "--view"]).1, Some(Filter::View(None)));
+        assert_eq!(
+            run_parts(&["run", "a", "--view=fast"]).1,
+            Some(Filter::View(Some("fast".into())))
+        );
+        match command(&["run", "--view", "main/a"]) {
+            Command::Run { request, filter, .. } => {
+                assert_eq!((request.as_str(), filter), ("main/a", Some(Filter::View(None))));
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(err(&["run", "a", "--view", "--view"]), "--view is given twice");
+        assert_eq!(
+            err(&["run", "a", "--view", "--jq", ".id"]),
+            "--view and --jq both pick a filter; give one"
+        );
+        assert!(err(&["run", "a", "--view", "--dry-run"]).contains("--view needs a send"));
+        assert_eq!(err(&["run", "a", "--view="]), "--view= needs a view's name");
+    }
+
+    /// D4: `--var NAME=VALUE`, once per name, on `run` and `suite`.
+    #[test]
+    fn var_takes_a_name_and_value_once_per_name() {
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
+        };
+        assert_eq!(
+            run_parts(&["run", "a", "--var", "model=gemma", "--var=url=http://x?a=b"]).0.vars,
+            pairs(&[("model", "gemma"), ("url", "http://x?a=b")])
+        );
+        match command(&["suite", "--var", "model="]) {
+            Command::Suite { opts, .. } => assert_eq!(opts.vars, pairs(&[("model", "")])),
+            other => panic!("{other:?}"),
+        }
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(err(&["run", "a", "--var", "model"]), "--var takes NAME=VALUE, not 'model'");
+        assert_eq!(err(&["run", "a", "--var", "m=1", "--var", "m=2"]), "--var m is given twice");
+        assert_eq!(
+            err(&["run", "a", "--var", "a b=1"]),
+            "--var: 'a b' is not a variable name (letters, digits, _ and -)"
+        );
+        assert_eq!(err(&["show", "--var", "a=1"]), "unknown option '--var'");
+    }
+
+    /// D5: the body alone unless `-i` or `-v` asks for more; `-v` holds
+    /// everything `-i` shows.
+    #[test]
+    fn run_shows_the_body_unless_asked_for_more() {
+        assert_eq!(run_parts(&["run", "a"]).2, Shown::Body);
+        assert_eq!(run_parts(&["run", "a", "-i"]).2, Shown::Include);
+        assert_eq!(run_parts(&["run", "a", "--include"]).2, Shown::Include);
+        assert_eq!(run_parts(&["run", "a", "-v"]).2, Shown::Verbose);
+        assert_eq!(run_parts(&["run", "a", "--verbose", "-i"]).2, Shown::Verbose);
+        assert_eq!(parsed(&["suite", "-i"]).unwrap_err(), "unknown option '-i'");
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert!(err(&["run", "a", "-v", "--json"]).contains("--json prints the whole run"));
+        assert!(err(&["run", "a", "-i", "--json"]).contains("--json prints the whole run"));
+        // A dry run prints the whole report already; -i and -v ask for no
+        // more, so neither is refused.
+        assert_eq!(run_parts(&["run", "a", "-v", "--dry-run"]).2, Shown::Verbose);
+        assert_eq!(run_parts(&["run", "a", "-i", "--dry-run"]).2, Shown::Include);
     }
 
     #[test]

@@ -2,20 +2,24 @@
 //! request's variables resolved against one environment (spec 2026-10-28
 //! §4). It is what an agent runs after editing the TOML by hand, so each
 //! finding names its file. Errors are what is wrong in the files: one that
-//! won't parse or validate, an invalid name, a `{{name}}` nothing declares.
+//! won't parse or validate, an invalid name, a `{{name}}` nothing declares,
+//! a URL using a value that holds a `{{token}}` (spec 2026-10-30 D1).
 //! Everything else is a warning, a missing selection or secret among them
-//! (both live in `.postui/`, which a fresh clone doesn't have).
+//! (both live in `.postui/`, which a fresh clone doesn't have), and any
+//! value written in the files that holds a `{{token}}` (D2).
 
 use super::mask::MASK_MIN_CHARS;
 use super::out::{count, fields, rel, table};
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
+use indexmap::IndexMap;
 use postui_core::prepare::{self, PrepareError, UnresolvedCause};
 use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
+use postui_core::varmodel::OptionDecl;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// The status a report with an error ends the run with.
@@ -90,9 +94,26 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
     }
 
+    // D2: a value is used as written, so one holding a `{{name}}` is warned
+    // of on the file it is written in (spec 2026-10-30, amended after review
+    // round 3). `secrets.toml` is the user's, and isn't looked at.
+    let model = project.variables();
+    let defaults = model.vars.iter().filter_map(|(n, v)| Some((n.clone(), v.default.as_deref()?)));
+    warnings.extend(values_holding_tokens(
+        &root.join("variables.toml"),
+        defaults.chain(option_values(&model.options)),
+    ));
     for slug in project.environments().to_vec() {
-        if let Err(e) = project.load_environment(&slug) {
-            errors.push(Finding::at(project::environment_path(&root, &slug), reason(e)));
+        let file = project::environment_path(&root, &slug);
+        match project.load_environment(&slug) {
+            Ok(data) => {
+                let values = data.values.iter().map(|(n, v)| (n.clone(), v.as_str()));
+                warnings.extend(values_holding_tokens(
+                    &file,
+                    values.chain(option_values(&data.options)),
+                ));
+            }
+            Err(e) => errors.push(Finding::at(file, reason(e))),
         }
     }
 
@@ -152,8 +173,30 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 continue;
             }
         };
-        let Err(PrepareError::Unresolved(causes)) = prepare::prepare(&req, &ctx) else {
-            continue;
+        // A disabled row is never used, as `prepare` skips it, and a secret's
+        // value is opaque data, never looked into (as `prepare` doesn't). A
+        // row the URL uses gets the request's error below too: the two
+        // checks are apart by design (the value's warning wherever it is
+        // written, the URL's refusal at send time), so each says its own
+        // thing.
+        let model = project.variables();
+        let secret = |name: &str| model.vars.get(name).is_some_and(|v| v.secret);
+        let values = req.variables.iter().filter(|(name, e)| e.enabled && !secret(name));
+        warnings.extend(values_holding_tokens(
+            &file,
+            values.map(|(name, e)| (name.clone(), e.value.as_str())),
+        ));
+        let causes = match prepare::prepare(&req, &ctx) {
+            Ok(_) => continue,
+            // The URL would go out with a value's braces in it (D1). It is
+            // asked first, so the request's other findings (a misspelt name,
+            // a missing secret) show once it is fixed: a cost the amendment
+            // names, taken so a missing secret can't hide this error.
+            Err(e @ PrepareError::ValueHoldsVariable { .. }) => {
+                errors.push(Finding::at(file, e.to_string()));
+                continue;
+            }
+            Err(PrepareError::Unresolved(causes)) => causes,
         };
         let (undeclared, rest): (BTreeMap<_, _>, BTreeMap<_, _>) =
             causes.into_iter().partition(|(name, cause)| {
@@ -183,6 +226,41 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
     Ok(CheckReport::new(root, environment, errors, warnings))
 }
 
+/// A warning on `file` for each of `values` (a name, and the value written
+/// for it) that holds a `{{name}}`: postui uses a value as written, so its
+/// braces would be sent (D2).
+fn values_holding_tokens<'a>(
+    file: &Path,
+    values: impl Iterator<Item = (String, &'a str)>,
+) -> Vec<Finding> {
+    values
+        .filter_map(|(name, value)| {
+            let token = postui_core::vars::find_tokens(value).into_iter().next()?.name;
+            Some(Finding::at(
+                file.to_path_buf(),
+                format!(
+                    "{name}'s value holds {{{{{token}}}}}, and postui doesn't fill in variables \
+                     inside a value"
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Each field value of every option in `options` (selector → option →
+/// option), named `field (option O of S)`.
+fn option_values(
+    options: &IndexMap<String, IndexMap<String, OptionDecl>>,
+) -> impl Iterator<Item = (String, &str)> {
+    options.iter().flat_map(|(selector, options)| {
+        options.iter().flat_map(move |(option, decl)| {
+            decl.values.iter().map(move |(field, value)| {
+                (format!("{field} (option {option} of {selector})"), value.as_str())
+            })
+        })
+    })
+}
+
 /// What is wrong with a name postui passes over.
 fn skipped_message(s: &Skipped) -> String {
     match s {
@@ -202,7 +280,7 @@ fn skipped_message(s: &Skipped) -> String {
 /// Whether `variables.toml` declares `name`, as a variable or a selector's
 /// field. An unresolved name it declares lacks a value; one it doesn't is
 /// likely a typo.
-fn declared(project: &Project, name: &str) -> bool {
+pub(super) fn declared(project: &Project, name: &str) -> bool {
     let model = project.variables();
     model.vars.contains_key(name)
         || model.selectors.values().any(|s| s.fields.iter().any(|f| f == name))

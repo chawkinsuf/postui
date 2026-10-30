@@ -117,9 +117,10 @@ pub fn secret_values(project: &Project) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The mask for the secrets of the environment `project` has active.
-pub fn of_env(project: &Project) -> Mask {
-    Mask::new(secret_values(project).into_iter().map(|(_, value)| value))
+/// The mask for the secrets of the environment `project` has active, and
+/// for `given`: values the command line gives secrets (`--var`).
+pub fn of_env(project: &Project, given: impl IntoIterator<Item = String>) -> Mask {
+    Mask::new(secret_values(project).into_iter().map(|(_, value)| value).chain(given))
 }
 
 #[cfg(test)]

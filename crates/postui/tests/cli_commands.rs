@@ -836,6 +836,80 @@ fn check_disabled_request_variable_is_not_declared_wording() {
     );
 }
 
+/// Spec 2026-10-30 D1, D2 (amended): a value holding a `{{token}}` is warned
+/// of on the file it is written in, wherever it is used; a URL using one is
+/// an error on the request, which a missing secret doesn't hide.
+#[test]
+fn check_reports_a_value_holding_a_token() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let x = root.join("requests/admin/x.toml");
+    std::fs::write(
+        &x,
+        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{wrap}}/x?k={{token}}\"\n\n\
+         [variables]\nwrap = \"https://{{base}}\"\n",
+    )
+    .unwrap();
+    std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
+    // A disabled row is never used, and a secret's value is never looked
+    // into, so neither is warned of.
+    let list = root.join("requests/main/list.toml");
+    std::fs::write(
+        &list,
+        "name = \"List\"\nmethod = \"POST\"\nurl = \"{{base}}/list\"\n\n\
+         [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n\
+         off = { value = \"{{region}}\", enabled = false }\ntoken = \"x{{s3cr}}y\"\n",
+    )
+    .unwrap();
+    let variables = root.join("variables.toml");
+    let mut text = std::fs::read_to_string(&variables).unwrap();
+    text.push_str("\n[held]\ndefault = \"{{id}}\"\n\n[options.org.acme]\norg_id = \"{{id}}\"\n");
+    text.push_str("\n[selectors.org]\nshared = true\nfields = [\"org_id\"]\n");
+    std::fs::write(&variables, text).unwrap();
+    let qa = root.join("environments/qa.toml");
+    std::fs::write(
+        &qa,
+        "base = \"https://qa\"\nheld = \"x{{base}}\"\n\n[options.user.bob]\nuser_id = \"{{id}}\"\n",
+    )
+    .unwrap();
+
+    let out = home.run_json(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    assert_eq!(
+        findings(&v, "errors"),
+        [(
+            s(&x).to_string(),
+            "the URL uses wrap, whose value holds {{base}}: postui doesn't fill in variables \
+             inside a value"
+                .to_string()
+        )]
+    );
+    let says = |file: &Path, what: &str, token: &str| {
+        (
+            s(file).to_string(),
+            format!(
+                "{what}'s value holds {{{{{token}}}}}, and postui doesn't fill in variables \
+                 inside a value"
+            ),
+        )
+    };
+    let mut want = vec![
+        says(&variables, "held", "id"),
+        says(&variables, "org_id (option acme of org)", "id"),
+        says(&qa, "held", "base"),
+        says(&qa, "user_id (option bob of user)", "id"),
+        // x's missing secret shows once its URL is fixed: the refusal comes
+        // first (the amendment's named cost).
+        says(&x, "wrap", "base"),
+        says(&list, "tag", "region"),
+    ];
+    want.sort();
+    let mut warnings = findings(&v, "warnings");
+    warnings.sort();
+    assert_eq!(warnings, want);
+}
+
 /// Spec §4: an invalid name in `project.toml` is an error on that file,
 /// not also the open's warning.
 #[test]

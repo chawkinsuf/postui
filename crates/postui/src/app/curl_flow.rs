@@ -528,6 +528,12 @@ impl App {
                 let msg = self.unresolved_message(&causes);
                 self.toasts.push(msg, ToastKind::Error);
             }
+            // Any other refusal says what is wrong on its own, and in which
+            // environment, as the unresolved one does.
+            Err(e) => {
+                let msg = format!("{e} ({})", self.env_label_display());
+                self.toasts.push(msg, ToastKind::Error);
+            }
         }
         true
     }

@@ -38,8 +38,10 @@ a `project.toml`.
 - `postui vars <name>`: one variable, or one selector with all its options'
   values and the file they live in.
 - `postui check [--env E]`: parses and validates every file, and resolves
-  every request's `{{variables}}`. An undeclared `{{name}}` is an error; a
-  missing secret or selection is only a warning, since those live in the
+  every request's `{{variables}}`. An undeclared `{{name}}` is an error, and
+  so is a URL using a variable whose value holds a `{{name}}` (values aren't
+  filled in, so postui won't send it); any value holding one is a warning on
+  its file, and so is a missing secret or selection, since those live in the
   user's untracked `.postui/`. Exits 1 on an error.
 
 Paths in the output are relative to the `root` line at the top. Output is
@@ -48,20 +50,33 @@ text; add `--json` only when a script needs to parse it.
 ## Send requests
 
 ```
-postui run <slug> [--env E] [--select SELECTOR=OPTION]... [--jq F] [-o FILE] [--dry-run] [--timeout SECS]
-postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [-o FILE]
+postui run <slug> [--env E] [--select SELECTOR=OPTION]... [--var NAME=VALUE]...
+                  [--jq F | --view[=NAME]] [-o FILE] [-i | -v] [--dry-run] [--timeout SECS]
+postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VALUE]...
+             [-o FILE] [--timeout SECS]
 ```
 
-- `run` prints the request it sent (method, URL, headers, body), then the
-  status, timings, response headers and body. Read the body to check your
-  work.
+- `run` prints the response body and nothing else, as curl does. A status
+  of 400 or more (`postui: 404 Not Found`), an error and any warning go to
+  stderr, one `postui:` line each. `-i` prints the status line and response
+  headers before the body; `-v` prints the whole run: the request as sent
+  (method, URL, headers, body), the status, timings and response headers,
+  then the body.
 - `--dry-run` prints the prepared request and sends nothing: use it to check
   what a new or changed request resolves to.
-- `--jq F` prints the filter's results instead of the body (postui's jq,
-  jaq). `-o FILE` writes the raw body to a file instead of printing it.
+- `--jq F` prints the filter's results instead of the body, one a line
+  (postui's jq, jaq). `--view` uses the request's own filter, the one its
+  response pane applies, and `--view=NAME` one of its saved `[[jq_view]]`s:
+  reach for these first when a request has them, to keep a large body out
+  of your context. `-o FILE` writes the raw body to a file instead of
+  printing it; use it for a binary body, which prints as text.
 - The environment is `--env`, else the one the user's postui has open, else
   the first. Selections are the user's saved ones; `--select` overrides one
   for this run only and never saves it. Pick an option name from `postui vars`.
+- `--var NAME=VALUE` gives a variable a value for this run only, over every
+  other source, the request's own `[variables]` included. The name must be
+  one the request could use: declared in `variables.toml`, set by the
+  environment, or in the request's `[variables]`.
 - `suite` sends every request (or one space's) one at a time in sidebar
   order and prints each one's status, time and size, then totals. A request
   that can't be prepared is reported and skipped.
@@ -81,7 +96,9 @@ flag, so the user's postui stays off the files while you work:
 Each refusal below exits 1 with the reason on stderr; a mistake in the
 command or the project exits 2.
 
-1. `postui edit begin --note "<what you're doing>"`. It refuses when:
+1. `postui check` first, so you know which errors were there before you
+   changed anything.
+2. `postui edit begin --note "<what you're doing>"`. It refuses when:
    - **postui has this project open**: ask the user to switch postui to
      another project or quit it, then retry. postui won't open the project
      again until you end the edit; it shows "Updates in progress" instead.
@@ -90,13 +107,15 @@ command or the project exits 2.
      Otherwise ask the user. Only once they confirm nothing is editing the
      project any more, `postui edit end --force` takes the flag down and you
      can begin. Never run two edits at once.
-2. Edit the files (`reference.md`).
-3. `postui check`, and fix every error it reports. `postui run <slug>
-   --dry-run` shows what a request resolves to.
-4. `postui edit end`. It runs `check` again and refuses (exit 1, the flag
-   kept) while there are errors; fix them. `--force` ends it anyway (still
-   exit 1, since the errors are still there): only when the user asks. If
-   it says **no edit is in progress**, the user
+3. Edit the files (`reference.md`).
+4. `postui check`, and fix every error your changes caused. `postui run
+   <slug> --dry-run` shows what a request resolves to.
+5. `postui edit end`. It runs `check` again and refuses (exit 1, the flag
+   kept) while there are errors. Fix yours. If it still refuses, ask the
+   user what to do about the rest, an error that was there before your edit
+   among them: fix it, or end the edit anyway with `postui edit end --force`
+   (still exit 1, since the errors are still there). Never `--force`
+   without asking. If it says **no edit is in progress**, the user
    overrode your edit in postui and may have changed files since: re-read
    what you changed, tell the user, and don't assume your edit survived.
 

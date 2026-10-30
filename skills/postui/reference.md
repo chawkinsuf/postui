@@ -200,7 +200,8 @@ jq = ".status"
 - `jq`: a filter the response pane applies to the body (view only; nothing
   sent changes). `[[jq_view]]` tables (`name`, `filter`) are saved filters,
   `jq_current` names the one in use, `jq_enabled = false` switches the
-  filter off. postui writes these when the user filters in the TUI.
+  filter off. postui writes these when the user filters in the TUI; you
+  may add them too, and `run --view` uses them.
 - postui adds `Accept: application/json` unless the request sets `Accept`,
   and the HTTP client adds `Host`, `Content-Length` and the like.
 - Any other key is an error: `check` names the file.
@@ -209,12 +210,21 @@ jq = ".status"
 
 For each `{{name}}`:
 
+- a `--var name=value` on `run` or `suite` wins over everything, for that
+  run only;
 - the request's own `[variables]` win, when a row is enabled;
 - otherwise a selector's field takes the selected option's value (from the
   environment's file, or `variables.toml` for a shared selector);
 - a variable takes the environment file's value, else its `default`;
 - a secret takes its value from `.postui/secrets.toml`, which the user fills
   in.
+
+A value is used as written: a `{{name}}` inside a value is not filled in.
+`base_url = "https://{{host}}"` would send `https://{{host}}`, so postui
+refuses to send a request whose URL or query parameters use such a value
+(`check` reports it as an error), and `check` warns about every value that
+holds a `{{name}}`, on the file it is written in. Give each environment the
+whole value instead (`base_url = "https://staging.example.com"`).
 
 `postui vars` shows each variable's source; `postui run <slug> --dry-run`
 shows the request filled in.
