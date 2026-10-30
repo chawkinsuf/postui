@@ -78,6 +78,9 @@ You change requests, variables and environments by editing the TOML files
 yourself; there are no commands that do it. Wrap every edit in the edit
 flag, so the user's postui stays off the files while you work:
 
+Each refusal below exits 1 with the reason on stderr; a mistake in the
+command or the project exits 2.
+
 1. `postui edit begin --note "<what you're doing>"`. It refuses when:
    - **postui has this project open**: ask the user to switch postui to
      another project or quit it, then retry. postui won't open the project

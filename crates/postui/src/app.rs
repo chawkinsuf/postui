@@ -1034,7 +1034,11 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
             }
-            Err(e) => self.toasts.push(format!("could not open project: {e}"), ToastKind::Error),
+            Err(e) => {
+                // No project was made: the lock taken for it goes.
+                self.project_lock = None;
+                self.toasts.push(format!("could not open project: {e}"), ToastKind::Error);
+            }
         }
         self.registry.register(root);
         self.save_registry();
@@ -5387,6 +5391,8 @@ impl App {
                         }
                     }
                     Err(e) => {
+                        // No project was made: the lock taken for it goes.
+                        self.project_lock = None;
                         self.toasts
                             .push(format!("could not create project here: {e}"), ToastKind::Error);
                     }
@@ -5589,7 +5595,9 @@ impl App {
             Action::ForceSwitchProject(target) => {
                 // The open project, by whatever spelling, is already open,
                 // and its lock is this app's: taking it again would meet it.
-                if self.is_open_project(&target) {
+                // A directory opened bare holds none, and is opened again
+                // (a project just made there, `ForceCreateProject`).
+                if self.project_lock.is_some() && self.is_open_project(&target) {
                     return false;
                 }
                 // The incoming project's lock first, then its flag

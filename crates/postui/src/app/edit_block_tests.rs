@@ -282,6 +282,20 @@ fn a_bare_directory_is_locked_only_once_it_is_a_project() {
     drop(held);
 }
 
+/// A project made at the path of the bare directory the app has open opens
+/// over it, and takes its lock: the open-project check is for a locked
+/// project, not a bare directory.
+#[test]
+fn a_project_made_where_the_app_stands_bare_opens() {
+    let mut app = App::new_for_test();
+    let here = root(&app);
+    assert!(app.project_lock.is_none());
+    app.update(Action::ForceCreateProject { path: here.clone(), name: None });
+    assert!(Project::is_project(&here));
+    assert!(app.project_lock.is_some());
+    assert!(Project::tui_open(&here).unwrap());
+}
+
 /// The Override question closes when the edit ends on its own.
 #[test]
 fn the_override_question_goes_with_the_edit() {
