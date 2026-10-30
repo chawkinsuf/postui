@@ -5,6 +5,7 @@
 //! `meta` holds the pure helpers over `ProjectMeta`, slugs and display
 //! names that the rest of the module builds on; it touches no files.
 
+mod edit_flag;
 mod environments;
 mod local;
 mod meta;
@@ -13,6 +14,7 @@ mod spaces;
 mod undo;
 mod varedit_ops;
 mod variables;
+pub use edit_flag::{EditFlag, ProjectLock, ago, rfc3339};
 pub use meta::*;
 pub use requests::{HeldDrift, ListingWarning};
 pub use undo::Undone;
@@ -214,6 +216,10 @@ pub const LAYOUT_TOML: &str = local_path!("layout.toml");
 pub const SECRETS_TOML: &str = local_path!("secrets.toml");
 /// Where `Disk::trash` puts deleted files until the project next opens.
 pub const TRASH_DIR: &str = local_path!("trash");
+/// The edit flag and the lock a TUI holds on the project it has open
+/// (`edit_flag.rs`).
+pub const EDITING_TOML: &str = local_path!("editing.toml");
+pub const TUI_LOCK: &str = local_path!("tui.lock");
 
 pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
     Ok(RelPath::new(s)?)

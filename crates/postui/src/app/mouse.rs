@@ -116,7 +116,13 @@ impl App {
     /// - Wheel events scroll the body editor when over it, else scroll the
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
+    ///
+    /// The edit flag's waiting screen takes the event before all of it,
+    /// unless a dialog is over it (`edit_block.rs`).
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        if self.edit_block.is_some() && self.modals.is_empty() {
+            return self.blocked_mouse(m);
+        }
         use ratatui::crossterm::event::MouseEventKind;
         // Where the keyboard is before this event, as `handle_key` learns
         // it: a click's focus change counts for `<C-w>l` and `p` (plan M4a
@@ -831,7 +837,13 @@ impl App {
     /// shows — files edited outside it, and a curl another app copied
     /// (spec 2026-10-15 curl import visibility V4). Returns whether a
     /// repaint is needed.
+    ///
+    /// The edit flag's waiting screen looks at the flag at once, rather
+    /// than at its next poll.
     pub fn on_focus_gained(&mut self) -> bool {
+        if self.edit_block.is_some() {
+            return self.poll_edit_flag(Instant::now(), true);
+        }
         let clipboard = self.check_clipboard();
         self.update(Action::ReloadProjectFiles) | clipboard
     }
@@ -1622,6 +1634,9 @@ impl App {
             self.move_editor_caret(SubFocus::None);
         }
         match hit {
+            // Drawn only while the waiting screen is up, whose clicks
+            // `blocked_mouse` takes before they come here.
+            Hit::EditBlock(_) => false,
             Hit::Pane(PaneId::Response) => self.press_response_pane(clicks.text, m, true),
             Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {

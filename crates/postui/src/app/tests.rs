@@ -4834,6 +4834,8 @@ fn renaming_the_open_request_moves_local_state_to_the_new_slug() {
     assert_eq!(app.proj().local().open_request.as_deref(), Some("main/zulu"));
     assert_eq!(app.proj().space_open_for("main").as_deref(), Some("main/zulu"));
 
+    // A relaunch: the first app is gone, and its lock on the project.
+    drop(app);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let relaunched = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(relaunched.editor.slug.as_deref(), Some("main/zulu"), "a relaunch reopens it");

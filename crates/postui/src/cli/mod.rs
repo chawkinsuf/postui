@@ -6,10 +6,12 @@
 //! write nothing (R16).
 
 mod check;
+mod edit;
 pub mod mask;
 pub mod out;
 mod read;
 mod run;
+mod skill;
 mod suite;
 pub mod target;
 
@@ -74,6 +76,22 @@ pub enum Command {
         opts: RunOpts,
         output: Option<PathBuf>,
     },
+    EditBegin {
+        g: Global,
+        note: Option<String>,
+    },
+    EditEnd {
+        g: Global,
+        force: bool,
+    },
+    EditStatus(Global),
+    SkillInstall {
+        /// `--project`: into the current directory, not the user's home.
+        into_project: bool,
+        force: bool,
+        json: bool,
+    },
+    SkillShow,
 }
 
 /// What [`parse`] makes of a command line.
@@ -86,8 +104,10 @@ pub enum Parsed {
 
 /// The first arguments that are commands rather than a directory to open
 /// (R18: a directory of that name opens as `postui ./show`).
-pub const SUBCOMMANDS: &[&str] =
-    &["projects", "show", "requests", "vars", "check", "init", "run", "suite", "help"];
+pub const SUBCOMMANDS: &[&str] = &[
+    "projects", "show", "requests", "vars", "check", "init", "run", "suite", "edit", "skill",
+    "help",
+];
 
 /// Why a command could not give its report: the error envelope's
 /// `error` and, when it is about one file, `file`.
@@ -95,17 +115,26 @@ pub const SUBCOMMANDS: &[&str] =
 pub struct CliError {
     pub message: String,
     pub file: Option<PathBuf>,
+    /// A refusal (`edit begin` over a flag already up): the command did
+    /// what it should, and the answer is no, so the run ends with 1 rather
+    /// than an error's 2.
+    pub refused: bool,
 }
 
 impl CliError {
     /// An error about no one file.
     pub fn new(message: impl Into<String>) -> Self {
-        CliError { message: message.into(), file: None }
+        CliError { message: message.into(), file: None, refused: false }
     }
 
     /// An error about `file`.
     pub fn at(message: impl Into<String>, file: PathBuf) -> Self {
-        CliError { message: message.into(), file: Some(file) }
+        CliError { message: message.into(), file: Some(file), refused: false }
+    }
+
+    /// A refusal about `file`.
+    pub fn refusal(message: impl Into<String>, file: PathBuf) -> Self {
+        CliError { refused: true, ..CliError::at(message, file) }
     }
 }
 
@@ -269,9 +298,107 @@ request failed to prepare or send or returned 400 or more.
     json_flag!()
 );
 
-/// One command: its name, the options it takes (by their long spelling;
-/// `-p` is `--project`, `-o` is `--output`), what positional argument it
-/// takes, and its usage.
+const EDIT_USAGE: &str = "\
+usage: postui edit begin|end|status [options]
+
+An agent's edit of a project's files: edit begin before changing the TOML,
+edit end after. An edit needs the project closed in postui; while one is in
+progress postui won't open the project, and shows \"Updates in progress\"
+until it ends. postui help edit <begin|end|status> gives each one's options.
+";
+
+const EDIT_BEGIN_USAGE: &str = concat!(
+    "\
+usage: postui edit begin [-p <dir|name>] [--note <text>] [--json]
+
+Starts an edit of the project's files. Refuses when an edit is already in
+progress, and while postui has the project open (ask the user to switch to
+another project or quit postui, then retry). Exits 1 when it refuses.
+
+",
+    project_flag!(),
+    "  --note <text>             what the edit is for; postui shows it
+",
+    json_flag!()
+);
+
+const EDIT_END_USAGE: &str = concat!(
+    "\
+usage: postui edit end [-p <dir|name>] [--force] [--json]
+
+Checks the project as postui check does and, when it finds no error, ends
+the edit, and postui can open the project again. Exits 1 when check finds
+an error (the edit stays in progress, unless --force), or when no edit is in
+progress (the user overrode it in postui).
+
+",
+    project_flag!(),
+    "  --force                   end the edit even when check finds errors, or
+                            its flag won't parse: for one the user confirms
+                            is no longer running
+",
+    json_flag!()
+);
+
+const EDIT_STATUS_USAGE: &str = concat!(
+    "\
+usage: postui edit status [-p <dir|name>] [--json]
+
+Whether an edit is in progress (since when, and its note), and whether
+postui has the project open.
+
+",
+    project_flag!(),
+    json_flag!()
+);
+
+const SKILL_USAGE: &str = "\
+usage: postui skill install|show [options]
+
+The Claude Code skill that teaches an agent postui's commands and project
+files. postui help skill <install|show> gives each one's options.
+";
+
+const SKILL_INSTALL_USAGE: &str = concat!(
+    "\
+usage: postui skill install [--user | --project] [--force] [--json]
+
+Installs the skill for Claude Code. A file already there that differs is
+left alone and listed, and the run exits 1, unless --force.
+
+  --user                    into ~/.claude/skills/postui (the default)
+  --project                 into ./.claude/skills/postui, for this directory
+  --force                   replace files that differ
+",
+    json_flag!()
+);
+
+const SKILL_SHOW_USAGE: &str = "\
+usage: postui skill show
+
+Prints the skill's SKILL.md.
+";
+
+/// A command spelled in two words (`edit begin`): the first, the second
+/// words it takes, and the usage `help <first>` prints.
+struct Group {
+    name: &'static str,
+    verbs: &'static [&'static str],
+    usage: &'static str,
+}
+
+const GROUPS: [Group; 2] = [
+    Group { name: "edit", verbs: &["begin", "end", "status"], usage: EDIT_USAGE },
+    Group { name: "skill", verbs: &["install", "show"], usage: SKILL_USAGE },
+];
+
+fn group(name: &str) -> Option<&'static Group> {
+    GROUPS.iter().find(|g| g.name == name)
+}
+
+/// One command: its name (two words for a [`Group`]'s), the options it
+/// takes (by their long spelling; `-p` is `--project`, `-o` is
+/// `--output`), what positional argument it takes, and its usage.
 struct Spec {
     name: &'static str,
     flags: &'static [&'static str],
@@ -302,7 +429,7 @@ impl Positional {
 }
 
 #[rustfmt::skip]
-const SPECS: [Spec; 8] = [
+const SPECS: [Spec; 13] = [
     Spec { name: "projects", flags: &["--json"],                                                                                                   positional: None,                      usage: PROJECTS_USAGE },
     Spec { name: "show",     flags: &["--project", "--json"],                                                                                      positional: None,                      usage: SHOW_USAGE },
     Spec { name: "requests", flags: &["--project", "--json", "--space"],                                                                           positional: None,                      usage: REQUESTS_USAGE },
@@ -311,16 +438,41 @@ const SPECS: [Spec; 8] = [
     Spec { name: "init",     flags: &["--json", "--name"],                                                                                         positional: Some(Positional::Dir),     usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--json", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some(Positional::Request), usage: RUN_USAGE },
     Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"],           positional: None,                      usage: SUITE_USAGE },
+    Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                         positional: None,                      usage: EDIT_BEGIN_USAGE },
+    Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                        positional: None,                      usage: EDIT_END_USAGE },
+    Spec { name: "edit status", flags: &["--project", "--json"],                                                                                   positional: None,                      usage: EDIT_STATUS_USAGE },
+    // `--project` is a switch here (into this directory), not `-p`'s project.
+    Spec { name: "skill install", flags: &["--user", "--project", "--force", "--json"],                                                            positional: None,                      usage: SKILL_INSTALL_USAGE },
+    Spec { name: "skill show",    flags: &[],                                                                                                      positional: None,                      usage: SKILL_SHOW_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.name == name)
 }
 
-/// The usage a mistake on `name`'s line is told with: the command's own,
-/// or the general one for `help` (whose mistake is naming no command).
+/// The usage a mistake on `name`'s line is told with: the command's own, a
+/// group's for its first word alone, or the general one for `help` (whose
+/// mistake is naming no command).
 pub fn usage(name: &str) -> &'static str {
-    spec(name).map_or(crate::config::USAGE, |s| s.usage)
+    usage_named(name).unwrap_or(crate::config::USAGE)
+}
+
+/// The usage of a command (`edit begin`) or a group (`edit`) by its name.
+fn usage_named(name: &str) -> Option<&'static str> {
+    spec(name).map(|s| s.usage).or_else(|| group(name).map(|g| g.usage))
+}
+
+/// [`usage`] for a whole command line: a group's first two words name its
+/// command, when the second is one of its verbs.
+pub fn usage_of(args: &[OsString]) -> &'static str {
+    let words: Vec<String> = args.iter().take(2).map(|a| a.to_string_lossy().into()).collect();
+    match words.as_slice() {
+        [first, verb, ..] if group(first).is_some_and(|g| g.verbs.contains(&verb.as_str())) => {
+            usage(&format!("{first} {verb}"))
+        }
+        [first, ..] => usage(first),
+        [] => crate::config::USAGE,
+    }
 }
 
 /// Parses a command line that starts at the command's name (one of
@@ -338,17 +490,33 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
     let rest: Vec<&OsString> = rest.iter().filter(|a| !is_help(a)).collect();
     let name = name.to_string_lossy();
     if name == "help" {
-        return match rest.as_slice() {
-            [] => Ok(Parsed::Help(crate::config::USAGE)),
-            [cmd] => {
-                let cmd = cmd.to_string_lossy();
-                spec(&cmd).map(|s| Parsed::Help(s.usage)).ok_or(format!("no command '{cmd}'"))
+        let words: Vec<_> = rest.iter().map(|a| a.to_string_lossy()).collect();
+        let (cmd, extra) = match words.as_slice() {
+            [] => return Ok(Parsed::Help(crate::config::USAGE)),
+            // A group's verb, never an option after the group's name.
+            [first, verb, extra @ ..] if group(first).is_some() && !verb.starts_with('-') => {
+                (format!("{first} {verb}"), extra.first())
             }
-            [_, extra, ..] => Err(format!("unexpected argument '{}'", extra.to_string_lossy())),
+            [cmd, extra @ ..] => (cmd.to_string(), extra.first()),
         };
+        if let Some(extra) = extra {
+            return Err(format!("unexpected argument '{extra}'"));
+        }
+        return usage_named(&cmd).map(Parsed::Help).ok_or(format!("no command '{cmd}'"));
     }
+    // A group's command is its first two words.
+    let (name, rest) = match group(&name) {
+        None => (name.into_owned(), rest.as_slice()),
+        Some(g) => match rest.split_first() {
+            Some((verb, rest)) if !verb.to_string_lossy().starts_with('-') => {
+                (format!("{name} {}", verb.to_string_lossy()), rest)
+            }
+            _ if wants_help => return Ok(Parsed::Help(g.usage)),
+            _ => return Err(format!("{name} needs one of: {}", g.verbs.join(", "))),
+        },
+    };
     let spec = spec(&name).ok_or(format!("no command '{name}'"))?;
-    let options = scan(spec, &rest)?;
+    let options = scan(spec, rest)?;
     if wants_help {
         return Ok(Parsed::Help(spec.usage));
     }
@@ -382,6 +550,20 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             opts,
             output: options.output.map(PathBuf::from),
         },
+        "edit begin" => Command::EditBegin { g, note: options.note },
+        "edit end" => Command::EditEnd { g, force: options.force },
+        "edit status" => Command::EditStatus(g),
+        "skill install" => {
+            if options.user && options.into_project {
+                return Err("--user and --project name two places; give one".into());
+            }
+            Command::SkillInstall {
+                into_project: options.into_project,
+                force: options.force,
+                json: g.json,
+            }
+        }
+        "skill show" => Command::SkillShow,
         _ => {
             let request = positional("request")?;
             let request = request.to_str().ok_or("the request's slug is not UTF-8")?.to_string();
@@ -435,6 +617,10 @@ struct Options {
     output: Option<String>,
     timeout: Option<String>,
     dry_run: bool,
+    note: Option<String>,
+    force: bool,
+    user: bool,
+    into_project: bool,
 }
 
 /// Reads `args` (help flags already out) against what `spec` takes.
@@ -464,7 +650,9 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             _ => (&*text, None),
         };
         let flag = match spelled {
-            "-p" => "--project",
+            // `skill install`'s `--project` is a place, not a project `-p`
+            // could name.
+            "-p" if spec.name != "skill install" => "--project",
             "-o" => "--output",
             other => other,
         };
@@ -475,6 +663,11 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             "--json" => Some(&mut o.json),
             "--show-secrets" => Some(&mut o.show_secrets),
             "--dry-run" => Some(&mut o.dry_run),
+            "--force" => Some(&mut o.force),
+            "--user" => Some(&mut o.user),
+            // `skill install`'s place, where every other command's is a
+            // project to name.
+            "--project" if spec.name == "skill install" => Some(&mut o.into_project),
             _ => None,
         };
         if let Some(on) = switch {
@@ -514,6 +707,7 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             "--jq" => &mut o.jq,
             "--output" => &mut o.output,
             "--timeout" => &mut o.timeout,
+            "--note" => &mut o.note,
             _ => &mut o.name,
         };
         if slot.is_some() {
@@ -590,6 +784,27 @@ pub async fn run(cmd: Command) -> ExitCode {
                 }
                 Err(e) => out::fail(&e, g.json),
             }
+        }
+        Command::EditBegin { g, note } => {
+            finish(edit::begin(&g, note.as_deref()), g.json, edit::BeginReport::text)
+        }
+        Command::EditEnd { g, force } => match edit::end(&g, force) {
+            Ok(report) => {
+                out::emit(&report, g.json, edit::EndReport::text).unwrap_or(report.status())
+            }
+            Err(e) => out::fail(&e, g.json),
+        },
+        Command::EditStatus(g) => finish(edit::status(&g), g.json, edit::StatusReport::text),
+        Command::SkillInstall { into_project, force, json } => {
+            match skill::install(into_project, force) {
+                Ok(report) => {
+                    out::emit(&report, json, skill::InstallReport::text).unwrap_or(report.status())
+                }
+                Err(e) => out::fail(&e, json),
+            }
+        }
+        Command::SkillShow => {
+            crate::cli_out::print_out(skill::FILES[0].1).unwrap_or(ExitCode::SUCCESS)
         }
     }
 }
@@ -830,6 +1045,7 @@ mod tests {
         assert_eq!(err(&["init", "a", "b"]), "one directory at most; 'b' is a second");
         assert_eq!(err(&["show", "--bogus", "-h"]), "unknown option '--bogus'");
         assert_eq!(err(&["help", "bogus"]), "no command 'bogus'");
+        assert_eq!(err(&["help", "edit", "--json"]), "unexpected argument '--json'");
     }
 
     #[test]
@@ -841,13 +1057,85 @@ mod tests {
         assert_eq!(help(&["help"]), crate::config::USAGE);
     }
 
-    /// Every command but `help` has a usage, and only those do.
+    /// Every command but `help` has a usage, and only those do; a group's
+    /// commands are its first word's.
     #[test]
     fn every_command_has_a_usage() {
-        let named: Vec<&str> = SPECS.iter().map(|s| s.name).collect();
-        assert_eq!(named, SUBCOMMANDS[..SUBCOMMANDS.len() - 1]);
+        let mut first: Vec<&str> =
+            SPECS.iter().map(|s| s.name.split(' ').next().unwrap()).collect();
+        first.dedup();
+        assert_eq!(first, SUBCOMMANDS[..SUBCOMMANDS.len() - 1]);
         for spec in &SPECS {
-            assert!(spec.usage.starts_with(&format!("usage: postui {} ", spec.name)));
+            let line = spec.usage.lines().next().unwrap();
+            let named = format!("usage: postui {}", spec.name);
+            assert!(line == named || line.starts_with(&format!("{named} ")), "{line}");
         }
+        for g in &GROUPS {
+            for verb in g.verbs {
+                assert!(spec(&format!("{} {verb}", g.name)).is_some(), "{} {verb}", g.name);
+            }
+        }
+    }
+
+    #[test]
+    fn edit_takes_its_verb_and_options() {
+        assert_eq!(
+            command(&["edit", "begin", "--note", "add orders", "-p", "api"]),
+            Command::EditBegin {
+                g: Global { project: Some("api".into()), json: false },
+                note: Some("add orders".into()),
+            }
+        );
+        assert_eq!(parsed(&["edit", "begin", "--force"]).unwrap_err(), "unknown option '--force'");
+        assert_eq!(
+            command(&["edit", "end", "--json"]),
+            Command::EditEnd { g: Global { project: None, json: true }, force: false }
+        );
+        assert_eq!(command(&["edit", "status"]), Command::EditStatus(Global::default()));
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(err(&["edit"]), "edit needs one of: begin, end, status");
+        assert_eq!(err(&["edit", "--json"]), "edit needs one of: begin, end, status");
+        assert_eq!(err(&["edit", "start"]), "no command 'edit start'");
+        assert_eq!(err(&["edit", "status", "--note", "x"]), "unknown option '--note'");
+        assert_eq!(err(&["edit", "end", "--force", "--force"]), "--force is given twice");
+    }
+
+    /// `skill install`'s `--project` is a place, not `-p`'s project.
+    #[test]
+    fn skill_takes_its_verb_and_place() {
+        assert_eq!(
+            command(&["skill", "install"]),
+            Command::SkillInstall { into_project: false, force: false, json: false }
+        );
+        assert_eq!(
+            command(&["skill", "install", "--project", "--force", "--json"]),
+            Command::SkillInstall { into_project: true, force: true, json: true }
+        );
+        assert_eq!(command(&["skill", "install", "--user"]), command(&["skill", "install"]));
+        assert_eq!(command(&["skill", "show"]), Command::SkillShow);
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(
+            err(&["skill", "install", "--user", "--project"]),
+            "--user and --project name two places; give one"
+        );
+        assert_eq!(err(&["skill", "install", "--project", "x"]), "unexpected argument 'x'");
+        assert_eq!(err(&["skill", "install", "-p"]), "unknown option '-p'");
+        assert_eq!(err(&["skill", "show", "--json"]), "unknown option '--json'");
+        assert_eq!(err(&["skill"]), "skill needs one of: install, show");
+        assert!(help(&["help", "skill", "install"]).starts_with("usage: postui skill install "));
+    }
+
+    #[test]
+    fn edit_help_is_the_groups_or_the_verbs() {
+        assert!(help(&["edit", "--help"]).starts_with("usage: postui edit begin|end|status"));
+        assert!(help(&["help", "edit"]).starts_with("usage: postui edit begin|end|status"));
+        assert!(help(&["help", "edit", "end"]).starts_with("usage: postui edit end "));
+        assert!(help(&["edit", "begin", "-h"]).starts_with("usage: postui edit begin "));
+        assert_eq!(parsed(&["help", "edit", "start"]).unwrap_err(), "no command 'edit start'");
+        assert_eq!(parsed(&["help", "edit", "end", "x"]).unwrap_err(), "unexpected argument 'x'");
+        let args = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(usage_of(&args(&["edit", "end", "--bogus"])), EDIT_END_USAGE);
+        assert_eq!(usage_of(&args(&["edit", "start"])), EDIT_USAGE);
+        assert_eq!(usage_of(&args(&["show", "x"])), SHOW_USAGE);
     }
 }

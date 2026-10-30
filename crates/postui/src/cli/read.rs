@@ -26,7 +26,7 @@ pub(super) fn open(root: &Path) -> Result<(Project, Vec<Warning>), CliError> {
         } else {
             e.error
         };
-        CliError { message, file }
+        CliError { message, file, refused: false }
     })
 }
 
@@ -263,8 +263,8 @@ pub fn init(dir: &Path, name: Option<&str>) -> Result<InitReport, CliError> {
     if Project::is_project(&dir) {
         return Err(CliError::at("already a postui project", dir.join("project.toml")));
     }
-    let (_, warnings) = Project::init(&dir, name)
-        .map_err(|e| CliError { message: e.to_string(), file: Some(dir.clone()) })?;
+    let (_, warnings) =
+        Project::init(&dir, name).map_err(|e| CliError::at(e.to_string(), dir.clone()))?;
     // Canonical like every other command's root, which needs it to exist.
     let root = dir
         .canonicalize()

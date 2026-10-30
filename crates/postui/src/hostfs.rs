@@ -1,7 +1,7 @@
 //! The only place in the TUI crate that touches files outside a project
 //! or the config dir: an export to a user-chosen path, the file picker's
-//! directory listing, the external editor's temp file, and the
-//! `--debug-ai` log. Everything else goes through
+//! directory listing, the external editor's temp file, the `--debug-ai`
+//! log, and `postui skill install`'s files. Everything else goes through
 //! `postui_core::disk::Disk` (see CLAUDE.md).
 
 use std::path::{Path, PathBuf};
@@ -43,6 +43,15 @@ pub fn write_user_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// `-o` has to accept.
 pub fn write_output_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
+}
+
+/// The bytes of the file at `path`; `None` when there is none.
+pub fn read_user_file(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// The entries of `dir`, unsorted, with the platform hidden-attribute bits.

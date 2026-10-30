@@ -13,6 +13,8 @@ use std::process::ExitCode;
 
 /// The status every error ends the run with.
 const ERROR: u8 = 2;
+/// The status a refusal ends it with, as a failed result does.
+const REFUSED: u8 = 1;
 
 /// What [`emit`] prints for `report`: `render_text`'s lines, or pretty JSON
 /// with `json`. A report JSON can't hold (a path that isn't UTF-8) is an
@@ -51,10 +53,10 @@ struct Envelope<'a> {
     file: Option<String>,
 }
 
-/// Prints `err` and gives the error status: `postui: <file>: <message>` on
-/// stderr, the file first as `check` names its findings and absolute (an
-/// error prints no root to be relative to); or the envelope on stdout with
-/// `json`.
+/// Prints `err` and gives the error status (a refusal's is 1): `postui:
+/// <file>: <message>` on stderr, the file first as `check` names its
+/// findings and absolute (an error prints no root to be relative to); or
+/// the envelope on stdout with `json`.
 pub fn fail(err: &CliError, json: bool) -> ExitCode {
     // An error message, not data: a path that isn't UTF-8 is shown lossily.
     let file = err.file.as_ref().map(|f| f.to_string_lossy().into_owned());
@@ -67,7 +69,7 @@ pub fn fail(err: &CliError, json: bool) -> ExitCode {
         let at = file.map(|f| format!("{f}: ")).unwrap_or_default();
         print_err(&format!("postui: {at}{}\n", err.message.trim_end()));
     }
-    ExitCode::from(ERROR)
+    ExitCode::from(if err.refused { REFUSED } else { ERROR })
 }
 
 /// Prints a mistake on a command's line: the reason and the command's
