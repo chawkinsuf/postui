@@ -281,7 +281,13 @@ where they disagree, this paragraph wins.
   says to try again. This closes the look-then-remove race the first
   design's reviews kept raising. alt+z cycles on from the waiting screen,
   and a launch onto a flagged directory runs none of the startup's
-  create or open dispositions.
+  create or open dispositions. After its round 3 (mine (approved)): a
+  flag file that can't be read is an edit of unknown owner in both
+  `--force` paths (`edit begin --force` replaces it; `edit end --force`
+  lowers it only while it still can't be read), a switch to the open
+  project by another spelling of its path is no switch, and the card is
+  sized for the widest age with the hint's row always kept, so nothing
+  moves as the flag ages.
 - Gone with the first design: `unsaved.lock`, the gate before every
   event, the write hold, the edit mark, the dropped event and the key
   grace. Your rulings that only applied to it (an AI request in flight

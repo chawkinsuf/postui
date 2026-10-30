@@ -170,7 +170,10 @@ impl Project {
 
     /// Raises `flag` at `root`. Without `force` a flag already up refuses
     /// (`AlreadyExists`) and nothing is written; with it, it is replaced,
-    /// and its text is handed back for [`Self::restore_edit_flag`].
+    /// and its text is handed back for [`Self::restore_edit_flag`]. One
+    /// whose text can't be read at all (not UTF-8) is replaced all the same,
+    /// an edit of unknown owner, and handed back as none: a put-back takes
+    /// the flag down.
     pub fn raise_edit_flag(
         root: &Path,
         flag: &EditFlag,
@@ -186,7 +189,7 @@ impl Project {
                 Err(e) => Err(e.into()),
             };
         }
-        let replaced = disk.peek(&rel)?;
+        let replaced = disk.peek(&rel).unwrap_or(None);
         disk.write(&rel, &text)?;
         Ok(replaced)
     }

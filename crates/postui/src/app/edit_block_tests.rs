@@ -400,6 +400,45 @@ fn an_old_flag_points_at_override() {
     assert!(screen.contains("If the agent has stopped, Override opens it now."), "{screen}");
 }
 
+/// The card keeps its size and its buttons their place as the flag ages,
+/// the old flag's hint included.
+#[test]
+fn the_card_doesnt_move_as_the_flag_ages() {
+    let quit_at = |started: &str| {
+        let other = other_project("Other");
+        let flag = EditFlag { started: started.into(), note: Some("n".into()), id: "a".into() };
+        Project::raise_edit_flag(other.path(), &flag, false).unwrap();
+        let mut app = project_app();
+        app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+        screen_text(&mut app, 100, 30);
+        (0..30)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .find(|&(x, y)| app.hits.hit_at(x, y) == Some(&Hit::EditBlock(EditBlockButton::Quit)))
+    };
+    let now = postui_core::project::rfc3339(std::time::SystemTime::now());
+    let ten_minutes =
+        postui_core::project::rfc3339(std::time::SystemTime::now() - Duration::from_secs(10 * 60));
+    let young = quit_at(&now);
+    assert!(young.is_some());
+    assert_eq!(quit_at(&ten_minutes), young, "the age grew longer");
+    assert_eq!(quit_at("2026-01-01T00:00:00Z"), young, "the old flag's hint came");
+}
+
+/// The open project by another spelling of its path is no switch: it
+/// would meet its own lock.
+#[cfg(unix)]
+#[test]
+fn the_open_project_by_another_path_is_no_switch() {
+    let mut app = project_app();
+    let here = root(&app);
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("here");
+    std::os::unix::fs::symlink(&here, &link).unwrap();
+    assert!(!app.update(Action::SwitchProject(link)));
+    assert_eq!(root(&app), here);
+    assert!(!app.toasts.messages().iter().any(|m| m.contains("another postui window")));
+}
+
 /// On a short terminal the card drops body lines, never its buttons, and
 /// a note of any length draws.
 #[test]

@@ -160,19 +160,23 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
         // The look and the take-down as one change of the flag.
         let _hold = hold_flag(&root)?;
         // Taken down while `check` ran (an override), or taken over by
-        // another `edit begin --force`, whose flag is left up.
-        if let Some(ours) = &ours {
-            match read()? {
-                Some(now) if &now == ours => {}
-                Some(_) => {
-                    return Err(CliError::refusal(
-                        "another edit took this one over (edit begin --force) while check \
-                         ran; its flag is left up",
-                        file,
-                    ));
-                }
-                None => return Err(overridden(file)),
+        // another `edit begin --force`, whose flag is left up. An
+        // unreadable flag it found is lowered only while it still is one.
+        let now = Project::read_edit_flag(&root);
+        let still_ours = match (&ours, &now) {
+            (Some(ours), Ok(Some(now))) => now == ours,
+            (None, Err(_)) => true,
+            _ => false,
+        };
+        if !still_ours {
+            if matches!(now, Ok(None)) {
+                return Err(overridden(file));
             }
+            return Err(CliError::refusal(
+                "another edit took this one over (edit begin --force) while check ran; its \
+                 flag is left up",
+                file,
+            ));
         }
         Project::lower_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()))?;
     }

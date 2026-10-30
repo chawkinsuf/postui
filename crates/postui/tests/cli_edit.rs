@@ -186,6 +186,11 @@ fn end_force_takes_down_a_broken_flag() {
     assert!(json["flag"]["error"].is_string(), "{json}");
     assert_ok(&edit(&home, &root, &["end", "--force"]), "forced end");
     assert!(!Project::edit_flag_up(&root));
+
+    // One that isn't even text is taken over by a forced begin.
+    std::fs::write(root.join(".postui/editing.toml"), [0xff, 0xfe, 0x00]).unwrap();
+    assert_ok(&edit(&home, &root, &["begin", "--force", "--note", "mine"]), "forced begin");
+    assert_eq!(flag(&root).and_then(|f| f.note).as_deref(), Some("mine"));
 }
 
 /// An edit that removed `project.toml` is still the flag's: `edit end`

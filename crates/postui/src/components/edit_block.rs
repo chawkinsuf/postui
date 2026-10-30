@@ -18,24 +18,36 @@ const BUTTON_GAP: u16 = 3;
 /// (mine): longer than an agent's edit of TOML files takes.
 const OLD_FLAG: Duration = Duration::from_secs(30 * 60);
 
-/// The lines the card says, top to bottom, each with whether it is muted:
-/// who is editing and since when, the note, what happens next, and for an
-/// old flag, that it may be left behind.
-fn lines(block: &EditBlock, name: &str, now: SystemTime) -> Vec<(String, bool)> {
-    let started = block.flag.as_ref().map(|f| f.started_text(now));
-    let who = match started {
+/// What the card says once a flag is [`OLD_FLAG`] old.
+const OLD_HINT: &str = "If the agent has stopped, Override opens it now.";
+
+/// The age the card is sized for, the widest it says in practice, so the
+/// card and its buttons stay put as the age ticks on (the user's "no layout
+/// shifts").
+const WIDEST_AGE: &str = "started 59 minutes ago";
+
+/// The card's first line: who is editing and since when.
+fn who(name: &str, started: Option<&str>) -> String {
+    match started {
         Some(started) => format!("An agent is editing {name} ({started})."),
         None => format!("An agent is editing {name}."),
-    };
-    let mut lines = vec![(who, false)];
+    }
+}
+
+/// The lines the card says, top to bottom, each with whether it is muted:
+/// who is editing and since when, the note, what happens next, and a row
+/// for an old flag's hint, that it may be left behind, kept (empty) while
+/// the flag is young so the card's height doesn't change when it comes.
+fn lines(block: &EditBlock, name: &str, now: SystemTime) -> Vec<(String, bool)> {
+    let started = block.flag.as_ref().map(|f| f.started_text(now));
+    let mut lines = vec![(who(name, started.as_deref()), false)];
     if let Some(note) = block.flag.as_ref().and_then(|f| f.note.as_deref()) {
         lines.push((format!("\"{}\"", shown(note)), true));
     }
     lines.push((String::new(), false));
     lines.push(("postui opens it when the agent finishes.".into(), true));
-    if block.flag.as_ref().and_then(|f| f.age(now)).is_some_and(|age| age >= OLD_FLAG) {
-        lines.push(("If the agent has stopped, Override opens it now.".into(), true));
-    }
+    let old = block.flag.as_ref().and_then(|f| f.age(now)).is_some_and(|age| age >= OLD_FLAG);
+    lines.push((if old { OLD_HINT } else { "" }.into(), true));
     lines
 }
 
@@ -77,8 +89,12 @@ pub fn draw(
     let body = lines(block, &block.name, SystemTime::now());
     let buttons: u16 = EditBlockButton::ALL.iter().map(|b| button_width(*b, theme)).sum::<u16>()
         + BUTTON_GAP * (EditBlockButton::ALL.len() as u16 - 1);
-    // No wider than the screen: the agent's note can be any length.
-    let text_w = body.iter().map(|(l, _)| crate::ui::cells(l)).max().unwrap_or(0);
+    // As wide as the widest age and the old flag's hint would make it, so
+    // neither moves the buttons; no wider than the screen, since the
+    // agent's note can be any length.
+    let fixed = [who(&block.name, Some(WIDEST_AGE)), OLD_HINT.to_string()];
+    let text_w = body.iter().map(|(l, _)| l).chain(&fixed).map(|l| crate::ui::cells(l));
+    let text_w = text_w.max().unwrap_or(0);
     let text_w = text_w.min(usize::from(screen.width)) as u16;
     // Two cells of ring and padding each side.
     let width = text_w.max(buttons).max(crate::ui::cells(title) as u16).saturating_add(6);

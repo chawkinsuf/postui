@@ -5562,7 +5562,13 @@ impl App {
                 true
             }
             Action::SwitchProject(target) => {
-                if target == self.root() {
+                // The open project by any spelling (a symlink, `..`) is no
+                // switch: opening it again would meet its own lock.
+                let resolved = |p: &std::path::Path| p.canonicalize().ok();
+                if target == self.root()
+                    || (self.project.is_some()
+                        && resolved(&target).is_some_and(|t| Some(t) == resolved(self.root())))
+                {
                     return false;
                 }
                 self.apply_gated("switch", Action::ForceSwitchProject(target));
