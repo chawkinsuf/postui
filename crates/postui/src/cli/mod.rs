@@ -79,7 +79,6 @@ pub enum Command {
     EditBegin {
         g: Global,
         note: Option<String>,
-        force: bool,
     },
     EditEnd {
         g: Global,
@@ -310,7 +309,7 @@ until it ends. postui help edit <begin|end|status> gives each one's options.
 
 const EDIT_BEGIN_USAGE: &str = concat!(
     "\
-usage: postui edit begin [-p <dir|name>] [--note <text>] [--force] [--json]
+usage: postui edit begin [-p <dir|name>] [--note <text>] [--json]
 
 Starts an edit of the project's files. Refuses when an edit is already in
 progress, and while postui has the project open (ask the user to switch to
@@ -319,8 +318,6 @@ another project or quit postui, then retry). Exits 1 when it refuses.
 ",
     project_flag!(),
     "  --note <text>             what the edit is for; postui shows it
-  --force                   take over a flag left up by an edit the user
-                            confirms is no longer running
 ",
     json_flag!()
 );
@@ -331,12 +328,14 @@ usage: postui edit end [-p <dir|name>] [--force] [--json]
 
 Checks the project as postui check does and, when it finds no error, ends
 the edit, and postui can open the project again. Exits 1 when check finds
-an error (the edit stays in progress, unless --force), or when the edit is
-no longer in progress (the user overrode it in postui).
+an error (the edit stays in progress, unless --force), or when no edit is in
+progress (the user overrode it in postui).
 
 ",
     project_flag!(),
-    "  --force                   end the edit even when check finds errors
+    "  --force                   end the edit even when check finds errors, or
+                            its flag won't parse: for one the user confirms
+                            is no longer running
 ",
     json_flag!()
 );
@@ -439,7 +438,7 @@ const SPECS: [Spec; 13] = [
     Spec { name: "init",     flags: &["--json", "--name"],                                                                                         positional: Some(Positional::Dir),     usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--json", "--env", "--select", "--show-secrets", "--timeout", "--jq", "--output", "--dry-run"], positional: Some(Positional::Request), usage: RUN_USAGE },
     Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--show-secrets", "--timeout", "--output"],           positional: None,                      usage: SUITE_USAGE },
-    Spec { name: "edit begin",  flags: &["--project", "--json", "--note", "--force"],                                                              positional: None,                      usage: EDIT_BEGIN_USAGE },
+    Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                         positional: None,                      usage: EDIT_BEGIN_USAGE },
     Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                        positional: None,                      usage: EDIT_END_USAGE },
     Spec { name: "edit status", flags: &["--project", "--json"],                                                                                   positional: None,                      usage: EDIT_STATUS_USAGE },
     // `--project` is a switch here (into this directory), not `-p`'s project.
@@ -551,7 +550,7 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             opts,
             output: options.output.map(PathBuf::from),
         },
-        "edit begin" => Command::EditBegin { g, note: options.note, force: options.force },
+        "edit begin" => Command::EditBegin { g, note: options.note },
         "edit end" => Command::EditEnd { g, force: options.force },
         "edit status" => Command::EditStatus(g),
         "skill install" => {
@@ -786,8 +785,8 @@ pub async fn run(cmd: Command) -> ExitCode {
                 Err(e) => out::fail(&e, g.json),
             }
         }
-        Command::EditBegin { g, note, force } => {
-            finish(edit::begin(&g, note.as_deref(), force), g.json, edit::BeginReport::text)
+        Command::EditBegin { g, note } => {
+            finish(edit::begin(&g, note.as_deref()), g.json, edit::BeginReport::text)
         }
         Command::EditEnd { g, force } => match edit::end(&g, force) {
             Ok(report) => {
@@ -1081,13 +1080,13 @@ mod tests {
     #[test]
     fn edit_takes_its_verb_and_options() {
         assert_eq!(
-            command(&["edit", "begin", "--note", "add orders", "-p", "api", "--force"]),
+            command(&["edit", "begin", "--note", "add orders", "-p", "api"]),
             Command::EditBegin {
                 g: Global { project: Some("api".into()), json: false },
                 note: Some("add orders".into()),
-                force: true,
             }
         );
+        assert_eq!(parsed(&["edit", "begin", "--force"]).unwrap_err(), "unknown option '--force'");
         assert_eq!(
             command(&["edit", "end", "--json"]),
             Command::EditEnd { g: Global { project: None, json: true }, force: false }

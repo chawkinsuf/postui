@@ -13,9 +13,9 @@
 //! - A TUI takes the lock, then looks for the flag, and lets the lock go
 //!   (opening nothing) if it is up.
 //!
-//! One edit at a time: `--force` takes over a flag left up by an edit the
-//! user confirms isn't running any more, never one that is (the user: "its
-//! not meant to allow two things to edit at once").
+//! One edit at a time: a flag left up by an edit the user confirms isn't
+//! running any more comes down with `edit end --force` or Override (the
+//! user: "its not meant to allow two things to edit at once").
 //!
 //! The lock is an OS advisory lock on an open file, so a TUI that crashes
 //! leaves none held; only the flag can be left behind, and the TUI's
@@ -33,20 +33,12 @@ pub struct EditFlag {
     pub started: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// Which `edit begin` raised it, so two raised in the same second with
-    /// the same note are still told apart: `edit end` lowers only the flag
-    /// it found as it began (not one raised while its check ran), and
-    /// Override only the one its screen showed. Nothing ties an `edit end`
-    /// to its own `edit begin`: an agent's end after another's `--force`
-    /// lowers the other's flag.
-    #[serde(default)]
-    pub id: String,
 }
 
 impl EditFlag {
     /// A flag that starts now.
     pub fn new(note: Option<String>) -> EditFlag {
-        EditFlag { started: rfc3339(SystemTime::now()), note, id: fresh_id() }
+        EditFlag { started: rfc3339(SystemTime::now()), note }
     }
 
     /// How long ago it started, as of `now`; `None` when `started` isn't a
@@ -64,13 +56,6 @@ impl EditFlag {
             None => format!("started {}", self.started),
         }
     }
-}
-
-/// An id no other `edit begin` has: this process and the moment.
-fn fresh_id() -> String {
-    let nanos =
-        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    format!("{}-{nanos}", std::process::id())
 }
 
 /// `age` in words: "just now", "1 minute ago", "3 hours ago", "2 days ago".
@@ -167,50 +152,16 @@ impl Project {
         toml::from_str(&text).map(Some).map_err(|e| parse_err(EDITING_TOML)(&e))
     }
 
-    /// Raises `flag` at `root`. Without `force` a flag already up refuses
-    /// (`AlreadyExists`) and nothing is written; with it, it is replaced,
-    /// and its text is handed back for [`Self::restore_edit_flag`]. One
-    /// whose text can't be read at all (not UTF-8) is replaced all the same,
-    /// an edit of unknown owner, and handed back as none: a put-back takes
-    /// the flag down.
-    pub fn raise_edit_flag(
-        root: &Path,
-        flag: &EditFlag,
-        force: bool,
-    ) -> Result<Option<String>, Error> {
+    /// Raises `flag` at `root`. A flag already up refuses (`AlreadyExists`)
+    /// and nothing is written: one edit at a time.
+    pub fn raise_edit_flag(root: &Path, flag: &EditFlag) -> Result<(), Error> {
         let mut disk = Self::disk_for(root.to_path_buf());
-        let rel = rel(EDITING_TOML)?;
         let text = toml::to_string(flag).expect("EditFlag always serializes");
-        if !force {
-            return match disk.write_new(&rel, &text) {
-                Ok(()) => Ok(None),
-                Err(DiskError::AlreadyExists(_)) => Err(Error::AlreadyExists(EDITING_TOML.into())),
-                Err(e) => Err(e.into()),
-            };
+        match disk.write_new(&rel(EDITING_TOML)?, &text) {
+            Ok(()) => Ok(()),
+            Err(DiskError::AlreadyExists(_)) => Err(Error::AlreadyExists(EDITING_TOML.into())),
+            Err(e) => Err(e.into()),
         }
-        let replaced = match disk.peek(&rel) {
-            // Not text: nothing to put back but the flag being down.
-            Err(DiskError::Io { source, .. })
-                if source.kind() == std::io::ErrorKind::InvalidData =>
-            {
-                None
-            }
-            other => other?,
-        };
-        disk.write(&rel, &text)?;
-        Ok(replaced)
-    }
-
-    /// Puts back what [`Self::raise_edit_flag`] replaced: the old flag's
-    /// text, or no flag when there was none.
-    pub fn restore_edit_flag(root: &Path, replaced: Option<&str>) -> Result<(), Error> {
-        let mut disk = Self::disk_for(root.to_path_buf());
-        let rel = rel(EDITING_TOML)?;
-        match replaced {
-            Some(text) => disk.write(&rel, text)?,
-            None => disk.remove(&rel)?,
-        }
-        Ok(())
     }
 
     /// Takes the flag down; whether it was up.
@@ -295,7 +246,7 @@ mod tests {
 
     #[test]
     fn age_is_told_in_words() {
-        let flag = EditFlag { started: "2026-10-29T20:31:05Z".into(), note: None, id: "a".into() };
+        let flag = EditFlag { started: "2026-10-29T20:31:05Z".into(), note: None };
         let at = |secs| parse_rfc3339("2026-10-29T20:31:05Z").unwrap() + Duration::from_secs(secs);
         assert_eq!(flag.started_text(at(5)), "started just now");
         assert_eq!(flag.started_text(at(60)), "started 1 minute ago");
@@ -304,7 +255,7 @@ mod tests {
         assert_eq!(flag.started_text(at(86400 * 3)), "started 3 days ago");
         let early = parse_rfc3339("2026-10-29T20:30:00Z").unwrap();
         assert_eq!(flag.started_text(early), "started just now", "a clock behind the flag's");
-        let edited = EditFlag { started: "a while back".into(), note: None, id: "b".into() };
+        let edited = EditFlag { started: "a while back".into(), note: None };
         assert_eq!(edited.started_text(at(0)), "started a while back");
     }
 
@@ -315,31 +266,17 @@ mod tests {
         assert!(!Project::edit_flag_up(root));
         assert_eq!(Project::read_edit_flag(root).unwrap(), None);
         let flag = EditFlag::new(Some("add orders".into()));
-        assert_eq!(Project::raise_edit_flag(root, &flag, false).unwrap(), None);
+        Project::raise_edit_flag(root, &flag).unwrap();
         assert!(Project::edit_flag_up(root));
         assert_eq!(Project::read_edit_flag(root).unwrap(), Some(flag.clone()));
         assert!(read(&dir, ".postui/.gitignore").is_some(), "the local folder is sealed");
 
-        let second =
-            EditFlag { started: "2026-01-01T00:00:00Z".into(), note: None, id: "c".into() };
-        assert!(matches!(
-            Project::raise_edit_flag(root, &second, false),
-            Err(Error::AlreadyExists(_))
-        ));
-        assert_eq!(Project::read_edit_flag(root).unwrap(), Some(flag.clone()));
-
-        let replaced = Project::raise_edit_flag(root, &second, true).unwrap();
-        assert_eq!(Project::read_edit_flag(root).unwrap(), Some(second));
-        Project::restore_edit_flag(root, replaced.as_deref()).unwrap();
+        let second = EditFlag { started: "2026-01-01T00:00:00Z".into(), note: None };
+        assert!(matches!(Project::raise_edit_flag(root, &second), Err(Error::AlreadyExists(_))));
         assert_eq!(Project::read_edit_flag(root).unwrap(), Some(flag));
 
         assert!(Project::lower_edit_flag(root).unwrap());
         assert!(!Project::lower_edit_flag(root).unwrap());
-        assert!(!Project::edit_flag_up(root));
-        // Forced over no flag, the restore takes it down again.
-        let replaced = Project::raise_edit_flag(root, &EditFlag::new(None), true).unwrap();
-        assert_eq!(replaced, None);
-        Project::restore_edit_flag(root, None).unwrap();
         assert!(!Project::edit_flag_up(root));
     }
 

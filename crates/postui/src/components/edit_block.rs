@@ -9,17 +9,10 @@ use crate::paint;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// The gap between two buttons.
 const BUTTON_GAP: u16 = 3;
-
-/// How old a flag is before the card says the agent may have stopped
-/// (mine): longer than an agent's edit of TOML files takes.
-const OLD_FLAG: Duration = Duration::from_secs(30 * 60);
-
-/// What the card says once a flag is [`OLD_FLAG`] old.
-const OLD_HINT: &str = "If the agent has stopped, Override opens it now.";
 
 /// The age the card is sized for, the widest it says in practice, so the
 /// card and its buttons stay put as the age ticks on (the user's "no layout
@@ -35,9 +28,7 @@ fn who(name: &str, started: Option<&str>) -> String {
 }
 
 /// The lines the card says, top to bottom, each with whether it is muted:
-/// who is editing and since when, the note, what happens next, and a row
-/// for an old flag's hint, that it may be left behind, kept (empty) while
-/// the flag is young so the card's height doesn't change when it comes.
+/// who is editing and since when, the note, and what happens next.
 fn lines(block: &EditBlock, name: &str, now: SystemTime) -> Vec<(String, bool)> {
     let started = block.flag.as_ref().map(|f| f.started_text(now));
     let mut lines = vec![(who(name, started.as_deref()), false)];
@@ -46,8 +37,6 @@ fn lines(block: &EditBlock, name: &str, now: SystemTime) -> Vec<(String, bool)> 
     }
     lines.push((String::new(), false));
     lines.push(("postui opens it when the agent finishes.".into(), true));
-    let old = block.flag.as_ref().and_then(|f| f.age(now)).is_some_and(|age| age >= OLD_FLAG);
-    lines.push((if old { OLD_HINT } else { "" }.into(), true));
     lines
 }
 
@@ -89,11 +78,11 @@ pub fn draw(
     let body = lines(block, &block.name, SystemTime::now());
     let buttons: u16 = EditBlockButton::ALL.iter().map(|b| button_width(*b, theme)).sum::<u16>()
         + BUTTON_GAP * (EditBlockButton::ALL.len() as u16 - 1);
-    // As wide as the widest age and the old flag's hint would make it, so
-    // neither moves the buttons; no wider than the screen, since the
-    // agent's note can be any length.
-    let fixed = [who(&block.name, Some(WIDEST_AGE)), OLD_HINT.to_string()];
-    let text_w = body.iter().map(|(l, _)| l).chain(&fixed).map(|l| crate::ui::cells(l));
+    // As wide as the widest age would make it, so the ticking age doesn't
+    // move the buttons; no wider than the screen, since the agent's note
+    // can be any length.
+    let widest = who(&block.name, Some(WIDEST_AGE));
+    let text_w = body.iter().map(|(l, _)| l).chain([&widest]).map(|l| crate::ui::cells(l));
     let text_w = text_w.max().unwrap_or(0);
     let text_w = text_w.min(usize::from(screen.width)) as u16;
     // Two cells of ring and padding each side.

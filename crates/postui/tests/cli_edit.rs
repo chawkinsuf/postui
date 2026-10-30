@@ -52,8 +52,10 @@ fn begin_raises_the_flag_with_its_note() {
     assert_eq!(json["tui_open"], false);
 }
 
+/// One edit at a time: a second `edit begin` refuses, and points at `edit
+/// end --force` for a flag the user confirms is stuck.
 #[test]
-fn begin_refuses_a_flag_already_up_unless_forced() {
+fn begin_refuses_a_flag_already_up() {
     let home = Home::new();
     let root = write_project(&home, "api");
     assert_ok(&edit(&home, &root, &["begin", "--note", "first"]), "first begin");
@@ -64,12 +66,8 @@ fn begin_refuses_a_flag_already_up_unless_forced() {
     let err = stderr(&out);
     assert!(err.starts_with(&format!("postui: {}: ", root.join(".postui/editing.toml").display())));
     assert!(err.contains("already in progress (started just now: \"first\")"), "{err}");
-    assert!(err.contains("--force"), "{err}");
+    assert!(err.contains("postui edit end --force"), "{err}");
     assert_eq!(flag(&root), Some(first), "the refusal leaves the flag alone");
-
-    let out = edit(&home, &root, &["begin", "--note", "second", "--force"]);
-    assert_ok(&out, "forced begin");
-    assert_eq!(flag(&root).unwrap().note.as_deref(), Some("second"));
 
     // --json: the envelope on stdout, still 1.
     let out = edit(&home, &root, &["begin", "--json"]);
@@ -78,8 +76,8 @@ fn begin_refuses_a_flag_already_up_unless_forced() {
 }
 
 /// A TUI with the project open (holding its lock, as this test process
-/// does here) makes `edit begin` refuse, `--force` or not, and leave the
-/// flag as it was. Once the TUI lets go, it goes ahead.
+/// does here) makes `edit begin` refuse and leave no flag. Once the TUI
+/// lets go, it goes ahead.
 #[test]
 fn begin_refuses_while_a_tui_has_the_project_open() {
     let home = Home::new();
@@ -91,18 +89,6 @@ fn begin_refuses_while_a_tui_has_the_project_open() {
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("postui has this project open"), "{}", stderr(&out));
     assert_eq!(flag(&root), None, "no flag left behind");
-
-    // Forced over an old flag, the old one stays.
-    let old = EditFlag {
-        started: "2026-01-01T00:00:00Z".into(),
-        note: Some("old".into()),
-        id: "old".into(),
-    };
-    Project::raise_edit_flag(&root, &old, false).unwrap();
-    let out = edit(&home, &root, &["begin", "--force"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert_eq!(flag(&root), Some(old));
-    Project::lower_edit_flag(&root).unwrap();
 
     drop(tui);
     assert_eq!(json(&edit(&home, &root, &["status", "--json"]))["tui_open"], false);
@@ -144,7 +130,7 @@ fn end_with_no_flag_says_it_was_overridden() {
     let out = edit(&home, &root, &["end"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("this edit is no longer in progress: the user overrode it"),
+        stderr(&out).contains("no edit is in progress: the user overrode it"),
         "{}",
         stderr(&out)
     );
@@ -155,51 +141,21 @@ fn end_with_no_flag_says_it_was_overridden() {
     assert!(stdout(&out).ends_with("flag  removed\n"), "{}", stdout(&out));
 }
 
-/// A flag file that won't parse is up: `edit end` names its error, and
-/// `--force` takes it down.
+/// A flag file that won't parse is up: `edit end` and `edit status` name
+/// its error, and `edit end --force` takes it down.
 #[test]
 fn end_force_takes_down_a_broken_flag() {
     let home = Home::new();
     let root = write_project(&home, "api");
     std::fs::write(root.join(".postui/editing.toml"), "started = [").unwrap();
-    let out = edit(&home, &root, &["end"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains(".postui/editing.toml"), "{}", stderr(&out));
+    for cmd in ["end", "status"] {
+        let out = edit(&home, &root, &[cmd]);
+        assert_eq!(out.status.code(), Some(2), "{cmd}");
+        assert!(stderr(&out).contains(".postui/editing.toml"), "{}", stderr(&out));
+    }
     assert!(Project::edit_flag_up(&root));
-    // `status` says so rather than failing.
-    let out = edit(&home, &root, &["status"]);
-    assert_ok(&out, "status of a broken flag");
-    assert!(stdout(&out).contains("flag    up, but its file can't be read ("), "{}", stdout(&out));
-    let json = json(&edit(&home, &root, &["status", "--json"]));
-    assert!(json["flag"]["error"].is_string(), "{json}");
     assert_ok(&edit(&home, &root, &["end", "--force"]), "forced end");
     assert!(!Project::edit_flag_up(&root));
-
-    // One that isn't even text is taken over by a forced begin.
-    std::fs::write(root.join(".postui/editing.toml"), [0xff, 0xfe, 0x00]).unwrap();
-    assert_ok(&edit(&home, &root, &["begin", "--force", "--note", "mine"]), "forced begin");
-    assert_eq!(flag(&root).and_then(|f| f.note).as_deref(), Some("mine"));
-}
-
-/// An edit that removed `project.toml` is still the flag's: `edit end`
-/// names what is missing and keeps the flag, and `--force` takes it down.
-#[test]
-fn end_finds_its_flag_in_a_project_that_lost_its_project_toml() {
-    let home = Home::new();
-    let root = write_project(&home, "api");
-    assert_ok(&edit(&home, &root, &["begin"]), "begin");
-    std::fs::remove_file(root.join("project.toml")).unwrap();
-    assert_ok(&edit(&home, &root, &["status"]), "status");
-
-    let out = edit(&home, &root, &["end"]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(stdout(&out).contains("project.toml: missing"), "{}", stdout(&out));
-    assert!(flag(&root).is_some());
-    let out = edit(&home, &root, &["end", "--force"]);
-    assert!(stdout(&out).ends_with("flag  removed\n"), "{}", stdout(&out));
-    assert_eq!(flag(&root), None);
-    // With no flag either, it is no project.
-    assert_eq!(edit(&home, &root, &["end"]).status.code(), Some(2));
 }
 
 /// `status` is a read command: it writes nothing, not even a lock file.

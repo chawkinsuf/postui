@@ -84,16 +84,16 @@ flag, so the user's postui stays off the files while you work:
      again until you end the edit; it shows "Updates in progress" instead.
    - **an edit is already in progress**: `postui edit status` shows since
      when and its note. If it is yours from earlier, carry on and end it.
-     Otherwise ask the user; `--force` takes the flag over only once they
-     confirm nothing is editing the project any more. It never lets two
-     edits run at once.
+     Otherwise ask the user. Only once they confirm nothing is editing the
+     project any more, `postui edit end --force` takes the flag down and you
+     can begin. Never run two edits at once.
 2. Edit the files (`reference.md`).
 3. `postui check`, and fix every error it reports. `postui run <slug>
    --dry-run` shows what a request resolves to.
 4. `postui edit end`. It runs `check` again and refuses (exit 1, the flag
    kept) while there are errors; fix them. `--force` ends it anyway (still
    exit 1, since the errors are still there): only when the user asks. If
-   it says **this edit is no longer in progress**, the user
+   it says **no edit is in progress**, the user
    overrode your edit in postui and may have changed files since: re-read
    what you changed, tell the user, and don't assume your edit survived.
 

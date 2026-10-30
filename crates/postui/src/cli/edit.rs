@@ -47,25 +47,20 @@ pub struct StatusReport {
 /// A flag that is up, as `status` reports it.
 #[derive(Serialize)]
 struct FlagState {
-    started: Option<String>,
+    started: String,
     /// Whole seconds since `started`; `null` when it can't be told.
     age_secs: Option<u64>,
     note: Option<String>,
-    /// Why the flag's file can't be read (the rest is `null` then): it is
-    /// up all the same, and `edit end --force` takes it down.
-    error: Option<String>,
     /// "started 4 minutes ago", for the text.
     #[serde(skip)]
     started_text: String,
 }
 
 /// Raises the flag for an edit of the project `g` names. Refuses a flag
-/// already up unless `force`, and refuses (whatever `force` says) while a
-/// TUI has the project open, putting back what was there before.
-pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport, CliError> {
-    // Found where a flag is up, though its edit removed `project.toml`: the
-    // answer there is that an edit is in progress.
-    let root = target::resolve_flagged(g.project.as_deref())?;
+/// already up, and refuses while a TUI has the project open, taking its own
+/// flag back down.
+pub fn begin(g: &Global, note: Option<&str>) -> Result<BeginReport, CliError> {
+    let root = target::resolve(g.project.as_deref())?;
     let file = root.join(EDITING_TOML);
     let tui_open = || Project::tui_open(&root).map_err(|e| CliError::at(reason(e), root.clone()));
     // Asked first so an open project raises no flag at all; asked again
@@ -75,8 +70,8 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
         return Err(open_refusal(root));
     }
     let flag = EditFlag::new(note.map(str::to_string));
-    let replaced = match Project::raise_edit_flag(&root, &flag, force) {
-        Ok(replaced) => replaced,
+    match Project::raise_edit_flag(&root, &flag) {
+        Ok(()) => {}
         Err(project::Error::AlreadyExists(_)) => {
             let held = match Project::read_edit_flag(&root) {
                 Ok(Some(held)) => describe(&held),
@@ -86,28 +81,29 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
             };
             return Err(CliError::refusal(
                 format!(
-                    "an edit is already in progress ({held}); postui edit end finishes it, \
-                     --force takes it over"
+                    "an edit is already in progress ({held}); postui edit end finishes it. If \
+                     the user confirms nothing is editing the project any more, postui edit end \
+                     --force takes the flag down"
                 ),
                 file,
             ));
         }
         Err(e) => return Err(CliError::at(reason(e), file)),
-    };
+    }
     // The flag first, then the lock: either this sees the TUI's lock, or
     // the TUI, taking its lock, sees the flag and opens nothing.
     let open = tui_open();
     if matches!(open, Ok(false)) {
         return Ok(BeginReport { flag: file, started: flag.started, note: flag.note, root });
     }
-    // Refused either way: the flag goes back to what it was. One that won't
-    // come down is said with the refusal, so the agent knows to clear it.
-    let restored = Project::restore_edit_flag(&root, replaced.as_deref());
+    // Refused either way: its own flag comes down. One that won't is said
+    // with the refusal, so the agent knows to clear it.
+    let lowered = Project::lower_edit_flag(&root);
     let mut refusal = match open {
         Ok(_) => open_refusal(root),
         Err(e) => e,
     };
-    if let Err(e) = restored {
+    if let Err(e) = lowered {
         refusal.message.push_str(&format!(
             "; its flag could not be taken back down ({}): postui edit end --force removes it",
             reason(e)
@@ -127,32 +123,23 @@ fn open_refusal(root: PathBuf) -> CliError {
 
 /// Lowers the flag once `check` finds no error (or with `force`). A flag
 /// already down is a refusal: the user overrode it, so the agent's edit
-/// may have met theirs. A project whose `project.toml` the edit removed
-/// is still this flag's, and `check` says what is missing.
+/// may have met theirs.
 pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
-    let root = target::resolve_flagged(g.project.as_deref())?;
+    let root = target::resolve(g.project.as_deref())?;
     let file = root.join(EDITING_TOML);
-    let read = || Project::read_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()));
     // A flag file that won't parse is up all the same: `--force` takes it
-    // down without knowing whose it is; without, its error is the answer.
-    let ours = match read() {
+    // down; without, its error is the answer.
+    match Project::read_edit_flag(&root) {
         Ok(None) => return Err(overridden(file)),
-        Ok(Some(flag)) => Some(flag),
-        Err(_) if force && Project::edit_flag_up(&root) => None,
-        Err(e) => return Err(e),
-    };
-    let check = check::check_root(root.clone(), None)?;
+        Ok(Some(_)) => {}
+        Err(_) if force => {}
+        Err(e) => return Err(CliError::at(reason(e), file)),
+    }
+    let check = check::check(g, None)?;
     let flag_removed = check.status() == ExitCode::SUCCESS || force;
     if flag_removed {
-        // Taken down while `check` ran: the user overrode it, and a flag up
-        // now is another edit's, begun since, left up.
-        let still_ours = match read() {
-            Ok(Some(now)) => ours.as_ref() == Some(&now),
-            Ok(None) => false,
-            // The unreadable flag `--force` found, still one.
-            Err(_) => ours.is_none(),
-        };
-        if !still_ours {
+        // Taken down while `check` ran: the user overrode it.
+        if !Project::edit_flag_up(&root) {
             return Err(overridden(file));
         }
         Project::lower_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()))?;
@@ -160,11 +147,10 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
     Ok(EndReport { root, check, flag_removed })
 }
 
-/// `edit end` with no flag of its own to take down.
+/// `edit end` with no flag to take down.
 fn overridden(file: PathBuf) -> CliError {
     CliError::refusal(
-        "this edit is no longer in progress: the user overrode it in postui (a flag up now is \
-         another edit's), or edit begin never ran",
+        "no edit is in progress: the user overrode it in postui, or edit begin never ran",
         file,
     )
 }
@@ -172,26 +158,16 @@ fn overridden(file: PathBuf) -> CliError {
 /// Whether the flag is up and whether a TUI has the project open. Writes
 /// nothing.
 pub fn status(g: &Global) -> Result<StatusReport, CliError> {
-    let root = target::resolve_flagged(g.project.as_deref())?;
+    let root = target::resolve(g.project.as_deref())?;
     let now = SystemTime::now();
-    let flag = match Project::read_edit_flag(&root) {
-        Ok(flag) => flag.map(|f| FlagState {
+    let flag = Project::read_edit_flag(&root)
+        .map_err(|e| CliError::at(reason(e), root.join(EDITING_TOML)))?
+        .map(|f| FlagState {
             age_secs: f.age(now).map(|a| a.as_secs()),
             started_text: f.started_text(now),
-            started: Some(f.started),
+            started: f.started,
             note: f.note,
-            error: None,
-        }),
-        // Up, but unreadable: said, rather than failing the question.
-        Err(e) if Project::edit_flag_up(&root) => Some(FlagState {
-            started: None,
-            age_secs: None,
-            note: None,
-            error: Some(reason(e)),
-            started_text: String::new(),
-        }),
-        Err(e) => return Err(CliError::at(reason(e), root.join(EDITING_TOML))),
-    };
+        });
     let tui_open = Project::tui_open(&root).map_err(|e| CliError::at(reason(e), root.clone()))?;
     Ok(StatusReport { root, flag, tui_open })
 }
@@ -243,10 +219,6 @@ impl StatusReport {
         let mut rows = vec![("root", self.root.display().to_string())];
         match &self.flag {
             None => rows.push(("flag", "down".to_string())),
-            Some(FlagState { error: Some(error), .. }) => rows.push((
-                "flag",
-                format!("up, but its file can't be read ({error}); edit end --force removes it"),
-            )),
             Some(f) => {
                 rows.push(("flag", format!("up, {}", f.started_text)));
                 if let Some(note) = &f.note {

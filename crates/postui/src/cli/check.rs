@@ -59,16 +59,7 @@ impl Finding {
 /// `env` (as `vars` picks it). Only a project that isn't one, or an `env`
 /// that doesn't exist, is the error rather than a report.
 pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
-    check_root(target::resolve(g.project.as_deref())?, env)
-}
-
-/// [`check`] of `root`, which `edit end` resolved: there, a `project.toml`
-/// the agent removed is an error in the report, as one that won't parse is.
-pub fn check_root(root: PathBuf, env: Option<&str>) -> Result<CheckReport, CliError> {
-    if !Project::is_project(&root) {
-        let missing = Finding::at(root.join("project.toml"), "missing: a project needs one");
-        return Ok(CheckReport::new(root, None, vec![missing], Vec::new()));
-    }
+    let root = target::resolve(g.project.as_deref())?;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let (mut project, opened_warnings) = match open(&root) {

@@ -22,7 +22,7 @@ fn root(app: &App) -> PathBuf {
 
 /// The agent's `edit begin`, without its check of the lock.
 fn raise(root: &Path, note: &str) {
-    Project::raise_edit_flag(root, &EditFlag::new(Some(note.into())), false).unwrap();
+    Project::raise_edit_flag(root, &EditFlag::new(Some(note.into()))).unwrap();
 }
 
 /// The agent's `edit end`.
@@ -227,27 +227,17 @@ fn override_asks_then_removes_the_flag_and_opens() {
     assert_eq!(root(&app), other.path());
 }
 
-/// Override takes down only the edit it asked about: one another `edit
-/// begin` raised since, even one the poll shows, is left up.
+/// A cmd chord (from a terminal that reports SUPER) presses no button:
+/// cmd+q doesn't quit, cmd+o doesn't ask to override.
 #[test]
-fn override_takes_down_only_the_edit_it_asked_about() {
+fn a_cmd_chord_presses_no_button() {
     let other = other_project("Other");
-    let root = other.path().to_path_buf();
-    let mut app = waiting_on(&root);
-    app.handle_key(plain('o'));
-    let second = EditFlag::new(Some("second".into()));
-    Project::raise_edit_flag(&root, &second, true).unwrap();
-    poll(&mut app);
-    app.handle_key(plain('o'));
-    assert_eq!(Project::read_edit_flag(&root).unwrap(), Some(second.clone()));
-    assert_eq!(app.edit_block.as_ref().and_then(|b| b.flag.clone()), Some(second));
-
-    // Nor one gone unreadable since.
-    app.handle_key(plain('o'));
-    std::fs::write(root.join(".postui/editing.toml"), "started = [").unwrap();
-    app.handle_key(plain('o'));
-    assert!(Project::edit_flag_up(&root), "not lowered");
-    assert!(app.edit_block.as_ref().is_some_and(|b| b.flag.is_none()));
+    let mut app = waiting_on(other.path());
+    for c in ['q', 'o', 's'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SUPER));
+    }
+    assert!(!app.should_quit);
+    assert!(app.modals.is_empty());
 }
 
 /// alt+z cycles on past a project an agent is editing.
@@ -271,8 +261,8 @@ fn the_project_cycle_goes_on_from_the_screen() {
 
 /// A directory with no `project.toml` gets no `.postui/` for being opened
 /// (the user: a stray folder "sounds terrible"); a project made there in
-/// place takes its lock. One another window holds is made all the same,
-/// saying it isn't locked.
+/// place takes its lock. One another window holds isn't made, as no open
+/// goes ahead then.
 #[test]
 fn a_bare_directory_is_locked_only_once_it_is_a_project() {
     let mut app = App::new_for_test();
@@ -287,8 +277,7 @@ fn a_bare_directory_is_locked_only_once_it_is_a_project() {
     let here = root(&app);
     let held = ProjectLock::take(&here).unwrap().expect("free");
     app.update(Action::InitProjectHere);
-    assert!(Project::is_project(&here));
-    assert!(app.project_lock.is_none());
+    assert!(!Project::is_project(&here), "nothing written");
     assert!(app.toasts.messages().iter().any(|m| m.contains("another postui window")));
     drop(held);
 }
@@ -363,7 +352,6 @@ fn the_screen_draws_its_buttons_and_they_click() {
     assert!(screen.contains("Updates in progress"), "{screen}");
     assert!(screen.contains("\"add the orders^Jrequests^[\""), "{screen}");
     assert!(screen.contains("Switch projects"), "{screen}");
-    assert!(!screen.contains("If the agent has stopped"), "a fresh flag: {screen}");
 
     let quit = (0..30)
         .flat_map(|y| (0..100).map(move |x| (x, y)))
@@ -381,26 +369,13 @@ fn the_screen_draws_its_buttons_and_they_click() {
     assert!(app.should_quit);
 }
 
-/// An old flag says the agent may have stopped, and points at Override.
-#[test]
-fn an_old_flag_points_at_override() {
-    let other = other_project("Other");
-    let old = EditFlag { started: "2026-01-01T00:00:00Z".into(), note: None, id: "old".into() };
-    Project::raise_edit_flag(other.path(), &old, false).unwrap();
-    let mut app = project_app();
-    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
-    let screen = screen_text(&mut app, 100, 30);
-    assert!(screen.contains("If the agent has stopped, Override opens it now."), "{screen}");
-}
-
-/// The card keeps its size and its buttons their place as the flag ages,
-/// the old flag's hint included.
+/// The card keeps its size and its buttons their place as the flag ages.
 #[test]
 fn the_card_doesnt_move_as_the_flag_ages() {
     let quit_at = |started: &str| {
         let other = other_project("Other");
-        let flag = EditFlag { started: started.into(), note: Some("n".into()), id: "a".into() };
-        Project::raise_edit_flag(other.path(), &flag, false).unwrap();
+        let flag = EditFlag { started: started.into(), note: Some("n".into()) };
+        Project::raise_edit_flag(other.path(), &flag).unwrap();
         let mut app = project_app();
         app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
         screen_text(&mut app, 100, 30);
@@ -414,7 +389,7 @@ fn the_card_doesnt_move_as_the_flag_ages() {
     let young = quit_at(&now);
     assert!(young.is_some());
     assert_eq!(quit_at(&ten_minutes), young, "the age grew longer");
-    assert_eq!(quit_at("2026-01-01T00:00:00Z"), young, "the old flag's hint came");
+    assert_eq!(quit_at("2026-01-01T00:00:00Z"), young, "months old");
 }
 
 /// The open project by another spelling of its path is no switch: it

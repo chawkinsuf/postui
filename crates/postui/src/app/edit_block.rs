@@ -118,17 +118,22 @@ impl App {
     /// Takes `root`'s lock for a project about to be made in place (the
     /// create-project answers), where no open took it first: before its
     /// `project.toml` is written, since an agent's `edit begin` needs one
-    /// to find the project. The make goes ahead whatever the take finds,
-    /// and a lock it can't have is said.
-    pub(super) fn take_project_lock(&mut self, root: &Path) {
+    /// to find the project. Whether the make may go ahead: not while
+    /// another window holds the lock, as no open does then. A lock that
+    /// can't be taken at all is said, and the make goes ahead.
+    pub(super) fn take_project_lock(&mut self, root: &Path) -> bool {
         self.project_lock = None;
         match ProjectLock::take(root) {
             Ok(Some(lock)) => self.project_lock = Some(lock),
-            Ok(None) => self
-                .toasts
-                .push(unlocked("another postui window has it open too"), ToastKind::Warning),
+            Ok(None) => {
+                let e = Self::open_in_another_window(root);
+                self.toasts.push(format!("could not create the project: {e}"), ToastKind::Error);
+                self.last_action_failed = true;
+                return false;
+            }
             Err(e) => self.toasts.push(unlocked(&e.to_string()), ToastKind::Warning),
         }
+        true
     }
 
     /// The waiting screen's look at the flag, at most once a second unless
@@ -186,29 +191,13 @@ impl App {
         }
     }
 
-    /// Override, confirmed: the flag comes down, as `edit end` would take
-    /// it, the agent's `edit end` will say the user overrode it, and the
-    /// project opens. `asked` is the flag the screen showed when the
-    /// question was put, which the poll may have re-read since: only that
-    /// one is taken down.
-    pub(super) fn override_edit_flag(&mut self, asked: Option<EditFlag>) -> bool {
+    /// Override, confirmed: the flag comes down, as `edit end --force`
+    /// would take it, the agent's `edit end` will say the user overrode it,
+    /// and the project opens.
+    pub(super) fn override_edit_flag(&mut self) -> bool {
         let Some(root) = self.edit_block.as_ref().map(|b| b.root.clone()) else {
             return false;
         };
-        // An unreadable flag is `None`, as the screen holds one: a question
-        // asked about a readable flag doesn't lower one gone unreadable.
-        let now = match Project::read_edit_flag(&root) {
-            Ok(None) => return self.apply(Action::ForceSwitchProject(root)),
-            Ok(Some(flag)) => Some(flag),
-            Err(_) => None,
-        };
-        if now != asked {
-            if let Some(block) = self.edit_block.as_mut() {
-                block.flag = now;
-            }
-            self.toasts.push("Another edit began; it is the one showing now", ToastKind::Info);
-            return true;
-        }
         if let Err(e) = Project::lower_edit_flag(&root) {
             self.toasts.push(format!("could not remove the edit flag: {e}"), ToastKind::Error);
             return true;
@@ -218,16 +207,16 @@ impl App {
 
     /// The Override button's question.
     pub(super) fn confirm_override_edit_flag(&mut self) -> bool {
-        let Some(asked) = self.edit_block.as_ref().map(|b| b.flag.clone()) else {
+        if self.edit_block.is_none() {
             return false;
-        };
+        }
         self.push_modal(Modal::Confirm {
             title: OVERRIDE_TITLE.into(),
             body: "The agent may be in the middle of its edit. Open the project with its files \
                    as they are now?"
                 .into(),
             choices: vec![
-                ('o', "Override".into(), vec![Action::OverrideEditFlag(asked)]),
+                ('o', "Override".into(), vec![Action::OverrideEditFlag]),
                 ('n', "Cancel".into(), vec![]),
             ],
         });
@@ -241,7 +230,10 @@ impl App {
         let ev = crate::keys::normalize_super_keys(ev);
         let armed = self.disarm_quit();
         let combo = KeyCombo::from_event(&ev);
-        if ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        // A chord (cmd+q included, from terminals that report SUPER) is the
+        // keymap's, never a button's letter.
+        if ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
             return match self.lookup_key(&combo) {
                 // The quit combo quits on its second press, as everywhere.
                 Some(Action::Quit) => self.press_quit_combo(combo, armed.as_ref()),

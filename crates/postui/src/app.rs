@@ -1024,7 +1024,9 @@ impl App {
     fn init_default_project(&mut self, root: PathBuf) {
         // Locked before `project.toml` is written, from when an agent's
         // `edit begin` could first find a project there.
-        self.take_project_lock(&root);
+        if !self.take_project_lock(&root) {
+            return;
+        }
         match Project::init(&root, Some("default")) {
             Ok((project, warnings)) => {
                 self.project = Some(project);
@@ -5348,7 +5350,9 @@ impl App {
                 // Locked before `project.toml` is written, from when an
                 // agent's `edit begin` could first find a project here.
                 let here = self.root().to_path_buf();
-                self.take_project_lock(&here);
+                if !self.take_project_lock(&here) {
+                    return true;
+                }
                 match Project::init(self.root(), None) {
                     Ok((project, warnings)) => {
                         let root = project.root().to_path_buf();
@@ -5406,7 +5410,7 @@ impl App {
                 true
             }
             Action::ConfirmOverrideEditFlag => self.confirm_override_edit_flag(),
-            Action::OverrideEditFlag(asked) => self.override_edit_flag(asked),
+            Action::OverrideEditFlag => self.override_edit_flag(),
             Action::OpenProjectChooser => {
                 self.apply(Action::ReloadProjectFiles);
                 use crate::components::chooser::{ChooserItem, ChooserState};
