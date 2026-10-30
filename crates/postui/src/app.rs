@@ -5545,7 +5545,13 @@ impl App {
                 true
             }
             Action::CycleProject(delta) => {
-                match self.registry.neighbor(self.root(), delta) {
+                // From the edit flag's waiting screen the cycle goes on from
+                // the project it waits on, which isn't open.
+                let current = match (&self.project, &self.edit_block) {
+                    (None, Some(block)) => block.root.clone(),
+                    _ => self.root().to_path_buf(),
+                };
+                match self.registry.neighbor(&current, delta) {
                     None => {
                         self.toasts.push("only one project registered", ToastKind::Warning);
                     }
@@ -5626,10 +5632,9 @@ impl App {
                 let Some(((project, warnings), lock, lock_warning)) = incoming else {
                     self.project = None;
                     self.refresh_sidebar();
-                    // Remembered as the last project now, so a quit from
-                    // the screen relaunches onto it.
-                    self.registry.register(target.clone());
-                    self.save_registry();
+                    // Not registered yet: a folder joins the known projects
+                    // only once it opens (as `ForceCreateProject` has it),
+                    // which the screen's own open does.
                     self.raise_edit_block(target);
                     return true;
                 };

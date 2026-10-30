@@ -329,9 +329,10 @@ const EDIT_END_USAGE: &str = concat!(
 usage: postui edit end [-p <dir|name>] [--force] [--json]
 
 Checks the project as postui check does and, when it finds no error, ends
-the edit, and postui can open the project again. Exits 1 when check finds an error
-(the edit stays in progress, unless --force), or when no edit is in progress
-(the user overrode it in postui).
+the edit, and postui can open the project again. Exits 1 when check finds
+an error (the edit stays in progress, unless --force), when no edit is in
+progress (the user overrode it in postui), or when another edit took this
+one over.
 
 ",
     project_flag!(),

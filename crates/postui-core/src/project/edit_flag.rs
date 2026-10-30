@@ -60,17 +60,10 @@ impl EditFlag {
     /// "started 4 minutes ago", or the stamp itself when its age can't be
     /// told.
     pub fn started_text(&self, now: SystemTime) -> String {
-        started_text(&self.started, self.age(now))
-    }
-}
-
-/// "started 4 minutes ago" for a flag `age` old, or "started `started`"
-/// when its age can't be told: [`EditFlag::started_text`], for a caller
-/// holding the parts.
-pub fn started_text(started: &str, age: Option<Duration>) -> String {
-    match age {
-        Some(age) => format!("started {}", ago(age)),
-        None => format!("started {started}"),
+        match self.age(now) {
+            Some(age) => format!("started {}", ago(age)),
+            None => format!("started {}", self.started),
+        }
     }
 }
 

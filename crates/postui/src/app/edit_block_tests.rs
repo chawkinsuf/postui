@@ -142,7 +142,7 @@ fn launching_onto_a_flagged_project_waits_to_open_it() {
 
 /// A switch onto a flagged project leaves the current one as any switch
 /// does, a Discard of its edits included, and lets go of its lock. The
-/// project switched to is remembered as the last one.
+/// project switched to joins the known projects only once it opens.
 #[test]
 fn a_switch_onto_a_flagged_project_leaves_the_current_one() {
     let mut app = project_app();
@@ -165,6 +165,9 @@ fn a_switch_onto_a_flagged_project_leaves_the_current_one() {
     assert!(app.project.is_none());
     assert!(!app.editor.is_dirty(), "discarded, as asked");
     assert!(!Project::tui_open(&here).unwrap());
+    assert!(!app.registry.known.iter().any(|p| p == other.path()));
+    lower(other.path());
+    poll(&mut app);
     assert_eq!(app.registry.last.as_deref(), Some(other.path()));
 }
 
@@ -270,7 +273,9 @@ fn the_project_cycle_goes_on_from_the_screen() {
     let here = root(&app);
     let other = other_project("Other");
     raise(other.path(), "x");
-    app.registry.known = vec![here.clone(), other.path().to_path_buf()];
+    // The flagged project first: the cycle goes on from it, not from the
+    // first known.
+    app.registry.known = vec![other.path().to_path_buf(), here.clone()];
     app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
     assert!(app.edit_block.is_some());
     let next = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
@@ -306,6 +311,23 @@ fn the_override_question_goes_with_the_edit() {
     poll(&mut app);
     assert!(app.edit_block.is_none());
     assert!(app.modals.is_empty());
+}
+
+/// The user's own dialog over the screen (the projects chooser) isn't
+/// opened under: the project opens once it closes.
+#[test]
+fn the_open_waits_for_the_users_dialog() {
+    let other = other_project("Other");
+    let mut app = waiting_on(other.path());
+    app.handle_key(plain('s'));
+    assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
+    lower(other.path());
+    poll(&mut app);
+    assert!(app.edit_block.is_some() && app.project.is_none(), "still waiting");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    poll(&mut app);
+    assert!(app.edit_block.is_none());
+    assert_eq!(root(&app), other.path());
 }
 
 /// A waiting project that won't open once its flag comes down is the

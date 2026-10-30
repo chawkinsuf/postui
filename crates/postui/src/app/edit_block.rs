@@ -143,7 +143,14 @@ impl App {
         self.edit_flag_polled = Some(now);
         match Project::read_edit_flag(&root) {
             Ok(None) => {
-                self.apply(Action::ForceSwitchProject(root));
+                // The Override question asked about an edit that is over.
+                // Any other dialog (the projects chooser, a file picker) is
+                // the user's, about where to go next: the open waits for it
+                // to close rather than opening under it.
+                self.close_override_question();
+                if self.modals.is_empty() {
+                    self.apply(Action::ForceSwitchProject(root));
+                }
             }
             Ok(Some(flag)) => {
                 if let Some(block) = self.edit_block.as_mut() {

@@ -17,7 +17,7 @@ use postui_core::project::{self, EDITING_TOML, EditFlag, Project};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// `postui edit begin`.
 #[derive(Serialize)]
@@ -54,6 +54,9 @@ struct FlagState {
     /// Why the flag's file can't be read (the rest is `null` then): it is
     /// up all the same, and `edit end --force` takes it down.
     error: Option<String>,
+    /// "started 4 minutes ago", for the text.
+    #[serde(skip)]
+    started_text: String,
 }
 
 /// Raises the flag for an edit of the project `g` names. Refuses a flag
@@ -156,13 +159,20 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
     if flag_removed {
         // The look and the take-down as one change of the flag.
         let _hold = hold_flag(&root)?;
-        // Taken down while `check` ran, or taken over (an override, then
-        // another `edit begin`): the same refusal, and someone else's flag
-        // is left up.
-        if let Some(ours) = &ours
-            && read()?.as_ref() != Some(ours)
-        {
-            return Err(overridden(file));
+        // Taken down while `check` ran (an override), or taken over by
+        // another `edit begin --force`, whose flag is left up.
+        if let Some(ours) = &ours {
+            match read()? {
+                Some(now) if &now == ours => {}
+                Some(_) => {
+                    return Err(CliError::refusal(
+                        "another edit took this one over (edit begin --force) while check \
+                         ran; its flag is left up",
+                        file,
+                    ));
+                }
+                None => return Err(overridden(file)),
+            }
         }
         Project::lower_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()))?;
     }
@@ -181,17 +191,23 @@ fn overridden(file: PathBuf) -> CliError {
 /// nothing.
 pub fn status(g: &Global) -> Result<StatusReport, CliError> {
     let root = target::resolve_flagged(g.project.as_deref())?;
+    let now = SystemTime::now();
     let flag = match Project::read_edit_flag(&root) {
         Ok(flag) => flag.map(|f| FlagState {
-            age_secs: f.age(SystemTime::now()).map(|a| a.as_secs()),
+            age_secs: f.age(now).map(|a| a.as_secs()),
+            started_text: f.started_text(now),
             started: Some(f.started),
             note: f.note,
             error: None,
         }),
         // Up, but unreadable: said, rather than failing the question.
-        Err(e) if Project::edit_flag_up(&root) => {
-            Some(FlagState { started: None, age_secs: None, note: None, error: Some(reason(e)) })
-        }
+        Err(e) if Project::edit_flag_up(&root) => Some(FlagState {
+            started: None,
+            age_secs: None,
+            note: None,
+            error: Some(reason(e)),
+            started_text: String::new(),
+        }),
         Err(e) => return Err(CliError::at(reason(e), root.join(EDITING_TOML))),
     };
     let tui_open = Project::tui_open(&root).map_err(|e| CliError::at(reason(e), root.clone()))?;
@@ -250,9 +266,7 @@ impl StatusReport {
                 format!("up, but its file can't be read ({error}); edit end --force removes it"),
             )),
             Some(f) => {
-                let age = f.age_secs.map(Duration::from_secs);
-                let started = project::started_text(f.started.as_deref().unwrap_or(""), age);
-                rows.push(("flag", format!("up, {started}")));
+                rows.push(("flag", format!("up, {}", f.started_text)));
                 if let Some(note) = &f.note {
                     rows.push(("note", note.clone()));
                 }
