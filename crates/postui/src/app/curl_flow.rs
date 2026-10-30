@@ -179,7 +179,9 @@ impl App {
         }
         // This can run inside a prompt's own actions (Enter on the command
         // before), whose loop reads the flag: a refusal here must not bring
-        // that prompt back over this one's.
+        // that prompt back over this one's. Taken and put back, as
+        // `commit_settings_edit` does for a write inside other actions;
+        // the answer read here is the return value, not the flag.
         let outer = std::mem::take(&mut self.last_action_failed);
         let created = self.create_current(run, name, vars);
         self.last_action_failed = outer;
