@@ -446,8 +446,8 @@ fn run_output_file_failure_keeps_the_response() {
     assert_eq!(v["response"]["status"], 200);
     assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
 
-    // Under a file, with --jq: the results show, and so does the body the
-    // file was to keep.
+    // Under a file, with --jq: as if there were no -o, the results show
+    // and the body doesn't.
     let blocker = home.path().join("blocker");
     std::fs::write(&blocker, "x").unwrap();
     let missing = blocker.join("out.txt");
@@ -456,11 +456,13 @@ fn run_output_file_failure_keeps_the_response() {
     let v = json(&out);
     assert!(v["error"].as_str().unwrap().contains("out.txt"), "{}", v["error"]);
     assert_eq!(v["jq"]["output"], serde_json::json!([42]));
-    assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
+    assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
+    let (code, out, _) = streams(&home, &root, "main/ok", &["--jq", ".id", "-o", s(&missing)]);
+    assert_eq!((code, out.as_str()), (Some(1), "42\n"));
 
-    // A failing filter too: the body shows, so no hint to save it.
+    // A failing filter too: -o was given, so no hint to give it.
     let (code, out, err) = streams(&home, &root, "main/ok", &["--jq", ".id.x", "-o", s(&missing)]);
-    assert_eq!((code, out.as_str()), (Some(1), "{\"id\":42}\n"));
+    assert_eq!((code, out.as_str()), (Some(1), ""));
     assert!(err.starts_with("postui: jq: ") && !err.contains("-o FILE"), "{err}");
 }
 
@@ -679,6 +681,15 @@ fn run_says_on_stderr_what_failed() {
     assert_eq!(err.lines().count(), 1, "{err}");
     let file = home.path().join("kept.bin");
     let (code, out, err) = streams(&home, &root, "main/bytes", &["--jq", ".", "-o", s(&file)]);
+    assert_eq!((code, out.as_str()), (Some(1), ""));
+    assert!(err.starts_with("postui: jq: ") && !err.contains("-o FILE"), "{err}");
+    // An empty body has nothing to save.
+    std::fs::write(
+        root.join("requests/main/empty.toml"),
+        "name = \"Empty\"\nmethod = \"GET\"\nurl = \"{{base}}/empty\"\n",
+    )
+    .unwrap();
+    let (code, out, err) = streams(&home, &root, "main/empty", &["--jq", ".x"]);
     assert_eq!((code, out.as_str()), (Some(1), ""));
     assert!(err.starts_with("postui: jq: ") && !err.contains("-o FILE"), "{err}");
 

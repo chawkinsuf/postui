@@ -204,7 +204,9 @@ A failing filter no longer shows the body (`response.body` and `body_json`
 are `null`): the vLLM dogfood printed 24 KB of streamed body into an agent's
 context that way. Its stderr line ends `; -o FILE saves the body` when no
 `-o` kept it, and the skill tells the agent to add `-o` when trying a filter
-on a body it can't fetch again. A `-o` write that fails still shows the body.
+on a body it can't fetch again (the hint is left out for an empty body). A
+`-o` write that fails is as if there were no `-o`: the body without a
+filter, the results with one.
 This replaces "With `--jq`, FILE gets the jq output instead" above and the
 #215 amendment's first sentence.
 

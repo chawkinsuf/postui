@@ -297,6 +297,24 @@ struct JqReport {
     filter: String,
     output: Option<Vec<serde_json::Value>>,
     error: Option<String>,
+    /// Whether a failure's text says `-o FILE` saves the body: no `-o` was
+    /// given and there is a body to save. Only the text says so; for a
+    /// script the JSON's null body and `output_file` are the same facts.
+    #[serde(skip)]
+    suggest_output: bool,
+}
+
+impl JqReport {
+    /// The failing filter's error as the text prints it: with how to keep
+    /// the body it failed on, which isn't printed (#223), when nothing kept
+    /// it.
+    fn failure(&self) -> Option<String> {
+        let error = self.error.as_ref()?;
+        Some(match self.suggest_output {
+            true => format!("{error}; -o FILE saves the body"),
+            false => error.clone(),
+        })
+    }
 }
 
 /// `404 Not Found`: the code and its reason, or the code alone when it has
@@ -342,9 +360,9 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
 }
 
 /// Fills `report` from `raw`: the response, the jq results, the `-o` file.
-/// A file that can't be written is the report's `error`, with the body
-/// shown in its place, `--jq` or not. The body takes the form the report
-/// will print in: text, or with `json` parsed when it parses.
+/// A file that can't be written is the report's `error`, with the response
+/// shown as if there were no `-o`. The body takes the form the report will
+/// print in: text, or with `json` parsed when it parses.
 fn record(
     report: &mut RunReport,
     mask: &Mask,
@@ -379,11 +397,16 @@ fn record(
     // against printing 24 KB of stream on a failure (mine (approved)); the
     // skill tells the agent to add `-o` for such requests.
     if let Some(filter) = jq {
-        let (output, error) = match run_jq(filter, text(), mask) {
+        let (results, error) = match run_jq(filter, text(), mask) {
             Ok(results) => (Some(results), None),
             Err(message) => (None, Some(mask.apply(&message))),
         };
-        report.jq = Some(JqReport { filter: mask.apply(filter), output, error });
+        report.jq = Some(JqReport {
+            filter: mask.apply(filter),
+            output: results,
+            error,
+            suggest_output: output.is_none() && !raw.bytes.is_empty(),
+        });
     }
     let mut show_body = jq.is_none() && output.is_none();
     if let Some(file) = output {
@@ -397,11 +420,13 @@ fn record(
         };
         match absolute(file).and_then(|path| write_output(&path, &bytes).map(|()| path)) {
             Ok(written) => report.output_file = Some(written),
-            // The request is sent and can't be resent safely: the body the
-            // file was to keep is shown instead.
+            // The request is sent and can't be resent safely: the report
+            // keeps what came back, as if there were no `-o` (a filter's
+            // results, then, and no body: they are what the reader asked
+            // to see).
             Err(e) => {
                 report.error = Some(mask.apply(&e.message));
-                show_body = true;
+                show_body = jq.is_none();
             }
         }
     }
@@ -565,21 +590,6 @@ impl RunReport {
         printed
     }
 
-    /// A failing filter's error, and how to keep the body it failed on when
-    /// neither a file nor the report holds it (#223): a filter's body isn't
-    /// printed, but one a failed `-o` write couldn't keep is. Only the text
-    /// says so; the JSON's `output_file` and null body are the same facts
-    /// for a script.
-    fn jq_failure(&self, error: &str) -> String {
-        let shown =
-            self.response.as_ref().is_some_and(|r| r.body.is_some() || r.body_json.is_some());
-        if self.output_file.is_some() || shown {
-            error.to_string()
-        } else {
-            format!("{error}; -o FILE saves the body")
-        }
-    }
-
     /// What a run prints like curl, as (stdout, stderr). Stdout: with
     /// `include`, the status line and response headers and a blank line;
     /// then the body as it came (nothing when `-o` took it), or the jq
@@ -623,8 +633,8 @@ impl RunReport {
             for value in j.output.iter().flatten() {
                 out.push_str(&format!("{value}\n"));
             }
-            if let Some(error) = &j.error {
-                err.push_str(&format!("postui: jq: {}\n", self.jq_failure(error)));
+            if let Some(failure) = j.failure() {
+                err.push_str(&format!("postui: jq: {failure}\n"));
             }
         }
         if let Some(error) = &self.error {
@@ -692,8 +702,8 @@ impl RunReport {
             for value in j.output.iter().flatten() {
                 out.push_str(&format!("{value}\n"));
             }
-            if let Some(error) = &j.error {
-                out.push_str(&table(&[vec![format!("error: {}", self.jq_failure(error))]]));
+            if let Some(failure) = j.failure() {
+                out.push_str(&table(&[vec![format!("error: {failure}")]]));
             }
         }
         if let Some(file) = &self.output_file {

@@ -271,7 +271,8 @@ sent, or when the jq filter fails.
                             results still print
   -i, --include             print the status and response headers first
   -v, --verbose             print the whole run: the request sent, the
-                            status, timings and headers, then the body
+                            status, timings and headers, then the body (or
+                            the jq results)
   --timeout <secs>          give up if the response hasn't started after this
                             long (connect, upload and redirects included),
                             or the body stalls this long between reads
