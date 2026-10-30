@@ -246,7 +246,8 @@ usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]
                    [--show-secrets] [--json]
 
 Sends one request and prints the response body, as curl does, but as text
-(-o writes its exact bytes); -i adds the status and headers, -v the whole
+(-o writes its exact bytes, or with a filter the text, masked); -i adds the
+status and headers, -v the whole
 run. A status of 400 or more, errors and warnings go to stderr. <request> is
 a slug as `postui requests` lists it.
 Nothing is written to the project. Each secret's exact value is masked in

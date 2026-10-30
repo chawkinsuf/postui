@@ -206,7 +206,9 @@ context that way. Its stderr line ends `; -o FILE saves the body` when no
 `-o` kept it, and the skill tells the agent to add `-o` when trying a filter
 on a body it can't fetch again (the hint is left out for an empty body). A
 `-o` write that fails is as if there were no `-o`: the body without a
-filter, the results with one.
+filter, the results with one. When the filter and the write both fail, the
+two errors are all that prints, with no hint (you: "if everything fails
+nothing works ... Just show the errors").
 This replaces "With `--jq`, FILE gets the jq output instead" above and the
 #215 amendment's first sentence.
 

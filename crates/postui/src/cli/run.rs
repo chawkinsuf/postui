@@ -273,8 +273,9 @@ struct ShownHeader {
 /// What came back, masked. The text prints the body as it came, in `body`.
 /// The JSON gives it once: as `body_json` when it parses as JSON, else as
 /// the string `body` (spec §5, #217). Both are `null` when `--jq` or `-o`
-/// took the body (their own keys say so), a failing `--jq` too (#223); a
-/// `-o` that can't be written leaves the body shown.
+/// took the body (their own keys say so), a failing `--jq` too (#223). A
+/// `-o` that can't be written is as if there were no `-o`: the body shows
+/// unless there is a filter.
 #[derive(Serialize)]
 struct ResponseReport {
     status: u16,
@@ -423,7 +424,9 @@ fn record(
             // The request is sent and can't be resent safely: the report
             // keeps what came back, as if there were no `-o` (a filter's
             // results, then, and no body: they are what the reader asked
-            // to see).
+            // to see). When the filter fails too, the two errors are all
+            // that prints, with no `-o` hint ("if everything fails ...
+            // just show the errors", the user, #223).
             Err(e) => {
                 report.error = Some(mask.apply(&e.message));
                 show_body = jq.is_none();
