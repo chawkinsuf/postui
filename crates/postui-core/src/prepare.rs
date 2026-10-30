@@ -100,7 +100,7 @@ pub enum PrepareError {
     /// `{{token}}`: a value isn't a template, so the URL would go out with
     /// the braces in it (spec 2026-10-30 D1). Asked before the unresolved
     /// names, so a missing secret or selection (only a warning in `check`)
-    /// can't hide it. `token` is the mask when `var` is a secret.
+    /// can't hide it. Never about a secret, whose value isn't looked into.
     ValueHoldsVariable {
         var: String,
         token: String,
@@ -146,8 +146,9 @@ impl fmt::Display for PrepareError {
 /// `{{token}}`, with `vars` overlaid. The URL is the one place checked at
 /// send time: a header's or a body's braces might be meant, and `check`
 /// warns about every such value where it is written (spec 2026-10-30, the
-/// amendment after review round 3). A secret's token is the mask, so the
-/// refusal shows none of its value.
+/// amendment after review round 3). A secret's value is opaque data, not a
+/// value someone wrote as a template, so it is never looked into: braces
+/// in it go out as they are, and nothing of it is printed.
 fn url_holding_token(
     req: &HttpRequest,
     vars: &IndexMap<String, String>,
@@ -157,12 +158,12 @@ fn url_holding_token(
     let mut parts = std::iter::once(req.url.as_str())
         .chain(params.flat_map(|(k, e)| [k.as_str(), e.value.as_str()]));
     parts.find_map(|text| {
-        crate::vars::find_tokens(text).into_iter().find_map(|t| {
-            let inner = crate::vars::find_tokens(vars.get(&t.name)?).into_iter().next()?;
-            let token =
-                if secrets.contains(&t.name) { SECRET_MASK.to_string() } else { inner.name };
-            Some(PrepareError::ValueHoldsVariable { var: t.name, token })
-        })
+        crate::vars::find_tokens(text).into_iter().filter(|t| !secrets.contains(&t.name)).find_map(
+            |t| {
+                let inner = crate::vars::find_tokens(vars.get(&t.name)?).into_iter().next()?;
+                Some(PrepareError::ValueHoldsVariable { var: t.name, token: inner.name })
+            },
+        )
     })
 }
 
@@ -1154,14 +1155,15 @@ mod tests {
         assert_eq!(prepare(&r, &c).unwrap_err(), holds("base", "host"));
     }
 
-    /// D1: a secret's value shows nothing of itself in the refusal, not even
-    /// the name inside its braces.
+    /// D1: a secret's value is opaque data, never looked into: braces in it
+    /// go out as they are, and nothing of it is printed.
     #[test]
-    fn a_secrets_token_is_masked_in_the_refusal() {
+    fn a_secrets_value_is_never_looked_into() {
         let r = base("http://x.test/{{key}}");
         let mut c = ctx(&[("key", "ab{{cdEF12}}gh")], &[]);
         c.meta.insert("key".into(), varmodel::VarMeta::Secret);
-        assert_eq!(prepare(&r, &c).unwrap_err(), holds("key", SECRET_MASK));
+        let (p, _) = prepare(&r, &c).unwrap();
+        assert_eq!(p.url, "http://x.test/ab{{cdEF12}}gh");
     }
 
     /// D2 (amended): a header or body using such a value is sent as

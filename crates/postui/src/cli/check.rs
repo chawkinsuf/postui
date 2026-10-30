@@ -173,18 +173,25 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 continue;
             }
         };
-        // A disabled row is never used, as `prepare` skips it. A row the URL
-        // uses gets the request's error below too: the two checks are apart
-        // by design (the value's warning wherever it is written, the URL's
-        // refusal at send time), so each says its own thing.
-        let values = req.variables.iter().filter(|(_, e)| e.enabled);
+        // A disabled row is never used, as `prepare` skips it, and a secret's
+        // value is opaque data, never looked into (as `prepare` doesn't). A
+        // row the URL uses gets the request's error below too: the two
+        // checks are apart by design (the value's warning wherever it is
+        // written, the URL's refusal at send time), so each says its own
+        // thing.
+        let model = project.variables();
+        let secret = |name: &str| model.vars.get(name).is_some_and(|v| v.secret);
+        let values = req.variables.iter().filter(|(name, e)| e.enabled && !secret(name));
         warnings.extend(values_holding_tokens(
             &file,
             values.map(|(name, e)| (name.clone(), e.value.as_str())),
         ));
         let causes = match prepare::prepare(&req, &ctx) {
             Ok(_) => continue,
-            // The URL would go out with a value's braces in it (D1).
+            // The URL would go out with a value's braces in it (D1). It is
+            // asked first, so the request's other findings (a misspelt name,
+            // a missing secret) show once it is fixed: a cost the amendment
+            // names, taken so a missing secret can't hide this error.
             Err(e @ PrepareError::ValueHoldsVariable { .. }) => {
                 errors.push(Finding::at(file, e.to_string()));
                 continue;

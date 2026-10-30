@@ -125,8 +125,9 @@ needs to happen at send time."
   that holds a token, and asks this **before** the unresolved names, so a
   missing secret or selection can't hide it. The cost: a request with both
   this and a misspelt name shows the misspelling after the URL is fixed;
-  both are errors, so `check` fails either way. A secret's inner token
-  prints as the mask.
+  both are errors, so `check` fails either way. A secret's value is opaque
+  data, never looked into (by `prepare` or `check`): braces in it go out as
+  they are, and nothing of it is printed.
 - **D2 (replaced):** no warning at send time. `check` looks at every value
   written in the project's files (each `variables.toml` default and shared
   option, each environment's values and options, each request's
@@ -143,7 +144,7 @@ needs to happen at send time."
 
 | Rule | Test |
 |---|---|
-| D1 | `prepare` refuses a URL token, a param key and a param value whose value holds a token, naming the var and token, before an unresolved name; a secret's token is masked; the TUI's Send toasts the text (with the environment) and sends nothing; `check` reports an error naming the request file even when the request also lacks a secret (whose warning then waits for the URL's fix). |
+| D1 | `prepare` refuses a URL token, a param key and a param value whose value holds a token, naming the var and token, before an unresolved name; a secret's value is not looked into; the TUI's Send toasts the text (with the environment) and sends nothing; `check` reports an error naming the request file even when the request also lacks a secret (whose warning then waits for the URL's fix). |
 | D2 | `check` warns on the file for a default, a shared option, an environment value and option, and a request's enabled `[variables]` row holding a token (a disabled row is never used); a header using one sends without a warning. |
 | D3 | `--view` uses `jq_current`'s filter, else the scratch; `--view=NAME` a named view (name matched as views are); no filter, an unknown name, `--view` with `--jq` or `--dry-run` are errors. |
 | D4 | `--var` beats the env, a selection and the request's own `[variables]`; `suite --var` reaches every request; a name given twice, an invalid one and an undeclared one are errors; a secret given with `--var` is masked. |
