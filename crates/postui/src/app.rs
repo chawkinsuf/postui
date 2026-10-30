@@ -1022,10 +1022,12 @@ impl App {
     /// here writes the file and the space list together (same order as
     /// `Action::InitProjectHere`).
     fn init_default_project(&mut self, root: PathBuf) {
+        // Locked before `project.toml` is written, from when an agent's
+        // `edit begin` could first find a project there.
+        self.take_project_lock(&root);
         match Project::init(&root, Some("default")) {
             Ok((project, warnings)) => {
                 self.project = Some(project);
-                self.take_project_lock();
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -1833,6 +1835,15 @@ impl App {
         self.last_loose_warning = None;
         self.last_spaces_warning = None;
         self.last_environments_warning = None;
+    }
+
+    /// Whether `target` is the open project's directory, by any spelling of
+    /// its path (a symlink, `..`).
+    fn is_open_project(&self, target: &std::path::Path) -> bool {
+        let resolved = |p: &std::path::Path| p.canonicalize().ok();
+        self.project.as_ref().is_some_and(|p| {
+            p.root() == target || resolved(target).is_some_and(|t| Some(t) == resolved(p.root()))
+        })
     }
 
     /// The refusal of a project another window has open.
@@ -5334,6 +5345,10 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
+                // Locked before `project.toml` is written, from when an
+                // agent's `edit begin` could first find a project here.
+                let here = self.root().to_path_buf();
+                self.take_project_lock(&here);
                 match Project::init(self.root(), None) {
                     Ok((project, warnings)) => {
                         let root = project.root().to_path_buf();
@@ -5344,7 +5359,6 @@ impl App {
                         self.history.clear();
                         self.marked_entry = None;
                         self.project = Some(project);
-                        self.take_project_lock();
                         for w in warnings {
                             self.toasts.push(w, ToastKind::Warning);
                         }
@@ -5562,19 +5576,18 @@ impl App {
                 true
             }
             Action::SwitchProject(target) => {
-                // The open project by any spelling (a symlink, `..`) is no
-                // switch: opening it again would meet its own lock.
-                let resolved = |p: &std::path::Path| p.canonicalize().ok();
-                if target == self.root()
-                    || (self.project.is_some()
-                        && resolved(&target).is_some_and(|t| Some(t) == resolved(self.root())))
-                {
+                if target == self.root() || self.is_open_project(&target) {
                     return false;
                 }
                 self.apply_gated("switch", Action::ForceSwitchProject(target));
                 true
             }
             Action::ForceSwitchProject(target) => {
+                // The open project, by whatever spelling, is already open,
+                // and its lock is this app's: taking it again would meet it.
+                if self.is_open_project(&target) {
+                    return false;
+                }
                 // The incoming project's lock first, then its flag
                 // (`edit_block.rs`). One another window has open refuses
                 // as a broken one does. One an agent is editing opens only

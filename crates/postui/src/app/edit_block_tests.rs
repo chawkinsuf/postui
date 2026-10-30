@@ -39,8 +39,9 @@ fn poll(app: &mut App) {
 /// A test app on a folder with a `project.toml`: one that holds its lock.
 fn project_app() -> App {
     let mut app = App::new_for_test();
-    postui_core::fixtures::init_project(&root(&app), None).unwrap();
-    app.take_project_lock();
+    let here = root(&app);
+    app.take_project_lock(&here);
+    postui_core::fixtures::init_project(&here, None).unwrap();
     assert!(app.project_lock.is_some());
     app
 }
@@ -285,16 +286,22 @@ fn the_project_cycle_goes_on_from_the_screen() {
     assert_eq!(root(&app), here);
 }
 
-/// A project made in place that another window also has open opens all
-/// the same, saying it isn't locked.
+/// A project made in place takes its lock (before writing `project.toml`,
+/// where an agent's `edit begin` could first find it); one another window
+/// holds is made all the same, saying it isn't locked.
 #[test]
-fn a_project_made_in_place_says_when_it_cant_lock() {
-    let mut app = project_app();
-    let other = ProjectLock::take(&root(&app));
-    assert!(other.unwrap().is_none(), "this app holds it");
-    app.project_lock = None;
-    let held = ProjectLock::take(&root(&app)).unwrap().expect("free now");
-    app.take_project_lock();
+fn a_project_made_in_place_takes_its_lock() {
+    let mut app = App::new_for_test();
+    let here = root(&app);
+    app.update(Action::InitProjectHere);
+    assert!(Project::is_project(&here));
+    assert!(Project::tui_open(&here).unwrap());
+
+    let mut app = App::new_for_test();
+    let here = root(&app);
+    let held = ProjectLock::take(&here).unwrap().expect("free");
+    app.update(Action::InitProjectHere);
+    assert!(Project::is_project(&here));
     assert!(app.project_lock.is_none());
     assert!(app.toasts.messages().iter().any(|m| m.contains("another postui window")));
     drop(held);

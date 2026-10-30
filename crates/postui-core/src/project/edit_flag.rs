@@ -51,10 +51,10 @@ impl EditFlag {
     }
 
     /// How long ago it started, as of `now`; `None` when `started` isn't a
-    /// time this module writes (someone edited the file) or is in the
-    /// future.
+    /// time this module writes (someone edited the file). One in the future
+    /// (another clock, or this one set back) started just now.
     pub fn age(&self, now: SystemTime) -> Option<Duration> {
-        now.duration_since(parse_rfc3339(&self.started)?).ok()
+        Some(now.duration_since(parse_rfc3339(&self.started)?).unwrap_or_default())
     }
 
     /// "started 4 minutes ago", or the stamp itself when its age can't be
@@ -189,7 +189,15 @@ impl Project {
                 Err(e) => Err(e.into()),
             };
         }
-        let replaced = disk.peek(&rel).unwrap_or(None);
+        let replaced = match disk.peek(&rel) {
+            // Not text: nothing to put back but the flag being down.
+            Err(DiskError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::InvalidData =>
+            {
+                None
+            }
+            other => other?,
+        };
         disk.write(&rel, &text)?;
         Ok(replaced)
     }
@@ -319,6 +327,8 @@ mod tests {
         assert_eq!(flag.started_text(at(4 * 60 + 59)), "started 4 minutes ago");
         assert_eq!(flag.started_text(at(7200)), "started 2 hours ago");
         assert_eq!(flag.started_text(at(86400 * 3)), "started 3 days ago");
+        let early = parse_rfc3339("2026-10-29T20:30:00Z").unwrap();
+        assert_eq!(flag.started_text(early), "started just now", "a clock behind the flag's");
         let edited = EditFlag { started: "a while back".into(), note: None, id: "b".into() };
         assert_eq!(edited.started_text(at(0)), "started a while back");
     }
@@ -394,10 +404,9 @@ mod tests {
         let asking =
             Disk::new(root.to_path_buf()).existing_lock(&rel(TUI_LOCK).unwrap()).unwrap().unwrap();
         assert!(asking.try_lock_shared().unwrap());
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(7));
-            asking.unlock().unwrap();
-        });
+        // Let go from another thread, whenever it runs: no sleep to race
+        // the take's tries on a loaded machine.
+        let release = std::thread::spawn(move || asking.unlock().unwrap());
         assert!(ProjectLock::take(root).unwrap().is_some());
         release.join().unwrap();
     }

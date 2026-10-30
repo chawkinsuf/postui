@@ -111,16 +111,14 @@ impl App {
         }
     }
 
-    /// Takes the open project's lock, for a project made in place (the
-    /// create-project answers), where no open took it first. Made already,
-    /// the project stays open whatever the take finds, and a lock it can't
-    /// have is said.
-    pub(super) fn take_project_lock(&mut self) {
+    /// Takes `root`'s lock for a project about to be made in place (the
+    /// create-project answers), where no open took it first: before its
+    /// `project.toml` is written, since an agent's `edit begin` needs one
+    /// to find the project. The make goes ahead whatever the take finds,
+    /// and a lock it can't have is said.
+    pub(super) fn take_project_lock(&mut self, root: &Path) {
         self.project_lock = None;
-        let Some(root) = self.project().map(|p| p.root().to_path_buf()) else {
-            return;
-        };
-        match ProjectLock::take(&root) {
+        match ProjectLock::take(root) {
             Ok(Some(lock)) => self.project_lock = Some(lock),
             Ok(None) => self
                 .toasts

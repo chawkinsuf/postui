@@ -494,7 +494,8 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
         let words: Vec<_> = rest.iter().map(|a| a.to_string_lossy()).collect();
         let (cmd, extra) = match words.as_slice() {
             [] => return Ok(Parsed::Help(crate::config::USAGE)),
-            [first, verb, extra @ ..] if group(first).is_some() => {
+            // A group's verb, never an option after the group's name.
+            [first, verb, extra @ ..] if group(first).is_some() && !verb.starts_with('-') => {
                 (format!("{first} {verb}"), extra.first())
             }
             [cmd, extra @ ..] => (cmd.to_string(), extra.first()),
@@ -1045,6 +1046,7 @@ mod tests {
         assert_eq!(err(&["init", "a", "b"]), "one directory at most; 'b' is a second");
         assert_eq!(err(&["show", "--bogus", "-h"]), "unknown option '--bogus'");
         assert_eq!(err(&["help", "bogus"]), "no command 'bogus'");
+        assert_eq!(err(&["help", "edit", "--json"]), "unexpected argument '--json'");
     }
 
     #[test]

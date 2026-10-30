@@ -169,14 +169,24 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
             _ => false,
         };
         if !still_ours {
-            if matches!(now, Ok(None)) {
-                return Err(overridden(file));
-            }
-            return Err(CliError::refusal(
-                "another edit took this one over (edit begin --force) while check ran; its \
-                 flag is left up",
-                file,
-            ));
+            return Err(match now {
+                Ok(None) => overridden(file),
+                Ok(Some(_)) => CliError::refusal(
+                    "another edit took this one over (edit begin --force) while check ran; its \
+                     flag is left up",
+                    file,
+                ),
+                // Readable when this began: rewritten since, by whom it
+                // can't say, so it is left up and its error is the answer.
+                Err(e) => CliError::refusal(
+                    format!(
+                        "the flag changed while check ran and can't be read now ({}); it is \
+                         left up: postui edit status shows it, --force removes it",
+                        reason(e)
+                    ),
+                    file,
+                ),
+            });
         }
         Project::lower_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()))?;
     }
