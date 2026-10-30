@@ -68,8 +68,14 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   (postui's jq, jaq). `--view` uses the request's own filter, the one its
   response pane applies, and `--view=NAME` one of its saved `[[jq_view]]`s:
   reach for these first when a request has them, to keep a large body out
-  of your context. `-o FILE` writes the raw body to a file instead of
-  printing it; use it for a binary body, which prints as text.
+  of your context. A filter that fails prints its error and no body.
+- `-o FILE` writes the body to a file instead of printing it. Alone, it
+  writes the raw bytes: use it for a binary body, which prints as text.
+  With `--jq` or `--view`, the results still print and the file gets the
+  body as text, masked like printed output (so never for a binary
+  download): add it when you try a filter on a body you can't just fetch
+  again (a large one, a POST that changes something, a model's answer),
+  so that if the filter fails the body is in the file to read.
 - The environment is `--env`, else the one the user's postui has open, else
   the first. Selections are the user's saved ones; `--select` overrides one
   for this run only and never saves it. Pick an option name from `postui vars`.
@@ -135,8 +141,11 @@ secrets unless the user explicitly asks: don't read that file, don't pass
 masks each secret's exact value as `●●●●●●`, but a value the server sends
 back re-encoded or escaped (base64, JSON-escaped, URL-encoded), or that a
 `--jq` filter transforms, is not caught, so a response body can still show
-one. A request that needs a missing secret won't prepare: ask the user to
-set it in postui.
+one. A request that needs a missing secret won't prepare (`check` only
+warns about it). When what you are checking doesn't need the secret, such
+as a header the server ignores, `--var NAME=` sends the request with it
+empty for that run; otherwise ask the user to set it in postui. Never give
+a secret's real value with `--var`.
 
 ## Start a request kit
 

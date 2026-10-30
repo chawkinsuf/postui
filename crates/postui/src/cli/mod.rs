@@ -246,7 +246,8 @@ usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]
                    [--show-secrets] [--json]
 
 Sends one request and prints the response body, as curl does, but as text
-(-o writes its exact bytes); -i adds the status and headers, -v the whole
+(-o writes its exact bytes, or with a filter the text, masked); -i adds the
+status and headers, -v the whole
 run. A status of 400 or more, errors and warnings go to stderr. <request> is
 a slug as `postui requests` lists it.
 Nothing is written to the project. Each secret's exact value is masked in
@@ -266,10 +267,13 @@ sent, or when the jq filter fails.
   --jq <filter>             print the filter's results instead of the body
   --view[=<name>]           filter with the request's own jq filter (the one
                             its response pane applies), or its view <name>
-  -o, --output <file>       write the body (or each jq result) to <file>
+  -o, --output <file>       write the body to <file>, as it came; with --jq or
+                            --view, as text with secrets masked, and the
+                            results still print
   -i, --include             print the status and response headers first
   -v, --verbose             print the whole run: the request sent, the
-                            status, timings and headers, then the body
+                            status, timings and headers, then the body (or
+                            the jq results)
   --timeout <secs>          give up if the response hasn't started after this
                             long (connect, upload and redirects included),
                             or the body stalls this long between reads

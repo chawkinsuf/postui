@@ -60,7 +60,8 @@ pub enum Filter {
 /// unless asked for more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
-    /// The body (or the jq results); the rest that matters goes to stderr.
+    /// The body (or the jq results, or nothing when `-o` took the body);
+    /// the rest that matters goes to stderr.
     Body,
     /// `-i`: the status line and response headers, then the body.
     Include,
@@ -272,8 +273,9 @@ struct ShownHeader {
 /// What came back, masked. The text prints the body as it came, in `body`.
 /// The JSON gives it once: as `body_json` when it parses as JSON, else as
 /// the string `body` (spec §5, #217). Both are `null` when `--jq` or `-o`
-/// took the body (their own keys say so); a failing `--jq` leaves the body
-/// shown.
+/// took the body (their own keys say so), a failing `--jq` too (#223). A
+/// `-o` that can't be written is as if there were no `-o`: the body shows
+/// unless there is a filter.
 #[derive(Serialize)]
 struct ResponseReport {
     status: u16,
@@ -296,6 +298,24 @@ struct JqReport {
     filter: String,
     output: Option<Vec<serde_json::Value>>,
     error: Option<String>,
+    /// Whether a failure's text says `-o FILE` saves the body: no `-o` was
+    /// given and there is a body to save. Only the text says so; for a
+    /// script the JSON's null body and `output_file` are the same facts.
+    #[serde(skip)]
+    suggest_output: bool,
+}
+
+impl JqReport {
+    /// The failing filter's error as the text prints it: with how to keep
+    /// the body it failed on, which isn't printed (#223), when nothing kept
+    /// it.
+    fn failure(&self) -> Option<String> {
+        let error = self.error.as_ref()?;
+        Some(match self.suggest_output {
+            true => format!("{error}; -o FILE saves the body"),
+            false => error.clone(),
+        })
+    }
 }
 
 /// `404 Not Found`: the code and its reason, or the code alone when it has
@@ -314,13 +334,8 @@ pub(super) fn millis(d: Duration) -> u64 {
 
 /// Runs `filter` over the body `text`, unmasked (masking first would break
 /// the JSON where a mask lands in a number or an escape): each result is
-/// parsed as the JSON jq printed, then masked as a tree, with the JSON line
-/// it prints as.
-fn run_jq(
-    filter: &str,
-    text: &str,
-    mask: &Mask,
-) -> Result<Vec<(String, serde_json::Value)>, String> {
+/// parsed as the JSON jq printed, then masked as a tree.
+fn run_jq(filter: &str, text: &str, mask: &Mask) -> Result<Vec<serde_json::Value>, String> {
     let doc = jq::JqDocument::parse(text).map_err(|e| e.message())?;
     let results = jq::run(filter, &doc).map_err(|e| e.message())?;
     results
@@ -328,8 +343,7 @@ fn run_jq(
         .map(|r| {
             let value: serde_json::Value =
                 serde_json::from_str(&r).map_err(|e| format!("a result isn't JSON: {e}"))?;
-            let value = mask.apply_json(value);
-            Ok((value.to_string(), value))
+            Ok(mask.apply_json(value))
         })
         .collect()
 }
@@ -375,58 +389,47 @@ fn record(
         body: None,
         body_json: None,
     };
-    // What `-o` would write, the jq results it would take, and whether the
-    // body is shown.
-    let mut file_bytes: Option<Cow<[u8]>> = None;
-    let mut taken_results = None;
-    let mut show_body = false;
-    match jq {
-        Some(filter) => match run_jq(filter, text(), mask) {
-            Ok(results) => {
-                let (lines, values): (Vec<String>, Vec<serde_json::Value>) =
-                    results.into_iter().unzip();
-                // The results go to the file or into the report, not both.
-                let (shown, taken) = match output {
-                    Some(_) => {
-                        let joined: String =
-                            lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
-                        file_bytes = Some(Cow::Owned(joined.into_bytes()));
-                        (None, Some(values))
-                    }
-                    None => (Some(values), None),
-                };
-                report.jq =
-                    Some(JqReport { filter: mask.apply(filter), output: shown, error: None });
-                taken_results = taken;
-            }
-            // The filter failed: the body is shown (nothing is written to
-            // `-o`), so the caller needn't send the request again.
-            Err(message) => {
-                show_body = true;
-                report.jq = Some(JqReport {
-                    filter: mask.apply(filter),
-                    output: None,
-                    error: Some(mask.apply(&message)),
-                });
-            }
-        },
-        // The file is the response itself, kept byte-exact (a binary
-        // download), so it is not masked (spec §4, §8 #9); `--jq -o` writes
-        // masked text because it is derived output.
-        None if output.is_some() => file_bytes = Some(Cow::Borrowed(&raw.bytes)),
-        None => show_body = true,
+    // The results print, the filter's or its error. Whether it fails or
+    // not, the body doesn't print with them: a large body is what the
+    // filter is there to keep out of the reader's context, and `-o` keeps
+    // it for a filter that fails (#223). The cost: without `-o`, a failed
+    // filter on a request that can't be sent again (a POST that changes
+    // something, a model's answer) loses the body. That was weighed
+    // against printing 24 KB of stream on a failure (mine (approved)); the
+    // skill tells the agent to add `-o` for such requests.
+    if let Some(filter) = jq {
+        let (results, error) = match run_jq(filter, text(), mask) {
+            Ok(results) => (Some(results), None),
+            Err(message) => (None, Some(mask.apply(&message))),
+        };
+        report.jq = Some(JqReport {
+            filter: mask.apply(filter),
+            output: results,
+            error,
+            suggest_output: output.is_none() && !raw.bytes.is_empty(),
+        });
     }
-    if let (Some(file), Some(bytes)) = (output, file_bytes) {
+    let mut show_body = jq.is_none() && output.is_none();
+    if let Some(file) = output {
+        // Alone, the file is the response itself, kept byte-exact (a binary
+        // download), so it is not masked (spec §4, §8 #9). With a filter it
+        // is the body the filter ran on, there to be read when the filter
+        // fails, so it is the text the report would print, masked (#223).
+        let bytes = match jq {
+            Some(_) => Cow::Owned(mask.apply(text()).into_bytes()),
+            None => Cow::Borrowed(&raw.bytes[..]),
+        };
         match absolute(file).and_then(|path| write_output(&path, &bytes).map(|()| path)) {
             Ok(written) => report.output_file = Some(written),
             // The request is sent and can't be resent safely: the report
-            // keeps what came back, as if there were no `-o`.
+            // keeps what came back, as if there were no `-o` (a filter's
+            // results, then, and no body: they are what the reader asked
+            // to see). When the filter fails too, the two errors are all
+            // that prints, with no `-o` hint ("if everything fails ...
+            // just show the errors", the user, #223).
             Err(e) => {
                 report.error = Some(mask.apply(&e.message));
-                match (taken_results, report.jq.as_mut()) {
-                    (Some(values), Some(j)) => j.output = Some(values),
-                    _ => show_body = true,
-                }
+                show_body = jq.is_none();
             }
         }
     }
@@ -494,7 +497,7 @@ fn filter_text(
 
 /// Runs request `slug` of the project `g` names. With `dry_run` it only
 /// prepares it; else it sends it, and `filter` filters the body and
-/// `output` takes it (or the jq results) to a file.
+/// `output` takes it to a file.
 pub async fn run(
     g: &Global,
     slug: &str,
@@ -592,8 +595,8 @@ impl RunReport {
 
     /// What a run prints like curl, as (stdout, stderr). Stdout: with
     /// `include`, the status line and response headers and a blank line;
-    /// then the body as it came, or the jq results one a line (nothing for
-    /// what `-o` took). Stderr, a `postui: ` line each (D6): the error, a
+    /// then the body as it came (nothing when `-o` took it), or the jq
+    /// results one a line. Stderr, a `postui: ` line each (D6): the error, a
     /// failing jq filter, a status of 400 or more, and the warnings.
     pub fn streams(&self, include: bool) -> (String, String) {
         let mut out = String::new();
@@ -612,11 +615,8 @@ impl RunReport {
                 }
                 out.push('\n');
             }
-            // A failed filter leaves the body here (`record`), on stdout like
-            // a body: the agent reading it needn't send the request again
-            // to see what the filter failed on (#215). The exit status and
-            // the stderr note say it failed; a script wanting nothing on a
-            // failure checks the status.
+            // A failed `-o` write leaves the body here (`record`); a filter,
+            // failing or not, never does (#223).
             //
             // The body is text (decoded lossily, masked), not bytes: masking
             // needs text, and the reader is mostly an agent's pipe, not a
@@ -636,8 +636,8 @@ impl RunReport {
             for value in j.output.iter().flatten() {
                 out.push_str(&format!("{value}\n"));
             }
-            if let Some(error) = &j.error {
-                err.push_str(&format!("postui: jq: {error}\n"));
+            if let Some(failure) = j.failure() {
+                err.push_str(&format!("postui: jq: {failure}\n"));
             }
         }
         if let Some(error) = &self.error {
@@ -705,8 +705,8 @@ impl RunReport {
             for value in j.output.iter().flatten() {
                 out.push_str(&format!("{value}\n"));
             }
-            if let Some(error) = &j.error {
-                out.push_str(&table(&[vec![format!("error: {error}")]]));
+            if let Some(failure) = j.failure() {
+                out.push_str(&table(&[vec![format!("error: {failure}")]]));
             }
         }
         if let Some(file) = &self.output_file {
