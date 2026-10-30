@@ -175,7 +175,15 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 errors.push(Finding::at(file, e.to_string()));
                 continue;
             }
-            Err(PrepareError::Unresolved(causes)) => causes,
+            // A missing secret or selection is only a warning here, so it
+            // mustn't hide the URL's error, which `prepare` reports only
+            // once every name resolves.
+            Err(PrepareError::Unresolved(causes)) => {
+                if let Some(e) = prepare::url_value_holding_token(&req, &ctx) {
+                    errors.push(Finding::at(file.clone(), e.to_string()));
+                }
+                causes
+            }
         };
         let (undeclared, rest): (BTreeMap<_, _>, BTreeMap<_, _>) =
             causes.into_iter().partition(|(name, cause)| {

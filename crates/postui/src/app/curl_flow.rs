@@ -528,9 +528,8 @@ impl App {
                 let msg = self.unresolved_message(&causes);
                 self.toasts.push(msg, ToastKind::Error);
             }
-            Err(e @ postui_core::prepare::PrepareError::ValueHoldsVariable { .. }) => {
-                self.toasts.push(e.to_string(), ToastKind::Error);
-            }
+            // Any other refusal says what is wrong on its own.
+            Err(e) => self.toasts.push(e.to_string(), ToastKind::Error),
         }
         true
     }

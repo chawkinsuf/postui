@@ -171,6 +171,26 @@ impl fmt::Display for PrepareError {
     }
 }
 
+/// D1: the refusal for a URL or query parameter using a value that holds a
+/// `{{token}}`, with `vars` overlaid. The URL is the one place a value's
+/// braces can't go out as written: a header's or a body's might be meant
+/// (D2 warns about those instead).
+fn url_holding_token(req: &HttpRequest, vars: &IndexMap<String, String>) -> Option<PrepareError> {
+    let params = req.params.iter().filter(|(_, e)| e.enabled);
+    let mut parts = std::iter::once(req.url.as_str())
+        .chain(params.flat_map(|(k, e)| [k.as_str(), e.value.as_str()]));
+    let (var, token) = parts.find_map(|t| value_holding_token(t, vars))?;
+    Some(PrepareError::ValueHoldsVariable { var, token })
+}
+
+/// [`url_holding_token`] for `req` against `ctx`, asked on its own: what
+/// [`prepare`] would refuse once every name resolves. `check` asks it of a
+/// request whose names don't all resolve yet (a missing secret is only a
+/// warning there), so the URL's error isn't hidden behind one.
+pub fn url_value_holding_token(req: &HttpRequest, ctx: &PrepareContext) -> Option<PrepareError> {
+    url_holding_token(req, &overlaid_vars(req, ctx))
+}
+
 /// The first `{{name}}` of `text` whose value holds a `{{token}}` of its
 /// own, as `(name, token)`. A value is sent as it is, so such a token would
 /// go out with its braces.
@@ -326,10 +346,9 @@ pub fn prepare(
     // it not to fail (spec 2026-10-18 R3a/R3b; a send-time notice was
     // weighed in review and declined).
     let body_len = body.as_ref().map(String::len);
-    let rows = rows(req, ctx, &vars, &secret_names, body_len, &mut warnings);
-    if let Some(Body::Json { text }) = &req.body
-        && body.is_some()
-        && req.substitute_body
+    let rows = rows(req, ctx, &vars, &secret_names, body_len, Some(&mut warnings));
+    if req.substitute_body
+        && let Some(text) = sent_body(req)
         && let Some((var, token)) = value_holding_token(text, &vars)
     {
         warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place: ValuePlace::Body });
@@ -358,13 +377,8 @@ pub fn prepare(
             .collect();
         return Err(PrepareError::Unresolved(causes));
     }
-    // The URL is the one place a value's braces can't go out as written: a
-    // header's or a body's might be meant (D2 warns about those instead).
-    let params = req.params.iter().filter(|(_, e)| e.enabled);
-    let url_parts = std::iter::once(req.url.as_str())
-        .chain(params.flat_map(|(k, e)| [k.as_str(), e.value.as_str()]));
-    if let Some((var, token)) = url_parts.into_iter().find_map(|t| value_holding_token(t, &vars)) {
-        return Err(PrepareError::ValueHoldsVariable { var, token });
+    if let Some(e) = url_holding_token(req, &vars) {
+        return Err(e);
     }
 
     Ok((
@@ -559,7 +573,7 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow> {
         true => substituted_len(body, &vars),
         false => body.len(),
     });
-    rows(req, ctx, &vars, &secret_names(ctx), body_len, &mut Vec::new())
+    rows(req, ctx, &vars, &secret_names(ctx), body_len, None)
 }
 
 /// The byte length `text` has once [`crate::vars::substitute`] has run on
@@ -575,14 +589,16 @@ fn substituted_len(text: &str, vars: &IndexMap<String, String>) -> usize {
 /// The rows of [`header_rows`], from what the caller already worked out:
 /// the overlaid `vars`, the `secrets` to mask, and the byte length of the
 /// body the send carries — so [`prepare`] substitutes nothing twice.
-/// Duplicate defaults are reported to `warnings`.
+/// Duplicate defaults, and sent rows using a value that holds a token, are
+/// reported to `warnings`; `None` (the Headers tab, every frame) looks for
+/// neither.
 fn rows(
     req: &HttpRequest,
     ctx: &PrepareContext,
     vars: &IndexMap<String, String>,
     secrets: &BTreeSet<String>,
     body_len: Option<usize>,
-    warnings: &mut Vec<PrepareWarning>,
+    mut warnings: Option<&mut Vec<PrepareWarning>>,
 ) -> Vec<HeaderRow> {
     let no_mask = BTreeSet::new();
     let quiet = |s: &str| substitute_masked(s, vars, &no_mask, &mut BTreeSet::new());
@@ -632,11 +648,19 @@ fn rows(
     // A sent row written as `name`/`value` whose value holds a token goes
     // out with its braces (D2).
     let warn_sent = |r: &HeaderRow, name: &str, value: &str, warnings: &mut Vec<PrepareWarning>| {
+        if !r.sent() {
+            return;
+        }
         let held = value_holding_token(name, vars).or_else(|| value_holding_token(value, vars));
-        if let Some((var, token)) = held.filter(|_| r.sent()) {
-            let name = r.header.name.clone();
+        if let Some((var, token)) = held {
+            // Masked, as the screens show it.
+            let name = r.header.display_name.clone();
+            // A default's is the same on every request, unless this request
+            // gives the variable its value: then the request is the file to
+            // fix.
+            let own = req.variables.get(&var).is_some_and(|e| e.enabled);
             let place = match r.origin {
-                HeaderOrigin::Default => ValuePlace::DefaultHeader(name),
+                HeaderOrigin::Default if !own => ValuePlace::DefaultHeader(name),
                 _ => ValuePlace::Header(name),
             };
             warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place });
@@ -660,15 +684,21 @@ fn rows(
         if r.sent() && named_by_request(&r.header.name) {
             r.unsent = Some(Unsent::Replaced);
         } else if r.sent() && !claimed.insert(lower.clone()) {
-            warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
+            if let Some(w) = warnings.as_deref_mut() {
+                w.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
+            }
             r.unsent = Some(Unsent::Duplicate);
         }
-        warn_sent(&r, k, &e.value, warnings);
+        if let Some(w) = warnings.as_deref_mut() {
+            warn_sent(&r, k, &e.value, w);
+        }
         rows.push(r);
     }
     for (i, (k, e)) in req.headers.iter().enumerate().filter(|(_, (_, e))| e.enabled) {
         let r = row(k, &e.value, HeaderOrigin::Request { row: i });
-        warn_sent(&r, k, &e.value, warnings);
+        if let Some(w) = warnings.as_deref_mut() {
+            warn_sent(&r, k, &e.value, w);
+        }
         rows.push(r);
     }
 

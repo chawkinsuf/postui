@@ -466,6 +466,9 @@ fn filter_text(
         // What the response pane applies. Whether the pane's switch is off
         // doesn't matter: asking for the view asks for its filter.
         Filter::View(None) => {
+            // The reader already spells `jq_current` as its view's own name
+            // (matched as `--view=NAME` matches, `HttpRequest::from_toml_str`),
+            // so the exact match here finds it.
             let scratch = read.jq.as_deref().unwrap_or_default();
             Some(applied_jq_filter(&read.jq_views, read.jq_current.as_deref(), scratch))
                 .filter(|f| !f.trim().is_empty())

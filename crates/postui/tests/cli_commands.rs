@@ -858,6 +858,16 @@ fn check_reports_a_value_holding_a_token() {
     )
     .unwrap();
 
+    // A missing secret is only a warning, so it doesn't hide the URL's
+    // error.
+    std::fs::write(
+        &x,
+        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{wrap}}/x?k={{token}}\"\n\n\
+         [variables]\nwrap = \"https://{{base}}\"\n",
+    )
+    .unwrap();
+    std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
+
     // A default header's value is the same on every request: one warning,
     // on the file the default is written in.
     let project = root.join("project.toml");
@@ -890,12 +900,31 @@ fn check_reports_a_value_holding_a_token() {
                 "the X-Def default header: held's value holds {{id}}, which is sent as written"
                     .to_string()
             ),
+            (s(&x).to_string(), "missing secret: token".to_string()),
             (
                 s(&list).to_string(),
                 "the X-Tag header: tag's value holds {{region}}, which is sent as written"
                     .to_string()
             ),
         ]
+    );
+
+    // A request that gives the default's variable a value of its own is the
+    // file to fix: its warning is its own.
+    let user = root.join("requests/main/users/get-user.toml");
+    std::fs::write(
+        &user,
+        "name = \"Get user\"\nmethod = \"GET\"\nurl = \"{{base}}/users\"\n\n\
+         [variables]\nheld = \"{{region}}\"\n",
+    )
+    .unwrap();
+    let warnings = findings(&json(&home.run_json(&["check", "-p", s(&root)])), "warnings");
+    assert!(
+        warnings.contains(&(
+            s(&user).to_string(),
+            "the X-Def header: held's value holds {{region}}, which is sent as written".to_string()
+        )),
+        "{warnings:?}"
     );
 }
 

@@ -5213,7 +5213,8 @@ impl App {
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
-                    Err(e @ postui_core::prepare::PrepareError::ValueHoldsVariable { .. }) => {
+                    // Any other refusal says what is wrong on its own.
+                    Err(e) => {
                         self.toasts.push(e.to_string(), ToastKind::Error);
                         return true;
                     }
