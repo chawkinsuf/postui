@@ -13,9 +13,9 @@
 use super::check::{self, CheckReport, reason};
 use super::out::{fields, rel};
 use super::{CliError, Global, target};
-use postui_core::project::{self, EDITING_TOML, EditFlag, Lowered, Project};
+use postui_core::project::{self, EDITING_TOML, EditFlag, Project};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::SystemTime;
 
@@ -63,7 +63,9 @@ struct FlagState {
 /// already up unless `force`, and refuses (whatever `force` says) while a
 /// TUI has the project open, putting back what was there before.
 pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport, CliError> {
-    let root = target::resolve(g.project.as_deref())?;
+    // Found where a flag is up, though its edit removed `project.toml`: the
+    // answer there is that an edit is in progress.
+    let root = target::resolve_flagged(g.project.as_deref())?;
     let file = root.join(EDITING_TOML);
     let tui_open = || Project::tui_open(&root).map_err(|e| CliError::at(reason(e), root.clone()));
     // Asked first so an open project raises no flag at all; asked again
@@ -72,8 +74,6 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
     if tui_open()? {
         return Err(open_refusal(root));
     }
-    // The raise and any put-back below, as one change of the flag.
-    let _hold = hold_flag(&root)?;
     let flag = EditFlag::new(note.map(str::to_string));
     let replaced = match Project::raise_edit_flag(&root, &flag, force) {
         Ok(replaced) => replaced,
@@ -116,24 +116,6 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
     Err(refusal)
 }
 
-/// Holds the flag still for this command's change of it
-/// (`Project::hold_edit_flag`); another command holding it is a refusal.
-fn hold_flag(root: &Path) -> Result<project::FlagHold, CliError> {
-    match Project::hold_edit_flag(root) {
-        Ok(Some(hold)) => Ok(hold),
-        Ok(None) => Err(busy(root)),
-        Err(e) => Err(CliError::at(reason(e), root.join(project::EDITING_LOCK))),
-    }
-}
-
-/// Another command holding the flag still.
-fn busy(root: &Path) -> CliError {
-    CliError::refusal(
-        "another postui edit command is changing the flag; retry",
-        root.join(project::EDITING_LOCK),
-    )
-}
-
 /// `edit begin` with a TUI that has the project open.
 fn open_refusal(root: PathBuf) -> CliError {
     CliError::refusal(
@@ -162,40 +144,27 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
     let check = check::check_root(root.clone(), None)?;
     let flag_removed = check.status() == ExitCode::SUCCESS || force;
     if flag_removed {
-        // Taken down while `check` ran (an override), or replaced since
-        // (an override and another `edit begin`, or `edit begin --force`),
-        // whose flag is left up. An unreadable flag it found is lowered
-        // only while it still is one.
-        let lowered = Project::lower_edit_flag_if(&root, ours.as_ref())
-            .map_err(|e| CliError::at(reason(e), file.clone()))?;
-        match lowered {
-            Lowered::Lowered => {}
-            Lowered::Gone => return Err(overridden(file)),
-            Lowered::Changed(Some(_)) => {
-                return Err(CliError::refusal(
-                    "another edit's flag is up now (the user overrode yours and another edit \
-                     began, or edit begin --force took it over); it is left up, and your edit \
-                     may have met theirs",
-                    file,
-                ));
-            }
-            Lowered::Changed(None) => {
-                return Err(CliError::refusal(
-                    "the flag changed while check ran and can't be read now; it is left up: \
-                     postui edit status shows it, --force removes it",
-                    file,
-                ));
-            }
-            Lowered::Busy => return Err(busy(&root)),
+        // Taken down while `check` ran: the user overrode it, and a flag up
+        // now is another edit's, begun since, left up.
+        let still_ours = match read() {
+            Ok(Some(now)) => ours.as_ref() == Some(&now),
+            Ok(None) => false,
+            // The unreadable flag `--force` found, still one.
+            Err(_) => ours.is_none(),
+        };
+        if !still_ours {
+            return Err(overridden(file));
         }
+        Project::lower_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()))?;
     }
     Ok(EndReport { root, check, flag_removed })
 }
 
-/// `edit end` with no flag to take down.
+/// `edit end` with no flag of its own to take down.
 fn overridden(file: PathBuf) -> CliError {
     CliError::refusal(
-        "no edit is in progress: the user overrode it in postui, or edit begin never ran",
+        "this edit is no longer in progress: the user overrode it in postui (a flag up now is \
+         another edit's), or edit begin never ran",
         file,
     )
 }

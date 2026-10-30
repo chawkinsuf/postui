@@ -272,29 +272,28 @@ where they disagree, this paragraph wins.
   alive between `edit begin` and `edit end` to refresh its flag (mine).
   Instead the screen says "If the agent has stopped, Override opens it
   now." once a flag is 30 minutes old (mine).
-- **One change of the flag at a time** (mine, its review round 1): each
-  change that depends on what the flag is now (`edit begin`'s raise and
-  put-back, `edit end`'s and Override's look and take-down) runs under a
-  short exclusive lock on `.postui/editing.lock`, held only while that
-  one command runs. Another command holding it is a refusal to retry
-  ("another postui edit command is changing the flag; retry"); Override
-  says to try again. This closes the look-then-remove race the first
-  design's reviews kept raising. alt+z cycles on from the waiting screen,
-  and a launch onto a flagged directory runs none of the startup's
-  create or open dispositions. After its round 3 (mine (approved)): a
-  flag file that can't be read is an edit of unknown owner in both
-  `--force` paths (`edit begin --force` replaces it; `edit end --force`
-  lowers it only while it still can't be read), a switch to the open
-  project by another spelling of its path is no switch, and the card is
-  sized for the widest age with the hint's row always kept, so nothing
-  moves as the flag ages. After its round 5 (mine): every directory the
-  TUI opens is locked, a project or not, so one opened without a
-  `project.toml` is held the moment one is written (the cost: a sealed
-  `.postui/` in a directory opened and then left as it was); the TUI's
-  take tries a shared lock first, so another window's hold refuses at
-  once rather than after the retries, which now only wait out commands
-  asking; and `edit end` and Override share one look-and-lower rule
-  (`Project::lower_edit_flag_if`).
+- **One edit at a time** (you: "--force is meant to be used 'when its
+  locked still but the user can confirm nothing is running' its not meant
+  to allow two things to edit at once"). `edit begin --force` takes over
+  a flag left up by an edit that has stopped, nothing more; two edits
+  racing on one project isn't a case the commands guard. A second lock
+  held while one command changed the flag (`.postui/editing.lock`, added
+  in a review round) is gone with that ruling.
+- **Only a project is locked** (you, of locking every opened folder: "why
+  would you leave 'a small .postui/ folder in any non-project folder'?
+  that sounds terrible"). A folder opened without a `project.toml` gets
+  no `.postui/`; the app's own create of one there takes the lock before
+  it writes. Left as it is: a folder the app has open bare that something
+  outside it makes a project isn't locked.
+- From the review rounds (mine): alt+z cycles on from the waiting screen
+  (from the project it waits on); a launch onto a flagged directory runs
+  none of the startup's create or open dispositions; the waiting screen's
+  open waits for a dialog the user opened; a flagged switch target joins
+  the known projects only once it opens; a switch to the open project by
+  another spelling of its path is no switch; a flag file that isn't text
+  is taken over by `edit begin --force`; a flag stamped in the future
+  started just now; and the card is sized for the widest age with the
+  hint's row always kept, so nothing moves as the flag ages.
 - Gone with the first design: `unsaved.lock`, the gate before every
   event, the write hold, the edit mark, the dropped event and the key
   grace. Your rulings that only applied to it (an AI request in flight

@@ -319,7 +319,8 @@ another project or quit postui, then retry). Exits 1 when it refuses.
 ",
     project_flag!(),
     "  --note <text>             what the edit is for; postui shows it
-  --force                   take over an edit already in progress
+  --force                   take over a flag left up by an edit the user
+                            confirms is no longer running
 ",
     json_flag!()
 );
@@ -330,9 +331,8 @@ usage: postui edit end [-p <dir|name>] [--force] [--json]
 
 Checks the project as postui check does and, when it finds no error, ends
 the edit, and postui can open the project again. Exits 1 when check finds
-an error (the edit stays in progress, unless --force), when no edit is in
-progress (the user overrode it in postui), or when another edit took this
-one over.
+an error (the edit stays in progress, unless --force), or when the edit is
+no longer in progress (the user overrode it in postui).
 
 ",
     project_flag!(),

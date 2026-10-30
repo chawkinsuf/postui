@@ -250,23 +250,6 @@ fn override_takes_down_only_the_edit_it_asked_about() {
     assert!(app.edit_block.as_ref().is_some_and(|b| b.flag.is_none()));
 }
 
-/// Override waits its turn while an agent's command is changing the flag
-/// (`Project::hold_edit_flag`): nothing is taken down meanwhile.
-#[test]
-fn override_waits_while_a_command_changes_the_flag() {
-    let other = other_project("Other");
-    let mut app = waiting_on(other.path());
-    let hold = Project::hold_edit_flag(other.path()).unwrap().expect("free");
-    app.handle_key(plain('o'));
-    app.handle_key(plain('o'));
-    assert!(Project::edit_flag_up(other.path()));
-    assert!(app.toasts.messages().iter().any(|m| m.contains("try again")));
-    drop(hold);
-    app.handle_key(plain('o'));
-    app.handle_key(plain('o'));
-    assert!(!Project::edit_flag_up(other.path()));
-}
-
 /// alt+z cycles on past a project an agent is editing.
 #[test]
 fn the_project_cycle_goes_on_from_the_screen() {
@@ -286,24 +269,22 @@ fn the_project_cycle_goes_on_from_the_screen() {
     assert_eq!(root(&app), here);
 }
 
-/// A directory opened without a `project.toml` is locked from its open, so
-/// it is held the moment one is written, here or from outside; the project
-/// made in place keeps that lock. One the open couldn't lock is made all
-/// the same, saying so.
+/// A directory with no `project.toml` gets no `.postui/` for being opened
+/// (the user: a stray folder "sounds terrible"); a project made there in
+/// place takes its lock. One another window holds is made all the same,
+/// saying it isn't locked.
 #[test]
-fn a_bare_directory_is_locked_from_its_open() {
+fn a_bare_directory_is_locked_only_once_it_is_a_project() {
     let mut app = App::new_for_test();
     let here = root(&app);
     assert!(!Project::is_project(&here));
-    assert!(Project::tui_open(&here).unwrap());
+    assert!(!here.join(".postui").exists(), "opened, and nothing written");
     app.update(Action::InitProjectHere);
     assert!(Project::is_project(&here));
     assert!(Project::tui_open(&here).unwrap());
-    assert!(!app.toasts.messages().iter().any(|m| m.contains("could not lock")));
 
     let mut app = App::new_for_test();
     let here = root(&app);
-    app.project_lock = None;
     let held = ProjectLock::take(&here).unwrap().expect("free");
     app.update(Action::InitProjectHere);
     assert!(Project::is_project(&here));

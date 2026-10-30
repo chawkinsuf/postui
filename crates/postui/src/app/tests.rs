@@ -5066,9 +5066,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
     assert!(!app.editor.is_dirty());
 
-    // Back to "a", dirty it again, this time choose 's' to save & open. A
-    // relaunch: the first app lets go of its lock, as its process would.
-    app.project_lock = None;
+    // Back to "a", dirty it again, this time choose 's' to save & open.
     let mut app = App::with_root(app.tx.clone(), dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
@@ -20555,9 +20553,7 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     app.update(Action::ToggleResponseCollapse);
     assert_eq!(saved(&root).as_deref(), Some("editor-full@0.7500"));
 
-    // A fresh app on the same root wakes up with the saved split (the
-    // first lets go of its lock, as its process would).
-    app.project_lock = None;
+    // A fresh app on the same root wakes up with the saved split.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let reopened = App::with_root(tx, root.clone());
     assert!(reopened.session.response.collapsed, "the minimized response comes back minimized");
@@ -20569,13 +20565,11 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
 /// sidebar that many columns wide.
 #[test]
 fn a_saved_sidebar_width_draws_from_the_project() {
-    let mut app = App::new_for_test();
+    let app = App::new_for_test();
     let root = app.proj().root().to_path_buf();
     let mut layout = postui_core::fixtures::load_layout(&root).unwrap();
     layout.sidebar_width = Some(30);
     postui_core::fixtures::save_layout(&root, &layout).unwrap();
-    // The first app lets go of its lock, as its process would.
-    app.project_lock = None;
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut reopened = App::with_root(tx, root.clone());
@@ -26111,8 +26105,6 @@ fn the_scratch_dirties_saves_and_reopens() {
     assert!(file.contains("jq = \".data.total\""), "{file}");
     assert!(!root.join(LOCAL_DIR).join("jq.toml").exists(), "no local file any more");
 
-    // A relaunch: the first app lets go of its lock, as its process would.
-    app.project_lock = None;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut reopened = App::with_root(tx, root.clone());
     reopened.update(Action::ForceOpenRequest("main/r".into()));
@@ -26204,8 +26196,6 @@ fn editing_a_view_dirties_saves_and_reopens() {
     assert_eq!(on_disk.jq_current.as_deref(), Some("names"), "what is current is saved too");
 
     let root = app.proj().root().to_path_buf();
-    // A relaunch: the first app lets go of its lock, as its process would.
-    app.project_lock = None;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut reopened = App::with_root(tx, root);
     reopened.update(Action::ForceOpenRequest("main/r".into()));

@@ -13,12 +13,11 @@
 //! - A TUI takes the lock, then looks for the flag, and lets the lock go
 //!   (opening nothing) if it is up.
 //!
-//! A change of the flag that depends on what it is now (taking down only
-//! the flag a command found, putting back the one it replaced) runs under
-//! a short exclusive lock on `editing.lock` ([`Project::hold_edit_flag`]),
-//! so no other command changes it in between.
+//! One edit at a time: `--force` takes over a flag left up by an edit the
+//! user confirms isn't running any more, never one that is (the user: "its
+//! not meant to allow two things to edit at once").
 //!
-//! The locks are OS advisory locks on open files, so a TUI that crashes
+//! The lock is an OS advisory lock on an open file, so a TUI that crashes
 //! leaves none held; only the flag can be left behind, and the TUI's
 //! Override and `edit end --force` take that down. Everything here goes
 //! through [`Disk`]; nothing opens the project.
@@ -223,26 +222,6 @@ impl Project {
         Ok(was_up)
     }
 
-    /// Takes the flag down only if it is still `expected`, the one the
-    /// caller saw (`None`: one whose file couldn't be read), looking and
-    /// taking down under [`Self::hold_edit_flag`]: `edit end`'s and the
-    /// TUI's Override's one rule.
-    pub fn lower_edit_flag_if(root: &Path, expected: Option<&EditFlag>) -> Result<Lowered, Error> {
-        let Some(_hold) = Self::hold_edit_flag(root)? else {
-            return Ok(Lowered::Busy);
-        };
-        let now = match Self::read_edit_flag(root) {
-            Ok(None) => return Ok(Lowered::Gone),
-            Ok(Some(flag)) => Some(flag),
-            Err(_) => None,
-        };
-        if now.as_ref() != expected {
-            return Ok(Lowered::Changed(now));
-        }
-        Self::lower_edit_flag(root)?;
-        Ok(Lowered::Lowered)
-    }
-
     /// Whether a TUI has the project at `root` open: a shared try of its
     /// lock, released when the try's file closes. Shared, so two commands
     /// asking at once don't keep each other out; only a TUI's exclusive
@@ -255,54 +234,6 @@ impl Project {
         };
         Ok(!lock.try_lock_shared()?)
     }
-
-    /// Holds the flag still for one change that depends on what it is now:
-    /// `edit begin`'s raise and its put-back, `edit end`'s and Override's
-    /// look and take-down. Every such change runs under it, so none lands
-    /// between another's look and its change. `Ok(None)` when another
-    /// command holds it past a few tries. It is held only while one command
-    /// runs, never from `edit begin` to `edit end`, so a stopped process
-    /// can't keep it.
-    pub fn hold_edit_flag(root: &Path) -> Result<Option<FlagHold>, Error> {
-        let mut disk = Self::disk_for(root.to_path_buf());
-        let lock = disk.open_lock(&rel(EDITING_LOCK)?)?;
-        Ok(try_exclusive(&lock)?.then_some(FlagHold { _lock: lock }))
-    }
-}
-
-/// Takes `lock` exclusively, never waiting on it, but trying again a few
-/// times 5 ms apart: another command holds its own lock for an instant.
-/// `false` when it is still held.
-fn try_exclusive(lock: &Lock) -> Result<bool, Error> {
-    const TRIES: u32 = 20;
-    for attempt in 1..=TRIES {
-        if lock.try_lock()? {
-            return Ok(true);
-        }
-        if attempt < TRIES {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-    Ok(false)
-}
-
-/// [`Project::hold_edit_flag`]'s hold, let go when it is dropped.
-pub struct FlagHold {
-    _lock: Lock,
-}
-
-/// What [`Project::lower_edit_flag_if`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Lowered {
-    /// The flag expected came down.
-    Lowered,
-    /// No flag was up: someone took it down first.
-    Gone,
-    /// Another flag is up now, left as it is: the one found (`None`: one
-    /// whose file can't be read).
-    Changed(Option<EditFlag>),
-    /// Another command was changing the flag; nothing was done.
-    Busy,
 }
 
 /// A TUI's hold on the project it has open (see the module doc): an
@@ -314,18 +245,23 @@ pub struct ProjectLock {
 
 impl ProjectLock {
     /// Takes `root`'s lock, making the file (and the local folder) when
-    /// missing: `Ok(None)` when another TUI holds it. Never waits. Another
-    /// TUI's hold is exclusive and lasts, so a shared try that fails is the
-    /// answer at once; one that gets in has only commands asking
-    /// [`Project::tui_open`] beside it, each for an instant, which the
-    /// exclusive tries then wait out (`try_exclusive`).
+    /// missing: `Ok(None)` when another TUI holds it. Never waits, but a
+    /// try that fails is tried again a few times 5 ms apart, since a
+    /// command asking [`Project::tui_open`] holds a shared lock for an
+    /// instant.
     pub fn take(root: &Path) -> Result<Option<ProjectLock>, Error> {
+        const TRIES: u32 = 10;
         let mut disk = Project::disk_for(root.to_path_buf());
         let lock = disk.open_lock(&rel(TUI_LOCK)?)?;
-        if !lock.try_lock_shared()? {
-            return Ok(None);
+        for attempt in 1..=TRIES {
+            if lock.try_lock()? {
+                return Ok(Some(ProjectLock { _lock: lock }));
+            }
+            if attempt < TRIES {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
-        Ok(try_exclusive(&lock)?.then_some(ProjectLock { _lock: lock }))
+        Ok(None)
     }
 }
 
@@ -433,32 +369,18 @@ mod tests {
         assert!(ProjectLock::take(root).unwrap().is_some());
     }
 
-    /// A command asking at the moment a TUI takes the lock doesn't keep it
-    /// out: the take tries again.
+    /// A command's question (a shared hold) keeps a take out only while it
+    /// is held: the take, which tries a few times, gets in once it goes.
     #[test]
-    fn a_take_waits_out_a_commands_question() {
+    fn a_commands_question_keeps_a_take_out_only_while_held() {
         let (dir, _p) = fixture();
         let root = dir.path();
         drop(ProjectLock::take(root).unwrap());
         let asking =
             Disk::new(root.to_path_buf()).existing_lock(&rel(TUI_LOCK).unwrap()).unwrap().unwrap();
         assert!(asking.try_lock_shared().unwrap());
-        // Let go from another thread, whenever it runs: no sleep to race
-        // the take's tries on a loaded machine.
-        let release = std::thread::spawn(move || asking.unlock().unwrap());
+        assert!(ProjectLock::take(root).unwrap().is_none(), "held past every try");
+        drop(asking);
         assert!(ProjectLock::take(root).unwrap().is_some());
-        release.join().unwrap();
-    }
-
-    /// One change of the flag at a time: a second hold is refused while one
-    /// is held, and taken once it goes.
-    #[test]
-    fn one_flag_change_at_a_time() {
-        let (dir, _p) = fixture();
-        let root = dir.path();
-        let hold = Project::hold_edit_flag(root).unwrap().expect("free");
-        assert!(Project::hold_edit_flag(root).unwrap().is_none(), "held");
-        drop(hold);
-        assert!(Project::hold_edit_flag(root).unwrap().is_some());
     }
 }
