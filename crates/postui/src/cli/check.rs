@@ -218,7 +218,7 @@ fn skipped_message(s: &Skipped) -> String {
 /// Whether `variables.toml` declares `name`, as a variable or a selector's
 /// field. An unresolved name it declares lacks a value; one it doesn't is
 /// likely a typo.
-fn declared(project: &Project, name: &str) -> bool {
+pub(super) fn declared(project: &Project, name: &str) -> bool {
     let model = project.variables();
     model.vars.contains_key(name)
         || model.selectors.values().any(|s| s.fields.iter().any(|f| f == name))

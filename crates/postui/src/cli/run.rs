@@ -4,14 +4,14 @@
 //! memory (the read-only disk refuses the persist, so nothing is written
 //! back) and holds the one mask every printed string passes through.
 
-use super::check::reason;
+use super::check::{declared, reason};
 use super::mask::{self, Mask};
 use super::out::{count, fields, rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
-use postui_core::model::{HttpRequest, Method};
+use postui_core::model::{Entry, HttpRequest, JqView, Method};
 use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
@@ -36,11 +36,36 @@ pub struct RunOpts {
     /// Each `--select SELECTOR=OPTION` as (selector, option), in the order
     /// given.
     pub selects: Vec<(String, String)>,
+    /// Each `--var NAME=VALUE` as (name, value), in the order given: a value
+    /// for this run that beats every other source (spec 2026-10-30 D4).
+    pub vars: Vec<(String, String)>,
     pub show_secrets: bool,
     /// `--timeout`, already defaulted: how long the request may take to get
     /// its final response started, and then each gap between reads of the
     /// body; `None` is no limit.
     pub timeout: Option<Duration>,
+}
+
+/// The jq filter `run` prints the results of instead of the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Filter {
+    /// `--jq F`.
+    Jq(String),
+    /// `--view` (`None`: the filter the request's response pane applies) or
+    /// `--view=NAME` (a saved view), read off the request (D3).
+    View(Option<String>),
+}
+
+/// How much of a run the text prints (D5): the body alone, as curl does,
+/// unless asked for more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    /// The body (or the jq results); the rest that matters goes to stderr.
+    Body,
+    /// `-i`: the status line and response headers, then the body.
+    Include,
+    /// `-v`: the whole report.
+    Verbose,
 }
 
 /// What a run needs to prepare and send requests.
@@ -56,12 +81,16 @@ pub(super) struct Session {
     pub clients: Clients,
     /// What opening the project warned about.
     pub warnings: Vec<String>,
+    /// The `--var`s, which every request prepared gets as its own
+    /// `[variables]`, enabled: the source `prepare` ranks first (D4).
+    vars: Vec<(String, String)>,
 }
 
 /// Opens the project read-only, makes `--env` the environment and applies
 /// the `--select`s, then builds the mask (from the secrets of the
-/// environment as selected), the prepare context and the clients. A
-/// selector or option that doesn't exist is the error, naming the choices.
+/// environment as selected, and any `--var` given for one), the prepare
+/// context and the clients. A selector or option that doesn't exist is the
+/// error, naming the choices.
 pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     let root = target::resolve(g.project.as_deref())?;
     let (mut project, mut warnings) = open(&root)?;
@@ -70,11 +99,52 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     for (selector, option) in &opts.selects {
         select_option(&mut project, env.as_deref().unwrap_or_default(), selector, option)?;
     }
-    let mask = if opts.show_secrets { Mask::none() } else { mask::of_env(&project) };
+    let mask = if opts.show_secrets {
+        Mask::none()
+    } else {
+        let model = project.variables();
+        let given =
+            opts.vars.iter().filter(|(name, _)| model.vars.get(name).is_some_and(|v| v.secret));
+        let secrets = mask::secret_values(&project).into_iter().map(|(_, value)| value);
+        Mask::new(secrets.chain(given.map(|(_, value)| value.clone())))
+    };
     let context = project.prepare_context();
     let clients = Clients::with_timeout(opts.timeout)
         .map_err(|e| CliError::new(format!("could not start the HTTP client: {e}")))?;
-    Ok(Session { project, root, env, mask, context, clients, warnings })
+    Ok(Session { project, root, env, mask, context, clients, warnings, vars: opts.vars.clone() })
+}
+
+impl Session {
+    /// Refuses a `--var` that `variables.toml` doesn't declare (as a
+    /// variable or a selector's field) and that none of `slugs`' requests
+    /// has in its `[variables]`: a misspelt name would otherwise change
+    /// nothing. `not_local` says, in the error, that those requests don't
+    /// have it.
+    pub(super) fn check_vars(&mut self, slugs: &[String], not_local: &str) -> Result<(), CliError> {
+        let undeclared: Vec<&str> = self
+            .vars
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| !declared(&self.project, name))
+            .collect();
+        if undeclared.is_empty() {
+            return Ok(());
+        }
+        // Read only when a name needs them: a broken file is the run's to
+        // report, so it has no names here.
+        let mut local = std::collections::BTreeSet::new();
+        for slug in slugs {
+            if let Ok(req) = self.project.read_request(slug) {
+                local.extend(req.variables.into_keys());
+            }
+        }
+        match undeclared.into_iter().find(|name| !local.contains(*name)) {
+            Some(name) => Err(CliError::new(format!(
+                "--var {name}: variables.toml doesn't declare it, and {not_local}"
+            ))),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Picks `option` of `selector` for this run: in memory only.
@@ -133,10 +203,14 @@ pub(super) fn prepare_one(
     if let Some(error) = &listing.broken {
         return Err(CliError::at(s.mask.apply(error), file));
     }
-    let req =
+    let read =
         s.project.read_request(slug).map_err(|e| CliError::at(s.mask.apply(&reason(e)), file))?;
+    let mut req = read.clone();
+    for (name, value) in &s.vars {
+        req.variables.insert(name.clone(), Entry { value: value.clone(), enabled: true });
+    }
     let outcome = prepare::prepare(&req, &s.context).map_err(|e| e.to_string());
-    Ok((req, outcome))
+    Ok((read, outcome))
 }
 
 /// A request `prepare` refused, as printed: the method and URL as read, the
@@ -208,6 +282,15 @@ struct JqReport {
     filter: String,
     output: Option<Vec<serde_json::Value>>,
     error: Option<String>,
+}
+
+/// `404 Not Found`: the code and its reason, or the code alone when it has
+/// none.
+fn status_line(status: u16) -> String {
+    match reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()) {
+        Some(reason) => format!("{status} {reason}"),
+        None => status.to_string(),
+    }
 }
 
 /// Whole milliseconds.
@@ -352,22 +435,68 @@ fn record(
     report.response = Some(response);
 }
 
+/// The jq filter `filter` names for request `read` (`slug`, in `file`):
+/// `--jq`'s own, or the request's (D3). A view that isn't there is an error
+/// naming the request's views.
+fn filter_text(
+    filter: &Filter,
+    read: &HttpRequest,
+    slug: &str,
+    file: &Path,
+) -> Result<String, CliError> {
+    let views: Vec<&str> = read.jq_views.iter().map(|v| v.name.as_str()).collect();
+    let choices = if views.is_empty() {
+        "it has no saved views".to_string()
+    } else {
+        format!("its views are {}", views.join(", "))
+    };
+    let missing = |what: String| CliError::at(format!("{what}; {choices}"), file.to_path_buf());
+    match filter {
+        Filter::Jq(text) => Ok(text.clone()),
+        // What the response pane applies: the current view's filter, else
+        // the scratch (`Editor::jq_filter`). Whether the pane's switch is
+        // off doesn't matter: asking for the view asks for its filter.
+        Filter::View(None) => {
+            let current = read.jq_current.as_deref().and_then(|name| {
+                read.jq_views.iter().find(|v| v.name == name).map(|v| v.filter.as_str())
+            });
+            current
+                .or(read.jq.as_deref())
+                .filter(|f| !f.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| missing(format!("request {slug} has no jq filter")))
+        }
+        Filter::View(Some(name)) => {
+            let key = JqView::name_key(name);
+            read.jq_views
+                .iter()
+                .find(|v| JqView::name_key(&v.name) == key)
+                .map(|v| v.filter.clone())
+                .ok_or_else(|| missing(format!("request {slug} has no view \"{name}\"")))
+        }
+    }
+}
+
 /// Runs request `slug` of the project `g` names. With `dry_run` it only
-/// prepares it; else it sends it, and `jq` filters the body and `output`
-/// takes it (or the jq results) to a file.
+/// prepares it; else it sends it, and `filter` filters the body and
+/// `output` takes it (or the jq results) to a file.
 pub async fn run(
     g: &Global,
     slug: &str,
     opts: &RunOpts,
-    jq: Option<&str>,
+    filter: Option<&Filter>,
     output: Option<&Path>,
     dry_run: bool,
 ) -> Result<RunReport, CliError> {
     let mut s = session(g, opts)?;
+    s.check_vars(&[slug.to_string()], "the request's [variables] don't have it")?;
     let (read, prepared) = prepare_one(&mut s, slug)?;
+    let file = storage::request_path(&s.root, slug);
+    let jq = filter.map(|f| filter_text(f, &read, slug, &file)).transpose()?;
+    let jq = jq.as_deref();
     let mut report = RunReport {
         request: slug.to_string(),
-        file: storage::request_path(&s.root, slug),
+        file,
         environment: s.env.clone(),
         method: None,
         url: None,
@@ -429,6 +558,72 @@ impl RunReport {
         } else {
             ExitCode::SUCCESS
         }
+    }
+
+    /// Prints the report as `shown` asks (D5): the JSON with `json`; the
+    /// whole report for `-v` or a dry run (whose point is the request);
+    /// otherwise [`Self::streams`]. `None` when it all went out, as
+    /// [`crate::cli_out::print_out`] says.
+    pub fn print(&self, json: bool, shown: Shown) -> Option<ExitCode> {
+        if json || self.dry_run || shown == Shown::Verbose {
+            return super::out::emit(self, json, RunReport::text);
+        }
+        let (out, err) = self.streams(shown == Shown::Include);
+        let printed = crate::cli_out::print_out(&out);
+        crate::cli_out::print_err(&err);
+        printed
+    }
+
+    /// What a run prints like curl, as (stdout, stderr). Stdout: with
+    /// `include`, the status line and response headers and a blank line;
+    /// then the body as it came, or the jq results one a line (nothing for
+    /// what `-o` took). Stderr, a `postui: ` line each (D6): the error, a
+    /// failing jq filter, a status of 400 or more, and the warnings.
+    pub fn streams(&self, include: bool) -> (String, String) {
+        let mut out = String::new();
+        let mut err = String::new();
+        if let Some(r) = &self.response {
+            if include {
+                out.push_str(&format!(
+                    "{}  {} ms (first byte {} ms), {}\n",
+                    status_line(r.status),
+                    r.elapsed_ms,
+                    r.ttfb_ms,
+                    count(r.size, "byte")
+                ));
+                for h in &r.headers {
+                    out.push_str(&format!("{}: {}\n", h.name, h.value));
+                }
+                out.push('\n');
+            }
+            if let Some(body) = &r.body {
+                out.push_str(body);
+                // A body without a last newline would run into the next
+                // line printed (a prompt, the stderr notes); `-o` keeps the
+                // bytes exact.
+                if !body.is_empty() && !body.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+        if let Some(j) = &self.jq {
+            for value in j.output.iter().flatten() {
+                out.push_str(&format!("{value}\n"));
+            }
+            if let Some(error) = &j.error {
+                err.push_str(&format!("postui: jq: {error}\n"));
+            }
+        }
+        if let Some(error) = &self.error {
+            err.push_str(&format!("postui: {}\n", error.trim_end()));
+        }
+        if let Some(r) = self.response.as_ref().filter(|r| r.status >= FIRST_FAILING_STATUS) {
+            err.push_str(&format!("postui: {}\n", status_line(r.status)));
+        }
+        for w in &self.warnings {
+            err.push_str(&format!("postui: warning: {}\n", w.trim_end()));
+        }
+        (out, err)
     }
 
     /// The request line, what identifies the run, the request's headers and

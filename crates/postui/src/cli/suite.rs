@@ -70,53 +70,54 @@ pub async fn suite(
     opts: &RunOpts,
 ) -> Result<(SuiteReport, Mask), CliError> {
     let mut s = session(g, opts)?;
-    let spaces = spaces_of(&s.project, space)?;
+    let slugs: Vec<String> = spaces_of(&s.project, space)?
+        .iter()
+        .flat_map(|space| displayed(&s.project, space))
+        .collect();
+    // Before anything is sent: a misspelt `--var` would change no request.
+    s.check_vars(&slugs, "no request's [variables] has it")?;
     let mut results = Vec::new();
     // What `run` would warn of for each request, in suite order.
     let mut request_warnings = Vec::new();
-    for space in spaces {
-        for slug in displayed(&s.project, &space) {
-            let mut result = SuiteResult {
-                request: slug.clone(),
-                method: None,
-                url: None,
-                status: None,
-                elapsed_ms: None,
-                size: None,
-                error: None,
-            };
-            match prepare_one(&mut s, &slug) {
-                // A broken file is this request's result, naming the file
-                // first and absolute, as an error does (R22).
-                Err(e) => {
-                    let at = e.file.map(|f| format!("{}: ", f.display())).unwrap_or_default();
-                    result.error = Some(format!("{at}{}", e.message.trim_end()));
-                }
-                // The file read; only the variables failed: it keeps its
-                // method and URL as written.
-                Ok((read, Err(message))) => {
-                    let (method, url, error) = refused(&s.mask, &read, &message);
-                    (result.method, result.url, result.error) =
-                        (Some(method), Some(url), Some(error));
-                }
-                Ok((_, Ok((request, prepare_warnings)))) => {
-                    request_warnings.extend(
-                        prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
-                    );
-                    result.method = Some(request.method);
-                    result.url = Some(shown_url(&request, opts.show_secrets));
-                    match send_raw(s.clients.for_request(&request), &request).await {
-                        Ok(raw) => {
-                            result.status = Some(raw.status);
-                            result.elapsed_ms = Some(millis(raw.elapsed));
-                            result.size = Some(raw.bytes.len());
-                        }
-                        Err(message) => result.error = Some(s.mask.apply(&message)),
+    for slug in slugs {
+        let mut result = SuiteResult {
+            request: slug.clone(),
+            method: None,
+            url: None,
+            status: None,
+            elapsed_ms: None,
+            size: None,
+            error: None,
+        };
+        match prepare_one(&mut s, &slug) {
+            // A broken file is this request's result, naming the file
+            // first and absolute, as an error does (R22).
+            Err(e) => {
+                let at = e.file.map(|f| format!("{}: ", f.display())).unwrap_or_default();
+                result.error = Some(format!("{at}{}", e.message.trim_end()));
+            }
+            // The file read; only the variables failed: it keeps its
+            // method and URL as written.
+            Ok((read, Err(message))) => {
+                let (method, url, error) = refused(&s.mask, &read, &message);
+                (result.method, result.url, result.error) = (Some(method), Some(url), Some(error));
+            }
+            Ok((_, Ok((request, prepare_warnings)))) => {
+                request_warnings
+                    .extend(prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))));
+                result.method = Some(request.method);
+                result.url = Some(shown_url(&request, opts.show_secrets));
+                match send_raw(s.clients.for_request(&request), &request).await {
+                    Ok(raw) => {
+                        result.status = Some(raw.status);
+                        result.elapsed_ms = Some(millis(raw.elapsed));
+                        result.size = Some(raw.bytes.len());
                     }
+                    Err(message) => result.error = Some(s.mask.apply(&message)),
                 }
             }
-            results.push(result);
         }
+        results.push(result);
     }
     let passed = results.iter().filter(|r| r.passed()).count();
     let totals = Totals {

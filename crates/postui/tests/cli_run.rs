@@ -101,6 +101,16 @@ fn send_text(home: &Home, root: &Path, slug: &str, extra: &[&str]) -> String {
     String::from_utf8_lossy(&home.run(&args).stdout).into_owned()
 }
 
+/// `run <slug> -p <root>` and then `extra`, printing text: the exit code,
+/// stdout and stderr.
+fn streams(home: &Home, root: &Path, slug: &str, extra: &[&str]) -> (Option<i32>, String, String) {
+    let mut args = vec!["run", slug, "-p", s(root)];
+    args.extend_from_slice(extra);
+    let out = home.run(&args);
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    (out.status.code(), text(&out.stdout), text(&out.stderr))
+}
+
 fn served() -> (Home, Server, PathBuf) {
     let home = Home::new();
     let server = Server::start();
@@ -337,8 +347,8 @@ fn run_reports_the_response() {
     assert_eq!(server.seen(), ["GET /ok"]);
     assert_eq!(tree(&root), before, "a send writes nothing into the project");
 
-    // The text prints the body exactly as it came, once.
-    let text = send_text(&home, &root, "main/ok", &[]);
+    // `-v`'s text prints the body exactly as it came, once.
+    let text = send_text(&home, &root, "main/ok", &["-v"]);
     assert!(text.contains("\nresponse\n  200 in "), "{text}");
     assert!(text.ends_with("\nresponse body\n{\"id\":42}\n"), "{text}");
 }
@@ -404,8 +414,10 @@ fn run_output_file_gets_raw_bytes() {
     // R20: the text names the file absolute, even one inside the project:
     // it is the user's, named from their working directory.
     let inside = root.join("out.bin");
-    let text = send_text(&home, &root, "main/bytes", &["-o", s(&inside)]);
+    let text = send_text(&home, &root, "main/bytes", &["-o", s(&inside), "-v"]);
     assert!(text.contains(&format!("\nwritten to {}\n", s(&inside))), "{text}");
+    // Without `-v`, as curl: nothing printed, the body is in the file.
+    assert_eq!(send_text(&home, &root, "main/bytes", &["-o", s(&inside)]), "");
 
     // A relative name lands in the working directory and is reported absolute.
     let out = home.run_json(&["run", "main/bytes", "-p", s(&root), "--output", "rel.bin"]);
@@ -565,8 +577,10 @@ fn run_jq_error_and_filter_are_masked() {
     assert_eq!(out.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
     assert_eq!(json(&out)["jq"]["filter"], format!("\"{MASK}\" | tonumber"));
-    let text = send_text(&home, &root, "main/ok", &["--jq", &filter]);
+    let text = send_text(&home, &root, "main/ok", &["--jq", &filter, "-v"]);
     assert!(!text.contains(SECRET) && text.contains(MASK), "{text}");
+    let (_, _, err) = streams(&home, &root, "main/echo", &["--jq", ".t | tonumber"]);
+    assert!(!err.contains(SECRET) && err.contains(MASK), "{err}");
 }
 
 #[test]
@@ -591,6 +605,183 @@ fn run_send_error_is_masked() {
     let v = json(&out);
     assert!(v["response"].is_null());
     assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()));
+}
+
+/// Spec 2026-10-30 D5: the body alone, as it came, as curl prints it.
+#[test]
+fn run_prints_the_body_alone_by_default() {
+    let (home, _server, root) = served();
+    assert_eq!(streams(&home, &root, "main/ok", &[]), (Some(0), "{\"id\":42}\n".into(), "".into()));
+    let (_, out, _) = streams(&home, &root, "main/ok", &["--jq", ".id"]);
+    assert_eq!(out, "42\n");
+}
+
+/// D5: `-i` puts the status line and the response headers, as `name:
+/// value`, and a blank line before the body; `-v` the whole report.
+#[test]
+fn run_include_and_verbose_show_more() {
+    let (home, _server, root) = served();
+    let (code, out, err) = streams(&home, &root, "main/ok", &["-i"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let (head, body) = out.split_once("\n\n").unwrap_or_else(|| panic!("{out}"));
+    assert!(head.starts_with("200 OK  ") && head.contains(" ms (first byte "), "{head}");
+    assert!(head.lines().next().unwrap().ends_with(", 9 bytes"), "{head}");
+    assert!(head.lines().any(|l| l == "content-type: application/json"), "{head}");
+    assert_eq!(body, "{\"id\":42}\n");
+
+    let (_, out, _) = streams(&home, &root, "main/ok", &["-v"]);
+    assert!(out.starts_with("GET http://127.0.0.1:"), "{out}");
+    assert!(out.contains("\nrequest headers\n") && out.contains("\nresponse body\n"), "{out}");
+    // A dry run prints the report too: the request is what it is for.
+    let (_, out, _) = streams(&home, &root, "main/ok", &["--dry-run"]);
+    assert!(out.contains("dry run      nothing was sent"), "{out}");
+}
+
+/// D6: what matters and isn't the body goes to stderr, a `postui:` line
+/// each, and the exit codes don't change.
+#[test]
+fn run_says_on_stderr_what_failed() {
+    let (home, _server, root) = served();
+    assert_eq!(
+        streams(&home, &root, "main/missing", &[]),
+        (Some(1), "nope\n".into(), "postui: 404 Not Found\n".into())
+    );
+    let (code, out, err) = streams(&home, &root, "main/refused", &[]);
+    assert_eq!((code, out.as_str()), (Some(1), ""));
+    assert!(err.starts_with("postui: ") && !err.contains(SECRET), "{err}");
+    let (code, out, err) = streams(&home, &root, "main/bytes", &["--jq", "."]);
+    assert_eq!(code, Some(1));
+    assert_eq!(out, "ok\u{fffd}\u{fffd}\n", "the body shows when the filter fails");
+    assert!(err.starts_with("postui: jq: "), "{err}");
+
+    std::fs::write(
+        root.join("requests/main/typo.toml"),
+        "name = \"Typo\"\nmethod = \"GET\"\nurl = \"{{bsae}}/x\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        streams(&home, &root, "main/typo", &[]),
+        (Some(1), "".into(), "postui: unresolved: bsae\n".into())
+    );
+    std::fs::write(
+        root.join("requests/main/tagged.toml"),
+        "name = \"Tagged\"\nmethod = \"GET\"\nurl = \"{{base}}/ok\"\n\n\
+         [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        streams(&home, &root, "main/tagged", &[]),
+        (
+            Some(0),
+            "{\"id\":42}\n".into(),
+            "postui: warning: the X-Tag header: tag's value holds {{region}}, which is sent \
+             as written\n"
+                .into()
+        )
+    );
+}
+
+/// D3: `--view` filters with what the request's response pane applies, the
+/// current view's filter, else the scratch; `--view=NAME` with a saved view.
+#[test]
+fn run_view_uses_the_requests_own_filter() {
+    let (home, _server, root) = served();
+    let put = |name: &str, extra: &str| {
+        std::fs::write(
+            root.join(format!("requests/main/{name}.toml")),
+            format!("name = \"{name}\"\nmethod = \"GET\"\nurl = \"{{{{base}}}}/ok\"\n{extra}"),
+        )
+        .unwrap();
+    };
+    put(
+        "viewed",
+        "jq_current = \"Id\"\njq_enabled = false\n\n\
+         [[jq_view]]\nname = \"Id\"\nfilter = \".id\"\n\n\
+         [[jq_view]]\nname = \"Keys\"\nfilter = \"keys\"\n",
+    );
+    put("scratch", "jq = \".id + 1\"\n");
+
+    assert_eq!(streams(&home, &root, "main/viewed", &["--view"]).1, "42\n");
+    assert_eq!(streams(&home, &root, "main/viewed", &["--view=keys"]).1, "[\"id\"]\n");
+    assert_eq!(streams(&home, &root, "main/scratch", &["--view"]).1, "43\n");
+
+    let (code, out, err) = streams(&home, &root, "main/viewed", &["--view=nope"]);
+    assert_eq!((code, out.as_str()), (Some(2), ""));
+    assert!(
+        err.ends_with(
+            "viewed.toml: request main/viewed has no view \"nope\"; its views are Id, Keys\n"
+        ),
+        "{err}"
+    );
+    let (code, _, err) = streams(&home, &root, "main/ok", &["--view"]);
+    assert_eq!(code, Some(2));
+    assert!(err.ends_with("request main/ok has no jq filter; it has no saved views\n"), "{err}");
+}
+
+/// D4: `--var` beats every other source, the request's own `[variables]`
+/// included; a name nothing declares or holds is refused.
+#[test]
+fn run_var_gives_a_value_for_this_run() {
+    let (home, _server, root) = served();
+    std::fs::write(
+        root.join("requests/main/local.toml"),
+        "name = \"Local\"\nmethod = \"GET\"\nurl = \"{{base}}/r/{{region}}/{{here}}\"\n\n\
+         [variables]\nregion = \"local\"\nhere = \"h\"\n",
+    )
+    .unwrap();
+    let url = |extra: &[&str]| {
+        let mut args = vec!["--var", "base=http://x.test"];
+        args.extend_from_slice(extra);
+        json(&dry(&home, &root, "main/local", &args))["url"].as_str().unwrap().to_string()
+    };
+    assert_eq!(url(&[]), "http://x.test/r/local/h");
+    assert_eq!(url(&["--var", "region=cli", "--var", "here=there"]), "http://x.test/r/cli/there");
+
+    // A selector's field, over the selection.
+    let out = send(&home, &root, "main/echo", &["--var", "user_id=99"]);
+    assert_eq!(json(&out)["response"]["body_json"]["u"], "99");
+
+    let (code, _, err) = streams(&home, &root, "main/ok", &["--var", "regoin=x"]);
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        err,
+        "postui: --var regoin: variables.toml doesn't declare it, and the request's \
+         [variables] don't have it\n"
+    );
+}
+
+/// D4: a secret given with `--var` is masked like the secret it stands for.
+#[test]
+fn run_var_for_a_secret_is_masked() {
+    let (home, _server, root) = served();
+    let other = "another-s3cret";
+    let out = send(&home, &root, "main/echo", &["--var", &format!("token={other}")]);
+    assert_ok(&out, "run --var token");
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(!printed.contains(other), "{printed}");
+    assert_eq!(json(&out)["response"]["body_json"]["t"], MASK);
+}
+
+/// D4: `suite --var` reaches every request, and is checked before any is
+/// sent.
+#[test]
+fn suite_var_reaches_every_request() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = write_suite_project(
+        &home,
+        "http://127.0.0.1:1",
+        &[("main/a", &get("/ok")), ("admin/b", &get("/ok"))],
+    );
+    let out =
+        home.run_json(&["suite", "-p", s(&root), "--var", &format!("base={}", server.base())]);
+    assert_ok(&out, "suite --var");
+    assert_eq!(server.seen(), ["GET /ok", "GET /ok"]);
+
+    let out = home.run(&["suite", "-p", s(&root), "--var", "nope=1"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no request's [variables] has it"));
+    assert_eq!(server.seen().len(), 2, "nothing more was sent");
 }
 
 #[test]
