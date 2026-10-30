@@ -5586,7 +5586,7 @@ impl App {
                 true
             }
             Action::SwitchProject(target) => {
-                if target == self.root() || self.is_open_project(&target) {
+                if self.is_open_project(&target) {
                     return false;
                 }
                 self.apply_gated("switch", Action::ForceSwitchProject(target));
