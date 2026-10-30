@@ -720,9 +720,11 @@ impl App {
             );
         }
 
-        if app.open_error.is_some() {
-            // The project refused to open: the app runs empty until the
-            // user opens another one, so none of the dispositions apply.
+        if app.open_error.is_some() || app.edit_block.is_some() {
+            // The project refused to open, or waits behind the edit flag's
+            // screen: the app runs empty until it opens, or the user opens
+            // another one, so none of the dispositions (which create or
+            // open the project) apply.
             app.apply_startup_config_gate();
             app.raise_keymap_choice();
             if testbed {

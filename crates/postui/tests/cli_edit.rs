@@ -106,7 +106,19 @@ fn begin_refuses_while_a_tui_has_the_project_open() {
 
     drop(tui);
     assert_eq!(json(&edit(&home, &root, &["status", "--json"]))["tui_open"], false);
+
+    // Another command changing the flag (holding it, as this process does
+    // here) is a refusal to retry, and so is it for `edit end`.
+    let hold = Project::hold_edit_flag(&root).unwrap().expect("free");
+    let out = edit(&home, &root, &["begin"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("another postui edit command"), "{}", stderr(&out));
+    drop(hold);
     assert_ok(&edit(&home, &root, &["begin"]), "begin once postui let go");
+    let hold = Project::hold_edit_flag(&root).unwrap().expect("free");
+    assert_eq!(edit(&home, &root, &["end"]).status.code(), Some(1));
+    assert!(flag(&root).is_some());
+    drop(hold);
 }
 
 #[test]

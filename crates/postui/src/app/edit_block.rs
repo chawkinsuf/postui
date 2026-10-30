@@ -83,6 +83,14 @@ pub(super) enum Opening {
     Flagged,
 }
 
+/// The warning for a project open without its lock, `why` it couldn't be
+/// had.
+fn unlocked(why: &str) -> String {
+    format!(
+        "could not lock the project ({why}): an agent's postui edit begin won't know it is open"
+    )
+}
+
 impl App {
     /// The lock, then the flag, for opening `root` (the order the module
     /// doc of `postui_core::project::edit_flag` explains): either the
@@ -98,33 +106,26 @@ impl App {
         }
         match taken {
             Some(Ok(lock)) => Opening::Open { lock, warning: None },
-            Some(Err(e)) => Opening::Open {
-                lock: None,
-                warning: Some(format!(
-                    "could not lock the project ({e}): an agent's postui edit begin won't \
-                     know it is open"
-                )),
-            },
+            Some(Err(e)) => Opening::Open { lock: None, warning: Some(unlocked(&e.to_string())) },
             None => Opening::Open { lock: None, warning: None },
         }
     }
 
     /// Takes the open project's lock, for a project made in place (the
-    /// create-project answers), where no open took it first.
+    /// create-project answers), where no open took it first. Made already,
+    /// the project stays open whatever the take finds, and a lock it can't
+    /// have is said.
     pub(super) fn take_project_lock(&mut self) {
         self.project_lock = None;
-        let root = self.project().map(|p| p.root().to_path_buf());
-        if let Some(root) = root {
-            match ProjectLock::take(&root) {
-                Ok(lock) => self.project_lock = lock,
-                Err(e) => self.toasts.push(
-                    format!(
-                        "could not lock the project ({e}): an agent's postui edit begin won't \
-                         know it is open"
-                    ),
-                    ToastKind::Warning,
-                ),
-            }
+        let Some(root) = self.project().map(|p| p.root().to_path_buf()) else {
+            return;
+        };
+        match ProjectLock::take(&root) {
+            Ok(Some(lock)) => self.project_lock = Some(lock),
+            Ok(None) => self
+                .toasts
+                .push(unlocked("another postui window has it open too"), ToastKind::Warning),
+            Err(e) => self.toasts.push(unlocked(&e.to_string()), ToastKind::Warning),
         }
     }
 
@@ -185,10 +186,27 @@ impl App {
         let Some(root) = self.edit_block.as_ref().map(|b| b.root.clone()) else {
             return false;
         };
+        // The look and the take-down as one change of the flag, as `edit
+        // end`'s are.
+        let hold = match Project::hold_edit_flag(&root) {
+            Ok(Some(hold)) => hold,
+            Ok(None) => {
+                self.toasts
+                    .push("An agent's command is changing the flag; try again", ToastKind::Info);
+                return true;
+            }
+            Err(e) => {
+                self.toasts.push(format!("could not remove the edit flag: {e}"), ToastKind::Error);
+                return true;
+            }
+        };
         // An unreadable flag is `None`, as the screen holds one: a question
         // asked about a readable flag doesn't lower one gone unreadable.
         let now = match Project::read_edit_flag(&root) {
-            Ok(None) => return self.apply(Action::ForceSwitchProject(root)),
+            Ok(None) => {
+                drop(hold);
+                return self.apply(Action::ForceSwitchProject(root));
+            }
             Ok(Some(flag)) => Some(flag),
             Err(_) => None,
         };
@@ -203,6 +221,7 @@ impl App {
             self.toasts.push(format!("could not remove the edit flag: {e}"), ToastKind::Error);
             return true;
         }
+        drop(hold);
         self.apply(Action::ForceSwitchProject(root))
     }
 
@@ -225,18 +244,21 @@ impl App {
     }
 
     /// A key while the screen is up and no dialog is over it (one that is
-    /// takes keys as anywhere): only the buttons' keys and the quit combo
-    /// do anything.
+    /// takes keys as anywhere): only the buttons' keys, the quit combo and
+    /// the project cycle do anything.
     pub(super) fn blocked_key(&mut self, ev: KeyEvent) -> bool {
         let ev = crate::keys::normalize_super_keys(ev);
         let armed = self.disarm_quit();
         let combo = KeyCombo::from_event(&ev);
         if ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
-            // The quit combo quits on its second press, as everywhere.
-            if self.lookup_key(&combo) != Some(Action::Quit) {
-                return armed.is_some();
-            }
-            return self.press_quit_combo(combo, armed.as_ref());
+            return match self.lookup_key(&combo) {
+                // The quit combo quits on its second press, as everywhere.
+                Some(Action::Quit) => self.press_quit_combo(combo, armed.as_ref()),
+                // Cycling through the projects goes on past one an agent
+                // is editing.
+                Some(action @ Action::CycleProject(_)) => self.update(action),
+                _ => armed.is_some(),
+            };
         }
         let KeyCode::Char(c) = ev.code else {
             return armed.is_some();

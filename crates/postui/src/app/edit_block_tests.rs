@@ -4,7 +4,7 @@
 //! and lowering the flag through `Project` directly, as `postui edit` does.
 
 use super::*;
-use postui_core::project::EditFlag;
+use postui_core::project::{EditFlag, ProjectLock};
 use ratatui::crossterm::event::KeyCode;
 use std::path::Path;
 
@@ -244,6 +244,55 @@ fn override_takes_down_only_the_edit_it_asked_about() {
     app.handle_key(plain('o'));
     assert!(Project::edit_flag_up(&root), "not lowered");
     assert!(app.edit_block.as_ref().is_some_and(|b| b.flag.is_none()));
+}
+
+/// Override waits its turn while an agent's command is changing the flag
+/// (`Project::hold_edit_flag`): nothing is taken down meanwhile.
+#[test]
+fn override_waits_while_a_command_changes_the_flag() {
+    let other = other_project("Other");
+    let mut app = waiting_on(other.path());
+    let hold = Project::hold_edit_flag(other.path()).unwrap().expect("free");
+    app.handle_key(plain('o'));
+    app.handle_key(plain('o'));
+    assert!(Project::edit_flag_up(other.path()));
+    assert!(app.toasts.messages().iter().any(|m| m.contains("try again")));
+    drop(hold);
+    app.handle_key(plain('o'));
+    app.handle_key(plain('o'));
+    assert!(!Project::edit_flag_up(other.path()));
+}
+
+/// alt+z cycles on past a project an agent is editing.
+#[test]
+fn the_project_cycle_goes_on_from_the_screen() {
+    let mut app = project_app();
+    let here = root(&app);
+    let other = other_project("Other");
+    raise(other.path(), "x");
+    app.registry.known = vec![here.clone(), other.path().to_path_buf()];
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert!(app.edit_block.is_some());
+    let next = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
+    assert!(matches!(app.lookup_key(&KeyCombo::from_event(&next)), Some(Action::CycleProject(_))));
+    app.handle_key(next);
+    assert!(app.edit_block.is_none());
+    assert_eq!(root(&app), here);
+}
+
+/// A project made in place that another window also has open opens all
+/// the same, saying it isn't locked.
+#[test]
+fn a_project_made_in_place_says_when_it_cant_lock() {
+    let mut app = project_app();
+    let other = ProjectLock::take(&root(&app));
+    assert!(other.unwrap().is_none(), "this app holds it");
+    app.project_lock = None;
+    let held = ProjectLock::take(&root(&app)).unwrap().expect("free now");
+    app.take_project_lock();
+    assert!(app.project_lock.is_none());
+    assert!(app.toasts.messages().iter().any(|m| m.contains("another postui window")));
+    drop(held);
 }
 
 /// The Override question closes when the edit ends on its own.

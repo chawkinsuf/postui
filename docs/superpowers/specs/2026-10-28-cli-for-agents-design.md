@@ -272,6 +272,16 @@ where they disagree, this paragraph wins.
   alive between `edit begin` and `edit end` to refresh its flag (mine).
   Instead the screen says "If the agent has stopped, Override opens it
   now." once a flag is 30 minutes old (mine).
+- **One change of the flag at a time** (mine, its review round 1): each
+  change that depends on what the flag is now (`edit begin`'s raise and
+  put-back, `edit end`'s and Override's look and take-down) runs under a
+  short exclusive lock on `.postui/editing.lock`, held only while that
+  one command runs. Another command holding it is a refusal to retry
+  ("another postui edit command is changing the flag; retry"); Override
+  says to try again. This closes the look-then-remove race the first
+  design's reviews kept raising. alt+z cycles on from the waiting screen,
+  and a launch onto a flagged directory runs none of the startup's
+  create or open dispositions.
 - Gone with the first design: `unsaved.lock`, the gate before every
   event, the write hold, the edit mark, the dropped event and the key
   grace. Your rulings that only applied to it (an AI request in flight

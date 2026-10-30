@@ -13,7 +13,12 @@
 //! - A TUI takes the lock, then looks for the flag, and lets the lock go
 //!   (opening nothing) if it is up.
 //!
-//! The lock is an OS advisory lock on an open file, so a TUI that crashes
+//! A change of the flag that depends on what it is now (taking down only
+//! the flag a command found, putting back the one it replaced) runs under
+//! a short exclusive lock on `editing.lock` ([`Project::hold_edit_flag`]),
+//! so no other command changes it in between.
+//!
+//! The locks are OS advisory locks on open files, so a TUI that crashes
 //! leaves none held; only the flag can be left behind, and the TUI's
 //! Override and `edit end --force` take that down. Everything here goes
 //! through [`Disk`]; nothing opens the project.
@@ -108,7 +113,11 @@ fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     if !shape {
         return None;
     }
-    let num = |range: std::ops::Range<usize>| text.get(range)?.parse::<u32>().ok();
+    // Digits only: `parse` alone would take a sign.
+    let num = |range: std::ops::Range<usize>| {
+        let digits = text.get(range)?;
+        digits.bytes().all(|c| c.is_ascii_digit()).then(|| digits.parse::<u32>().ok())?
+    };
     let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
     let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 59 {
@@ -211,54 +220,69 @@ impl Project {
     }
 
     /// Whether a TUI has the project at `root` open: a shared try of its
-    /// lock, released at once. Shared, so two commands asking at once don't
-    /// keep each other out; only a TUI's exclusive hold does. A missing
-    /// file has never been locked, and asking makes none.
+    /// lock, released when the try's file closes. Shared, so two commands
+    /// asking at once don't keep each other out; only a TUI's exclusive
+    /// hold does. A missing file has never been locked, and asking makes
+    /// none.
     pub fn tui_open(root: &Path) -> Result<bool, Error> {
         let disk = Disk::new(root.to_path_buf());
         let Some(lock) = disk.existing_lock(&rel(TUI_LOCK)?)? else {
             return Ok(false);
         };
-        let free = lock.try_lock_shared()?;
-        if free {
-            lock.unlock()?;
-        }
-        Ok(!free)
+        Ok(!lock.try_lock_shared()?)
     }
+
+    /// Holds the flag still for one change that depends on what it is now:
+    /// `edit begin`'s raise and its put-back, `edit end`'s and Override's
+    /// look and take-down. Every such change runs under it, so none lands
+    /// between another's look and its change. `Ok(None)` when another
+    /// command holds it past a few tries. It is held only while one command
+    /// runs, never from `edit begin` to `edit end`, so a stopped process
+    /// can't keep it.
+    pub fn hold_edit_flag(root: &Path) -> Result<Option<FlagHold>, Error> {
+        let mut disk = Self::disk_for(root.to_path_buf());
+        let lock = disk.open_lock(&rel(EDITING_LOCK)?)?;
+        Ok(try_exclusive(&lock)?.then_some(FlagHold { _lock: lock }))
+    }
+}
+
+/// Takes `lock` exclusively, never waiting on it, but trying again a few
+/// times 5 ms apart: another command holds its own lock for an instant.
+/// `false` when it is still held.
+fn try_exclusive(lock: &Lock) -> Result<bool, Error> {
+    const TRIES: u32 = 20;
+    for attempt in 1..=TRIES {
+        if lock.try_lock()? {
+            return Ok(true);
+        }
+        if attempt < TRIES {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    Ok(false)
+}
+
+/// [`Project::hold_edit_flag`]'s hold, let go when it is dropped.
+pub struct FlagHold {
+    _lock: Lock,
 }
 
 /// A TUI's hold on the project it has open (see the module doc): an
 /// exclusive lock on `tui.lock`, released when it is dropped or the process
 /// ends.
 pub struct ProjectLock {
-    root: PathBuf,
     _lock: Lock,
 }
 
 impl ProjectLock {
     /// Takes `root`'s lock, making the file (and the local folder) when
     /// missing: `Ok(None)` when another TUI holds it. Never waits, but a
-    /// try that fails is tried again a few times 5 ms apart, since a
-    /// command asking [`Project::tui_open`] holds a shared lock for an
-    /// instant.
+    /// try that fails is tried again (`try_exclusive`), since a command
+    /// asking [`Project::tui_open`] holds a shared lock for an instant.
     pub fn take(root: &Path) -> Result<Option<ProjectLock>, Error> {
-        const TRIES: u32 = 5;
         let mut disk = Project::disk_for(root.to_path_buf());
         let lock = disk.open_lock(&rel(TUI_LOCK)?)?;
-        for attempt in 1..=TRIES {
-            if lock.try_lock()? {
-                return Ok(Some(ProjectLock { root: root.to_path_buf(), _lock: lock }));
-            }
-            if attempt < TRIES {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-        Ok(None)
-    }
-
-    /// The project it locks.
-    pub fn root(&self) -> &Path {
-        &self.root
+        Ok(try_exclusive(&lock)?.then_some(ProjectLock { _lock: lock }))
     }
 }
 
@@ -282,6 +306,7 @@ mod tests {
             "2026-13-01T00:00:00Z",
             "2026-02-31T00:00:00Z",
             "2025-02-29T00:00:00Z",
+            "+026-10-29T20:31:05Z",
             "yesterday",
             "",
         ] {
@@ -356,7 +381,6 @@ mod tests {
         assert!(!root.join(TUI_LOCK).exists(), "asking makes nothing");
 
         let one = ProjectLock::take(root).unwrap().expect("free");
-        assert_eq!(one.root(), root);
         assert!(Project::tui_open(root).unwrap());
         assert!(ProjectLock::take(root).unwrap().is_none(), "a second TUI is kept out");
         drop(one);
@@ -380,5 +404,17 @@ mod tests {
         });
         assert!(ProjectLock::take(root).unwrap().is_some());
         release.join().unwrap();
+    }
+
+    /// One change of the flag at a time: a second hold is refused while one
+    /// is held, and taken once it goes.
+    #[test]
+    fn one_flag_change_at_a_time() {
+        let (dir, _p) = fixture();
+        let root = dir.path();
+        let hold = Project::hold_edit_flag(root).unwrap().expect("free");
+        assert!(Project::hold_edit_flag(root).unwrap().is_none(), "held");
+        drop(hold);
+        assert!(Project::hold_edit_flag(root).unwrap().is_some());
     }
 }

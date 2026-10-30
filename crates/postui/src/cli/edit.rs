@@ -15,7 +15,7 @@ use super::out::{fields, rel};
 use super::{CliError, Global, target};
 use postui_core::project::{self, EDITING_TOML, EditFlag, Project};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
@@ -69,6 +69,8 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
     if tui_open()? {
         return Err(open_refusal(root));
     }
+    // The raise and any put-back below, as one change of the flag.
+    let _hold = hold_flag(&root)?;
     let flag = EditFlag::new(note.map(str::to_string));
     let replaced = match Project::raise_edit_flag(&root, &flag, force) {
         Ok(replaced) => replaced,
@@ -111,6 +113,19 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
     Err(refusal)
 }
 
+/// Holds the flag still for this command's change of it
+/// (`Project::hold_edit_flag`); another command holding it is a refusal.
+fn hold_flag(root: &Path) -> Result<project::FlagHold, CliError> {
+    match Project::hold_edit_flag(root) {
+        Ok(Some(hold)) => Ok(hold),
+        Ok(None) => Err(CliError::refusal(
+            "another postui edit command is changing the flag; retry",
+            root.join(project::EDITING_LOCK),
+        )),
+        Err(e) => Err(CliError::at(reason(e), root.join(project::EDITING_LOCK))),
+    }
+}
+
 /// `edit begin` with a TUI that has the project open.
 fn open_refusal(root: PathBuf) -> CliError {
     CliError::refusal(
@@ -139,6 +154,8 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
     let check = check::check_root(root.clone(), None)?;
     let flag_removed = check.status() == ExitCode::SUCCESS || force;
     if flag_removed {
+        // The look and the take-down as one change of the flag.
+        let _hold = hold_flag(&root)?;
         // Taken down while `check` ran, or taken over (an override, then
         // another `edit begin`): the same refusal, and someone else's flag
         // is left up.
