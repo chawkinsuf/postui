@@ -11,7 +11,7 @@ use super::mask::MASK_MIN_CHARS;
 use super::out::{count, fields, rel, table};
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
-use postui_core::prepare::{self, PrepareError, PrepareWarning, UnresolvedCause};
+use postui_core::prepare::{self, PrepareError, PrepareWarning, UnresolvedCause, ValuePlace};
 use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
 use serde::Serialize;
@@ -144,6 +144,9 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         Err(e) => return Err(e),
     };
     let ctx = project.prepare_context();
+    // A default header goes on every request, so its warning is the same on
+    // each: it is reported once, on `project.toml`, where the default is.
+    let mut defaults_warned = std::collections::BTreeSet::new();
     for slug in parsed {
         let file = storage::request_path(&root, &slug);
         let req = match project.read_request(&slug) {
@@ -158,8 +161,11 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
             // fix (D2); the duplicate default would repeat on every request.
             Ok((_, sent_warnings)) => {
                 for w in sent_warnings {
-                    if matches!(w, PrepareWarning::ValueHoldsVariable { .. }) {
+                    let PrepareWarning::ValueHoldsVariable { place, .. } = &w else { continue };
+                    if !matches!(place, ValuePlace::DefaultHeader(_)) {
                         warnings.push(Finding::at(file.clone(), w.to_string()));
+                    } else if defaults_warned.insert(w.to_string()) {
+                        warnings.push(Finding::at(root.join("project.toml"), w.to_string()));
                     }
                 }
                 continue;

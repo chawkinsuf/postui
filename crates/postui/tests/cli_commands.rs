@@ -858,6 +858,17 @@ fn check_reports_a_value_holding_a_token() {
     )
     .unwrap();
 
+    // A default header's value is the same on every request: one warning,
+    // on the file the default is written in.
+    let project = root.join("project.toml");
+    let mut text = std::fs::read_to_string(&project).unwrap();
+    text.push_str("\n[default_headers]\nX-Def = \"{{held}}\"\n");
+    std::fs::write(&project, text).unwrap();
+    let variables = root.join("variables.toml");
+    let mut text = std::fs::read_to_string(&variables).unwrap();
+    text.push_str("\n[held]\ndefault = \"{{id}}\"\n");
+    std::fs::write(&variables, text).unwrap();
+
     let out = home.run_json(&["check", "-p", s(&root)]);
     assert_eq!(out.status.code(), Some(1));
     let v = json(&out);
@@ -869,12 +880,22 @@ fn check_reports_a_value_holding_a_token() {
                 .to_string()
         )]
     );
+    let mut warnings = findings(&v, "warnings");
+    warnings.sort();
     assert_eq!(
-        findings(&v, "warnings"),
-        [(
-            s(&list).to_string(),
-            "the X-Tag header: tag's value holds {{region}}, which is sent as written".to_string()
-        )]
+        warnings,
+        [
+            (
+                s(&project).to_string(),
+                "the X-Def default header: held's value holds {{id}}, which is sent as written"
+                    .to_string()
+            ),
+            (
+                s(&list).to_string(),
+                "the X-Tag header: tag's value holds {{region}}, which is sent as written"
+                    .to_string()
+            ),
+        ]
     );
 }
 

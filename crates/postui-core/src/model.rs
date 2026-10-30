@@ -174,6 +174,18 @@ pub struct JqView {
     pub id: u64,
 }
 
+/// The filter a request's response pane applies: view `current`'s, else the
+/// `scratch`. The editor's bar and `run --view` both ask this.
+pub fn applied_jq_filter<'a>(
+    views: &'a [JqView],
+    current: Option<&str>,
+    scratch: &'a str,
+) -> &'a str {
+    current
+        .and_then(|name| views.iter().find(|v| v.name == name))
+        .map_or(scratch, |v| v.filter.as_str())
+}
+
 impl JqView {
     /// What two view names are compared by: trimmed, ignoring case
     /// (Unicode, as request names are). One request never holds two views

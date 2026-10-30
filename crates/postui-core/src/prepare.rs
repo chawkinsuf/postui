@@ -70,8 +70,11 @@ pub enum PrepareWarning {
 /// Where a sent value holding a `{{token}}` goes out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValuePlace {
-    /// A sent header, by its name as sent.
+    /// A sent header of the request's own, by its name as sent.
     Header(String),
+    /// A sent project default header, by its name as sent: the same on
+    /// every request, so `check` reports it once.
+    DefaultHeader(String),
     Body,
 }
 
@@ -87,6 +90,7 @@ impl fmt::Display for PrepareWarning {
             PrepareWarning::ValueHoldsVariable { var, token, place } => {
                 match place {
                     ValuePlace::Header(name) => write!(f, "the {name} header")?,
+                    ValuePlace::DefaultHeader(name) => write!(f, "the {name} default header")?,
                     ValuePlace::Body => f.write_str("the body")?,
                 }
                 write!(f, ": {var}'s value holds {{{{{token}}}}}, which is sent as written")
@@ -630,7 +634,11 @@ fn rows(
     let warn_sent = |r: &HeaderRow, name: &str, value: &str, warnings: &mut Vec<PrepareWarning>| {
         let held = value_holding_token(name, vars).or_else(|| value_holding_token(value, vars));
         if let Some((var, token)) = held.filter(|_| r.sent()) {
-            let place = ValuePlace::Header(r.header.name.clone());
+            let name = r.header.name.clone();
+            let place = match r.origin {
+                HeaderOrigin::Default => ValuePlace::DefaultHeader(name),
+                _ => ValuePlace::Header(name),
+            };
             warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place });
         }
     };
@@ -1207,10 +1215,14 @@ mod tests {
         assert_eq!(
             warnings,
             vec![
-                warning("trace", "y", ValuePlace::Header("X-Trace".into())),
+                warning("trace", "y", ValuePlace::DefaultHeader("X-Trace".into())),
                 warning("tok", "x", ValuePlace::Header("Authorization".into())),
                 warning("doc", "z", ValuePlace::Body),
             ]
+        );
+        assert_eq!(
+            warnings[0].to_string(),
+            "the X-Trace default header: trace's value holds {{y}}, which is sent as written"
         );
         assert_eq!(
             warnings[1].to_string(),

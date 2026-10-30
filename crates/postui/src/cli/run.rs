@@ -11,7 +11,7 @@ use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
-use postui_core::model::{Entry, HttpRequest, JqView, Method};
+use postui_core::model::{Entry, HttpRequest, JqView, Method, applied_jq_filter};
 use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
@@ -99,16 +99,24 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     for (selector, option) in &opts.selects {
         select_option(&mut project, env.as_deref().unwrap_or_default(), selector, option)?;
     }
+    let model = project.variables();
+    let given_secrets: Vec<&(String, String)> = opts
+        .vars
+        .iter()
+        .filter(|(name, _)| model.vars.get(name).is_some_and(|v| v.secret))
+        .collect();
     let mask = if opts.show_secrets {
         Mask::none()
     } else {
-        let model = project.variables();
-        let given =
-            opts.vars.iter().filter(|(name, _)| model.vars.get(name).is_some_and(|v| v.secret));
         let secrets = mask::secret_values(&project).into_iter().map(|(_, value)| value);
-        Mask::new(secrets.chain(given.map(|(_, value)| value.clone())))
+        Mask::new(secrets.chain(given_secrets.iter().map(|(_, value)| value.clone())))
     };
-    let context = project.prepare_context();
+    let mut context = project.prepare_context();
+    // A secret `--var` supplies (one with no stored value, on a fresh clone)
+    // is a secret all the same: `prepare` masks it on the request side.
+    for (name, _) in &given_secrets {
+        context.meta.insert(name.clone(), varmodel::VarMeta::Secret);
+    }
     let clients = Clients::with_timeout(opts.timeout)
         .map_err(|e| CliError::new(format!("could not start the HTTP client: {e}")))?;
     Ok(Session { project, root, env, mask, context, clients, warnings, vars: opts.vars.clone() })
@@ -188,9 +196,10 @@ pub(super) type Prepared = Result<(PreparedRequest, Vec<PrepareWarning>), String
 /// environment. The outer `Err` is a request that can't be read (not in the
 /// project, or its file is broken: exit 2, naming its file); the inner
 /// `Err` is `prepare` refusing it (an unresolved variable), which is a
-/// result of the run, not a mistake on its line. The request as read comes
-/// back beside the outcome, so a refused one still has its method and URL.
-/// The outer errors' messages have been through the mask.
+/// result of the run, not a mistake on its line. The request as read (with
+/// the `--var`s in its `[variables]`) comes back beside the outcome, so a
+/// refused one still has its method and URL. The outer errors' messages
+/// have been through the mask.
 pub(super) fn prepare_one(
     s: &mut Session,
     slug: &str,
@@ -203,14 +212,15 @@ pub(super) fn prepare_one(
     if let Some(error) = &listing.broken {
         return Err(CliError::at(s.mask.apply(error), file));
     }
-    let read =
+    let mut req =
         s.project.read_request(slug).map_err(|e| CliError::at(s.mask.apply(&reason(e)), file))?;
-    let mut req = read.clone();
+    // In memory only; what comes back is the request as read in all but
+    // these rows (its method, URL and jq filters are untouched).
     for (name, value) in &s.vars {
         req.variables.insert(name.clone(), Entry { value: value.clone(), enabled: true });
     }
     let outcome = prepare::prepare(&req, &s.context).map_err(|e| e.to_string());
-    Ok((read, outcome))
+    Ok((req, outcome))
 }
 
 /// A request `prepare` refused, as printed: the method and URL as read, the
@@ -453,15 +463,11 @@ fn filter_text(
     let missing = |what: String| CliError::at(format!("{what}; {choices}"), file.to_path_buf());
     match filter {
         Filter::Jq(text) => Ok(text.clone()),
-        // What the response pane applies: the current view's filter, else
-        // the scratch (`Editor::jq_filter`). Whether the pane's switch is
-        // off doesn't matter: asking for the view asks for its filter.
+        // What the response pane applies. Whether the pane's switch is off
+        // doesn't matter: asking for the view asks for its filter.
         Filter::View(None) => {
-            let current = read.jq_current.as_deref().and_then(|name| {
-                read.jq_views.iter().find(|v| v.name == name).map(|v| v.filter.as_str())
-            });
-            current
-                .or(read.jq.as_deref())
+            let scratch = read.jq.as_deref().unwrap_or_default();
+            Some(applied_jq_filter(&read.jq_views, read.jq_current.as_deref(), scratch))
                 .filter(|f| !f.trim().is_empty())
                 .map(str::to_string)
                 .ok_or_else(|| missing(format!("request {slug} has no jq filter")))
@@ -489,8 +495,9 @@ pub async fn run(
     dry_run: bool,
 ) -> Result<RunReport, CliError> {
     let mut s = session(g, opts)?;
-    s.check_vars(&[slug.to_string()], "the request's [variables] don't have it")?;
+    // The request first: a slug that names none is the mistake to report.
     let (read, prepared) = prepare_one(&mut s, slug)?;
+    s.check_vars(&[slug.to_string()], "the request's [variables] don't have it")?;
     let file = storage::request_path(&s.root, slug);
     let jq = filter.map(|f| filter_text(f, &read, slug, &file)).transpose()?;
     let jq = jq.as_deref();
@@ -596,6 +603,11 @@ impl RunReport {
                 }
                 out.push('\n');
             }
+            // A failed filter leaves the body here (`record`), on stdout like
+            // a body: the agent reading it needn't send the request again
+            // to see what the filter failed on (#215). The exit status and
+            // the stderr note say it failed; a script wanting nothing on a
+            // failure checks the status.
             if let Some(body) = &r.body {
                 out.push_str(body);
                 // A body without a last newline would run into the next

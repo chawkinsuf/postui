@@ -1017,10 +1017,7 @@ impl Editor {
 
     /// The filter the bar shows: the current view's, or the scratch.
     pub fn jq_filter(&self) -> &str {
-        match self.current_view() {
-            Some(i) => &self.jq_views[i].filter,
-            None => &self.jq,
-        }
+        postui_core::model::applied_jq_filter(&self.jq_views, self.jq_current.as_deref(), &self.jq)
     }
 
     /// Writes the bar's text into the current view, or the scratch.

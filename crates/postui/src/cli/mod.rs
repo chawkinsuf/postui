@@ -245,9 +245,10 @@ usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]
                    [-o <file>] [-i | -v] [--timeout <secs>] [--dry-run]
                    [--show-secrets] [--json]
 
-Sends one request and prints the response body, as curl does; -i adds the
-status and headers, -v the whole run. A status of 400 or more, errors and
-warnings go to stderr. <request> is a slug as `postui requests` lists it.
+Sends one request and prints the response body, as curl does, but as text
+(-o writes its exact bytes); -i adds the status and headers, -v the whole
+run. A status of 400 or more, errors and warnings go to stderr. <request> is
+a slug as `postui requests` lists it.
 Nothing is written to the project. Each secret's exact value is masked in
 everything printed; a value the server or a jq filter transforms is not.
 Exits 1 for a status of 400 or more, when the request can't be prepared or

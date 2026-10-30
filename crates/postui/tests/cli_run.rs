@@ -748,6 +748,10 @@ fn run_var_gives_a_value_for_this_run() {
         "postui: --var regoin: variables.toml doesn't declare it, and the request's \
          [variables] don't have it\n"
     );
+    // A slug that names no request is the mistake to report first.
+    let (code, _, err) = streams(&home, &root, "main/okk", &["--var", "regoin=x"]);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("no request \"main/okk\""), "{err}");
 }
 
 /// D4: a secret given with `--var` is masked like the secret it stands for.
@@ -760,6 +764,16 @@ fn run_var_for_a_secret_is_masked() {
     let printed = String::from_utf8_lossy(&out.stdout);
     assert!(!printed.contains(other), "{printed}");
     assert_eq!(json(&out)["response"]["body_json"]["t"], MASK);
+
+    // A fresh clone has no value for the secret, and `--var` supplies it:
+    // the request side still shows it masked, as the TUI would.
+    std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
+    let out = dry(&home, &root, "main/me", &["--var", &format!("token={other}")]);
+    assert_ok(&out, "run --dry-run --var token, no stored secret");
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(!printed.contains(other), "{printed}");
+    let url = json(&out)["url"].as_str().unwrap().to_string();
+    assert!(url.ends_with(&format!("/me?key={MASK}")), "{url}");
 }
 
 /// D4: `suite --var` reaches every request, and is checked before any is

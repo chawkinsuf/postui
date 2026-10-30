@@ -69,7 +69,7 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   response pane applies, and `--view=NAME` one of its saved `[[jq_view]]`s:
   reach for these first when a request has them, to keep a large body out
   of your context. `-o FILE` writes the raw body to a file instead of
-  printing it.
+  printing it; use it for a binary body, which prints as text.
 - The environment is `--env`, else the one the user's postui has open, else
   the first. Selections are the user's saved ones; `--select` overrides one
   for this run only and never saves it. Pick an option name from `postui vars`.
