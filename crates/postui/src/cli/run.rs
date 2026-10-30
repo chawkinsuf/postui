@@ -16,6 +16,7 @@ use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -59,7 +60,8 @@ pub enum Filter {
 /// unless asked for more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
-    /// The body (or the jq results); the rest that matters goes to stderr.
+    /// The body (or the jq results, or nothing when `-o` took the body);
+    /// the rest that matters goes to stderr.
     Body,
     /// `-i`: the status line and response headers, then the body.
     Include,
@@ -340,9 +342,9 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
 }
 
 /// Fills `report` from `raw`: the response, the jq results, the `-o` file.
-/// A file that can't be written is the report's `error`, with the response
-/// shown as if there were no `-o`. The body takes the form the report will
-/// print in: text, or with `json` parsed when it parses.
+/// A file that can't be written is the report's `error`, with the body
+/// shown in its place, `--jq` or not. The body takes the form the report
+/// will print in: text, or with `json` parsed when it parses.
 fn record(
     report: &mut RunReport,
     mask: &Mask,
@@ -371,7 +373,11 @@ fn record(
     // The results print, the filter's or its error. Whether it fails or
     // not, the body doesn't print with them: a large body is what the
     // filter is there to keep out of the reader's context, and `-o` keeps
-    // it for a filter that fails (#223).
+    // it for a filter that fails (#223). The cost: without `-o`, a failed
+    // filter on a request that can't be sent again (a POST that changes
+    // something, a model's answer) loses the body. That was weighed
+    // against printing 24 KB of stream on a failure (mine (approved)); the
+    // skill tells the agent to add `-o` for such requests.
     if let Some(filter) = jq {
         let (output, error) = match run_jq(filter, text(), mask) {
             Ok(results) => (Some(results), None),
@@ -380,10 +386,16 @@ fn record(
         report.jq = Some(JqReport { filter: mask.apply(filter), output, error });
     }
     let mut show_body = jq.is_none() && output.is_none();
-    // The file is the response itself, kept byte-exact (a binary download),
-    // so it is not masked (spec §4, §8 #9), with `--jq` too.
     if let Some(file) = output {
-        match absolute(file).and_then(|path| write_output(&path, &raw.bytes).map(|()| path)) {
+        // Alone, the file is the response itself, kept byte-exact (a binary
+        // download), so it is not masked (spec §4, §8 #9). With a filter it
+        // is the body the filter ran on, there to be read when the filter
+        // fails, so it is the text the report would print, masked (#223).
+        let bytes = match jq {
+            Some(_) => Cow::Owned(mask.apply(text()).into_bytes()),
+            None => Cow::Borrowed(&raw.bytes[..]),
+        };
+        match absolute(file).and_then(|path| write_output(&path, &bytes).map(|()| path)) {
             Ok(written) => report.output_file = Some(written),
             // The request is sent and can't be resent safely: the body the
             // file was to keep is shown instead.
@@ -554,18 +566,24 @@ impl RunReport {
     }
 
     /// A failing filter's error, and how to keep the body it failed on when
-    /// no `-o` kept it: the body isn't printed (#223).
+    /// neither a file nor the report holds it (#223): a filter's body isn't
+    /// printed, but one a failed `-o` write couldn't keep is. Only the text
+    /// says so; the JSON's `output_file` and null body are the same facts
+    /// for a script.
     fn jq_failure(&self, error: &str) -> String {
-        match self.output_file {
-            Some(_) => error.to_string(),
-            None => format!("{error}; -o FILE saves the body"),
+        let shown =
+            self.response.as_ref().is_some_and(|r| r.body.is_some() || r.body_json.is_some());
+        if self.output_file.is_some() || shown {
+            error.to_string()
+        } else {
+            format!("{error}; -o FILE saves the body")
         }
     }
 
     /// What a run prints like curl, as (stdout, stderr). Stdout: with
     /// `include`, the status line and response headers and a blank line;
-    /// then the body as it came, or the jq results one a line (nothing for
-    /// what `-o` took). Stderr, a `postui: ` line each (D6): the error, a
+    /// then the body as it came (nothing when `-o` took it), or the jq
+    /// results one a line. Stderr, a `postui: ` line each (D6): the error, a
     /// failing jq filter, a status of 400 or more, and the warnings.
     pub fn streams(&self, include: bool) -> (String, String) {
         let mut out = String::new();

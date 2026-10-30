@@ -457,6 +457,11 @@ fn run_output_file_failure_keeps_the_response() {
     assert!(v["error"].as_str().unwrap().contains("out.txt"), "{}", v["error"]);
     assert_eq!(v["jq"]["output"], serde_json::json!([42]));
     assert_eq!(v["response"]["body_json"], serde_json::json!({"id": 42}));
+
+    // A failing filter too: the body shows, so no hint to save it.
+    let (code, out, err) = streams(&home, &root, "main/ok", &["--jq", ".id.x", "-o", s(&missing)]);
+    assert_eq!((code, out.as_str()), (Some(1), "{\"id\":42}\n"));
+    assert!(err.starts_with("postui: jq: ") && !err.contains("-o FILE"), "{err}");
 }
 
 /// `-o` writes in place, like `curl -o`: `/dev/null` works, and a symlink is
@@ -500,7 +505,7 @@ fn run_jq_prints_the_filters_output() {
     assert_eq!(v["response"]["status"], 200);
     assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
 
-    // `-o` takes the body, byte-exact, and the results still print.
+    // `-o` takes the body, and the results still print.
     let file = home.path().join("body.txt");
     let out = send(&home, &root, "main/ok", &["--jq", ".id", "-o", s(&file)]);
     assert_ok(&out, "run --jq -o");
@@ -510,11 +515,11 @@ fn run_jq_prints_the_filters_output() {
     assert_eq!(v["jq"]["output"], serde_json::json!([42]));
     assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
 
-    // A filter that fails still has the body in the file.
-    let kept = home.path().join("kept.bin");
+    // A filter that fails still has the body in the file, as text.
+    let kept = home.path().join("kept.txt");
     let out = send(&home, &root, "main/bytes", &["--jq", ".", "-o", s(&kept)]);
     assert_eq!(out.status.code(), Some(1));
-    assert_eq!(std::fs::read(&kept).unwrap(), b"ok\xff\xfe");
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), "ok\u{fffd}\u{fffd}");
     let v = json(&out);
     assert_eq!(v["output_file"], s(&kept));
     assert!(v["jq"]["error"].is_string());
@@ -550,16 +555,26 @@ fn run_jq_output_is_masked() {
     assert_eq!(json(&out)["jq"]["output"], serde_json::json!([MASK]));
 }
 
-/// `--jq -o` writes the body as it came, as `-o` alone does (the file is the
-/// user's own copy of the response); the printed results are masked.
+/// `--jq -o` writes the body the filter ran on as the report would print
+/// it, masked, since it is there to be read when the filter fails (#223);
+/// `-o` alone keeps the raw bytes, and `--show-secrets` unmasks.
 #[test]
-fn run_jq_output_file_gets_the_raw_body() {
+fn run_jq_output_file_is_the_masked_body() {
     let (home, _server, root) = served();
+    let raw = home.path().join("raw.txt");
+    assert_ok(&send(&home, &root, "main/echo", &["-o", s(&raw)]), "run main/echo -o");
+    let raw = std::fs::read_to_string(&raw).unwrap();
+    assert!(raw.contains(SECRET), "{raw}");
+
     let file = home.path().join("t.txt");
     let (code, out, _) = streams(&home, &root, "main/echo", &["--jq", ".t", "-o", s(&file)]);
     assert_eq!(code, Some(0));
     assert_eq!(out, format!("\"{MASK}\"\n"));
-    assert!(std::fs::read_to_string(&file).unwrap().contains(SECRET));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), raw.replace(SECRET, MASK));
+
+    let shown = &["--jq", ".t", "-o", s(&file), "--show-secrets"];
+    assert_ok(&send(&home, &root, "main/echo", shown), "run main/echo --jq -o --show-secrets");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), raw);
 }
 
 /// A jq error that quotes the secret, and a filter that holds it, are

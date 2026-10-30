@@ -193,9 +193,13 @@ of the body may last SECS, so a long download that keeps coming is not cut
 off. `-o` writes the file in place (not atomically), so `/dev/null` and
 pipes work.
 
-*Amended 2026-10-30 (#223, mine (approved)):* `-o FILE` always writes the
-raw response bytes, with `--jq`/`--view` too, and the jq results still print
-(stdout, or `jq.output`): a file of results is what `> FILE` already gives.
+*Amended 2026-10-30 (#223, mine (approved)):* with `--jq`/`--view`, `-o
+FILE` writes the body the filter ran on, as the text the report would print
+(lossy UTF-8, masked; `--show-secrets` unmasks), and the jq results still
+print (stdout, or `jq.output`): a file of results is what `> FILE` already
+gives. The file is there to be read when the filter fails, so it keeps the
+masking a printed body has (review round 1). `-o` alone still writes the raw
+bytes.
 A failing filter no longer shows the body (`response.body` and `body_json`
 are `null`): the vLLM dogfood printed 24 KB of streamed body into an agent's
 context that way. Its stderr line ends `; -o FILE saves the body` when no
