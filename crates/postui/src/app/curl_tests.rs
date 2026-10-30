@@ -155,6 +155,15 @@ fn a_named_command_that_loses_something_sent_prompts() {
 }
 
 #[test]
+fn a_name_that_reads_as_no_name_prompts_without_trying() {
+    let mut app = app_with_clip("# @name sub/\ncurl https://x/a");
+    let toasts = app.toasts.messages().len();
+    import(&mut app);
+    assert_eq!(prompt(&app).1, "sub/");
+    assert_eq!(app.toasts.messages().len(), toasts, "no create was tried");
+}
+
+#[test]
 fn a_paste_with_another_shell_line_prompts() {
     let mut app = app_with_clip("alias curl='curl -x http://p:3128'\n# @name A\ncurl https://x/a");
     import(&mut app);

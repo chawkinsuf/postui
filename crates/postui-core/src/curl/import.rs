@@ -226,10 +226,11 @@ const VALUE_FLAGS: &[&str] = &[
 /// (import-without-prompt spec S3, mine (approved)).
 #[rustfmt::skip]
 const QUIET_FLAGS: &[&str] = &[
-    "compressed", "create-dirs", "dump-header", "fail", "fail-with-body", "include",
-    "location", "no-buffer", "no-progress-meter", "output", "output-dir", "progress-bar",
-    "remote-header-name", "remote-name", "show-error", "silent", "stderr", "trace",
-    "trace-ascii", "trace-time", "verbose", "write-out",
+    "compressed", "cookie-jar", "create-dirs", "dump-header", "fail", "fail-with-body",
+    "include", "location", "no-buffer", "no-progress-meter", "output", "output-dir",
+    "progress-bar", "remote-header-name", "remote-name", "remote-name-all", "remote-time",
+    "show-error", "silent", "stderr", "trace", "trace-ascii", "trace-time", "verbose",
+    "write-out",
 ];
 
 fn takes_value(long: &str) -> bool {
@@ -856,6 +857,7 @@ mod tests {
             "curl --output-dir d --create-dirs --write-out x --dump-header h https://x/a",
             "curl --fail --fail-with-body --progress-bar --no-progress-meter https://x/a",
             "curl --no-buffer --trace t --trace-ascii t --trace-time --stderr e https://x/a",
+            "curl -c jar.txt -R --cookie-jar j --remote-time --remote-name-all https://x/a",
             "curl https://x/a | jq .",
             "curl -s https://x/a | jq -r .x > out.txt",
         ] {

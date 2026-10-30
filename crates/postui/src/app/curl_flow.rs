@@ -132,34 +132,40 @@ impl App {
     /// The name prompt for `run`'s current command (spec §4.2 step 3). A
     /// command that needs none (spec 2026-10-30 import-without-prompt S1)
     /// is created at once, as Enter on its prompt would, and the run goes
-    /// on to the next; past the last, the summary. A create that refuses
-    /// has said why, and its prompt comes up after all (S8).
+    /// on. A create that refuses has said why, and its prompt comes up
+    /// after all (S8).
     pub(super) fn push_curl_prompt(&mut self, mut run: CurlImportRun) {
-        loop {
-            let space = self.active_space();
-            let folder = run.folder.clone().unwrap_or_else(|| space.clone());
-            let suggested = run.current().suggested_name();
-            let name = self.free_request_name(&folder, &suggested);
-            // A name already taken is the user's to settle (S4).
-            let free = name == suggested;
-            // The prompt speaks folders inside the space, as New request does.
-            let prefill = match folder.strip_prefix(&format!("{space}/")) {
-                Some(rel) => format!("{rel}/{name}"),
-                None => name,
-            };
-            if !(free && self.create_unasked(&mut run, &prefill)) {
-                self.push_modal(Modal::Prompt {
-                    title: run.title(),
-                    input: LineInput::new(&prefill),
-                    kind: PromptKind::ImportCurl(Box::new(run)),
-                    revealed: false,
-                });
-                return;
-            }
-            if !run.advance() {
-                return self.finish_curl_import(&run);
-            }
+        let space = self.active_space();
+        let folder = run.folder.clone().unwrap_or_else(|| space.clone());
+        let suggested = run.current().suggested_name();
+        // A name already taken, or one that reads as no name, is the
+        // user's to settle (S4).
+        let free = self.request_name_free(&folder, &suggested);
+        let name = self.free_request_name(&folder, &suggested);
+        // The prompt speaks folders inside the space, as New request does.
+        let prefill = match folder.strip_prefix(&format!("{space}/")) {
+            Some(rel) => format!("{rel}/{name}"),
+            None => name,
+        };
+        if free && self.create_unasked(&mut run, &prefill) {
+            return self.advance_curl_import(run);
         }
+        self.push_modal(Modal::Prompt {
+            title: run.title(),
+            input: LineInput::new(&prefill),
+            kind: PromptKind::ImportCurl(Box::new(run)),
+            revealed: false,
+        });
+    }
+
+    /// Whether `base` reads as a request name in `folder`, as the create
+    /// will read it, that no request there has.
+    fn request_name_free(&self, folder: &str, base: &str) -> bool {
+        let path = format!("{folder}/{base}");
+        self.project().is_some_and(|p| {
+            postui_core::storage::split_display_path(&path)
+                .is_some_and(|(folder, leaf)| !p.sibling_name_taken(&folder, &leaf, None))
+        })
     }
 
     /// Creates `run`'s current command as `name` without asking, when it
@@ -180,15 +186,7 @@ impl App {
         if vars.as_ref().is_ok_and(|v| !v.raise_nothing()) {
             return false;
         }
-        // This can run inside a prompt's own actions (Enter on the command
-        // before), whose loop reads the flag: a refusal here must not bring
-        // that prompt back over this one's. Taken and put back, as
-        // `commit_settings_edit` does for a write inside other actions;
-        // the answer read here is the return value, not the flag.
-        let outer = std::mem::take(&mut self.last_action_failed);
-        let created = self.create_current(run, name, vars);
-        self.last_action_failed = outer;
-        created
+        self.create_current(run, name, vars)
     }
 
     /// `base`, else `base 2`, `base 3`, …: the first name no request in
@@ -220,15 +218,20 @@ impl App {
         let vars = self.curl_variables(run.current(), &Default::default());
         if self.create_current(&mut run, name, vars) {
             self.advance_curl_import(run);
+        } else {
+            self.last_action_failed = true;
         }
         true
     }
 
     /// Creates `run`'s current command as `name`, with its variables as
     /// `vars` sorted them, and records it in `run`; `true` when created. A
-    /// refusal toasts and sets `last_action_failed`. A request that was
-    /// written but could not be opened counts as created: asking again
-    /// would only meet its own name as taken.
+    /// refusal toasts. A request that was written but could not be opened
+    /// counts as created: asking again would only meet its own name as
+    /// taken. It answers by its return value alone and leaves
+    /// `last_action_failed` as it was: a silent create runs inside the
+    /// previous prompt's actions (Enter on the command before), and that
+    /// flag would bring that prompt back (`apply_modal_result`).
     fn create_current(
         &mut self,
         run: &mut CurlImportRun,
@@ -242,19 +245,18 @@ impl App {
                 // In create_request_from's words, which said it before.
                 let path = format!("{}/{}", self.active_space(), name.trim_start_matches('/'));
                 self.toasts.push(format!("could not save {path}: {e}"), ToastKind::Error);
-                self.last_action_failed = true;
                 return false;
             }
         };
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
-        let name = match self.create_request_from(name, |_| import.request, &secrets) {
+        let outer = self.last_action_failed;
+        let outcome = self.create_request_from(name, |_| import.request, &secrets);
+        self.last_action_failed = outer;
+        let name = match outcome {
             CreateOutcome::Refused => return false,
             CreateOutcome::Opened => self.editor.name.clone().unwrap_or_else(|| name.to_string()),
-            CreateOutcome::Unopened(leaf) => {
-                // `land` toasted why; the prompt must not come back.
-                self.last_action_failed = false;
-                leaf
-            }
+            // `land` toasted why.
+            CreateOutcome::Unopened(leaf) => leaf,
         };
         if secrets.iter().any(|(_, v)| v.is_some()) {
             run.secrets_env = env;
@@ -528,16 +530,10 @@ impl App {
     /// (spec §4.2 step 5). The last request created is already open: each
     /// create opened its own.
     pub(super) fn advance_curl_import(&mut self, mut run: CurlImportRun) {
-        if run.advance() {
+        if run.index + 1 < run.commands.len() {
+            run.index += 1;
             self.push_curl_prompt(run);
-        } else {
-            self.finish_curl_import(&run);
-        }
-    }
-
-    /// The summary toast past the last command (spec §4.3).
-    fn finish_curl_import(&mut self, run: &CurlImportRun) {
-        if let Some((text, kind)) = run.summary() {
+        } else if let Some((text, kind)) = run.summary() {
             self.toasts.push(text, kind);
         }
     }
