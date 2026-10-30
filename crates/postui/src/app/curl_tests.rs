@@ -98,13 +98,14 @@ fn a_taken_name_prefills_the_next_free_one() {
 }
 
 #[test]
-fn a_name_comment_prefills_the_prompt_and_its_folder_is_a_folder() {
+fn a_name_comment_names_the_import_and_its_folder_is_a_folder() {
+    // Free, it needs no prompt (import-without-prompt S1).
     let mut app = app_with_clip("# @name api/List users\ncurl https://x/users");
     import(&mut app);
-    assert_eq!(prompt(&app).1, "api/List users");
-    app.update(Action::ConfirmTopModal);
+    assert!(app.modals.is_empty());
     assert!(slug_named(&app, "List users").unwrap().starts_with("main/api/"));
-    // R8 numbers the leaf, in the folder the name points into.
+    // Taken, it prompts (S4): R8 numbers the leaf, in the folder the name
+    // points into.
     let mut app = app_with_clip("# @name api/ping\ncurl https://x/p");
     app.update(Action::ImportCurl { folder: Some("main".into()) });
     assert_eq!(prompt(&app).1, "api/ping 2");
@@ -124,6 +125,153 @@ fn one_undo_removes_the_import() {
     app.update(Action::Undo);
     assert!(slug_named(&app, "GET users").is_none());
     assert!(app.proj().request_exists("main/top"), "nothing else went");
+}
+
+// Spec 2026-10-30 import-without-prompt (task #147): a named command with
+// nothing lost is created without its prompt.
+
+#[test]
+fn a_named_command_that_loses_nothing_sent_is_created_without_a_prompt() {
+    let mut app =
+        app_with_clip("# @name List users\ncurl -sSL --compressed https://x/users | jq .");
+    import(&mut app);
+    assert!(app.modals.is_empty(), "no prompt");
+    let slug = slug_named(&app, "List users").expect("created");
+    assert_eq!(app.editor.slug.as_deref(), Some(slug.as_str()), "and opened");
+    // S10: the summary still names what it ignored.
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(msg, "ignored: -s, -S, -L, --compressed, | jq .");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Warning);
+    app.update(Action::Undo);
+    assert!(slug_named(&app, "List users").is_none(), "one undo removes it");
+}
+
+#[test]
+fn a_named_command_that_loses_something_sent_prompts() {
+    let mut app = app_with_clip("# @name Upload\ncurl -F f=@a.png https://x/up");
+    import(&mut app);
+    assert_eq!(prompt(&app), ("Import curl".into(), "Upload".into()));
+    assert!(slug_named(&app, "Upload").is_none());
+}
+
+#[test]
+fn a_named_command_with_a_variable_issue_prompts() {
+    for clip in [
+        // A secret with no value.
+        "# @name Me\ncurl -H \"A: $TOKEN\" https://x/me",
+        // The project's value is not the paste's.
+        "# @name Me\nexport base=https://pasted\ncurl \"$base/me\"",
+        // A reserved name.
+        "# @name Me\nexport entries=5\ncurl \"https://x/me?n=$entries\"",
+    ] {
+        let mut app = app_with_clip(clip);
+        std::fs::write(
+            app.proj().root().join("variables.toml"),
+            "[base]\ndefault = \"https://mine\"\n",
+        )
+        .unwrap();
+        app.update(Action::ReloadProjectFiles);
+        import(&mut app);
+        assert_eq!(prompt(&app).1, "Me", "{clip}");
+    }
+}
+
+#[test]
+fn a_named_command_whose_variables_raise_nothing_needs_no_prompt() {
+    for clip in [
+        // Saved as a secret with the paste's value.
+        "# @name Me\nexport TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/me",
+        // The project's own, and the paste says nothing against it.
+        "# @name Me\ncurl \"$base/me\"",
+        // The project's own, with the paste's value.
+        "# @name Me\nexport base=https://mine\ncurl \"$base/me\"",
+    ] {
+        let mut app = app_with_clip(clip);
+        std::fs::write(
+            app.proj().root().join("variables.toml"),
+            "[base]\ndefault = \"https://mine\"\n",
+        )
+        .unwrap();
+        app.update(Action::ReloadProjectFiles);
+        import(&mut app);
+        assert!(app.modals.is_empty(), "{clip}");
+        assert!(slug_named(&app, "Me").is_some(), "{clip}");
+    }
+}
+
+#[test]
+fn a_batch_prompts_only_for_the_commands_that_need_it() {
+    let mut app =
+        app_with_clip("# @name A\ncurl https://x/a\n# @name B\ncurl https://x/b\ncurl https://x/c");
+    import(&mut app);
+    assert!(slug_named(&app, "A").is_some());
+    assert!(slug_named(&app, "B").is_some());
+    assert_eq!(prompt(&app), ("Import curl (3 of 3)".into(), "GET c".into()));
+    app.update(Action::ConfirmTopModal);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("imported 3 of 3"), "one summary");
+    // Each create is its own undo step, as at Enter.
+    app.update(Action::Undo);
+    assert!(slug_named(&app, "GET c").is_none());
+    assert!(slug_named(&app, "B").is_some());
+}
+
+#[test]
+fn a_name_an_earlier_command_of_the_batch_took_prompts() {
+    let mut app = app_with_clip("# @name A\ncurl https://x/a\n# @name A\ncurl https://x/b");
+    import(&mut app);
+    assert!(slug_named(&app, "A").is_some());
+    assert_eq!(prompt(&app), ("Import curl (2 of 2)".into(), "A 2".into()));
+}
+
+#[test]
+fn unsaved_edits_meet_the_gate_before_a_silent_create() {
+    let mut app = app_with_clip("# @name A\ncurl https://x/a");
+    app.update(Action::ForceOpenRequest("main/top".into()));
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    import(&mut app);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes")
+    );
+    assert!(slug_named(&app, "A").is_none(), "nothing before the answer");
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    let a = slug_named(&app, "A").expect("created after the answer");
+    assert_eq!(app.editor.slug.as_deref(), Some(a.as_str()));
+}
+
+/// The test app with `environments/qa.toml` known to the project, then
+/// broken on disk: reading what it sets fails.
+fn broken_env(clip: &str) -> App {
+    let mut app = app_with_clip(clip);
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "X = [").unwrap();
+    app
+}
+
+#[test]
+fn a_refused_silent_create_says_why_and_prompts() {
+    let mut app = broken_env("# @name N\nexport X=1\ncurl -H \"A: $X\" https://x/n");
+    import(&mut app);
+    assert_eq!(prompt(&app), ("Import curl".into(), "N".into()));
+    let (_, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+    assert!(slug_named(&app, "N").is_none());
+}
+
+#[test]
+fn a_refused_silent_create_after_an_enter_leaves_only_its_own_prompt() {
+    let mut app =
+        broken_env("curl https://x/a\n# @name N\nexport X=1\ncurl -H \"A: $X\" https://x/n");
+    import(&mut app);
+    app.update(Action::ConfirmTopModal);
+    assert!(slug_named(&app, "GET a").is_some());
+    assert_eq!(prompt(&app), ("Import curl (2 of 2)".into(), "N".into()));
+    app.update(Action::CancelTopModal);
+    assert!(app.modals.is_empty(), "the first prompt did not come back under it");
 }
 
 #[test]

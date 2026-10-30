@@ -16,6 +16,11 @@ pub struct CurlImport {
     /// URLs a later one replaced, `$(…) kept as text` notes, then a
     /// pipeline tail or redirect (`| jq .`).
     pub ignored: Vec<String>,
+    /// Whether something in `ignored` changed what curl sent: anything but
+    /// a `QUIET_FLAGS` flag, the pipeline tail or redirect, and the
+    /// leading assignments (import-without-prompt spec S3). An import
+    /// with a `# @name` and nothing sent lost needs no prompt.
+    pub ignores_sent: bool,
     /// Shell variables converted to `{{NAME}}`, first-seen order.
     pub converted: Vec<String>,
     /// One per `converted` variable, in its order, with the value the
@@ -209,6 +214,18 @@ const VALUE_FLAGS: &[&str] = &[
     "variable", "write-out",
 ];
 
+/// curl's flags that change only what curl does with the response, or
+/// that postui does anyway (`location`: it follows redirects;
+/// `compressed`: the body arrives whole either way). Ignored, they lose
+/// nothing the request sent (import-without-prompt spec S3).
+#[rustfmt::skip]
+const QUIET_FLAGS: &[&str] = &[
+    "compressed", "create-dirs", "dump-header", "fail", "fail-with-body", "include",
+    "location", "no-buffer", "no-progress-meter", "output", "output-dir", "progress-bar",
+    "remote-header-name", "remote-name", "show-error", "silent", "stderr", "trace",
+    "trace-ascii", "trace-time", "verbose", "write-out",
+];
+
 fn takes_value(long: &str) -> bool {
     VALUE_FLAGS.contains(&long)
 }
@@ -304,6 +321,8 @@ struct Flags {
     /// flag): POST, or PUT for `-T` (spec D10).
     dropped_body: Option<Method>,
     ignored: Vec<String>,
+    /// Some flag in `ignored` changed what curl sent.
+    ignores_sent: bool,
 }
 
 impl Flags {
@@ -347,6 +366,7 @@ impl Flags {
             ("cookie", Some(v)) if v.contains('=') => self.cookies.push(v),
             ("user-agent", Some(v)) => self.user_agent = Some(v),
             ("referer", Some(v)) => self.referer = Some(v),
+            (_, value) if QUIET_FLAGS.contains(&long) => self.list(display, value),
             (_, value) => self.ignore(display, value),
         }
     }
@@ -363,7 +383,14 @@ impl Flags {
         }
     }
 
+    /// A flag the request loses, though curl would have sent it.
     fn ignore(&mut self, display: &str, value: Option<String>) {
+        self.ignores_sent = true;
+        self.list(display, value);
+    }
+
+    /// A flag listed as ignored, as written with its value.
+    fn list(&mut self, display: &str, value: Option<String>) {
         self.ignored.push(match value {
             Some(v) => format!("{display} {v}"),
             None => display.to_string(),
@@ -498,7 +525,12 @@ fn build(
         insecure,
         dropped_body,
         mut ignored,
+        ignores_sent,
     } = flags;
+    // Everything this pushes onto `ignored` before the tail (credentials,
+    // earlier URLs, an unknown method, an unsent body, `$(…)` text) is
+    // something curl sent.
+    let from_flags = ignored.len();
     // A shell variable or `$(…)` in the credentials would be encoded as
     // literal text (spec D8), and another auth scheme would not have sent
     // them as Basic: the flag is dropped instead.
@@ -615,6 +647,8 @@ fn build(
     ignored.extend(
         substitutions.into_iter().filter(|s| in_request(s)).map(|s| format!("{s} kept as text")),
     );
+    let ignores_sent = ignores_sent || ignored.len() > from_flags;
+    // Where curl's output went: nothing it sent.
     ignored.extend(tail);
 
     Ok(CurlImport {
@@ -634,6 +668,7 @@ fn build(
             body: body_text.map(|text| Body::Json { text }),
         },
         ignored,
+        ignores_sent,
         converted,
         // Filled in by `parse`, which sees the lines before this one.
         variables: Vec::new(),
@@ -796,6 +831,52 @@ mod tests {
             let c = one(cmd);
             assert!(c.ignored.is_empty(), "{cmd}: {:?}", c.ignored);
             assert_eq!(c.request.url, "https://x/a?f[s]=1");
+        }
+    }
+
+    /// Output and display flags, `-L`, `--compressed`, a pipeline tail or
+    /// redirect and leading assignments are ignored without changing what
+    /// curl sent (import-without-prompt S3).
+    #[test]
+    fn output_flags_are_ignored_without_changing_what_is_sent() {
+        for cmd in [
+            "curl -sSviL https://x/a",
+            "curl -o out.json -O -J -w '%{http_code}' -D h.txt -f -# -N https://x/a",
+            "curl --silent --show-error --verbose --include --location https://x/a",
+            "curl --compressed --output out --remote-name --remote-header-name https://x/a",
+            "curl --output-dir d --create-dirs --write-out x --dump-header h https://x/a",
+            "curl --fail --fail-with-body --progress-bar --no-progress-meter https://x/a",
+            "curl --no-buffer --trace t --trace-ascii t --trace-time --stderr e https://x/a",
+            "curl https://x/a | jq .",
+            "curl https://x/a > out.json",
+            "TOKEN=abc curl https://x/a",
+        ] {
+            let c = one(cmd);
+            assert!(!c.ignored.is_empty(), "{cmd}: something is listed");
+            assert!(!c.ignores_sent, "{cmd}: {:?}", c.ignored);
+        }
+        assert!(!one("curl https://x/a").ignores_sent);
+    }
+
+    /// Anything else the import ignores changed what curl sent.
+    #[test]
+    fn a_lost_flag_or_value_ignores_what_was_sent() {
+        for cmd in [
+            "curl -F f=@a.png https://x/a",
+            "curl -d @body.json https://x/a",
+            "curl -T a.txt https://x/a",
+            "curl -b cookies.txt https://x/a",
+            "curl --max-time 5 https://x/a",
+            "curl --unknown-flag https://x/a",
+            "curl -s https://a/1 https://b/2",
+            "curl -X PURGE https://x/a",
+            "curl -u $U:p https://x/a",
+            "curl --digest -u a:b https://x/a",
+            r#"curl "https://x/a?d=$(date)""#,
+            "curl -X GET -d x https://x/a",
+            "curl -H 'X-Gone:' https://x/a",
+        ] {
+            assert!(one(cmd).ignores_sent, "{cmd}");
         }
     }
 

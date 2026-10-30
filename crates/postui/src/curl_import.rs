@@ -39,6 +39,18 @@ pub struct CurlVariables {
     pub reserved: Vec<String>,
 }
 
+impl CurlVariables {
+    /// Whether the request sends what the curl did, with nothing left to
+    /// fill in: every new secret has the paste's value, every kept name
+    /// already holds it (or the paste gave none), and no name is reserved
+    /// (import-without-prompt spec S2).
+    pub fn raise_nothing(&self) -> bool {
+        self.secrets.iter().all(|(_, v)| v.is_some())
+            && self.kept.iter().all(|(_, same)| *same)
+            && self.reserved.is_empty()
+    }
+}
+
 /// A replace decided before the dirty gate (replace-with-curl U7): the
 /// paste's one command and its sorted variables, so nothing past the gate
 /// can refuse what the gate's answer already did.

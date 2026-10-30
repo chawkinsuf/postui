@@ -129,22 +129,49 @@ impl App {
         true
     }
 
-    /// The name prompt for `run`'s current command (spec §4.2 step 3).
+    /// The name prompt for `run`'s current command (spec §4.2 step 3), or,
+    /// for a command that needs none, its create at once, as Enter on the
+    /// prompt would (spec 2026-10-30 import-without-prompt S1). A create
+    /// that refuses has said why, and the prompt comes up after all (S8).
     pub(super) fn push_curl_prompt(&mut self, run: CurlImportRun) {
         let space = self.active_space();
         let folder = run.folder.clone().unwrap_or_else(|| space.clone());
-        let name = self.free_request_name(&folder, &run.current().suggested_name());
+        let suggested = run.current().suggested_name();
+        let name = self.free_request_name(&folder, &suggested);
+        // A name already taken is the user's to settle (S4).
+        let free = name == suggested;
         // The prompt speaks folders inside the space, as New request does.
         let prefill = match folder.strip_prefix(&format!("{space}/")) {
             Some(rel) => format!("{rel}/{name}"),
             None => name,
         };
+        if free && self.needs_no_prompt(run.current()) {
+            // This can run inside a prompt's own actions (Enter on the
+            // command before): a refusal left flagged would bring that
+            // prompt back over this one, so the flag is this create's only.
+            let outer = std::mem::take(&mut self.last_action_failed);
+            self.import_curl_create(run.clone(), &prefill);
+            if !std::mem::replace(&mut self.last_action_failed, outer) {
+                return;
+            }
+        }
         self.push_modal(Modal::Prompt {
             title: run.title(),
             input: LineInput::new(&prefill),
             kind: PromptKind::ImportCurl(Box::new(run)),
             revealed: false,
         });
+    }
+
+    /// Whether `import` can be created without asking (spec 2026-10-30
+    /// import-without-prompt S1–S3): it has a `# @name`, nothing it
+    /// ignored changed what curl sent, and its variables raise nothing.
+    /// An environment file that can't be read is the create's to report
+    /// (S8), so it does not stop the try.
+    fn needs_no_prompt(&mut self, import: &CurlImport) -> bool {
+        import.named.is_some()
+            && !import.ignores_sent
+            && self.curl_variables(import, &Default::default()).map_or(true, |v| v.raise_nothing())
     }
 
     /// `base`, else `base 2`, `base 3`, …: the first name no request in
