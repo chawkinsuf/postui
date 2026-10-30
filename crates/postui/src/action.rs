@@ -625,6 +625,12 @@ pub enum Action {
     /// Open the project chooser: every registered project plus a final
     /// "open by path…" option.
     OpenProjectChooser,
+    /// The edit flag's waiting screen's Override button: asks first.
+    ConfirmOverrideEditFlag,
+    /// Its answer: takes the agent's edit flag down and opens the project,
+    /// if the flag is still the one asked about (`None`: one that didn't
+    /// parse).
+    OverrideEditFlag(Option<postui_core::project::EditFlag>),
     /// Open the theme picker (chooser modal listing the theme registry).
     OpenThemeChooser,
     /// Flip the open theme picker between its dark and light theme sets

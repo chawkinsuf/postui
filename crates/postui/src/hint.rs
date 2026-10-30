@@ -277,7 +277,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
     use crate::components::settings::SettingsField;
     match hit {
         // -- Surfaces, not buttons: no hint. --
-        Hit::Pane(_)
+        // The edit flag's screen covers the footer, so its buttons can't
+        // have one.
+        Hit::EditBlock(_)
+        | Hit::Pane(_)
         | Hit::ManageRow(_)
         | Hit::SettingsRow(_)
         | Hit::SidebarRow(_)

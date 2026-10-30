@@ -11,6 +11,8 @@ use ratatui::widgets::Paragraph;
 pub enum Hit {
     /// Pane background: click focuses, wheel scrolls.
     Pane(PaneId),
+    /// A button of the edit flag's waiting screen.
+    EditBlock(crate::app::EditBlockButton),
     /// The header's `Project: <name>` chip: opens the project chooser.
     HeaderProject,
     /// The `alt+z` keycap pill beside the project chip: next project on

@@ -124,7 +124,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let hovered = app.hovered.as_ref();
             let pointer = app.pointer;
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
-            let modal_open = app.modals.top().is_some();
+            // The edit flag's screen covers the bar as a dialog does.
+            let modal_open = app.modals.top().is_some() || app.edit_block.is_some();
             // Destructured so each component can be borrowed mutably
             // alongside the shared theme reference its DrawCtx holds.
             let App { theme, sidebar, editor, session, anims, .. } = app;
@@ -328,6 +329,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.hovered.as_ref(),
         hover_t,
     );
+    // The edit flag's waiting screen covers the frame just drawn, hits and
+    // all; dialogs and toasts still go over it.
+    if let Some(block) = &app.edit_block {
+        hits.clear();
+        crate::components::edit_block::draw(
+            frame,
+            frame.area(),
+            &app.theme,
+            block,
+            &mut hits,
+            app.hovered.as_ref(),
+            hover_t,
+        );
+    }
     app.modals.draw(
         frame,
         frame.area(),
@@ -356,7 +371,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // keys and footer chip go by `var_token_tip` too, so they agree with
     // each other even where a terminal too small for the panel draws none
     // (the chip is then the cue, #135).
-    match app.var_token_tip() {
+    let tip = if app.edit_block.is_some() { None } else { app.var_token_tip() };
+    match tip {
         Some(tip) => {
             let info = app.editor.vars.describe(&tip.name);
             // Revealed only for the exact secret the reveal was clicked

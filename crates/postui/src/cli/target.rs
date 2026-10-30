@@ -16,6 +16,18 @@ use std::path::{Path, PathBuf};
 /// directory (`~/x`, `x/`, `../..` from inside it, its registered name, or
 /// running from it) is one root, and every path built from it is clean.
 pub fn resolve(project: Option<&str>) -> Result<PathBuf, CliError> {
+    resolve_where(project, Project::is_project)
+}
+
+/// [`resolve`] for `edit end` and `edit status`: a directory with an edit
+/// flag up is the one the flag is in, though the agent's edit removed its
+/// `project.toml`.
+pub fn resolve_flagged(project: Option<&str>) -> Result<PathBuf, CliError> {
+    resolve_where(project, |root| Project::is_project(root) || Project::edit_flag_up(root))
+}
+
+/// The root `project` names, refused unless `takes` it.
+fn resolve_where(project: Option<&str>, takes: fn(&Path) -> bool) -> Result<PathBuf, CliError> {
     let root = match project {
         None => std::env::current_dir()
             .and_then(|cwd| cwd.canonicalize())
@@ -33,7 +45,7 @@ pub fn resolve(project: Option<&str>) -> Result<PathBuf, CliError> {
             }
         }
     };
-    if !Project::is_project(&root) {
+    if !takes(&root) {
         return Err(CliError::at(
             "not a postui project (no project.toml); `postui init` makes one, or pass -p <dir>",
             root.join("project.toml"),

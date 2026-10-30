@@ -98,8 +98,8 @@ user picked; `mine` = my call, open to veto (§8).
 | R3 | Claude creates requests in a project inside the API's repo, committed with it. | you |
 | R4 | Claude changes project files by editing the TOML directly; `postui check` verifies them. | you |
 | R5 | An edit flag in the project directory, which the TUI knows about, marks the agent's edit. | you |
-| R6 | While the flag is up, the TUI stops loading changes from disk and prevents the user from saving anything. | you |
-| R7 | While the flag is up, the TUI shows a blocking "updates in progress" screen with a "switch projects" option. | you |
+| R6 | While the flag is up, the TUI stops loading changes from disk and prevents the user from saving anything. *Amended (#216 redesign): the project can't be open in a TUI at all while the flag is up; `edit begin` refuses while one has it open, and one TUI at most has a project open.* | you |
+| R7 | While the flag is up, the TUI shows a blocking "updates in progress" screen with a "switch projects" option. *Amended (#216 redesign): shown when an open finds the flag up, with no project open; it opens the project when the flag comes down.* | you |
 | R8 | The user can override a stuck flag from the TUI. | you (need), mine (placement on the R7 screen) |
 | R9 | A suite runs every request in a project, or in one space, and reports each one's status and timing. | you |
 | R10 | Output can go to a file. | you |
@@ -227,6 +227,63 @@ not masked (they would mask unrelated text); `check` warns about them.
 
 ### Piece 3 — edit flag, TUI blocking screen, skill
 
+*Amended 2026-10-29 (#216, redesign).* The first design below (an agent
+editing under an open project: presence and unsaved locks with a
+per-event handshake, a screen over the open project, a write hold, a
+reload and undo clearing at the end) ran twelve review rounds without
+converging, each finding one more event path or timing window. It is
+superseded by your design: "Should we just require the project be closed
+entirely before the agent starts? A lock when it's opened that's removed
+when it's closed or the app is closed. Maybe also prevent two instances
+of the tui from opening the same project. With an override in case a lock
+gets stuck." The earlier text and its amendments stay below as history;
+where they disagree, this paragraph wins.
+
+- **A TUI holds an exclusive OS lock on `.postui/tui.lock`** for as long
+  as it has the project open (you). Switching away or quitting releases
+  it, and so does a crash. A second TUI finds it held and doesn't open
+  the project: at launch it runs empty saying "it is open in another
+  postui window", and a switch stays where it was (you: "prevent two
+  instances"). Reload from disk retries the launch's open.
+- **`edit begin` refuses while postui has the project open** (you),
+  `--force` or not: "postui has this project open; ask the user to
+  switch to another project or quit postui, then retry". It asks first,
+  then raises the flag and asks again, taking its flag back down if the
+  lock is held; a TUI's open takes the lock and then looks for the flag,
+  letting it go if the flag is up. The opposite orders mean the two can't
+  both go ahead. `edit status` asks with a shared try, so two commands
+  asking at once don't keep each other out; the TUI's take tries a few
+  times 5 ms apart to wait one out (mine). This supersedes "`edit begin`
+  should fail to lock if there are unsaved changes" and "open inputs
+  count as unsaved": a project that is open at all refuses.
+- **Opening a flagged project** (launch or switch) shows the "Updates in
+  progress" screen with no project open, polls the flag once a second
+  (and at once when focus comes back), and opens the project when it
+  comes down, fresh from its files, so there is nothing to reload and
+  no undo to clear. A switch onto one leaves the current project as any
+  switch does and records the flagged one as the last project. Its
+  buttons: Switch projects, Override (asks first; takes down only the
+  flag it asked about, then opens), Quit.
+- **The override for a stuck lock** is for the flag, the one thing that
+  can be left behind: Override on the screen, or `edit end --force`. The
+  TUI's lock dies with its process. A lease that times out (you: "It
+  could refresh the lock so it can timeout") wasn't built: the OS lock
+  already goes the moment postui exits, and the agent has no process
+  alive between `edit begin` and `edit end` to refresh its flag (mine).
+  Instead the screen says "If the agent has stopped, Override opens it
+  now." once a flag is 30 minutes old (mine).
+- Gone with the first design: `unsaved.lock`, the gate before every
+  event, the write hold, the edit mark, the dropped event and the key
+  grace. Your rulings that only applied to it (an AI request in flight
+  counting as unsaved; blocking writes behind the screen) have nothing
+  left to apply to.
+- Kept from the first design: the flag's file and `id`, `edit end`'s
+  check and its overridden refusal, `edit end` and `edit status` finding
+  a flag whose edit removed `project.toml`, `edit status` reporting an
+  unreadable flag, the note's control chars shown as codes, the skill and
+  `skill install`/`show`. `edit begin`'s report no longer has a `postui`
+  row or `tui_open` key: it can only succeed with no TUI open.
+
 **The flag** is `.postui/editing.toml`: `started` (RFC 3339) and an
 optional `note`. It is local and uncommitted, like the rest of
 `.postui/`. Its reads and writes go through a small `postui_core`
@@ -327,6 +384,135 @@ second (one stat), and before opening or switching to a project.
     can still echo one back;
   - how to start a repo's request kit with `postui init`, and that the
     project gets committed.
+
+*Amended 2026-10-29 (#216).* Mine (approved), from the plan the user saw
+before code:
+
+- **`unsaved.lock` is shared, not exclusive.** Two postui windows on one
+  project would fight over an exclusive one: the second could only hang
+  before every event or run without it, and `edit begin` could then go
+  ahead past its unsaved work. Every window with unsaved work holds a
+  shared lock, and `edit begin`'s exclusive try fails while any one does.
+  The order on each side and the guarantee are unchanged. The TUI's take
+  never waits (mine): only `edit begin`'s exclusive try can keep it out,
+  and that one has raised its flag, which the TUI looks for next; waiting
+  would hang the app on a stopped `edit begin`.
+- **A refusal exits 1** (a flag already up, unsaved work, `check` errors at
+  `edit end`, a flag already gone); mistakes and project errors stay 2.
+  `edit begin` asks about unsaved work only after raising its flag, so its
+  exclusive try of `unsaved.lock` always comes after a raised flag, which
+  the TUI relies on. A refused `edit begin` therefore raises its flag for
+  a moment, and a TUI can see it (the window whose lock refused it, mid
+  event, or another window). Asking before raising (review round 4) broke
+  that order and was taken back out. What keeps the moment cheap is the
+  release: a flag that came and went with no edit just drops the screen
+  (no reload, no toast, undo kept). Review round 6 (mine (approved)) told
+  that from file stamps taken when the screen went up; review round 9
+  found it missed writes made before the screen went up, and edits begun
+  and ended between two looks, and kept undo over both. Replaced (mine;
+  the user's "we need to finish the code review and task" took the
+  recommended option) by an edit mark: taking the flag down (`edit end`,
+  `--force` or not, and Override) first rewrites `.postui/edited.toml`
+  with a fresh mark, and the TUI's look before every event and its poll
+  compare it with the one seen last (taken with the locks, before the
+  open reads the files). A changed mark loads the files and empties undo,
+  whether or not the screen was ever up, and the event is dropped. A
+  refused `edit begin` puts its flag back without a mark. An Override
+  always loads, even of an edit not yet made (coarser, never wrong).
+- The flag carries an `id` (mine, review round 7), so two raised in the
+  same second with the same note are told apart: `edit end` lowers only
+  its own, and Override only the one its question was asked about (one
+  another `edit begin` raised since is shown in its place). A waiting project that then
+  won't open is the app's state as a refused launch is: shown in the
+  sidebar, and retried by Reload from disk.
+- Review round 8 (mine): the app's locks are dropped by every settle that
+  finds them on a project that isn't open or waiting behind the screen,
+  however the app came to leave it. The screen's button keys are ignored
+  for 750 ms after it goes up, so a word typed on into it can't override
+  or quit. The Override question closes when the edit ends on its own.
+  `edit end --force` still exits 1 when `check` found errors (the flag is
+  down; the errors are still there). Review round 9 (mine): `edit end` and
+  `edit status` find a flag in a directory whose `project.toml` the edit
+  removed (`check` reports it missing), `edit status` reports a flag file
+  that won't parse as up with its error, and the screen shows the note's
+  control chars as codes (`^J`), as a field does. After the edit-mark
+  rework (mine, its review rounds 1 and 2): the poll's load and the
+  release take the lock before they look, as an event does; loading an
+  edit empties the project's journal as well as the app's undo; the
+  Override question's keys wait out the same 750 ms, so a typed `oo`
+  can't open and answer it; and the command line's lock probe retries a
+  few times 5 ms apart, so two commands probing at once don't read each
+  other as a TUI.
+- The event whose gate finds the flag is dropped, not handed to the
+  screen: it was meant for the app behind, and a `q` must not quit from a
+  screen not yet drawn. On a short terminal the card keeps its title and
+  buttons and drops body lines.
+- Kept by choice: the gate runs on every event, pointer motion included
+  (the spec's rule; three review rounds raised its syscalls, and the user
+  left it). A launch onto a flagged project ends with the open path's
+  "Switched to …" toast, since changing that wording would change the
+  open-retry path's too.
+  `edit begin --force` that is then refused over unsaved work puts back
+  the flag it replaced.
+- The output, text and `--json`: `edit begin` prints `root`, `flag`,
+  `note` and `postui  open: …`/`not open` (`{"root", "flag", "started",
+  "note", "tui_open"}`); `edit end` prints `check`'s report, then `flag
+  removed` or `flag  kept: …` (`{"root", "check", "flag_removed"}`); `edit
+  status` prints `flag  up, started 4 minutes ago` or `down`, the note and
+  `postui` (`{"root", "flag": {"started", "age_secs", "note", "error"} |
+  null, "tui_open"}`); `skill install` prints `dir`, then each file as
+  `installed`, `same`, `replaced` or `differs`, and exits 1 on `differs`
+  (`{"dir", "files": [{"file", "status"}]}`). `started` is RFC 3339 UTC to
+  the second, written without a time crate.
+- The screen's buttons are `s Switch projects`, `o Override`, `q Quit`;
+  the quit combo quits on its second press there too. Override asks first.
+
+Mine, built that way and open to veto:
+
+- **"Unsaved"** is the buffer (or scratch) holding edits, an open table
+  cell, typing in flight in the URL line, the jq bar or vim's body, any
+  dialog, a Variable Manager form or grid field, a Settings field, **or a
+  live drag or resize** (each writes when it ends).
+- **Release** of a project open behind the screen re-reads its files, then
+  re-reads the open request from its file (one the agent removed leaves an
+  empty scratch), empties the undo history and seeds history from what
+  loaded, so the reload is no step of its own. The response pane is kept.
+- **A switch onto a flagged project** leaves the current one as any
+  switch does (its inputs close, the unsaved question's Save or Discard is
+  honoured, its locks go), then waits with no project open behind the
+  screen, as a launch onto one does. Switch projects from there opens
+  whichever is picked, the one just left included.
+- **Opening a project takes its locks first**: presence, and the unsaved
+  lock held, before the TUI looks for the flag and before `Project::open`
+  writes, so no `edit begin` goes ahead in between; the next settle lets
+  go when nothing is unsaved. Behind a pending screen presence stays, so
+  `edit status` says postui is open. A directory with no `project.toml`
+  gets no locks (and no `.postui/`). No lock is ever waited for.
+- **Background tasks' actions** (a response, a jq run, an AI answer) pass
+  the gate as input does, so the unsaved lock is held before they act, and
+  still run behind the screen: none writes the project, and a request one
+  changes there keeps the change through the release, which re-seeds only
+  a clean buffer (the save's drift check then guards the agent's file).
+- `edit end` checks against the default environment (`check`'s own rule),
+  and takes the flag down only if it is still the one it found: one the
+  user overrode, or another agent's after that, is a refusal.
+
+*Amended 2026-10-29 (#216, review round 3).* Your rulings:
+
+- **An AI filter request in flight counts as unsaved** (you: "We should
+  count the request as edited if an AI request is pending"): its answer
+  lands in the request, so the unsaved lock is held until it does.
+- **Behind the screen the open project refuses every write** (you: "It's
+  probably better to block than have an accidental write", "As long as we
+  presume to have all cases accounted for"): `Disk` holds writes, each
+  refused with "refused while an agent is editing the project", until the
+  screen goes. The gates and the handshake stay the mechanism; the hold
+  catches a path they miss. Known paths that reach it: Quit and Switch
+  projects from the screen record the open request in `state.toml` (best
+  effort, so it isn't recorded), and a buffer a background task changed
+  behind the screen can't be saved until the edit ends (Discard works).
+- `skill install --user --project` is a mistake; `skill show` prints
+  `SKILL.md` only.
 
 ## 5. Output format
 
@@ -536,9 +722,9 @@ both profiles.
 12. TUI presence via a shared OS file lock, only ever reported.
 13. Blocking screen: Switch projects, Quit and Override always offered.
     On release: forced reload and undo cleared.
-14. The unsaved handshake: the TUI's `unsaved.lock` is taken before
-    every event while it has nothing unsaved; `edit begin` writes the
-    flag, then tries the lock. "Unsaved" includes open inputs and
+14. The unsaved handshake: the TUI's `unsaved.lock` (shared, #216) is
+    taken before every event while it has nothing unsaved; `edit begin`
+    writes the flag, then tries the lock. "Unsaved" includes open inputs and
     dialogs. A mid-event refusal is retried once by the skill.
 15. Skill at `skills/postui/` (`SKILL.md` + `reference.md`), embedded;
     `skill install` defaults to `--user` and never overwrites a differing

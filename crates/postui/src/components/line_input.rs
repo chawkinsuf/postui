@@ -1156,12 +1156,16 @@ fn drawn(glyphs: &[Glyph], start: usize, width: usize) -> Vec<usize> {
 /// `strtrans`): `^I` for a control char, `^?` for DEL, `<200b>` for the
 /// rest. `None` for a grapheme that takes a cell, which shows as itself.
 fn code_of(g: &str, cells: usize) -> Option<String> {
-    let code = |c: char| match c {
+    (cells == 0).then(|| g.chars().map(char_code).collect())
+}
+
+/// One char's code in [`code_of`]'s terms.
+pub(crate) fn char_code(c: char) -> String {
+    match c {
         '\0'..='\x1f' => format!("^{}", char::from(c as u8 + 0x40)),
         '\x7f' => "^?".to_string(),
         _ => format!("<{:x}>", c as u32),
-    };
-    (cells == 0).then(|| g.chars().map(code).collect())
+    }
 }
 
 /// Flattens pasted text to one line: runs of line breaks and tabs collapse

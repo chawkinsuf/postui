@@ -1,4 +1,5 @@
 pub mod chooser;
+pub mod edit_block;
 pub mod editor;
 pub mod file_picker;
 pub mod footer;

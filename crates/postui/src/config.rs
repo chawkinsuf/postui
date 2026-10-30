@@ -1220,6 +1220,8 @@ commands (text on stdout, --json for scripts; postui help <command>):
   init              start a project in a directory
   run               send a request and print the response
   suite             send every request and report status and timing
+  edit              begin or end an agent's edit of a project, or its status
+  skill             install the Claude Code skill for postui, or show it
   help              a command's usage
 
 A directory named like a command opens as ./name.
@@ -1257,7 +1259,7 @@ pub fn parse_cli(args: Vec<OsString>) -> CliParse {
             Err(reason) => CliParse::CommandUsage {
                 reason,
                 json: args.iter().any(|a| a == "--json"),
-                usage: crate::cli::usage(&first.to_string_lossy()),
+                usage: crate::cli::usage_of(&args),
             },
         };
     }

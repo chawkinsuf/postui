@@ -625,6 +625,79 @@ impl Disk {
             None => Ok(()),
         }
     }
+
+    /// The lock file `rel`, opened to be held: created empty when missing
+    /// (its directory too, sealed as any write's), never truncated, since
+    /// another process may hold a lock on the one that is there.
+    pub fn open_lock(&mut self, rel: &RelPath) -> Result<Lock, DiskError> {
+        self.refuse(rel)?;
+        let path = self.abs(rel);
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        self.create_dirs(parent, rel, "create the directory of")?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(DiskError::io("open", rel))?;
+        Ok(Lock { file, rel: rel.clone() })
+    }
+
+    /// The lock file `rel` opened to ask whether someone holds it; `None`
+    /// when it is missing, which means no one ever has. Creates nothing and
+    /// writes nothing, so a read-only `Disk` may ask too. Opened for writing
+    /// where it may be (and read-only where it may not): an exclusive lock
+    /// emulated with `fcntl`, as on NFS, needs a handle open for writing.
+    pub fn existing_lock(&self, rel: &RelPath) -> Result<Option<Lock>, DiskError> {
+        let path = self.abs(rel);
+        let opened = match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+            // Not writable (permissions, a read-only mount): asked read-only.
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => std::fs::File::open(&path),
+            other => other,
+        };
+        match opened {
+            Ok(file) => Ok(Some(Lock { file, rel: rel.clone() })),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(DiskError::io("open", rel)(e)),
+        }
+    }
+}
+
+/// An open lock file, for an OS advisory lock (`flock` on unix) between
+/// processes. A lock belongs to this open file: dropping it, or the process
+/// ending however it ends, releases it.
+pub struct Lock {
+    file: std::fs::File,
+    rel: RelPath,
+}
+
+/// Nothing here waits for a lock: a process stopped while holding one would
+/// hang whoever waited.
+impl Lock {
+    /// Takes a shared lock if no one holds an exclusive one: `false` when
+    /// someone does.
+    pub fn try_lock_shared(&self) -> Result<bool, DiskError> {
+        match self.file.try_lock_shared() {
+            Ok(()) => Ok(true),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(e)) => Err(DiskError::io("lock", &self.rel)(e)),
+        }
+    }
+
+    /// Takes an exclusive lock if no one holds any: `false` when someone
+    /// does.
+    pub fn try_lock(&self) -> Result<bool, DiskError> {
+        match self.file.try_lock() {
+            Ok(()) => Ok(true),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(e)) => Err(DiskError::io("lock", &self.rel)(e)),
+        }
+    }
+
+    /// Releases whatever lock this file holds.
+    pub fn unlock(&self) -> Result<(), DiskError> {
+        self.file.unlock().map_err(DiskError::io("unlock", &self.rel))
+    }
 }
 
 #[cfg(test)]
@@ -1191,5 +1264,38 @@ mod tests {
         disk.trash(&p).unwrap();
         disk.empty_trash().unwrap();
         assert!(!disk.exists(&RelPath::new(TRASH_DIR).unwrap()));
+    }
+
+    /// A shared lock keeps an exclusive one out and lets other shared ones
+    /// in; unlocking or dropping lets the exclusive one in. Each `Lock` is
+    /// its own open file, as two processes' would be.
+    #[test]
+    fn locks_shared_against_exclusive() {
+        let (_d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        let rel = local("x.lock");
+        assert!(disk.existing_lock(&rel).unwrap().is_none(), "nothing made by asking");
+        let held = disk.open_lock(&rel).unwrap();
+        assert!(held.try_lock_shared().unwrap());
+        let other = disk.open_lock(&rel).unwrap();
+        assert!(other.try_lock_shared().unwrap());
+        let asker = disk.existing_lock(&rel).unwrap().unwrap();
+        assert!(!asker.try_lock().unwrap());
+        held.unlock().unwrap();
+        drop(other);
+        assert!(asker.try_lock().unwrap());
+        asker.unlock().unwrap();
+        // The folder the lock made is sealed like any other write's.
+        assert!(disk.is_file(&local(".gitignore")));
+    }
+
+    #[test]
+    fn a_read_only_disk_asks_about_locks_but_makes_none() {
+        let (_d, mut disk) = disk();
+        disk.set_read_only();
+        let rel = local("x.lock");
+        assert!(matches!(disk.open_lock(&rel), Err(DiskError::ReadOnly(_))));
+        assert!(disk.existing_lock(&rel).unwrap().is_none());
+        assert!(!disk.exists(&RelPath::new(LOCAL_DIR).unwrap()));
     }
 }

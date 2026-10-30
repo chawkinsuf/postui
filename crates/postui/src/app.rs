@@ -16,6 +16,7 @@ use crate::keys::KeyCombo;
 use crate::layout::PaneId;
 use crate::theme::Theme;
 use crate::undo::Open;
+pub use edit_block::{EditBlock, EditBlockButton};
 use landing::{CursorAim, Landing};
 use postui_core::project::{HeldDrift, OpenError, Project};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -196,6 +197,15 @@ pub struct App {
     /// write. `None` when no project is open (the startup fallback, or an
     /// open that refused).
     pub project: Option<Project>,
+    /// The open project's lock (`edit_block.rs`): held for as long as it is
+    /// open, so no agent's `edit begin` and no second window goes ahead.
+    /// Taken before the open looks for the edit flag (`lock_for_open`).
+    project_lock: Option<postui_core::project::ProjectLock>,
+    /// The "Updates in progress" screen, up while an open waits on an
+    /// agent's edit flag (`edit_block.rs`); no project is open then.
+    pub edit_block: Option<EditBlock>,
+    /// When the waiting screen last looked at the flag (once a second).
+    edit_flag_polled: Option<Instant>,
     /// The global registry of known projects (config.toml's `[projects]`
     /// table): cycle order, configured root, last-used project.
     pub registry: crate::config::ProjectsRegistry,
@@ -1013,6 +1023,7 @@ impl App {
         match Project::init(&root, Some("default")) {
             Ok((project, warnings)) => {
                 self.project = Some(project);
+                self.take_project_lock();
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -1769,33 +1780,106 @@ impl App {
     /// empty state doubles as the "nothing is loaded" screen.
     fn show_open_error(&mut self) {
         self.sidebar.notice = self.open_error.as_ref().map(|e| {
-            format!(
-                "Could not open {}.\n\n{}\n\nFix the file and relaunch, or open another project.",
-                e.root.display(),
-                e
-            )
+            // One that names no file (another window has the project open)
+            // is retried by Reload from disk.
+            let next = if e.file.is_empty() {
+                "Reload from disk to try again, or open another project."
+            } else {
+                "Fix the file and relaunch, or open another project."
+            };
+            format!("Could not open {}.\n\n{e}\n\n{next}", e.root.display())
         });
+    }
+
+    /// A switch's open that refused (a broken file, another window): said,
+    /// and the current project stays as it was. With no project open and
+    /// no screen up (a waiting project's own open, once its flag came
+    /// down, or a launch's open that refused) the refusal is the app's
+    /// state, as a launch's is: shown where the requests would be, and what
+    /// Reload from disk retries.
+    fn refused_open(&mut self, e: OpenError) {
+        self.toasts.push(format!("could not open {}: {e}", e.root.display()), ToastKind::Error);
+        self.last_action_failed = true;
+        if self.edit_block.as_ref().is_some_and(|b| b.root == e.root) {
+            self.edit_block = None;
+            self.close_override_question();
+        }
+        if self.project.is_none() && self.edit_block.is_none() {
+            self.open_error = Some(e);
+            self.show_open_error();
+        }
+    }
+
+    /// A switch's teardown of what the views hold of the project left,
+    /// whether the next one opens now or waits behind the edit flag's
+    /// screen.
+    fn forget_project_views(&mut self) {
+        // All of the Variable Manager's state indexes the project being
+        // left, and only a switch knows that (a sync can't tell a
+        // same-named declaration of the new project from the old one), so
+        // it starts over as at launch (task #179). The cost: the Manager
+        // opens with nothing selected, even into a project that declares
+        // the name that was open.
+        self.varmanager = VarManager::default();
+        // The same for the Environments and Spaces lists: their cursors
+        // hold the old project's slugs (task #83), which must not land on a
+        // same-named item in the next.
+        self.manage.reset_lists();
+        self.open_error = None;
+        self.sidebar.notice = None;
+        // A different tree has a different set of loose files.
+        self.last_loose_warning = None;
+        self.last_spaces_warning = None;
+        self.last_environments_warning = None;
+    }
+
+    /// The refusal of a project another window has open.
+    fn open_in_another_window(root: &std::path::Path) -> OpenError {
+        OpenError {
+            root: root.to_path_buf(),
+            file: String::new(),
+            error: "it is open in another postui window".into(),
+        }
     }
 
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let mut toasts = Toasts::default();
-        let (project, open_error) = if root.as_os_str().is_empty() {
+        // The lock first, then the flag (`edit_block.rs`): an agent's edit
+        // keeps the project closed, behind the waiting screen, until it
+        // ends.
+        let opening =
+            if root.as_os_str().is_empty() { None } else { Some(Self::lock_for_open(&root)) };
+        let mut flagged = false;
+        let (project, project_lock, open_error) = match opening {
             // An empty root is "no project", never the process's cwd.
-            (None, None)
-        } else {
-            match Project::open(root) {
-                Ok((project, warnings)) => {
-                    for w in warnings {
-                        toasts.push(w, ToastKind::Warning);
-                    }
-                    (Some(project), None)
+            None => (None, None, None),
+            Some(edit_block::Opening::Flagged) => {
+                flagged = true;
+                (None, None, None)
+            }
+            Some(edit_block::Opening::InUse) => {
+                let e = Self::open_in_another_window(&root);
+                toasts.push(format!("could not open {}: {e}", root.display()), ToastKind::Error);
+                (None, None, Some(e))
+            }
+            Some(edit_block::Opening::Open { lock, warning }) => {
+                if let Some(w) = warning {
+                    toasts.push(w, ToastKind::Warning);
                 }
-                Err(e) => {
-                    toasts.push(
-                        format!("could not open {}: {e}", e.root.display()),
-                        ToastKind::Error,
-                    );
-                    (None, Some(e))
+                match Project::open(root.clone()) {
+                    Ok((project, warnings)) => {
+                        for w in warnings {
+                            toasts.push(w, ToastKind::Warning);
+                        }
+                        (Some(project), lock, None)
+                    }
+                    Err(e) => {
+                        toasts.push(
+                            format!("could not open {}: {e}", e.root.display()),
+                            ToastKind::Error,
+                        );
+                        (None, None, Some(e))
+                    }
                 }
             }
         };
@@ -1816,6 +1900,9 @@ impl App {
             toasts,
             modals: ModalStack::default(),
             project,
+            project_lock,
+            edit_block: None,
+            edit_flag_polled: None,
             registry: crate::config::ProjectsRegistry::default(),
             config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
@@ -1895,6 +1982,9 @@ impl App {
             testbed_list_dir_plan: 1,
             testbed_list_dir_alt: 1,
         };
+        if flagged {
+            app.raise_edit_block(root);
+        }
         app.prompt_migration_if_pending();
         app
     }
@@ -3790,6 +3880,7 @@ impl App {
                     None => false,
                 };
                 let now = Instant::now();
+                let flag_changed = self.poll_edit_flag(now, false);
                 let tip_changed = self.track_caret_token(now);
                 // The testbed's looping motion demos self-drive from here,
                 // never from any other screen's tick path — see
@@ -3819,6 +3910,7 @@ impl App {
                 self.toasts.on_tick(&mut self.anims, now)
                     || self.in_flight_ticking()
                     || tip_changed
+                    || flag_changed
                     || now_animating
                     || was_animating
                     || edge_scrolled
@@ -5250,6 +5342,7 @@ impl App {
                         self.history.clear();
                         self.marked_entry = None;
                         self.project = Some(project);
+                        self.take_project_lock();
                         for w in warnings {
                             self.toasts.push(w, ToastKind::Warning);
                         }
@@ -5296,6 +5389,8 @@ impl App {
                 }
                 true
             }
+            Action::ConfirmOverrideEditFlag => self.confirm_override_edit_flag(),
+            Action::OverrideEditFlag(asked) => self.override_edit_flag(asked),
             Action::OpenProjectChooser => {
                 self.apply(Action::ReloadProjectFiles);
                 use crate::components::chooser::{ChooserItem, ChooserState};
@@ -5466,19 +5561,32 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
+                // The incoming project's lock first, then its flag
+                // (`edit_block.rs`). One another window has open refuses
+                // as a broken one does. One an agent is editing opens only
+                // once its flag comes down: the current project is left all
+                // the same, as the gate's answer (a save, a discard)
+                // expects, and the app waits with none open behind the
+                // screen, as a launch onto a flagged project does.
+                //
                 // Open the incoming project before touching the current
                 // one: a project that refuses to open (a broken file it
                 // would write back) leaves the current project exactly as
                 // it was, its open inputs included.
-                let (project, warnings) = match Project::open(target.clone()) {
-                    Ok(opened) => opened,
-                    Err(e) => {
-                        self.toasts.push(
-                            format!("could not open {}: {e}", e.root.display()),
-                            ToastKind::Error,
-                        );
-                        self.last_action_failed = true;
+                let incoming = match Self::lock_for_open(&target) {
+                    edit_block::Opening::Flagged => None,
+                    edit_block::Opening::InUse => {
+                        self.refused_open(Self::open_in_another_window(&target));
                         return true;
+                    }
+                    edit_block::Opening::Open { lock, warning } => {
+                        match Project::open(target.clone()) {
+                            Ok(opened) => Some((opened, lock, warning)),
+                            Err(e) => {
+                                self.refused_open(e);
+                                return true;
+                            }
+                        }
                     }
                 };
                 // Then the open inputs close, saved, into the project they
@@ -5510,35 +5618,35 @@ impl App {
                 // across the switch could resurface under an unrelated
                 // request with the same slug.
                 self.session.reset();
+                // The project left lets go of its lock.
+                self.project_lock = None;
+                self.forget_project_views();
+                let Some(((project, warnings), lock, lock_warning)) = incoming else {
+                    self.project = None;
+                    self.refresh_sidebar();
+                    // Remembered as the last project now, so a quit from
+                    // the screen relaunches onto it.
+                    self.registry.register(target.clone());
+                    self.save_registry();
+                    self.raise_edit_block(target);
+                    return true;
+                };
                 let name = project.display_name();
                 self.project = Some(project);
-                // All of the Variable Manager's state indexes the project
-                // being left, and only here is that known (a sync can't tell
-                // a same-named declaration of the new project from the old
-                // one), so it starts over as at launch (task #179). The cost:
-                // the Manager opens with nothing selected, even into a
-                // project that declares the name that was open. With Manage
-                // up it reads the new rows now, for whatever runs before the
-                // next frame; with it closed, `OpenManage` syncs (task #84).
-                self.varmanager = VarManager::default();
+                self.project_lock = lock;
+                // A screen that waited on this project (or another) has
+                // nothing to wait on any more.
+                self.edit_block = None;
+                self.close_override_question();
+                // With Manage up the Variable Manager reads the new rows
+                // now, for whatever runs before the next frame (with it
+                // closed, `OpenManage` syncs, task #84), and a list settles
+                // on the new project's first item.
                 if self.screen == Screen::Manage {
                     self.sync_varmanager();
-                }
-                // The same for the Environments and Spaces lists: their
-                // cursors hold the old project's slugs (task #83), which
-                // must not land on a same-named item here. With Manage up on
-                // one of them, it settles on the new project's first item now.
-                self.manage.reset_lists();
-                if self.screen == Screen::Manage {
                     self.settle_list(self.manage.tab);
                 }
-                self.open_error = None;
-                self.sidebar.notice = None;
-                // A different tree has a different set of loose files.
-                self.last_loose_warning = None;
-                self.last_spaces_warning = None;
-                self.last_environments_warning = None;
-                for w in warnings {
+                for w in lock_warning.into_iter().chain(warnings) {
                     self.toasts.push(w, ToastKind::Warning);
                 }
                 self.prompt_migration_if_pending();
@@ -11046,7 +11154,12 @@ impl App {
     /// the body takes them verbatim. Returns `false` when nothing
     /// focused accepts text. The sidebar takes none, but imports the
     /// paste's curl (spec 2026-10-15 curl import visibility V1).
+    ///
+    /// The edit flag's waiting screen takes none; a dialog over it does.
     pub fn paste_text(&mut self, text: &str) -> bool {
+        if self.edit_block.is_some() && self.modals.is_empty() {
+            return false;
+        }
         // First, as no modal, field or response surface can be up when it
         // holds; and before the empty check, as an empty paste there still
         // says it holds no curl (V7).
@@ -11707,7 +11820,13 @@ impl App {
     /// (i.e. whether the caller should redraw): the OR of every
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
+    ///
+    /// The edit flag's waiting screen takes keys before all of it, unless a
+    /// dialog is over it (`edit_block.rs`).
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        if self.edit_block.is_some() && self.modals.is_empty() {
+            return self.blocked_key(ev);
+        }
         // Where the keyboard is before this key (plan M4a Deviation 6).
         self.note_pane();
         // The field session catches up first with whatever moved the caret
@@ -11778,6 +11897,20 @@ impl App {
         live.then_some(combo)
     }
 
+    /// A press of the modified quit combo, once nothing refuses it (task
+    /// #85): the second press of the combo that armed the quit, while its
+    /// toast shows, quits; any other press arms it. The main keys' route
+    /// and the edit flag's waiting screen both go through here.
+    fn press_quit_combo(&mut self, combo: KeyCombo, armed: Option<&KeyCombo>) -> bool {
+        if armed == Some(&combo) {
+            return self.update(Action::Quit);
+        }
+        let key = crate::keys::format_combo(&combo);
+        let id = self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info);
+        self.quit_armed = Some((id, combo));
+        true
+    }
+
     fn route_key(&mut self, ev: KeyEvent, armed: Option<&KeyCombo>) -> router::Ran {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
@@ -11822,13 +11955,7 @@ impl App {
             if self.quit_refused() {
                 return router::Ran::routed(self.refuse_quit());
             }
-            if armed == Some(&combo) {
-                return router::Ran::routed(self.update(Action::Quit));
-            }
-            let key = crate::keys::format_combo(&combo);
-            let id = self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info);
-            self.quit_armed = Some((id, combo));
-            return router::Ran::routed(true);
+            return router::Ran::routed(self.press_quit_combo(combo, armed));
         }
 
         // A live row drag owns Escape: it cancels the drag, nothing else.
@@ -13335,6 +13462,9 @@ mod curl_tests;
 mod dialog_tests;
 #[cfg(test)]
 mod dot_tests;
+mod edit_block;
+#[cfg(test)]
+mod edit_block_tests;
 #[cfg(test)]
 mod ex_tests;
 #[cfg(test)]
