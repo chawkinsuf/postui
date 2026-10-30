@@ -5213,6 +5213,10 @@ impl App {
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
+                    Err(e @ postui_core::prepare::PrepareError::ValueHoldsVariable { .. }) => {
+                        self.toasts.push(e.to_string(), ToastKind::Error);
+                        return true;
+                    }
                 };
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);

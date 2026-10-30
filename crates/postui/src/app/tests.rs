@@ -9035,6 +9035,25 @@ async fn unresolved_variable_blocks_send_with_toast() {
     assert!(!app.toasts.is_empty());
 }
 
+/// Spec 2026-10-30 D1: a URL using a value that holds a `{{token}}` would go
+/// out with the braces in it, so Send refuses with a toast naming both.
+#[tokio::test]
+async fn a_url_value_holding_a_token_blocks_send_with_toast() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.editor.url = crate::components::line_input::LineInput::new("{{wrap}}/x");
+    app.editor.variables.insert(
+        "wrap".into(),
+        postui_core::model::Entry { value: "http://{{host}}".into(), enabled: true },
+    );
+    app.update(Action::ForceSend);
+    assert!(app.session.in_flight.is_empty());
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("wrap's value holds {{host}}, and postui doesn't fill in variables inside a value")
+    );
+}
+
 #[test]
 fn toggle_body_vars_flips_flag_and_shows_badge() {
     use ratatui::Terminal;

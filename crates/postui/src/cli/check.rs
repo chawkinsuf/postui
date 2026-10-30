@@ -2,7 +2,8 @@
 //! request's variables resolved against one environment (spec 2026-10-28
 //! §4). It is what an agent runs after editing the TOML by hand, so each
 //! finding names its file. Errors are what is wrong in the files: one that
-//! won't parse or validate, an invalid name, a `{{name}}` nothing declares.
+//! won't parse or validate, an invalid name, a `{{name}}` nothing declares,
+//! a URL using a value that holds a `{{token}}` (spec 2026-10-30 D1).
 //! Everything else is a warning, a missing selection or secret among them
 //! (both live in `.postui/`, which a fresh clone doesn't have).
 
@@ -10,7 +11,7 @@ use super::mask::MASK_MIN_CHARS;
 use super::out::{count, fields, rel, table};
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
-use postui_core::prepare::{self, PrepareError, UnresolvedCause};
+use postui_core::prepare::{self, PrepareError, PrepareWarning, UnresolvedCause};
 use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
 use serde::Serialize;
@@ -152,8 +153,23 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 continue;
             }
         };
-        let Err(PrepareError::Unresolved(causes)) = prepare::prepare(&req, &ctx) else {
-            continue;
+        let causes = match prepare::prepare(&req, &ctx) {
+            // Of the warnings only a value holding a token is the file's to
+            // fix (D2); the duplicate default would repeat on every request.
+            Ok((_, sent_warnings)) => {
+                for w in sent_warnings {
+                    if matches!(w, PrepareWarning::ValueHoldsVariable { .. }) {
+                        warnings.push(Finding::at(file.clone(), w.to_string()));
+                    }
+                }
+                continue;
+            }
+            // The URL would go out with a value's braces in it (D1).
+            Err(e @ PrepareError::ValueHoldsVariable { .. }) => {
+                errors.push(Finding::at(file, e.to_string()));
+                continue;
+            }
+            Err(PrepareError::Unresolved(causes)) => causes,
         };
         let (undeclared, rest): (BTreeMap<_, _>, BTreeMap<_, _>) =
             causes.into_iter().partition(|(name, cause)| {

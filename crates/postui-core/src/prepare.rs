@@ -51,8 +51,28 @@ impl SentHeader {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrepareWarning {
-    ParamOverridesUrl { key: String },
-    DuplicateDefaultHeader { name: String },
+    ParamOverridesUrl {
+        key: String,
+    },
+    DuplicateDefaultHeader {
+        name: String,
+    },
+    /// `var`'s value holds `{{token}}`, which goes out as written in a sent
+    /// header or a substituted body: a value isn't a template (spec
+    /// 2026-10-30 D2).
+    ValueHoldsVariable {
+        var: String,
+        token: String,
+        place: ValuePlace,
+    },
+}
+
+/// Where a sent value holding a `{{token}}` goes out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValuePlace {
+    /// A sent header, by its name as sent.
+    Header(String),
+    Body,
 }
 
 impl fmt::Display for PrepareWarning {
@@ -63,6 +83,13 @@ impl fmt::Display for PrepareWarning {
             }
             PrepareWarning::DuplicateDefaultHeader { name } => {
                 write!(f, "duplicate default header '{}'", name)
+            }
+            PrepareWarning::ValueHoldsVariable { var, token, place } => {
+                match place {
+                    ValuePlace::Header(name) => write!(f, "the {name} header")?,
+                    ValuePlace::Body => f.write_str("the body")?,
+                }
+                write!(f, ": {var}'s value holds {{{{{token}}}}}, which is sent as written")
             }
         }
     }
@@ -96,6 +123,14 @@ pub enum UnresolvedCause {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrepareError {
     Unresolved(BTreeMap<String, UnresolvedCause>),
+    /// The URL or a query parameter uses `var`, whose value holds
+    /// `{{token}}`: a value isn't a template, so the URL would go out with
+    /// the braces in it (spec 2026-10-30 D1). Reported only once every name
+    /// resolves.
+    ValueHoldsVariable {
+        var: String,
+        token: String,
+    },
 }
 
 impl fmt::Display for PrepareError {
@@ -124,8 +159,22 @@ impl fmt::Display for PrepareError {
                 }
                 write!(f, "{}", groups.join(" · "))
             }
+            PrepareError::ValueHoldsVariable { var, token } => write!(
+                f,
+                "{var}'s value holds {{{{{token}}}}}, and postui doesn't fill in variables inside a value"
+            ),
         }
     }
+}
+
+/// The first `{{name}}` of `text` whose value holds a `{{token}}` of its
+/// own, as `(name, token)`. A value is sent as it is, so such a token would
+/// go out with its braces.
+fn value_holding_token(text: &str, vars: &IndexMap<String, String>) -> Option<(String, String)> {
+    crate::vars::find_tokens(text).into_iter().find_map(|t| {
+        let inner = crate::vars::find_tokens(vars.get(&t.name)?).into_iter().next()?;
+        Some((t.name, inner.name))
+    })
 }
 
 impl std::error::Error for PrepareError {}
@@ -274,6 +323,13 @@ pub fn prepare(
     // weighed in review and declined).
     let body_len = body.as_ref().map(String::len);
     let rows = rows(req, ctx, &vars, &secret_names, body_len, &mut warnings);
+    if let Some(Body::Json { text }) = &req.body
+        && body.is_some()
+        && req.substitute_body
+        && let Some((var, token)) = value_holding_token(text, &vars)
+    {
+        warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place: ValuePlace::Body });
+    }
     let wire = wire_order(&rows);
     let headers: Vec<SentHeader> = rows
         .into_iter()
@@ -297,6 +353,14 @@ pub fn prepare(
             })
             .collect();
         return Err(PrepareError::Unresolved(causes));
+    }
+    // The URL is the one place a value's braces can't go out as written: a
+    // header's or a body's might be meant (D2 warns about those instead).
+    let params = req.params.iter().filter(|(_, e)| e.enabled);
+    let url_parts = std::iter::once(req.url.as_str())
+        .chain(params.flat_map(|(k, e)| [k.as_str(), e.value.as_str()]));
+    if let Some((var, token)) = url_parts.into_iter().find_map(|t| value_holding_token(t, &vars)) {
+        return Err(PrepareError::ValueHoldsVariable { var, token });
     }
 
     Ok((
@@ -561,6 +625,15 @@ fn rows(
     let client_row = |name: &str, value: String, display: String, unsent: Option<Unsent>| {
         fixed_row(name, value, display, HeaderOrigin::Client, unsent, None)
     };
+    // A sent row written as `name`/`value` whose value holds a token goes
+    // out with its braces (D2).
+    let warn_sent = |r: &HeaderRow, name: &str, value: &str, warnings: &mut Vec<PrepareWarning>| {
+        let held = value_holding_token(name, vars).or_else(|| value_holding_token(value, vars));
+        if let Some((var, token)) = held.filter(|_| r.sent()) {
+            let place = ValuePlace::Header(r.header.name.clone());
+            warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place });
+        }
+    };
 
     let mut rows = Vec::new();
 
@@ -582,10 +655,13 @@ fn rows(
             warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
             r.unsent = Some(Unsent::Duplicate);
         }
+        warn_sent(&r, k, &e.value, warnings);
         rows.push(r);
     }
     for (i, (k, e)) in req.headers.iter().enumerate().filter(|(_, (_, e))| e.enabled) {
-        rows.push(row(k, &e.value, HeaderOrigin::Request { row: i }));
+        let r = row(k, &e.value, HeaderOrigin::Request { row: i });
+        warn_sent(&r, k, &e.value, warnings);
+        rows.push(r);
     }
 
     // An auto or client row stands aside for a sent row naming it. A
@@ -884,15 +960,14 @@ mod tests {
         let mut r = base("http://x.test/{{gone}}");
         r.method = Method::Post;
         r.body = Some(Body::Json { text: "{{also_gone}}".into() });
-        let err = prepare(&r, &PrepareContext::default()).unwrap_err();
-        let PrepareError::Unresolved(causes) = err;
+        let causes = unresolved(prepare(&r, &PrepareContext::default()));
         assert_eq!(
             causes.into_keys().collect::<Vec<_>>(),
             vec!["gone".to_string()],
             "body ignored while flag off"
         );
         r.substitute_body = true;
-        let PrepareError::Unresolved(causes) = prepare(&r, &PrepareContext::default()).unwrap_err();
+        let causes = unresolved(prepare(&r, &PrepareContext::default()));
         assert_eq!(causes.len(), 2);
     }
 
@@ -1020,8 +1095,7 @@ mod tests {
     fn disabled_request_variable_does_not_resolve() {
         let mut r = base("http://x.test/{{name}}");
         r.variables.insert("name".into(), off("request-scoped"));
-        let err = prepare(&r, &PrepareContext::default()).unwrap_err();
-        let PrepareError::Unresolved(causes) = err;
+        let causes = unresolved(prepare(&r, &PrepareContext::default()));
         assert_eq!(causes.get("name"), Some(&UnresolvedCause::Undefined));
     }
 
@@ -1031,7 +1105,7 @@ mod tests {
         let mut c = PrepareContext::default();
         c.meta.insert("user".into(), varmodel::VarMeta::NeedsSelection);
         c.meta.insert("api_key".into(), varmodel::VarMeta::MissingSecret);
-        let PrepareError::Unresolved(causes) = prepare(&r, &c).unwrap_err();
+        let causes = unresolved(prepare(&r, &c));
         assert_eq!(causes.get("gone"), Some(&UnresolvedCause::Undefined));
         assert_eq!(causes.get("user"), Some(&UnresolvedCause::NeedsSelection));
         assert_eq!(causes.get("api_key"), Some(&UnresolvedCause::MissingSecret));
@@ -1057,6 +1131,108 @@ mod tests {
         causes.insert("only".to_string(), UnresolvedCause::NeedsSelection);
         let err = PrepareError::Unresolved(causes);
         assert_eq!(err.to_string(), "need a selection: only");
+    }
+
+    /// The causes of an `Unresolved` refusal; any other outcome fails the
+    /// test.
+    fn unresolved(
+        outcome: Result<(PreparedRequest, Vec<PrepareWarning>), PrepareError>,
+    ) -> BTreeMap<String, UnresolvedCause> {
+        match outcome {
+            Err(PrepareError::Unresolved(causes)) => causes,
+            other => panic!("expected an unresolved refusal, got {other:?}"),
+        }
+    }
+
+    fn holds(var: &str, token: &str) -> PrepareError {
+        PrepareError::ValueHoldsVariable { var: var.into(), token: token.into() }
+    }
+
+    /// D1 (spec 2026-10-30): a value isn't a template, so a URL token whose
+    /// value holds a `{{token}}` would go out with its braces; the send is
+    /// refused instead, naming both.
+    #[test]
+    fn a_url_token_whose_value_holds_a_token_refuses_the_send() {
+        let r = base("{{base}}/api");
+        let c = ctx(&[("base", "https://{{host}}"), ("host", "x.test")], &[]);
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("base", "host"));
+        assert_eq!(
+            holds("base", "host").to_string(),
+            "base's value holds {{host}}, and postui doesn't fill in variables inside a value"
+        );
+    }
+
+    /// D1: the query parameters are part of the URL, key and value alike;
+    /// a disabled one isn't sent, so it doesn't count.
+    #[test]
+    fn a_query_parameter_whose_value_holds_a_token_refuses_the_send() {
+        let c = ctx(&[("k", "{{a}}"), ("v", "x{{b}}")], &[]);
+        let mut r = base("http://x.test");
+        r.params.insert("{{k}}".into(), on("1"));
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("k", "a"));
+        let mut r = base("http://x.test");
+        r.params.insert("id".into(), on("{{v}}"));
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("v", "b"));
+        let mut r = base("http://x.test");
+        r.params.insert("id".into(), off("{{v}}"));
+        assert!(prepare(&r, &c).is_ok(), "a disabled parameter isn't sent");
+    }
+
+    /// D1: a name with no value at all is still what the refusal names.
+    #[test]
+    fn an_unresolved_name_is_reported_before_a_value_holding_a_token() {
+        let r = base("{{base}}/{{gone}}");
+        let c = ctx(&[("base", "https://{{host}}")], &[]);
+        assert!(unresolved(prepare(&r, &c)).contains_key("gone"));
+    }
+
+    /// D2: a sent header, a sent default and a substituted body go out as
+    /// written, each with a warning naming where.
+    #[test]
+    fn a_header_or_body_value_holding_a_token_is_sent_with_a_warning() {
+        let c = ctx(
+            &[("tok", "{{x}}"), ("trace", "{{y}}"), ("doc", "{{z}}")],
+            &[("X-Trace", "{{trace}}", true)],
+        );
+        let mut r = base("http://x.test");
+        r.method = Method::Post;
+        r.headers.insert("Authorization".into(), on("Bearer {{tok}}"));
+        r.body = Some(Body::Json { text: "{{doc}}".into() });
+        r.substitute_body = true;
+        let (p, warnings) = prepare(&r, &c).unwrap();
+        assert!(wire(&p).contains(&("Authorization".into(), "Bearer {{x}}".into())));
+        let warning = |var: &str, token: &str, place: ValuePlace| {
+            PrepareWarning::ValueHoldsVariable { var: var.into(), token: token.into(), place }
+        };
+        assert_eq!(
+            warnings,
+            vec![
+                warning("trace", "y", ValuePlace::Header("X-Trace".into())),
+                warning("tok", "x", ValuePlace::Header("Authorization".into())),
+                warning("doc", "z", ValuePlace::Body),
+            ]
+        );
+        assert_eq!(
+            warnings[1].to_string(),
+            "the Authorization header: tok's value holds {{x}}, which is sent as written"
+        );
+        assert_eq!(
+            warnings[2].to_string(),
+            "the body: doc's value holds {{z}}, which is sent as written"
+        );
+    }
+
+    /// D2: what isn't sent can't be sent as written: a default the request
+    /// replaces, and a body sent without substitution.
+    #[test]
+    fn an_unsent_header_or_unsubstituted_body_does_not_warn() {
+        let c = ctx(&[("trace", "{{y}}"), ("doc", "{{z}}")], &[("X-Trace", "{{trace}}", true)]);
+        let mut r = base("http://x.test");
+        r.method = Method::Post;
+        r.headers.insert("x-trace".into(), on("mine"));
+        r.body = Some(Body::Json { text: "{{doc}}".into() });
+        let (_, warnings) = prepare(&r, &c).unwrap();
+        assert_eq!(warnings, vec![]);
     }
 
     fn base(url: &str) -> HttpRequest {
@@ -1468,7 +1644,7 @@ mod tests {
         prepare(&req, &c).expect("neither unsent row has to resolve");
 
         let c = ctx(&[], &[("X-Sent", "{{gone}}", true)]);
-        let PrepareError::Unresolved(causes) = prepare(&req, &c).unwrap_err();
+        let causes = unresolved(prepare(&req, &c));
         assert_eq!(causes.into_keys().collect::<Vec<_>>(), ["gone"]);
     }
 

@@ -836,6 +836,48 @@ fn check_disabled_request_variable_is_not_declared_wording() {
     );
 }
 
+/// Spec 2026-10-30 D1, D2: a value holding a `{{token}}` is an error where
+/// the URL uses it (the send is refused) and a warning where a sent header
+/// does (it goes out as written).
+#[test]
+fn check_reports_a_value_holding_a_token() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let x = root.join("requests/admin/x.toml");
+    std::fs::write(
+        &x,
+        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{wrap}}/x\"\n\n\
+         [variables]\nwrap = \"https://{{base}}\"\n",
+    )
+    .unwrap();
+    let list = root.join("requests/main/list.toml");
+    std::fs::write(
+        &list,
+        "name = \"List\"\nmethod = \"POST\"\nurl = \"{{base}}/list\"\n\n\
+         [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n",
+    )
+    .unwrap();
+
+    let out = home.run_json(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    assert_eq!(
+        findings(&v, "errors"),
+        [(
+            s(&x).to_string(),
+            "wrap's value holds {{base}}, and postui doesn't fill in variables inside a value"
+                .to_string()
+        )]
+    );
+    assert_eq!(
+        findings(&v, "warnings"),
+        [(
+            s(&list).to_string(),
+            "the X-Tag header: tag's value holds {{region}}, which is sent as written".to_string()
+        )]
+    );
+}
+
 /// Spec §4: an invalid name in `project.toml` is an error on that file,
 /// not also the open's warning.
 #[test]
