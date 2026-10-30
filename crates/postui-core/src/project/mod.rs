@@ -14,7 +14,7 @@ mod spaces;
 mod undo;
 mod varedit_ops;
 mod variables;
-pub use edit_flag::{EditFlag, FlagHold, ProjectLock, ago, rfc3339};
+pub use edit_flag::{EditFlag, FlagHold, Lowered, ProjectLock, ago, rfc3339};
 pub use meta::*;
 pub use requests::{HeldDrift, ListingWarning};
 pub use undo::Undone;

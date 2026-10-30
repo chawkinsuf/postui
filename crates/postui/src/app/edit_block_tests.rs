@@ -286,19 +286,24 @@ fn the_project_cycle_goes_on_from_the_screen() {
     assert_eq!(root(&app), here);
 }
 
-/// A project made in place takes its lock (before writing `project.toml`,
-/// where an agent's `edit begin` could first find it); one another window
-/// holds is made all the same, saying it isn't locked.
+/// A directory opened without a `project.toml` is locked from its open, so
+/// it is held the moment one is written, here or from outside; the project
+/// made in place keeps that lock. One the open couldn't lock is made all
+/// the same, saying so.
 #[test]
-fn a_project_made_in_place_takes_its_lock() {
+fn a_bare_directory_is_locked_from_its_open() {
     let mut app = App::new_for_test();
     let here = root(&app);
+    assert!(!Project::is_project(&here));
+    assert!(Project::tui_open(&here).unwrap());
     app.update(Action::InitProjectHere);
     assert!(Project::is_project(&here));
     assert!(Project::tui_open(&here).unwrap());
+    assert!(!app.toasts.messages().iter().any(|m| m.contains("could not lock")));
 
     let mut app = App::new_for_test();
     let here = root(&app);
+    app.project_lock = None;
     let held = ProjectLock::take(&here).unwrap().expect("free");
     app.update(Action::InitProjectHere);
     assert!(Project::is_project(&here));

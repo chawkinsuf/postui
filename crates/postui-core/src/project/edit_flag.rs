@@ -223,6 +223,26 @@ impl Project {
         Ok(was_up)
     }
 
+    /// Takes the flag down only if it is still `expected`, the one the
+    /// caller saw (`None`: one whose file couldn't be read), looking and
+    /// taking down under [`Self::hold_edit_flag`]: `edit end`'s and the
+    /// TUI's Override's one rule.
+    pub fn lower_edit_flag_if(root: &Path, expected: Option<&EditFlag>) -> Result<Lowered, Error> {
+        let Some(_hold) = Self::hold_edit_flag(root)? else {
+            return Ok(Lowered::Busy);
+        };
+        let now = match Self::read_edit_flag(root) {
+            Ok(None) => return Ok(Lowered::Gone),
+            Ok(Some(flag)) => Some(flag),
+            Err(_) => None,
+        };
+        if now.as_ref() != expected {
+            return Ok(Lowered::Changed(now));
+        }
+        Self::lower_edit_flag(root)?;
+        Ok(Lowered::Lowered)
+    }
+
     /// Whether a TUI has the project at `root` open: a shared try of its
     /// lock, released when the try's file closes. Shared, so two commands
     /// asking at once don't keep each other out; only a TUI's exclusive
@@ -271,6 +291,20 @@ pub struct FlagHold {
     _lock: Lock,
 }
 
+/// What [`Project::lower_edit_flag_if`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lowered {
+    /// The flag expected came down.
+    Lowered,
+    /// No flag was up: someone took it down first.
+    Gone,
+    /// Another flag is up now, left as it is: the one found (`None`: one
+    /// whose file can't be read).
+    Changed(Option<EditFlag>),
+    /// Another command was changing the flag; nothing was done.
+    Busy,
+}
+
 /// A TUI's hold on the project it has open (see the module doc): an
 /// exclusive lock on `tui.lock`, released when it is dropped or the process
 /// ends.
@@ -280,12 +314,17 @@ pub struct ProjectLock {
 
 impl ProjectLock {
     /// Takes `root`'s lock, making the file (and the local folder) when
-    /// missing: `Ok(None)` when another TUI holds it. Never waits, but a
-    /// try that fails is tried again (`try_exclusive`), since a command
-    /// asking [`Project::tui_open`] holds a shared lock for an instant.
+    /// missing: `Ok(None)` when another TUI holds it. Never waits. Another
+    /// TUI's hold is exclusive and lasts, so a shared try that fails is the
+    /// answer at once; one that gets in has only commands asking
+    /// [`Project::tui_open`] beside it, each for an instant, which the
+    /// exclusive tries then wait out (`try_exclusive`).
     pub fn take(root: &Path) -> Result<Option<ProjectLock>, Error> {
         let mut disk = Project::disk_for(root.to_path_buf());
         let lock = disk.open_lock(&rel(TUI_LOCK)?)?;
+        if !lock.try_lock_shared()? {
+            return Ok(None);
+        }
         Ok(try_exclusive(&lock)?.then_some(ProjectLock { _lock: lock }))
     }
 }

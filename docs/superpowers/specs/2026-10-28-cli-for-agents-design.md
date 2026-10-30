@@ -287,7 +287,14 @@ where they disagree, this paragraph wins.
   lowers it only while it still can't be read), a switch to the open
   project by another spelling of its path is no switch, and the card is
   sized for the widest age with the hint's row always kept, so nothing
-  moves as the flag ages.
+  moves as the flag ages. After its round 5 (mine): every directory the
+  TUI opens is locked, a project or not, so one opened without a
+  `project.toml` is held the moment one is written (the cost: a sealed
+  `.postui/` in a directory opened and then left as it was); the TUI's
+  take tries a shared lock first, so another window's hold refuses at
+  once rather than after the retries, which now only wait out commands
+  asking; and `edit end` and Override share one look-and-lower rule
+  (`Project::lower_edit_flag_if`).
 - Gone with the first design: `unsaved.lock`, the gate before every
   event, the write hold, the edit mark, the dropped event and the key
   grace. Your rulings that only applied to it (an AI request in flight

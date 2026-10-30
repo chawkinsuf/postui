@@ -10,7 +10,7 @@
 //! behind by an agent that stopped) and Quit are the ways out.
 
 use super::*;
-use postui_core::project::{EditFlag, ProjectLock};
+use postui_core::project::{EditFlag, Lowered, ProjectLock};
 use std::path::Path;
 
 /// How often the waiting screen looks at the flag: a stat a second.
@@ -72,10 +72,10 @@ impl EditBlockButton {
 
 /// What an open may do with a project, as [`App::lock_for_open`] finds it.
 pub(super) enum Opening {
-    /// Open it. `lock` is `None` for a directory with no `project.toml`
-    /// (the create-project prompt's, which takes it once it writes one), or
-    /// when the lock couldn't be taken: `warning` then says so, since an
-    /// agent's `edit begin` can't see this window.
+    /// Open it. `lock` is `None` for a root that isn't a directory yet
+    /// (the open says what is wrong, or a create makes it and locks it
+    /// then), or when the lock couldn't be taken: `warning` then says so,
+    /// since an agent's `edit begin` can't see this window.
     Open { lock: Option<ProjectLock>, warning: Option<String> },
     /// Another window has it open.
     InUse,
@@ -96,8 +96,14 @@ impl App {
     /// doc of `postui_core::project::edit_flag` explains): either the
     /// agent's `edit begin` sees the lock and takes its flag back down, or
     /// this sees the flag and opens nothing, letting the lock go.
+    ///
+    /// Every directory the app opens is locked, a project or not: one
+    /// opened without a `project.toml` becomes a project the moment
+    /// something writes one, from the app or outside it, and is held from
+    /// the start. The cost is a `.postui/` (sealed out of git) in a
+    /// directory the app opened and then left without making it a project.
     pub(super) fn lock_for_open(root: &Path) -> Opening {
-        let taken = Project::is_project(root).then(|| ProjectLock::take(root));
+        let taken = root.is_dir().then(|| ProjectLock::take(root));
         if matches!(taken, Some(Ok(None))) {
             return Opening::InUse;
         }
@@ -112,12 +118,14 @@ impl App {
     }
 
     /// Takes `root`'s lock for a project about to be made in place (the
-    /// create-project answers), where no open took it first: before its
-    /// `project.toml` is written, since an agent's `edit begin` needs one
-    /// to find the project. The make goes ahead whatever the take finds,
-    /// and a lock it can't have is said.
+    /// create-project answers), unless the open of the directory took it
+    /// already: before its `project.toml` is written, since an agent's
+    /// `edit begin` needs one to find the project. The make goes ahead
+    /// whatever the take finds, and a lock it can't have is said.
     pub(super) fn take_project_lock(&mut self, root: &Path) {
-        self.project_lock = None;
+        if self.project_lock.is_some() {
+            return;
+        }
         match ProjectLock::take(root) {
             Ok(Some(lock)) => self.project_lock = Some(lock),
             Ok(None) => self
@@ -191,43 +199,28 @@ impl App {
         let Some(root) = self.edit_block.as_ref().map(|b| b.root.clone()) else {
             return false;
         };
-        // The look and the take-down as one change of the flag, as `edit
-        // end`'s are.
-        let hold = match Project::hold_edit_flag(&root) {
-            Ok(Some(hold)) => hold,
-            Ok(None) => {
+        // `edit end`'s rule: an unreadable flag is `None`, as the screen
+        // holds one, so a question about a readable flag doesn't lower one
+        // gone unreadable.
+        match Project::lower_edit_flag_if(&root, asked.as_ref()) {
+            Ok(Lowered::Lowered | Lowered::Gone) => self.apply(Action::ForceSwitchProject(root)),
+            Ok(Lowered::Changed(now)) => {
+                if let Some(block) = self.edit_block.as_mut() {
+                    block.flag = now;
+                }
+                self.toasts.push("Another edit began; it is the one showing now", ToastKind::Info);
+                true
+            }
+            Ok(Lowered::Busy) => {
                 self.toasts
                     .push("An agent's command is changing the flag; try again", ToastKind::Info);
-                return true;
+                true
             }
             Err(e) => {
                 self.toasts.push(format!("could not remove the edit flag: {e}"), ToastKind::Error);
-                return true;
+                true
             }
-        };
-        // An unreadable flag is `None`, as the screen holds one: a question
-        // asked about a readable flag doesn't lower one gone unreadable.
-        let now = match Project::read_edit_flag(&root) {
-            Ok(None) => {
-                drop(hold);
-                return self.apply(Action::ForceSwitchProject(root));
-            }
-            Ok(Some(flag)) => Some(flag),
-            Err(_) => None,
-        };
-        if now != asked {
-            if let Some(block) = self.edit_block.as_mut() {
-                block.flag = now;
-            }
-            self.toasts.push("Another edit began; it is the one showing now", ToastKind::Info);
-            return true;
         }
-        if let Err(e) = Project::lower_edit_flag(&root) {
-            self.toasts.push(format!("could not remove the edit flag: {e}"), ToastKind::Error);
-            return true;
-        }
-        drop(hold);
-        self.apply(Action::ForceSwitchProject(root))
     }
 
     /// The Override button's question.

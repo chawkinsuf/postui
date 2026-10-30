@@ -98,8 +98,8 @@ pub fn draw(
     let text_w = text_w.min(usize::from(screen.width)) as u16;
     // Two cells of ring and padding each side.
     let width = text_w.max(buttons).max(crate::ui::cells(title) as u16).saturating_add(6);
-    // Title, blank, the body, blank, the buttons, and a row of padding
-    // above and below inside the ring.
+    // The ring's top, the title, a blank, the body, a blank, the buttons,
+    // and the ring's bottom.
     let height = body.len() as u16 + 6;
     let card = crate::components::modal::centered_rect(screen, width, height);
     paint::panel::floating_panel(buf, card, screen, theme);

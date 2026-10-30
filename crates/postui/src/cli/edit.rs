@@ -13,7 +13,7 @@
 use super::check::{self, CheckReport, reason};
 use super::out::{fields, rel};
 use super::{CliError, Global, target};
-use postui_core::project::{self, EDITING_TOML, EditFlag, Project};
+use postui_core::project::{self, EDITING_TOML, EditFlag, Lowered, Project};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -121,12 +121,17 @@ pub fn begin(g: &Global, note: Option<&str>, force: bool) -> Result<BeginReport,
 fn hold_flag(root: &Path) -> Result<project::FlagHold, CliError> {
     match Project::hold_edit_flag(root) {
         Ok(Some(hold)) => Ok(hold),
-        Ok(None) => Err(CliError::refusal(
-            "another postui edit command is changing the flag; retry",
-            root.join(project::EDITING_LOCK),
-        )),
+        Ok(None) => Err(busy(root)),
         Err(e) => Err(CliError::at(reason(e), root.join(project::EDITING_LOCK))),
     }
+}
+
+/// Another command holding the flag still.
+fn busy(root: &Path) -> CliError {
+    CliError::refusal(
+        "another postui edit command is changing the flag; retry",
+        root.join(project::EDITING_LOCK),
+    )
 }
 
 /// `edit begin` with a TUI that has the project open.
@@ -157,38 +162,32 @@ pub fn end(g: &Global, force: bool) -> Result<EndReport, CliError> {
     let check = check::check_root(root.clone(), None)?;
     let flag_removed = check.status() == ExitCode::SUCCESS || force;
     if flag_removed {
-        // The look and the take-down as one change of the flag.
-        let _hold = hold_flag(&root)?;
-        // Taken down while `check` ran (an override), or taken over by
-        // another `edit begin --force`, whose flag is left up. An
-        // unreadable flag it found is lowered only while it still is one.
-        let now = Project::read_edit_flag(&root);
-        let still_ours = match (&ours, &now) {
-            (Some(ours), Ok(Some(now))) => now == ours,
-            (None, Err(_)) => true,
-            _ => false,
-        };
-        if !still_ours {
-            return Err(match now {
-                Ok(None) => overridden(file),
-                Ok(Some(_)) => CliError::refusal(
-                    "another edit took this one over (edit begin --force) while check ran; its \
-                     flag is left up",
+        // Taken down while `check` ran (an override), or replaced since
+        // (an override and another `edit begin`, or `edit begin --force`),
+        // whose flag is left up. An unreadable flag it found is lowered
+        // only while it still is one.
+        let lowered = Project::lower_edit_flag_if(&root, ours.as_ref())
+            .map_err(|e| CliError::at(reason(e), file.clone()))?;
+        match lowered {
+            Lowered::Lowered => {}
+            Lowered::Gone => return Err(overridden(file)),
+            Lowered::Changed(Some(_)) => {
+                return Err(CliError::refusal(
+                    "another edit's flag is up now (the user overrode yours and another edit \
+                     began, or edit begin --force took it over); it is left up, and your edit \
+                     may have met theirs",
                     file,
-                ),
-                // Readable when this began: rewritten since, by whom it
-                // can't say, so it is left up and its error is the answer.
-                Err(e) => CliError::refusal(
-                    format!(
-                        "the flag changed while check ran and can't be read now ({}); it is \
-                         left up: postui edit status shows it, --force removes it",
-                        reason(e)
-                    ),
+                ));
+            }
+            Lowered::Changed(None) => {
+                return Err(CliError::refusal(
+                    "the flag changed while check ran and can't be read now; it is left up: \
+                     postui edit status shows it, --force removes it",
                     file,
-                ),
-            });
+                ));
+            }
+            Lowered::Busy => return Err(busy(&root)),
         }
-        Project::lower_edit_flag(&root).map_err(|e| CliError::at(reason(e), file.clone()))?;
     }
     Ok(EndReport { root, check, flag_removed })
 }
