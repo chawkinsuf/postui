@@ -155,6 +155,13 @@ fn a_named_command_that_loses_something_sent_prompts() {
 }
 
 #[test]
+fn a_paste_with_another_shell_line_prompts() {
+    let mut app = app_with_clip("alias curl='curl -x http://p:3128'\n# @name A\ncurl https://x/a");
+    import(&mut app);
+    assert_eq!(prompt(&app).1, "A");
+}
+
+#[test]
 fn a_named_command_with_a_variable_issue_prompts() {
     for clip in [
         // A secret with no value.

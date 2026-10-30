@@ -14,9 +14,6 @@ pub(crate) struct ShellCommand {
     /// A pipeline tail or redirect after the command's own words
     /// (`| jq .`, `> out.json`), its words joined by spaces.
     pub tail: Option<String>,
-    /// The tail holds words bash still passes to the command: after a
-    /// redirect's target and before any `|` (`> out.json -H 'A: b'`).
-    pub tail_args: bool,
     /// Shell variables converted to `{{NAME}}`, first-seen order, no repeats.
     pub converted: Vec<String>,
     /// `$(…)` and backtick substitutions, kept as literal text.
@@ -67,8 +64,6 @@ pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
         expanded: false,
         in_tail: false,
         tail_words: Vec::new(),
-        redirect_target: false,
-        piped: false,
         line_start: true,
         after_and_or: false,
         line_blank: true,
@@ -122,10 +117,6 @@ struct Splitter<'a> {
     /// Past a `|` or a redirect: words go to the tail.
     in_tail: bool,
     tail_words: Vec<String>,
-    /// The next tail word is a redirect's target (`> out.json`).
-    redirect_target: bool,
-    /// A `|` began the tail: its words are another command's.
-    piped: bool,
     /// The command being read began its line.
     line_start: bool,
     /// The last command was ended by `&&` or `||`.
@@ -175,7 +166,6 @@ impl Splitter<'_> {
                         self.after_and_or = true;
                     } else {
                         self.end_word();
-                        self.piped = true;
                         self.start_tail("|".to_string());
                     }
                 }
@@ -271,9 +261,6 @@ impl Splitter<'_> {
         let mut mark = std::mem::take(&mut self.mark);
         mark.literal = !std::mem::take(&mut self.expanded);
         if self.in_tail {
-            if !std::mem::take(&mut self.redirect_target) && !self.piped {
-                self.current.tail_args = true;
-            }
             self.tail_words.push(w);
         } else {
             self.current.words.push(w);
@@ -295,8 +282,6 @@ impl Splitter<'_> {
             self.current.tail = Some(self.tail_words.join(" "));
             self.tail_words.clear();
             self.in_tail = false;
-            self.redirect_target = false;
-            self.piped = false;
         }
         let mut cmd = std::mem::take(&mut self.current);
         cmd.alone = self.line_start && ends_line && cmd.tail.is_none();
@@ -338,8 +323,6 @@ impl Splitter<'_> {
                 break;
             }
         }
-        // `2>&1`, `>&-` name their target in the operator.
-        self.redirect_target = op.rsplit_once('&').is_none_or(|(_, fd)| fd.is_empty());
         self.start_tail(op);
     }
 

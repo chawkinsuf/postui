@@ -16,10 +16,10 @@ pub struct CurlImport {
     /// URLs a later one replaced, `$(…) kept as text` notes, then a
     /// pipeline tail or redirect (`| jq .`).
     pub ignored: Vec<String>,
-    /// Whether something in `ignored` changed what curl sent: anything but
-    /// a `QUIET_FLAGS` flag, the pipeline tail or redirect, and the
-    /// leading assignments (import-without-prompt spec S3). An import
-    /// with a `# @name` and nothing sent lost needs no prompt.
+    /// Whether `ignored` holds anything but `QUIET_FLAGS` flags and a
+    /// `| …` pipeline tail (import-without-prompt spec S3): only those are
+    /// known to leave what curl sent alone. An import with a `# @name`
+    /// and nothing else ignored needs no prompt.
     pub ignores_sent: bool,
     /// Shell variables converted to `{{NAME}}`, first-seen order.
     pub converted: Vec<String>,
@@ -115,9 +115,6 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
     let mut env: IndexMap<String, Option<String>> = IndexMap::new();
     // A `# @name` names the next curl command, past any other lines.
     let mut name = None;
-    // An assignment line before has set curl's own environment
-    // (`export https_proxy=…`): every curl command after it loses that.
-    let mut env_lost = false;
     for (i, mut cmd) in commands.into_iter().enumerate() {
         name = cmd.name.take().or(name);
         // `TOKEN=abc curl …` (or `TOKEN+=abc`): bash expands curl's words
@@ -125,14 +122,11 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         // outlive the command, so they change nothing here.
         let lead = cmd.marks.iter().take_while(|m| m.assignment).count();
         if !cmd.words.get(lead).is_some_and(|w| is_curl(w)) {
-            if assign(&cmd, &mut env) {
-                env_lost |= sets_curl_env(&cmd.words);
-            } else {
+            if !assign(&cmd, &mut env) {
                 batch.skipped_lines += 1;
             }
             continue;
         }
-        let sets_env = env_lost || sets_curl_env(&cmd.words[..lead]);
         let leading: Vec<String> = cmd
             .words
             .drain(..lead)
@@ -141,7 +135,8 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         cmd.marks.drain(..lead);
         let mut import = parse_command(cmd)
             .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
-        import.ignores_sent |= sets_env;
+        // They set curl's environment, which may be a proxy or a CA.
+        import.ignores_sent |= !leading.is_empty();
         import.named = name.take();
         import.ignored.splice(0..0, leading);
         import.variables =
@@ -183,36 +178,6 @@ fn assign(cmd: &ShellCommand, env: &mut IndexMap<String, Option<String>>) -> boo
         env.insert(name.to_string(), literal.then(|| value.to_string()));
     }
     true
-}
-
-/// Whether any of `words`' assignments (`NAME=…`, `NAME+=…`) sets a
-/// [`curl_env`] variable.
-fn sets_curl_env(words: &[String]) -> bool {
-    words
-        .iter()
-        .filter_map(|w| w.split_once('='))
-        .any(|(n, _)| curl_env(n.strip_suffix('+').unwrap_or(n)))
-}
-
-/// An environment variable curl reads that changes where or how the
-/// request goes: a proxy (`http_proxy`, `HTTPS_PROXY`, `NO_PROXY`, … in
-/// either case), the CA bundle, or where its `.curlrc` (which can add any
-/// flag) is read from. Set by an assignment leading the command or by an
-/// assignment line before it (`export https_proxy=…`; a plain one too,
-/// since it changes a variable the shell already exports), the request
-/// loses it (import-without-prompt spec S3; review rounds 1–2, mine
-/// (approved)). Any other assignment loses nothing curl sent.
-fn curl_env(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with("_proxy")
-        || matches!(
-            name,
-            "CURL_CA_BUNDLE"
-                | "SSL_CERT_FILE"
-                | "SSL_CERT_DIR"
-                | "CURL_HOME"
-                | "XDG_CONFIG_HOME"
-                | "HOME"
-        )
 }
 
 fn is_curl(word: &str) -> bool {
@@ -494,16 +459,7 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
-    let ShellCommand {
-        words,
-        tail,
-        tail_args,
-        converted,
-        substitutions,
-        marks: _,
-        alone: _,
-        name: _,
-    } = cmd;
+    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _, name: _ } = cmd;
     let mut flags = Flags::default();
     let mut words = words.into_iter().skip(1);
     let mut options_done = false;
@@ -550,10 +506,7 @@ fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
             }
         }
     }
-    let mut import = build(flags, tail, converted, substitutions)?;
-    // Words after a redirect's target are still curl's (`> out.json -H …`).
-    import.ignores_sent |= tail_args;
-    Ok(import)
+    build(flags, tail, converted, substitutions)
 }
 
 fn build(
@@ -700,9 +653,11 @@ fn build(
     ignored.extend(
         substitutions.into_iter().filter(|s| in_request(s)).map(|s| format!("{s} kept as text")),
     );
-    let ignores_sent = ignores_sent || ignored.len() > from_flags;
-    // Where curl's output went: nothing it sent, unless curl's own words
-    // sit in it (`parse_command`'s `tail_args`).
+    // A `| jq .` pipeline is another command's. A redirect is not known
+    // to be harmless: bash still hands curl the words after its target.
+    let ignores_sent = ignores_sent
+        || ignored.len() > from_flags
+        || tail.as_ref().is_some_and(|t| !t.starts_with('|'));
     ignored.extend(tail);
 
     Ok(CurlImport {
@@ -888,9 +843,9 @@ mod tests {
         }
     }
 
-    /// Output and display flags, `-L`, `--compressed`, a pipeline tail or
-    /// redirect and leading assignments are ignored without changing what
-    /// curl sent (import-without-prompt S3).
+    /// Output and display flags, `-L`, `--compressed` and a `| …` pipeline
+    /// are ignored without changing what curl sent (import-without-prompt
+    /// S3).
     #[test]
     fn output_flags_are_ignored_without_changing_what_is_sent() {
         for cmd in [
@@ -902,12 +857,7 @@ mod tests {
             "curl --fail --fail-with-body --progress-bar --no-progress-meter https://x/a",
             "curl --no-buffer --trace t --trace-ascii t --trace-time --stderr e https://x/a",
             "curl https://x/a | jq .",
-            "curl https://x/a > out.json",
-            "curl https://x/a > out.json 2>&1",
-            "curl https://x/a 2>&1 | jq -r .x > out.txt",
-            "curl https://x/a >& out.txt",
-            "TOKEN=abc curl https://x/a",
-            "T+=x curl https://x/a",
+            "curl -s https://x/a | jq -r .x > out.txt",
         ] {
             let c = one(cmd);
             assert!(!c.ignored.is_empty(), "{cmd}: something is listed");
@@ -934,29 +884,15 @@ mod tests {
             "curl -X GET -d x https://x/a",
             "curl -H 'X-Gone:' https://x/a",
             // bash still hands curl the words after a redirect's target.
+            "curl https://x/a > out.json",
             "curl https://x/a > out.json -H 'A: b'",
-            "curl https://x/a 2>&1 -X DELETE",
-            // curl's own environment (review round 1).
+            "curl https://x/a 2>&1 | jq .",
+            // They set curl's environment (a proxy, a CA bundle).
             "HTTPS_PROXY=http://p:3128 curl https://x/a",
-            "no_proxy=x curl https://x/a",
-            "CURL_HOME=/c curl https://x/a",
-            "CURL_CA_BUNDLE=/ca.pem curl https://x/a",
-            // An assignment line before sets it too (review round 2).
-            "export https_proxy=http://p:3128\ncurl https://x/a",
-            "export TOKEN=abc CURL_HOME=/c\ncurl https://x/a",
-            "HTTP_PROXY=http://p\ncurl https://x/a",
+            "TOKEN=abc curl https://x/a",
         ] {
             assert!(one(cmd).ignores_sent, "{cmd}");
         }
-    }
-
-    /// curl's environment set on a line holds for every command after it,
-    /// and for none before.
-    #[test]
-    fn an_environment_line_counts_from_where_it_sits() {
-        let b = parse("curl https://x/a\nexport ALL_PROXY=socks5://p\ncurl https://x/b").unwrap();
-        assert!(!b.commands[0].ignores_sent);
-        assert!(b.commands[1].ignores_sent);
         assert!(!one("export TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/a").ignores_sent);
     }
 

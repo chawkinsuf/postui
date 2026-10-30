@@ -164,13 +164,16 @@ impl App {
 
     /// Creates `run`'s current command as `name` without asking, when it
     /// needs no prompt (spec 2026-10-30 import-without-prompt S1–S3): it
-    /// has a `# @name`, nothing it ignored changed what curl sent, and its
-    /// variables raise nothing. `true` when it was created. An environment
-    /// file that can't be read does not stop the try: the create reports
-    /// it, and the prompt follows (S8).
+    /// has a `# @name`, it ignored nothing but harmless flags and a `| …`
+    /// pipeline, the paste has no other shell lines, and its variables
+    /// raise nothing. `true` when it was created. An environment file that
+    /// can't be read does not stop the try: the create reports it, and the
+    /// prompt follows (S8).
     fn create_unasked(&mut self, run: &mut CurlImportRun, name: &str) -> bool {
         let import = run.current();
-        if import.named.is_none() || import.ignores_sent {
+        // What another shell line did (`alias`, `source`) is unknown, as
+        // for the paste's values (curl spec R7).
+        if import.named.is_none() || import.ignores_sent || run.notes.skipped_lines > 0 {
             return false;
         }
         let vars = self.curl_variables(import, &Default::default());

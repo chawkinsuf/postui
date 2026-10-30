@@ -22,7 +22,7 @@ trigger the modal."
 |---|---|---|
 | S1 | A curl command with a `# @name` line and no issue (S2) is created at once, with no prompt: the same create, undo step, "Saved X" toast and opening as an Enter on its prompt. | you (#147; chat: "if the request has a name in it already, theres no need to use the popup to ask. the user can always just rename it after") |
 | S2 | An issue is any one of: something the import ignored that changes what the request sends (S3); the name taken (S4); a variable the request uses that this import declares as a secret with no value, that the project already has with a value other than the paste's, or under a reserved name (R7, the summary's warning parts). A variable the project already has, when the paste gives it no value, is no issue: the paste says nothing against what is there (the summary's plain "kept the existing X"). | you for the line ("yes, that's the line I had in mind"); the exact list is mine (approved) |
-| S3 | Ignored but harmless, so no issue: output and display flags (`-s`/`--silent`, `-S`/`--show-error`, `-v`/`--verbose`, `-i`/`--include`, `-o`/`--output`, `-O`/`--remote-name`, `-J`/`--remote-header-name`, `--output-dir`, `--create-dirs`, `-w`/`--write-out`, `-D`/`--dump-header`, `-f`/`--fail`, `--fail-with-body`, `-#`/`--progress-bar`, `--no-progress-meter`, `-N`/`--no-buffer`, `--trace`, `--trace-ascii`, `--trace-time`, `--stderr`), `-L`/`--location` (postui follows redirects), `--compressed`, the pipeline tail or redirect (`\| jq .`, `> out.json`), and assignments leading the command (`TOKEN=… curl`, which set curl's environment, not what it sends). Everything else the import ignores is an issue: any other flag, an earlier URL a later one replaced, a dropped body, `-X` with an unknown method, a body the method doesn't send, `-u` dropped, `$(…) kept as text`. *Review round 1:* words after a redirect's target and before any `\|` are still curl's (bash passes `> out.json -H 'A: b'`'s `-H` to curl), so a tail holding them is an issue (mine). A leading assignment to a variable curl reads for where or how the request goes is an issue: a name ending in `_proxy` in either case (`HTTPS_PROXY`, `no_proxy`), `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, or a name that moves curl's `.curlrc` (`CURL_HOME`, `XDG_CONFIG_HOME`, `HOME`) (mine (approved): the reviewer's argument was that `-x` prompts while `HTTPS_PROXY=` did not). *Review round 2:* the same names set on an assignment line before the command (`export https_proxy=…`, or a plain `HTTP_PROXY=…` line, which changes a variable the shell may already export) count for every curl command after that line; the prompt's `ignores …` does not list the line (mine). | the line is you; the list is mine |
+| S3 | Ignored but harmless, so no issue: output and display flags (`-s`/`--silent`, `-S`/`--show-error`, `-v`/`--verbose`, `-i`/`--include`, `-o`/`--output`, `-O`/`--remote-name`, `-J`/`--remote-header-name`, `--output-dir`, `--create-dirs`, `-w`/`--write-out`, `-D`/`--dump-header`, `-f`/`--fail`, `--fail-with-body`, `-#`/`--progress-bar`, `--no-progress-meter`, `-N`/`--no-buffer`, `--trace`, `--trace-ascii`, `--trace-time`, `--stderr`), `-L`/`--location` (postui follows redirects), `--compressed`, and a pipeline tail (`\| jq .`). Everything else the import ignores is an issue: any other flag, a redirect (`> out.json`: bash still hands curl the words after its target), assignments leading the command (`TOKEN=… curl`: curl's environment, which may be a proxy), an earlier URL a later one replaced, a dropped body, `-X` with an unknown method, a body the method doesn't send, `-u` dropped, `$(…) kept as text`. *Amended after review round 3:* see S11. | the line is you; the list is mine |
 | S4 | A `# @name` already taken in its folder (by a request there, or one this paste created) brings the prompt up, prefilled with the R8 number (`List users 2`), as today. | you ("that can prompt. that is an issue the user needs to deal with") |
 | S5 | In a batch, each command decides for itself. Clean named ones are created silently and only the others prompt, keeping their `(n of N)` title. One summary toast after the last command covers the whole paste, as today (§4.3). | mine (approved, chat: "yes") |
 | S6 | A command with no `# @name` always prompts, as today. | you |
@@ -30,11 +30,12 @@ trigger the modal."
 | S8 | A silent create the project refuses for any other reason (an unreadable environment file, a name the create rejects) toasts why, as today, and brings up that command's prompt, prefilled with the name, so the user can deal with it. | mine |
 | S9 | The prompt, when it shows, is unchanged: method and URL, then `ignores …` with the whole ignored list, harmless flags included. | mine |
 | S10 | The summary toast is unchanged: harmless flags are still listed under `ignored:`, and still make it a warning (D3 names every dropped flag in a warning toast). | mine |
+| S11 | Only the standard path skips the prompt: a paste holding any skipped line (anything but curl commands, comments and plain `NAME=value` assignments: `echo`, `alias`, `source`) prompts every command, since what such a line did is unknown, as for R7's values. A plain assignment line is read as a value only, even one curl would read itself (`export https_proxy=…`): that rare loss is accepted, and undo takes the request back. | the direction is you (after review round 3: "this was supposed to just be a simple update. i just want to keep it simple and make the standard path that doesnt need user input, not require user input"); the rule is mine |
 
-Skipped non-curl lines (`echo`, `cd`) are no issue of their own: they
-don't change what any request sends. When they drop a variable's value
-(R7 all-or-nothing), the variable is declared with no value, which is
-an issue under S2. (mine)
+Rounds 1–2 had grown a list of curl's environment variables and a
+redirect-target tracker in the shell splitter, and round 3 found more
+shell lines they misjudged. S3's redirect and leading-assignment rules
+and S11 replace them, and both are removed.
 
 ## 3. Design
 
@@ -48,8 +49,10 @@ classification happens there:
 - A `QUIET_FLAGS` table of long names (S3's flags). `Flags::ignore`
   sets `ignores_sent` unless the flag's long name is in it.
 - `build` sets it for the dropped user, earlier URLs, an unknown `-X`,
-  a body the method doesn't send and `$(…)` notes; not for the tail.
-  `parse` doesn't set it for the leading assignments.
+  a body the method doesn't send, `$(…)` notes and a tail that is not a
+  `| …` pipeline. `parse` sets it for leading assignments.
+- The app adds S11: no silent create when the paste's `skipped_lines`
+  is above zero.
 - `ignored` is unchanged: still every item, in its order, for the prompt
   and the summary.
 
