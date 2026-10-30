@@ -5,18 +5,21 @@
 //! won't parse or validate, an invalid name, a `{{name}}` nothing declares,
 //! a URL using a value that holds a `{{token}}` (spec 2026-10-30 D1).
 //! Everything else is a warning, a missing selection or secret among them
-//! (both live in `.postui/`, which a fresh clone doesn't have).
+//! (both live in `.postui/`, which a fresh clone doesn't have), and any
+//! value written in the files that holds a `{{token}}` (D2).
 
 use super::mask::MASK_MIN_CHARS;
 use super::out::{count, fields, rel, table};
 use super::read::{displayed, open, pick_env};
 use super::{CliError, Global, target};
-use postui_core::prepare::{self, PrepareError, PrepareWarning, UnresolvedCause, ValuePlace};
+use indexmap::IndexMap;
+use postui_core::prepare::{self, PrepareError, UnresolvedCause};
 use postui_core::project::{self, Project, Skipped};
 use postui_core::storage;
+use postui_core::varmodel::OptionDecl;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// The status a report with an error ends the run with.
@@ -91,9 +94,26 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
     }
 
+    // D2: a value is used as written, so one holding a `{{name}}` is warned
+    // of on the file it is written in (spec 2026-10-30, amended after review
+    // round 3). `secrets.toml` is the user's, and isn't looked at.
+    let model = project.variables();
+    let defaults = model.vars.iter().filter_map(|(n, v)| Some((n.clone(), v.default.as_deref()?)));
+    warnings.extend(values_holding_tokens(
+        &root.join("variables.toml"),
+        defaults.chain(option_values(&model.options)),
+    ));
     for slug in project.environments().to_vec() {
-        if let Err(e) = project.load_environment(&slug) {
-            errors.push(Finding::at(project::environment_path(&root, &slug), reason(e)));
+        let file = project::environment_path(&root, &slug);
+        match project.load_environment(&slug) {
+            Ok(data) => {
+                let values = data.values.iter().map(|(n, v)| (n.clone(), v.as_str()));
+                warnings.extend(values_holding_tokens(
+                    &file,
+                    values.chain(option_values(&data.options)),
+                ));
+            }
+            Err(e) => errors.push(Finding::at(file, reason(e))),
         }
     }
 
@@ -144,9 +164,6 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         Err(e) => return Err(e),
     };
     let ctx = project.prepare_context();
-    // A default header goes on every request, so its warning is the same on
-    // each: it is reported once, on `project.toml`, where the default is.
-    let mut defaults_warned = std::collections::BTreeSet::new();
     for slug in parsed {
         let file = storage::request_path(&root, &slug);
         let req = match project.read_request(&slug) {
@@ -156,34 +173,16 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 continue;
             }
         };
+        let values = req.variables.iter().map(|(name, e)| (name.clone(), e.value.as_str()));
+        warnings.extend(values_holding_tokens(&file, values));
         let causes = match prepare::prepare(&req, &ctx) {
-            // Of the warnings only a value holding a token is the file's to
-            // fix (D2); the duplicate default would repeat on every request.
-            Ok((_, sent_warnings)) => {
-                for w in sent_warnings {
-                    let PrepareWarning::ValueHoldsVariable { place, .. } = &w else { continue };
-                    if !matches!(place, ValuePlace::DefaultHeader(_)) {
-                        warnings.push(Finding::at(file.clone(), w.to_string()));
-                    } else if defaults_warned.insert(w.to_string()) {
-                        warnings.push(Finding::at(root.join("project.toml"), w.to_string()));
-                    }
-                }
-                continue;
-            }
+            Ok(_) => continue,
             // The URL would go out with a value's braces in it (D1).
             Err(e @ PrepareError::ValueHoldsVariable { .. }) => {
                 errors.push(Finding::at(file, e.to_string()));
                 continue;
             }
-            // A missing secret or selection is only a warning here, so it
-            // mustn't hide the URL's error, which `prepare` reports only
-            // once every name resolves.
-            Err(PrepareError::Unresolved(causes)) => {
-                if let Some(e) = prepare::url_value_holding_token(&req, &ctx) {
-                    errors.push(Finding::at(file.clone(), e.to_string()));
-                }
-                causes
-            }
+            Err(PrepareError::Unresolved(causes)) => causes,
         };
         let (undeclared, rest): (BTreeMap<_, _>, BTreeMap<_, _>) =
             causes.into_iter().partition(|(name, cause)| {
@@ -211,6 +210,41 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
         }
     }
     Ok(CheckReport::new(root, environment, errors, warnings))
+}
+
+/// A warning on `file` for each of `values` (a name, and the value written
+/// for it) that holds a `{{name}}`: postui uses a value as written, so its
+/// braces would be sent (D2).
+fn values_holding_tokens<'a>(
+    file: &Path,
+    values: impl Iterator<Item = (String, &'a str)>,
+) -> Vec<Finding> {
+    values
+        .filter_map(|(name, value)| {
+            let token = postui_core::vars::find_tokens(value).into_iter().next()?.name;
+            Some(Finding::at(
+                file.to_path_buf(),
+                format!(
+                    "{name}'s value holds {{{{{token}}}}}, and postui doesn't fill in variables \
+                     inside a value"
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Each field value of every option in `options` (selector → option →
+/// option), named `field (option O of S)`.
+fn option_values(
+    options: &IndexMap<String, IndexMap<String, OptionDecl>>,
+) -> impl Iterator<Item = (String, &str)> {
+    options.iter().flat_map(|(selector, options)| {
+        options.iter().flat_map(move |(option, decl)| {
+            decl.values.iter().map(move |(field, value)| {
+                (format!("{field} (option {option} of {selector})"), value.as_str())
+            })
+        })
+    })
 }
 
 /// What is wrong with a name postui passes over.

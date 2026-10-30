@@ -51,31 +51,8 @@ impl SentHeader {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrepareWarning {
-    ParamOverridesUrl {
-        key: String,
-    },
-    DuplicateDefaultHeader {
-        name: String,
-    },
-    /// `var`'s value holds `{{token}}`, which goes out as written in a sent
-    /// header or a substituted body: a value isn't a template (spec
-    /// 2026-10-30 D2).
-    ValueHoldsVariable {
-        var: String,
-        token: String,
-        place: ValuePlace,
-    },
-}
-
-/// Where a sent value holding a `{{token}}` goes out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValuePlace {
-    /// A sent header of the request's own, by its name as sent.
-    Header(String),
-    /// A sent project default header, by its name as sent: the same on
-    /// every request, so `check` reports it once.
-    DefaultHeader(String),
-    Body,
+    ParamOverridesUrl { key: String },
+    DuplicateDefaultHeader { name: String },
 }
 
 impl fmt::Display for PrepareWarning {
@@ -86,14 +63,6 @@ impl fmt::Display for PrepareWarning {
             }
             PrepareWarning::DuplicateDefaultHeader { name } => {
                 write!(f, "duplicate default header '{}'", name)
-            }
-            PrepareWarning::ValueHoldsVariable { var, token, place } => {
-                match place {
-                    ValuePlace::Header(name) => write!(f, "the {name} header")?,
-                    ValuePlace::DefaultHeader(name) => write!(f, "the {name} default header")?,
-                    ValuePlace::Body => f.write_str("the body")?,
-                }
-                write!(f, ": {var}'s value holds {{{{{token}}}}}, which is sent as written")
             }
         }
     }
@@ -129,8 +98,9 @@ pub enum PrepareError {
     Unresolved(BTreeMap<String, UnresolvedCause>),
     /// The URL or a query parameter uses `var`, whose value holds
     /// `{{token}}`: a value isn't a template, so the URL would go out with
-    /// the braces in it (spec 2026-10-30 D1). Reported only once every name
-    /// resolves.
+    /// the braces in it (spec 2026-10-30 D1). Asked before the unresolved
+    /// names, so a missing secret or selection (only a warning in `check`)
+    /// can't hide it. `token` is the mask when `var` is a secret.
     ValueHoldsVariable {
         var: String,
         token: String,
@@ -165,39 +135,34 @@ impl fmt::Display for PrepareError {
             }
             PrepareError::ValueHoldsVariable { var, token } => write!(
                 f,
-                "{var}'s value holds {{{{{token}}}}}, and postui doesn't fill in variables inside a value"
+                "the URL uses {var}, whose value holds {{{{{token}}}}}: postui doesn't fill in \
+                 variables inside a value"
             ),
         }
     }
 }
 
 /// D1: the refusal for a URL or query parameter using a value that holds a
-/// `{{token}}`, with `vars` overlaid. The URL is the one place a value's
-/// braces can't go out as written: a header's or a body's might be meant
-/// (D2 warns about those instead).
-fn url_holding_token(req: &HttpRequest, vars: &IndexMap<String, String>) -> Option<PrepareError> {
+/// `{{token}}`, with `vars` overlaid. The URL is the one place checked at
+/// send time: a header's or a body's braces might be meant, and `check`
+/// warns about every such value where it is written (spec 2026-10-30, the
+/// amendment after review round 3). A secret's token is the mask, so the
+/// refusal shows none of its value.
+fn url_holding_token(
+    req: &HttpRequest,
+    vars: &IndexMap<String, String>,
+    secrets: &BTreeSet<String>,
+) -> Option<PrepareError> {
     let params = req.params.iter().filter(|(_, e)| e.enabled);
     let mut parts = std::iter::once(req.url.as_str())
         .chain(params.flat_map(|(k, e)| [k.as_str(), e.value.as_str()]));
-    let (var, token) = parts.find_map(|t| value_holding_token(t, vars))?;
-    Some(PrepareError::ValueHoldsVariable { var, token })
-}
-
-/// [`url_holding_token`] for `req` against `ctx`, asked on its own: what
-/// [`prepare`] would refuse once every name resolves. `check` asks it of a
-/// request whose names don't all resolve yet (a missing secret is only a
-/// warning there), so the URL's error isn't hidden behind one.
-pub fn url_value_holding_token(req: &HttpRequest, ctx: &PrepareContext) -> Option<PrepareError> {
-    url_holding_token(req, &overlaid_vars(req, ctx))
-}
-
-/// The first `{{name}}` of `text` whose value holds a `{{token}}` of its
-/// own, as `(name, token)`. A value is sent as it is, so such a token would
-/// go out with its braces.
-fn value_holding_token(text: &str, vars: &IndexMap<String, String>) -> Option<(String, String)> {
-    crate::vars::find_tokens(text).into_iter().find_map(|t| {
-        let inner = crate::vars::find_tokens(vars.get(&t.name)?).into_iter().next()?;
-        Some((t.name, inner.name))
+    parts.find_map(|text| {
+        crate::vars::find_tokens(text).into_iter().find_map(|t| {
+            let inner = crate::vars::find_tokens(vars.get(&t.name)?).into_iter().next()?;
+            let token =
+                if secrets.contains(&t.name) { SECRET_MASK.to_string() } else { inner.name };
+            Some(PrepareError::ValueHoldsVariable { var: t.name, token })
+        })
     })
 }
 
@@ -346,13 +311,7 @@ pub fn prepare(
     // it not to fail (spec 2026-10-18 R3a/R3b; a send-time notice was
     // weighed in review and declined).
     let body_len = body.as_ref().map(String::len);
-    let rows = rows(req, ctx, &vars, &secret_names, body_len, Some(&mut warnings));
-    if req.substitute_body
-        && let Some(text) = sent_body(req)
-        && let Some((var, token)) = value_holding_token(text, &vars)
-    {
-        warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place: ValuePlace::Body });
-    }
+    let rows = rows(req, ctx, &vars, &secret_names, body_len, &mut warnings);
     let wire = wire_order(&rows);
     let headers: Vec<SentHeader> = rows
         .into_iter()
@@ -363,6 +322,10 @@ pub fn prepare(
         })
         .collect();
 
+    // First, so a missing secret or selection can't hide it from `check`.
+    if let Some(e) = url_holding_token(req, &vars, &secret_names) {
+        return Err(e);
+    }
     if !missing.is_empty() {
         let causes = missing
             .into_iter()
@@ -376,9 +339,6 @@ pub fn prepare(
             })
             .collect();
         return Err(PrepareError::Unresolved(causes));
-    }
-    if let Some(e) = url_holding_token(req, &vars) {
-        return Err(e);
     }
 
     Ok((
@@ -573,7 +533,7 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow> {
         true => substituted_len(body, &vars),
         false => body.len(),
     });
-    rows(req, ctx, &vars, &secret_names(ctx), body_len, None)
+    rows(req, ctx, &vars, &secret_names(ctx), body_len, &mut Vec::new())
 }
 
 /// The byte length `text` has once [`crate::vars::substitute`] has run on
@@ -589,16 +549,14 @@ fn substituted_len(text: &str, vars: &IndexMap<String, String>) -> usize {
 /// The rows of [`header_rows`], from what the caller already worked out:
 /// the overlaid `vars`, the `secrets` to mask, and the byte length of the
 /// body the send carries — so [`prepare`] substitutes nothing twice.
-/// Duplicate defaults, and sent rows using a value that holds a token, are
-/// reported to `warnings`; `None` (the Headers tab, every frame) looks for
-/// neither.
+/// Duplicate defaults are reported to `warnings`.
 fn rows(
     req: &HttpRequest,
     ctx: &PrepareContext,
     vars: &IndexMap<String, String>,
     secrets: &BTreeSet<String>,
     body_len: Option<usize>,
-    mut warnings: Option<&mut Vec<PrepareWarning>>,
+    warnings: &mut Vec<PrepareWarning>,
 ) -> Vec<HeaderRow> {
     let no_mask = BTreeSet::new();
     let quiet = |s: &str| substitute_masked(s, vars, &no_mask, &mut BTreeSet::new());
@@ -645,28 +603,6 @@ fn rows(
     let client_row = |name: &str, value: String, display: String, unsent: Option<Unsent>| {
         fixed_row(name, value, display, HeaderOrigin::Client, unsent, None)
     };
-    // A sent row written as `name`/`value` whose value holds a token goes
-    // out with its braces (D2).
-    let warn_sent = |r: &HeaderRow, name: &str, value: &str, warnings: &mut Vec<PrepareWarning>| {
-        if !r.sent() {
-            return;
-        }
-        let held = value_holding_token(name, vars).or_else(|| value_holding_token(value, vars));
-        if let Some((var, token)) = held {
-            // Masked, as the screens show it.
-            let name = r.header.display_name.clone();
-            // A default's is the same on every request, unless this request
-            // gives the variable its value: then the request is the file to
-            // fix.
-            let own = req.variables.get(&var).is_some_and(|e| e.enabled);
-            let place = match r.origin {
-                HeaderOrigin::Default if !own => ValuePlace::DefaultHeader(name),
-                _ => ValuePlace::Header(name),
-            };
-            warnings.push(PrepareWarning::ValueHoldsVariable { var, token, place });
-        }
-    };
-
     let mut rows = Vec::new();
 
     // Defaults merge UNDER the request's rows: a default is not sent when
@@ -684,22 +620,13 @@ fn rows(
         if r.sent() && named_by_request(&r.header.name) {
             r.unsent = Some(Unsent::Replaced);
         } else if r.sent() && !claimed.insert(lower.clone()) {
-            if let Some(w) = warnings.as_deref_mut() {
-                w.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
-            }
+            warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
             r.unsent = Some(Unsent::Duplicate);
-        }
-        if let Some(w) = warnings.as_deref_mut() {
-            warn_sent(&r, k, &e.value, w);
         }
         rows.push(r);
     }
     for (i, (k, e)) in req.headers.iter().enumerate().filter(|(_, (_, e))| e.enabled) {
-        let r = row(k, &e.value, HeaderOrigin::Request { row: i });
-        if let Some(w) = warnings.as_deref_mut() {
-            warn_sent(&r, k, &e.value, w);
-        }
-        rows.push(r);
+        rows.push(row(k, &e.value, HeaderOrigin::Request { row: i }));
     }
 
     // An auto or client row stands aside for a sent row naming it. A
@@ -1196,7 +1123,8 @@ mod tests {
         assert_eq!(prepare(&r, &c).unwrap_err(), holds("base", "host"));
         assert_eq!(
             holds("base", "host").to_string(),
-            "base's value holds {{host}}, and postui doesn't fill in variables inside a value"
+            "the URL uses base, whose value holds {{host}}: postui doesn't fill in variables \
+             inside a value"
         );
     }
 
@@ -1216,22 +1144,32 @@ mod tests {
         assert!(prepare(&r, &c).is_ok(), "a disabled parameter isn't sent");
     }
 
-    /// D1: a name with no value at all is still what the refusal names.
+    /// D1 (amended): the URL's refusal comes before an unresolved name, so a
+    /// missing secret (only a warning in `check`) can't hide it.
     #[test]
-    fn an_unresolved_name_is_reported_before_a_value_holding_a_token() {
-        let r = base("{{base}}/{{gone}}");
-        let c = ctx(&[("base", "https://{{host}}")], &[]);
-        assert!(unresolved(prepare(&r, &c)).contains_key("gone"));
+    fn a_value_holding_a_token_is_reported_before_an_unresolved_name() {
+        let r = base("{{base}}/{{api_key}}");
+        let mut c = ctx(&[("base", "https://{{host}}")], &[]);
+        c.meta.insert("api_key".into(), varmodel::VarMeta::MissingSecret);
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("base", "host"));
     }
 
-    /// D2: a sent header, a sent default and a substituted body go out as
-    /// written, each with a warning naming where.
+    /// D1: a secret's value shows nothing of itself in the refusal, not even
+    /// the name inside its braces.
     #[test]
-    fn a_header_or_body_value_holding_a_token_is_sent_with_a_warning() {
-        let c = ctx(
-            &[("tok", "{{x}}"), ("trace", "{{y}}"), ("doc", "{{z}}")],
-            &[("X-Trace", "{{trace}}", true)],
-        );
+    fn a_secrets_token_is_masked_in_the_refusal() {
+        let r = base("http://x.test/{{key}}");
+        let mut c = ctx(&[("key", "ab{{cdEF12}}gh")], &[]);
+        c.meta.insert("key".into(), varmodel::VarMeta::Secret);
+        assert_eq!(prepare(&r, &c).unwrap_err(), holds("key", SECRET_MASK));
+    }
+
+    /// D2 (amended): a header or body using such a value is sent as
+    /// written, with no warning at send time: `check` warns where the value
+    /// is written.
+    #[test]
+    fn a_header_or_body_value_holding_a_token_is_sent_as_written() {
+        let c = ctx(&[("tok", "{{x}}"), ("doc", "{{z}}")], &[]);
         let mut r = base("http://x.test");
         r.method = Method::Post;
         r.headers.insert("Authorization".into(), on("Bearer {{tok}}"));
@@ -1239,41 +1177,7 @@ mod tests {
         r.substitute_body = true;
         let (p, warnings) = prepare(&r, &c).unwrap();
         assert!(wire(&p).contains(&("Authorization".into(), "Bearer {{x}}".into())));
-        let warning = |var: &str, token: &str, place: ValuePlace| {
-            PrepareWarning::ValueHoldsVariable { var: var.into(), token: token.into(), place }
-        };
-        assert_eq!(
-            warnings,
-            vec![
-                warning("trace", "y", ValuePlace::DefaultHeader("X-Trace".into())),
-                warning("tok", "x", ValuePlace::Header("Authorization".into())),
-                warning("doc", "z", ValuePlace::Body),
-            ]
-        );
-        assert_eq!(
-            warnings[0].to_string(),
-            "the X-Trace default header: trace's value holds {{y}}, which is sent as written"
-        );
-        assert_eq!(
-            warnings[1].to_string(),
-            "the Authorization header: tok's value holds {{x}}, which is sent as written"
-        );
-        assert_eq!(
-            warnings[2].to_string(),
-            "the body: doc's value holds {{z}}, which is sent as written"
-        );
-    }
-
-    /// D2: what isn't sent can't be sent as written: a default the request
-    /// replaces, and a body sent without substitution.
-    #[test]
-    fn an_unsent_header_or_unsubstituted_body_does_not_warn() {
-        let c = ctx(&[("trace", "{{y}}"), ("doc", "{{z}}")], &[("X-Trace", "{{trace}}", true)]);
-        let mut r = base("http://x.test");
-        r.method = Method::Post;
-        r.headers.insert("x-trace".into(), on("mine"));
-        r.body = Some(Body::Json { text: "{{doc}}".into() });
-        let (_, warnings) = prepare(&r, &c).unwrap();
+        assert_eq!(p.body.as_deref(), Some("{{z}}"));
         assert_eq!(warnings, vec![]);
     }
 

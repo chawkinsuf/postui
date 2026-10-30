@@ -40,9 +40,9 @@ a `project.toml`.
 - `postui check [--env E]`: parses and validates every file, and resolves
   every request's `{{variables}}`. An undeclared `{{name}}` is an error, and
   so is a URL using a variable whose value holds a `{{name}}` (values aren't
-  filled in, so postui won't send it); a missing secret or selection is only
-  a warning, since those live in the user's untracked `.postui/`. Exits 1 on
-  an error.
+  filled in, so postui won't send it); any value holding one is a warning on
+  its file, and so is a missing secret or selection, since those live in the
+  user's untracked `.postui/`. Exits 1 on an error.
 
 Paths in the output are relative to the `root` line at the top. Output is
 text; add `--json` only when a script needs to parse it.

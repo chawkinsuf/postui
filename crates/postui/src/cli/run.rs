@@ -124,16 +124,17 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
 
 impl Session {
     /// Refuses a `--var` that `variables.toml` doesn't declare (as a
-    /// variable or a selector's field) and that none of `slugs`' requests
-    /// has in its `[variables]`: a misspelt name would otherwise change
-    /// nothing. `not_local` says, in the error, that those requests don't
-    /// have it.
+    /// variable or a selector's field), that the environment gives no value
+    /// (it may set one it doesn't declare), and that none of `slugs`'
+    /// requests has in its `[variables]`: a misspelt name would otherwise
+    /// change nothing. `not_local` says, in the error, that those requests
+    /// don't have it.
     pub(super) fn check_vars(&mut self, slugs: &[String], not_local: &str) -> Result<(), CliError> {
         let undeclared: Vec<&str> = self
             .vars
             .iter()
             .map(|(name, _)| name.as_str())
-            .filter(|name| !declared(&self.project, name))
+            .filter(|name| !declared(&self.project, name) && !self.context.vars.contains_key(*name))
             .collect();
         if undeclared.is_empty() {
             return Ok(());

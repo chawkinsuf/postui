@@ -445,20 +445,20 @@ impl Positional {
 
 #[rustfmt::skip]
 const SPECS: [Spec; 13] = [
-    Spec { name: "projects", flags: &["--json"],                                                                                                   positional: None,                      usage: PROJECTS_USAGE },
-    Spec { name: "show",     flags: &["--project", "--json"],                                                                                      positional: None,                      usage: SHOW_USAGE },
-    Spec { name: "requests", flags: &["--project", "--json", "--space"],                                                                           positional: None,                      usage: REQUESTS_USAGE },
-    Spec { name: "vars",     flags: &["--project", "--json", "--env", "--show-secrets"],                                                           positional: Some(Positional::Name),    usage: VARS_USAGE },
-    Spec { name: "check",    flags: &["--project", "--json", "--env"],                                                                             positional: None,                      usage: CHECK_USAGE },
-    Spec { name: "init",     flags: &["--json", "--name"],                                                                                         positional: Some(Positional::Dir),     usage: INIT_USAGE },
+    Spec { name: "projects", flags: &["--json"],                                                                                                                                                positional: None,                      usage: PROJECTS_USAGE },
+    Spec { name: "show",     flags: &["--project", "--json"],                                                                                                                                   positional: None,                      usage: SHOW_USAGE },
+    Spec { name: "requests", flags: &["--project", "--json", "--space"],                                                                                                                        positional: None,                      usage: REQUESTS_USAGE },
+    Spec { name: "vars",     flags: &["--project", "--json", "--env", "--show-secrets"],                                                                                                        positional: Some(Positional::Name),    usage: VARS_USAGE },
+    Spec { name: "check",    flags: &["--project", "--json", "--env"],                                                                                                                          positional: None,                      usage: CHECK_USAGE },
+    Spec { name: "init",     flags: &["--json", "--name"],                                                                                                                                      positional: Some(Positional::Dir),     usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--json", "--env", "--select", "--var", "--show-secrets", "--timeout", "--jq", "--view", "--output", "--dry-run", "--include", "--verbose"], positional: Some(Positional::Request), usage: RUN_USAGE },
-    Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--var", "--show-secrets", "--timeout", "--output"],                                     positional: None,                      usage: SUITE_USAGE },
-    Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                         positional: None,                      usage: EDIT_BEGIN_USAGE },
-    Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                        positional: None,                      usage: EDIT_END_USAGE },
-    Spec { name: "edit status", flags: &["--project", "--json"],                                                                                   positional: None,                      usage: EDIT_STATUS_USAGE },
+    Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--var", "--show-secrets", "--timeout", "--output"],                                               positional: None,                      usage: SUITE_USAGE },
+    Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                                                                      positional: None,                      usage: EDIT_BEGIN_USAGE },
+    Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                                                                     positional: None,                      usage: EDIT_END_USAGE },
+    Spec { name: "edit status", flags: &["--project", "--json"],                                                                                                                                positional: None,                      usage: EDIT_STATUS_USAGE },
     // `--project` is a switch here (into this directory), not `-p`'s project.
-    Spec { name: "skill install", flags: &["--user", "--project", "--force", "--json"],                                                            positional: None,                      usage: SKILL_INSTALL_USAGE },
-    Spec { name: "skill show",    flags: &[],                                                                                                      positional: None,                      usage: SKILL_SHOW_USAGE },
+    Spec { name: "skill install", flags: &["--user", "--project", "--force", "--json"],                                                                                                         positional: None,                      usage: SKILL_INSTALL_USAGE },
+    Spec { name: "skill show",    flags: &[],                                                                                                                                                   positional: None,                      usage: SKILL_SHOW_USAGE },
 ];
 
 fn spec(name: &str) -> Option<&'static Spec> {
@@ -591,6 +591,12 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             }
             if options.dry_run && options.view.is_some() {
                 return Err("--view needs a send; it can't go with --dry-run".into());
+            }
+            if options.dry_run && options.include {
+                return Err("-i needs a send; it can't go with --dry-run".into());
+            }
+            if g.json && (options.include || options.verbose) {
+                return Err("--json prints the whole run; -i and -v are for the text".into());
             }
             let filter = match (options.jq, options.view) {
                 (Some(_), Some(_)) => {
@@ -1126,6 +1132,12 @@ mod tests {
         assert_eq!(run_parts(&["run", "a", "-v"]).2, Shown::Verbose);
         assert_eq!(run_parts(&["run", "a", "--verbose", "-i"]).2, Shown::Verbose);
         assert_eq!(parsed(&["suite", "-i"]).unwrap_err(), "unknown option '-i'");
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert!(err(&["run", "a", "-i", "--dry-run"]).contains("-i needs a send"));
+        assert!(err(&["run", "a", "-v", "--json"]).contains("--json prints the whole run"));
+        assert!(err(&["run", "a", "-i", "--json"]).contains("--json prints the whole run"));
+        // A dry run prints the whole report already; -v asks for no more.
+        assert_eq!(run_parts(&["run", "a", "-v", "--dry-run"]).2, Shown::Verbose);
     }
 
     #[test]

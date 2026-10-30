@@ -222,9 +222,9 @@ For each `{{name}}`:
 A value is used as written: a `{{name}}` inside a value is not filled in.
 `base_url = "https://{{host}}"` would send `https://{{host}}`, so postui
 refuses to send a request whose URL or query parameters use such a value
-(`check` reports it as an error), and warns when a header or a substituted
-body does. Give each environment the whole value instead (`base_url =
-"https://staging.example.com"`).
+(`check` reports it as an error), and `check` warns about every value that
+holds a `{{name}}`, on the file it is written in. Give each environment the
+whole value instead (`base_url = "https://staging.example.com"`).
 
 `postui vars` shows each variable's source; `postui run <slug> --dry-run`
 shows the request filled in.

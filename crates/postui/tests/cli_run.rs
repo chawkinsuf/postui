@@ -664,18 +664,32 @@ fn run_says_on_stderr_what_failed() {
         (Some(1), "".into(), "postui: unresolved: bsae\n".into())
     );
     std::fs::write(
-        root.join("requests/main/tagged.toml"),
-        "name = \"Tagged\"\nmethod = \"GET\"\nurl = \"{{base}}/ok\"\n\n\
-         [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n",
+        root.join("requests/main/param.toml"),
+        "name = \"Param\"\nmethod = \"GET\"\nurl = \"{{base}}/ok?id=1\"\n\n[params]\nid = \"2\"\n",
     )
     .unwrap();
     assert_eq!(
-        streams(&home, &root, "main/tagged", &[]),
+        streams(&home, &root, "main/param", &[]),
         (
             Some(0),
             "{\"id\":42}\n".into(),
-            "postui: warning: the X-Tag header: tag's value holds {{region}}, which is sent \
-             as written\n"
+            "postui: warning: query param `id` in [params] overrides the one in the URL\n".into()
+        )
+    );
+    // D1: a URL using a value that holds a token isn't sent.
+    std::fs::write(
+        root.join("requests/main/wrapped.toml"),
+        "name = \"Wrapped\"\nmethod = \"GET\"\nurl = \"{{wrap}}/ok\"\n\n\
+         [variables]\nwrap = \"{{base}}\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        streams(&home, &root, "main/wrapped", &[]),
+        (
+            Some(1),
+            "".into(),
+            "postui: the URL uses wrap, whose value holds {{base}}: postui doesn't fill in \
+             variables inside a value\n"
                 .into()
         )
     );
@@ -748,6 +762,20 @@ fn run_var_gives_a_value_for_this_run() {
         "postui: --var regoin: variables.toml doesn't declare it, and the request's \
          [variables] don't have it\n"
     );
+    // A name the environment sets without a declaration is no misspelling.
+    let dev = root.join("environments/dev.toml");
+    let mut text = std::fs::read_to_string(&dev).unwrap();
+    text.insert_str(0, "extra = \"env\"\n");
+    std::fs::write(&dev, text).unwrap();
+    std::fs::write(
+        root.join("requests/main/extra.toml"),
+        "name = \"Extra\"\nmethod = \"GET\"\nurl = \"http://x.test/{{extra}}\"\n",
+    )
+    .unwrap();
+    let out = dry(&home, &root, "main/extra", &["--var", "extra=cli"]);
+    assert_ok(&out, "--var for an undeclared environment value");
+    assert_eq!(json(&out)["url"], "http://x.test/cli");
+
     // A slug that names no request is the mistake to report first.
     let (code, _, err) = streams(&home, &root, "main/okk", &["--var", "regoin=x"]);
     assert_eq!(code, Some(2));

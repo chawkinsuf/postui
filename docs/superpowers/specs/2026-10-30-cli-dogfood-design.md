@@ -108,12 +108,43 @@ the output mask (mine).
 Exit codes don't change. `suite` doesn't change. The reason phrase comes
 from the status code (`404 Not Found`); a code with none prints bare.
 
+### Amended 2026-10-30, after review round 3: the checks happen apart from the send
+
+Three review rounds kept finding pieces of the send-time warnings: which
+file a default header's warning belongs to, a request supplying the value
+itself, warnings lost when the send was also refused, a secret's value
+showing in the text. Each fix added a rule the next round broke. The cause:
+"this value holds a `{{name}}`" is a fact about a value, not about a
+request, and working it out per send needs all of those rules to put it
+back where the value is written.
+
+You: "the checks and warnings should happen separately. only the url check
+needs to happen at send time."
+
+- **D1 (amended):** `prepare` refuses a URL or query parameter using a value
+  that holds a token, and asks this **before** the unresolved names, so a
+  missing secret or selection can't hide it. The cost: a request with both
+  this and a misspelt name shows the misspelling after the URL is fixed;
+  both are errors, so `check` fails either way. A secret's inner token
+  prints as the mask.
+- **D2 (replaced):** no warning at send time. `check` looks at every value
+  written in the project's files (each `variables.toml` default and shared
+  option, each environment's values and options, each request's
+  `[variables]`) and warns, on that file, about one that holds a `{{name}}`.
+  One rule, one place per value. `secrets.toml` isn't looked at (it is the
+  user's, in `.postui/`). The cost: a value meant to hold braces (a template
+  for another system) is warned about even where only a body uses it; it is
+  a warning, so `edit end` passes.
+- Gone with D2: `PrepareWarning::ValueHoldsVariable`, `ValuePlace`, the header
+  rows' warning, `check`'s once-per-project default-header rule and its
+  second URL lookup.
+
 ## 4. Tests
 
 | Rule | Test |
 |---|---|
-| D1 | `prepare` refuses a URL token, a param key and a param value whose value holds a token, naming the var and token; an unresolved name is still reported first; the TUI's Send toasts the text and sends nothing; `check` reports an error naming the request file. |
-| D2 | A sent request header, a sent default and a substituted body each warn; an unsent (replaced) default and an unsubstituted body don't; `check` reports the warning; `run` sends. |
+| D1 | `prepare` refuses a URL token, a param key and a param value whose value holds a token, naming the var and token, before an unresolved name; a secret's token is masked; the TUI's Send toasts the text and sends nothing; `check` reports an error naming the request file, a missing secret beside it too. |
+| D2 | `check` warns on the file for a default, a shared option, an environment value and option, and a request's `[variables]` holding a token; a header using one sends without a warning. |
 | D3 | `--view` uses `jq_current`'s filter, else the scratch; `--view=NAME` a named view (name matched as views are); no filter, an unknown name, `--view` with `--jq` or `--dry-run` are errors. |
 | D4 | `--var` beats the env, a selection and the request's own `[variables]`; `suite --var` reaches every request; a name given twice, an invalid one and an undeclared one are errors; a secret given with `--var` is masked. |
 | D5 | Default prints only the body (and only the results with `--jq`); `-i` prints status, headers, blank line, body; `-v` prints today's report; `--dry-run` prints today's report. |

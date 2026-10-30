@@ -836,9 +836,9 @@ fn check_disabled_request_variable_is_not_declared_wording() {
     );
 }
 
-/// Spec 2026-10-30 D1, D2: a value holding a `{{token}}` is an error where
-/// the URL uses it (the send is refused) and a warning where a sent header
-/// does (it goes out as written).
+/// Spec 2026-10-30 D1, D2 (amended): a value holding a `{{token}}` is warned
+/// of on the file it is written in, wherever it is used; a URL using one is
+/// an error on the request, which a missing secret doesn't hide.
 #[test]
 fn check_reports_a_value_holding_a_token() {
     let home = Home::new();
@@ -846,10 +846,11 @@ fn check_reports_a_value_holding_a_token() {
     let x = root.join("requests/admin/x.toml");
     std::fs::write(
         &x,
-        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{wrap}}/x\"\n\n\
+        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{wrap}}/x?k={{token}}\"\n\n\
          [variables]\nwrap = \"https://{{base}}\"\n",
     )
     .unwrap();
+    std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
     let list = root.join("requests/main/list.toml");
     std::fs::write(
         &list,
@@ -857,27 +858,17 @@ fn check_reports_a_value_holding_a_token() {
          [headers]\nX-Tag = \"{{tag}}\"\n\n[variables]\ntag = \"{{region}}\"\n",
     )
     .unwrap();
-
-    // A missing secret is only a warning, so it doesn't hide the URL's
-    // error.
-    std::fs::write(
-        &x,
-        "name = \"X\"\nmethod = \"DELETE\"\nurl = \"{{wrap}}/x?k={{token}}\"\n\n\
-         [variables]\nwrap = \"https://{{base}}\"\n",
-    )
-    .unwrap();
-    std::fs::remove_file(root.join(".postui/secrets.toml")).unwrap();
-
-    // A default header's value is the same on every request: one warning,
-    // on the file the default is written in.
-    let project = root.join("project.toml");
-    let mut text = std::fs::read_to_string(&project).unwrap();
-    text.push_str("\n[default_headers]\nX-Def = \"{{held}}\"\n");
-    std::fs::write(&project, text).unwrap();
     let variables = root.join("variables.toml");
     let mut text = std::fs::read_to_string(&variables).unwrap();
-    text.push_str("\n[held]\ndefault = \"{{id}}\"\n");
+    text.push_str("\n[held]\ndefault = \"{{id}}\"\n\n[options.org.acme]\norg_id = \"{{id}}\"\n");
+    text.push_str("\n[selectors.org]\nshared = true\nfields = [\"org_id\"]\n");
     std::fs::write(&variables, text).unwrap();
+    let qa = root.join("environments/qa.toml");
+    std::fs::write(
+        &qa,
+        "base = \"https://qa\"\nheld = \"x{{base}}\"\n\n[options.user.bob]\nuser_id = \"{{id}}\"\n",
+    )
+    .unwrap();
 
     let out = home.run_json(&["check", "-p", s(&root)]);
     assert_eq!(out.status.code(), Some(1));
@@ -886,46 +877,34 @@ fn check_reports_a_value_holding_a_token() {
         findings(&v, "errors"),
         [(
             s(&x).to_string(),
-            "wrap's value holds {{base}}, and postui doesn't fill in variables inside a value"
+            "the URL uses wrap, whose value holds {{base}}: postui doesn't fill in variables \
+             inside a value"
                 .to_string()
         )]
     );
+    let says = |file: &Path, what: &str, token: &str| {
+        (
+            s(file).to_string(),
+            format!(
+                "{what}'s value holds {{{{{token}}}}}, and postui doesn't fill in variables \
+                 inside a value"
+            ),
+        )
+    };
+    let mut want = vec![
+        says(&variables, "held", "id"),
+        says(&variables, "org_id (option acme of org)", "id"),
+        says(&qa, "held", "base"),
+        says(&qa, "user_id (option bob of user)", "id"),
+        // x's missing secret shows once its URL is fixed: the refusal comes
+        // first (the amendment's named cost).
+        says(&x, "wrap", "base"),
+        says(&list, "tag", "region"),
+    ];
+    want.sort();
     let mut warnings = findings(&v, "warnings");
     warnings.sort();
-    assert_eq!(
-        warnings,
-        [
-            (
-                s(&project).to_string(),
-                "the X-Def default header: held's value holds {{id}}, which is sent as written"
-                    .to_string()
-            ),
-            (s(&x).to_string(), "missing secret: token".to_string()),
-            (
-                s(&list).to_string(),
-                "the X-Tag header: tag's value holds {{region}}, which is sent as written"
-                    .to_string()
-            ),
-        ]
-    );
-
-    // A request that gives the default's variable a value of its own is the
-    // file to fix: its warning is its own.
-    let user = root.join("requests/main/users/get-user.toml");
-    std::fs::write(
-        &user,
-        "name = \"Get user\"\nmethod = \"GET\"\nurl = \"{{base}}/users\"\n\n\
-         [variables]\nheld = \"{{region}}\"\n",
-    )
-    .unwrap();
-    let warnings = findings(&json(&home.run_json(&["check", "-p", s(&root)])), "warnings");
-    assert!(
-        warnings.contains(&(
-            s(&user).to_string(),
-            "the X-Def header: held's value holds {{region}}, which is sent as written".to_string()
-        )),
-        "{warnings:?}"
-    );
+    assert_eq!(warnings, want);
 }
 
 /// Spec §4: an invalid name in `project.toml` is an error on that file,
