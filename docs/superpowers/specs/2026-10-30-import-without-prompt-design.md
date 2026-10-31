@@ -84,6 +84,12 @@ assigns a variable a value it can't read (`export BASE=$(…)`) over a
 variable the project has reads as "no news" (curl R7's kept-the-same),
 so it does not stop the silent create.
 
+Known limit (user, after review round 9: "They can also see it in the
+request after the import"): a URL bash or curl would expand
+(`https://x/{a,b}`, `https://x/item[1-3]` without `-g`) imports as
+written and does not stop the silent create. The prompt never said
+anything about it either: it shows the URL as written.
+
 ## 4. Tests
 
 - Core: each S3 flag (short and long) and a `| …` pipeline leave
