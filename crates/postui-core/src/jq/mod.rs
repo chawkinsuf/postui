@@ -121,7 +121,7 @@ impl JqDocument {
             .collect::<Result<_, _>>()
             .map_err(not_json)?;
         if values.is_empty() {
-            return Err(JqError::Runtime { message: "not JSON: the body is empty".into() });
+            return Err(JqError::Runtime { message: "not JSON: the body holds no value".into() });
         }
         Ok(JqDocument(values.into()))
     }
@@ -182,8 +182,8 @@ pub fn run_with_cap(
     with_compiled(code, |filter| {
         let mut out = Vec::new();
         let mut total = 0usize;
-        for_each_output(filter, doc, |val| {
-            let text = val.to_string();
+        for_each_output(filter, doc, |item| {
+            let text = item?.to_string();
             total += text.len();
             if total > cap_bytes {
                 return Err(JqError::Runtime {
@@ -200,30 +200,38 @@ pub fn run_with_cap(
 /// Runs `filter` over `doc` the way jq runs a program over its inputs:
 /// once per value, in order, with `input`/`inputs` taking the values after
 /// the current one (so a run that reads them all is the last). `each` sees
-/// every output in order and may stop the run early.
+/// every output in order, a filter error included, and may stop the run
+/// early (`Break`) or end it with an error. An error it lets go
+/// (`Continue`) ends only that value's run, as in jq, and the run goes on
+/// with the next value: completion does that, so one odd line in a stream
+/// doesn't hide the keys of the rest.
 ///
-/// Unlike jq, the first error, the filter's or `each`'s, ends the whole
-/// run: jq prints an error for that value and goes on with the next, but a
-/// run here is a result or an error (the bar shows one or the other, as
-/// does `run --jq`), and an error with partial output behind it would need
-/// a third state in both (#218, mine (approved)).
+/// [`run`] doesn't: there, unlike jq, the first error ends the whole run.
+/// jq prints an error for that value and goes on with the next, but a run
+/// here is a result or an error (the bar shows one or the other, as does
+/// `run --jq`), and an error with partial output behind it would need a
+/// third state in both (#218, mine (approved)).
 fn for_each_output(
     filter: &jaq_core::Filter<Data>,
     doc: &JqDocument,
-    mut each: impl FnMut(Val) -> Result<ControlFlow<()>, JqError>,
+    mut each: impl FnMut(Result<Val, JqError>) -> Result<ControlFlow<()>, JqError>,
 ) -> Result<(), JqError> {
     let values = RcIter::new(doc.0.iter().cloned().map(Ok));
     let globals = Globals { lut: &filter.lut, inputs: &values };
     while let Some(Ok(input)) = (&values).next() {
         for item in filter.id.run((Ctx::<Data>::new(&globals, Vars::new([])), input)) {
-            let val = item.map_err(|exn| JqError::Runtime {
+            let failed = item.is_err();
+            let item = item.map_err(|exn| JqError::Runtime {
                 message: match exn.get_err() {
                     Ok(err) => err.to_string(),
                     Err(_) => "filter broke out of its loop".to_string(),
                 },
-            })?;
-            if each(val)?.is_break() {
+            });
+            if each(item)?.is_break() {
                 return Ok(());
+            }
+            if failed {
+                break;
             }
         }
     }

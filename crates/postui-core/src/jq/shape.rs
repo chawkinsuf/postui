@@ -52,10 +52,10 @@ pub fn shape_of(doc: &JqDocument, limits: ShapeLimits) -> Shape {
     for value in doc.0.iter() {
         schema.add_val(value);
     }
-    Shape { stream: doc.0.len() > 1, ..build(schema, limits) }
+    build(schema, doc.0.len() > 1, limits)
 }
 
-fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
+fn build(mut schema: Schema, stream: bool, limits: ShapeLimits) -> Shape {
     schema.collapse();
     // The keys a request names sit at the top level — or, for a document
     // that is an array (or several things), one level under it.
@@ -67,7 +67,7 @@ fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
     // The example names keys the model can see: the deepest leaf among the
     // lines kept.
     let (outline, deepest) = outline.text();
-    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)), stream: false }
+    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)), stream }
 }
 
 /// Everything seen at one position of the document, merged.
