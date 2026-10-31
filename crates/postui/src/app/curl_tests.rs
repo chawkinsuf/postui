@@ -1703,13 +1703,17 @@ fn watching(clip: &str) -> App {
 #[test]
 fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
     let mut app = watching("");
+    let limit = super::curl_flow::CURL_IMPORT_LIMIT;
     for (clip, ready) in [
-        ("curl https://x/u", true),
-        ("hello", false),
-        ("curl 'https://x", false),
-        ("# @name A\ncurl https://x/a\ncurl https://x/b", true),
+        ("curl https://x/u".to_string(), true),
+        ("hello".to_string(), false),
+        ("curl 'https://x".to_string(), false),
+        ("# @name A\ncurl https://x/a\ncurl https://x/b".to_string(), true),
+        (named_batch(limit), true),
+        // Past the limit the import refuses (import-without-prompt S12).
+        (named_batch(limit + 1), false),
     ] {
-        app.clipboard.set_read_for_test(clip);
+        app.clipboard.set_read_for_test(&clip);
         app.check_clipboard();
         assert_eq!(app.sidebar.curl_ready, ready, "{clip:?}");
     }

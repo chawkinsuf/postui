@@ -33,7 +33,9 @@ impl App {
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
         let parsed = postui_core::curl::parse(&text);
-        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
+        // Past the limit the import refuses (S12): no curl it would take.
+        let takes = parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT);
+        self.sidebar.curl_ready = self.ui_settings.curl_button && takes;
         parsed
     }
 
