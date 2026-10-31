@@ -99,9 +99,7 @@ impl App {
     fn start_curl_import(&mut self, batch: CurlBatch, folder: Option<String>) {
         let n = batch.commands.len();
         if n > CURL_IMPORT_LIMIT {
-            let msg = format!(
-                "the paste holds {n} curl commands; import at most {CURL_IMPORT_LIMIT} at a time"
-            );
+            let msg = format!("{n} curl commands; import at most {CURL_IMPORT_LIMIT} at a time");
             return self.toasts.push(msg, ToastKind::Error);
         }
         let run = Box::new(CurlImportRun::new(batch, folder));
@@ -170,13 +168,8 @@ impl App {
                     revealed: false,
                 });
             }
-            if run.index + 1 < run.commands.len() {
-                run.index += 1;
-            } else {
-                if let Some((text, kind)) = run.summary() {
-                    self.toasts.push(text, kind);
-                }
-                return;
+            if !run.advance() {
+                return self.finish_curl_import(&run);
             }
         }
     }
@@ -556,10 +549,16 @@ impl App {
     /// (spec §4.2 step 5). The last request created is already open: each
     /// create opened its own.
     pub(super) fn advance_curl_import(&mut self, mut run: CurlImportRun) {
-        if run.index + 1 < run.commands.len() {
-            run.index += 1;
+        if run.advance() {
             self.push_curl_prompt(run);
-        } else if let Some((text, kind)) = run.summary() {
+        } else {
+            self.finish_curl_import(&run);
+        }
+    }
+
+    /// The summary toast past the last command (spec §4.3).
+    fn finish_curl_import(&mut self, run: &CurlImportRun) {
+        if let Some((text, kind)) = run.summary() {
             self.toasts.push(text, kind);
         }
     }

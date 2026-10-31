@@ -18,8 +18,9 @@ pub struct CurlImport {
     pub ignored: Vec<String>,
     /// Whether `ignored` holds anything but `QUIET_FLAGS` flags and a
     /// `| …` pipeline tail (import-without-prompt spec S3): only those are
-    /// known to leave what curl sent alone. An import with a `# @name`
-    /// and nothing else ignored needs no prompt.
+    /// known to leave what curl sent alone. One of the checks an import
+    /// makes before it skips the name prompt; the name, the paste's other
+    /// lines and the variables are the app's to check (S2, S4, S11).
     pub ignores_sent: bool,
     /// Shell variables converted to `{{NAME}}`, first-seen order.
     pub converted: Vec<String>,

@@ -258,10 +258,7 @@ fn a_paste_past_the_limit_imports_nothing() {
     assert!(app.modals.is_empty());
     assert_eq!(app.proj().requests().len(), before);
     let (msg, kind) = *app.toasts.entries().last().unwrap();
-    assert_eq!(
-        msg,
-        format!("the paste holds {n} curl commands; import at most {} at a time", n - 1)
-    );
+    assert_eq!(msg, format!("{n} curl commands; import at most {} at a time", n - 1));
     assert_eq!(*kind, crate::components::toast::ToastKind::Error);
 }
 

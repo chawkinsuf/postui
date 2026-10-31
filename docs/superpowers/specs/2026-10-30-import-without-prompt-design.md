@@ -30,8 +30,8 @@ trigger the modal."
 | S8 | A silent create the project refuses for any other reason (an unreadable environment file, a write that fails) toasts why, as today, and brings up that command's prompt, prefilled with the name, so the user can deal with it. A `# @name` that does not read as a request name (`sub/`) is not tried: it prompts, as a taken one does (review round 4). | mine |
 | S9 | The prompt, when it shows, is unchanged: method and URL, then `ignores …` with the whole ignored list, harmless flags included. | mine |
 | S10 | The summary toast is unchanged: harmless flags are still listed under `ignored:`, and still make it a warning (D3 names every dropped flag in a warning toast). | mine |
-| S12 | A paste of more than 50 curl commands imports nothing: an error toast says "the paste holds N curl commands; import at most 50 at a time", before the dirty gate. Every import path (palette, sidebar paste, button, folder menu). | the limit is you ("No one should really be importing hundreds like that"); refusing the paste, at 50, is mine (approved) |
 | S11 | Only the standard path skips the prompt: a paste holding any skipped line (anything but curl commands, comments and plain `NAME=value` assignments: `echo`, `alias`, `source`) prompts every command, since what such a line did is unknown, as for R7's values. A plain assignment line is read as a value only, even one curl would read itself (`export https_proxy=…`): that rare loss is accepted, and undo takes the request back. | the direction is you (after review round 3: "this was supposed to just be a simple update. i just want to keep it simple and make the standard path that doesnt need user input, not require user input"); the rule is mine |
+| S12 | A paste of more than 50 curl commands imports nothing: an error toast says "N curl commands; import at most 50 at a time", before the dirty gate. Every import path (palette, sidebar paste, button, folder menu). | the limit is you ("No one should really be importing hundreds like that"); refusing the paste, at 50, is mine (approved) |
 
 Rounds 1–2 had grown a list of curl's environment variables and a
 redirect-target tracker in the shell splitter, and round 3 found more
@@ -76,13 +76,13 @@ next command) asks for a name, so the choice goes there:
   (Enter on command k, then k+1's create), and a refusal's
   `last_action_failed` would push k's prompt back over k+1's, so the
   flag is taken first and put back, as `commit_settings_edit` does.
+- Nothing is removed. The prompt, its actions and the summary stay as
+  they are.
 
 Known limit (user, after review round 6: "Leave it"): a paste that
 assigns a variable a value it can't read (`export BASE=$(…)`) over a
 variable the project has reads as "no news" (curl R7's kept-the-same),
 so it does not stop the silent create.
-- Nothing is removed. The prompt, its actions and the summary stay as
-  they are.
 
 ## 4. Tests
 

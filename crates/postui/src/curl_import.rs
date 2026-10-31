@@ -106,6 +106,15 @@ impl CurlImportRun {
         &self.commands[self.index]
     }
 
+    /// Moves on to the next command; `false`, staying put, past the last.
+    pub fn advance(&mut self) -> bool {
+        let more = self.index + 1 < self.commands.len();
+        if more {
+            self.index += 1;
+        }
+        more
+    }
+
     pub fn title(&self) -> String {
         if self.commands.len() == 1 {
             "Import curl".to_string()
