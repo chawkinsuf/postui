@@ -247,6 +247,10 @@ need a project (`refuse_without_project`, like New request).
    then (a scratch request becomes a blank one), so skipping every
    prompt afterwards still leaves what the answer said; undo brings it
    back (2026-10-12).
+   *Amended 2026-10-30 (task #147, you):* a command with a `# @name`,
+   a free name, nothing ignored that changed what curl sent, and no
+   variable issue gets no prompt: step 4 runs at once. The rules are in
+   `2026-10-30-import-without-prompt-design.md`.
 4. Enter → `Project::create_request(display_path, request)`: the same
    validation, sibling uniqueness, slug derivation and undo entry as a
    new request; the same "name taken"/"empty name" errors keep the
