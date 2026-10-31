@@ -438,7 +438,10 @@ fn record(
         // Parsed from the unmasked text, then masked as a tree: masking the
         // text first would break the JSON where a mask lands in a number or
         // an escape. A body that parses is given only parsed (its exact
-        // spacing and duplicate keys are lost; `-o` keeps the bytes).
+        // spacing and duplicate keys are lost; `-o` keeps the bytes). A
+        // stream of values (NDJSON) is one JSON value only as an array the
+        // server never sent, so it stays text in `body`; `--jq` reads it
+        // value by value (#218, mine (approved)).
         let parsed = json.then(|| serde_json::from_str::<serde_json::Value>(text).ok()).flatten();
         match parsed {
             Some(value) => response.body_json = Some(mask.apply_json(value)),

@@ -4,31 +4,32 @@
 //! (`candidates`). Pure apart from `keys_at`; jaq's types never leave the
 //! module.
 
-use super::{Data, JqDocument, with_compiled};
-use jaq_core::{Ctx, Vars};
+use super::{JqDocument, for_each_output, with_compiled};
 use jaq_json::Val;
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::sync::OnceLock;
 
 /// How many outputs of the context expression are looked at for keys.
 /// `.users[]` over a huge array stops here; a completion run can never
-/// reach `OUTPUT_CAP`.
+/// reach `OUTPUT_CAP`. The cap counts across a stream's values too (and an
+/// error counts as an output), so on NDJSON the keys come from the first
+/// lines: a key only a later line has is not offered, the price of a run
+/// that stays short on every keystroke, as it already was for a big array.
 pub const COMPLETE_OUTPUTS: usize = 64;
 
 /// Runs `input_expr` against `doc`, takes at most `COMPLETE_OUTPUTS`
 /// outputs, and returns the keys of those that are objects in order of
 /// first appearance, deduplicated. Any error — a prefix that does not
 /// compile, a runtime error part-way — yields what was collected so far,
-/// never an error: a half-typed filter is normal here.
+/// never an error: a half-typed filter is normal here. In a stream, a
+/// runtime error ends only that value's run and the next value goes on.
 pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
+    let mut outputs = 0;
     let _ = with_compiled(input_expr, |filter| {
-        let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
-        for item in filter.id.run((ctx, (*doc.0).clone())).take(COMPLETE_OUTPUTS) {
-            let Ok(val) = item else {
-                break;
-            };
-            if let Val::Obj(map) = &val {
+        for_each_output(filter, doc, |item| {
+            if let Ok(Val::Obj(map)) = &item {
                 for (k, _) in map.iter() {
                     if let Val::TStr(s) = k {
                         let key = String::from_utf8_lossy(s).into_owned();
@@ -38,8 +39,13 @@ pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
                     }
                 }
             }
-        }
-        Ok(())
+            outputs += 1;
+            Ok(if outputs < COMPLETE_OUTPUTS {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            })
+        })
     });
     keys
 }
@@ -588,6 +594,20 @@ mod tests {
 
     fn doc() -> super::super::JqDocument {
         super::super::JqDocument::parse(DOC).expect("fixture is JSON")
+    }
+
+    #[test]
+    fn keys_come_from_every_value_of_a_stream() {
+        let stream = super::super::JqDocument::parse("{\"a\":1}\n{\"b\":2,\"a\":3}\n").unwrap();
+        assert_eq!(keys_at(".", &stream), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn a_value_the_context_fails_on_is_skipped_not_the_rest_of_the_stream() {
+        let body =
+            "{\"type\":\"start\"}\n{\"items\":[{\"id\":1}]}\n{\"items\":[{\"id\":2,\"n\":3}]}";
+        let stream = super::super::JqDocument::parse(body).unwrap();
+        assert_eq!(keys_at(".items[]", &stream), vec!["id", "n"]);
     }
 
     fn closer_of(text: &str) -> Option<String> {

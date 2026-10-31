@@ -271,26 +271,39 @@ impl JsonTree {
         }
     }
 
-    /// Parses `text` as JSON and flattens it. Returns `None` when the text
-    /// is not JSON at all. Synchronous and potentially slow on a large
-    /// document: past `response::SYNC_PRETTY_BYTES` its caller runs it on a
-    /// blocking worker rather than on the UI thread.
+    /// Parses `text` as JSON and flattens it. A stream of values (NDJSON,
+    /// or any whitespace-separated run of them) stacks them as
+    /// [`Self::parse_many`] does, the way jq reads it (#218). Returns `None`
+    /// when the text holds no value or a bad one.
+    ///
+    /// Any such run is a stream, whatever the content type says: a
+    /// `text/plain` list of numbers (`200\n404`) opens on the Tree tab,
+    /// as a lone `200` always has, because jq reads it as JSON too and the
+    /// jq bar is only there with a tree. A value's path starts at `.` (jq's
+    /// path inside each input), so a path taken from the second value runs
+    /// on every value, as that filter does in jq. Synchronous and
+    /// potentially slow on a large document: past
+    /// `response::SYNC_PRETTY_BYTES` its caller runs it on a blocking
+    /// worker rather than on the UI thread.
     pub fn parse(text: &str) -> Option<JsonTree> {
-        let value: serde_json::Value = serde_json::from_str(text).ok()?;
-        let mut tree = Self::empty();
-        tree.walk(None, &value, 0, NONE, NONE, false);
-        tree.rebuild_visible();
-        Some(tree)
+        let values = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
+        let tree = Self::from_values(values.map(Result::ok))?;
+        (!tree.lines.is_empty()).then_some(tree)
     }
 
     /// Several documents in one tree — a filter's outputs — one straight
     /// after another, exactly as `jq` prints a stream. Paths restart at `.`
     /// for every document. An empty list is an empty tree.
     pub fn parse_many(docs: &[String]) -> Option<JsonTree> {
+        Self::from_values(docs.iter().map(|doc| serde_json::from_str(doc).ok()))
+    }
+
+    /// The tree of `values` stacked in order; `None` at the first that
+    /// failed to parse.
+    fn from_values(values: impl Iterator<Item = Option<serde_json::Value>>) -> Option<JsonTree> {
         let mut tree = Self::empty();
-        for doc in docs {
-            let value: serde_json::Value = serde_json::from_str(doc).ok()?;
-            tree.walk(None, &value, 0, NONE, NONE, false);
+        for value in values {
+            tree.walk(None, &value?, 0, NONE, NONE, false);
         }
         tree.rebuild_visible();
         Some(tree)
@@ -912,6 +925,16 @@ mod tests {
     fn parse_rejects_non_json() {
         assert!(JsonTree::parse("<html><body>hi</body></html>").is_none());
         assert!(JsonTree::parse("").is_none());
+        assert!(JsonTree::parse(" \n").is_none());
+        assert!(JsonTree::parse("{\"a\": 1}\n{oops}\n").is_none(), "a bad value in a stream");
+    }
+
+    #[test]
+    fn a_stream_of_values_stacks_them_like_jq() {
+        let t = JsonTree::parse("{\"a\":1}\n{\"a\":2}\n").expect("NDJSON has a tree");
+        let stacked = JsonTree::parse_many(&["{\"a\":1}".into(), "{\"a\":2}".into()]).unwrap();
+        assert_eq!(t.full_text_lines(), stacked.full_text_lines());
+        assert_eq!(t.full_text_lines(), ["{", "  \"a\": 1", "}", "{", "  \"a\": 2", "}"]);
     }
 
     #[test]

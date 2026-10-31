@@ -26,6 +26,9 @@ impl Default for ShapeLimits {
 pub struct Shape {
     pub outline: String,
     pub example_path: Option<String>,
+    /// The body is a stream of several values (NDJSON), merged into the
+    /// outline, which the prompt has to say: a filter runs once per value.
+    pub stream: bool,
 }
 
 /// The whole structure, one key per line, indented under its parent:
@@ -44,12 +47,15 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
 /// `shape` of a body the jq engine already parsed — the one walker; the
 /// text form parses with the same engine first.
 pub fn shape_of(doc: &JqDocument, limits: ShapeLimits) -> Shape {
+    // A stream's values merge at the root as an array's elements do.
     let mut schema = Schema::default();
-    schema.add_val(&doc.0);
-    build(schema, limits)
+    for value in doc.0.iter() {
+        schema.add_val(value);
+    }
+    build(schema, doc.0.len() > 1, limits)
 }
 
-fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
+fn build(mut schema: Schema, stream: bool, limits: ShapeLimits) -> Shape {
     schema.collapse();
     // The keys a request names sit at the top level — or, for a document
     // that is an array (or several things), one level under it.
@@ -61,7 +67,7 @@ fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
     // The example names keys the model can see: the deepest leaf among the
     // lines kept.
     let (outline, deepest) = outline.text();
-    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)) }
+    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)), stream }
 }
 
 /// Everything seen at one position of the document, merged.
@@ -702,6 +708,15 @@ data[]
     b: number
     []: boolean"
         );
+    }
+
+    #[test]
+    fn every_value_of_a_stream_is_merged_like_array_elements() {
+        let stream =
+            shape("{\"a\": 1}\n{\"a\": 2, \"b\": \"x\"}\n", ShapeLimits::default()).unwrap();
+        assert_eq!(stream.outline, "a: number\nb?: string");
+        assert!(stream.stream, "the shape says it is a stream");
+        assert!(!shape("{\"a\": 1}", ShapeLimits::default()).unwrap().stream);
     }
 
     #[test]

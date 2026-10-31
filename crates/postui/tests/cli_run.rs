@@ -528,6 +528,24 @@ fn run_jq_prints_the_filters_output() {
     assert!(v["response"]["body"].is_null() && v["response"]["body_json"].is_null());
 }
 
+/// An NDJSON body runs the filter once per value, like jq (#218), and
+/// `inputs` reads the rest.
+#[test]
+fn run_jq_runs_over_every_value_of_a_stream() {
+    let (home, _server, root) = served();
+    std::fs::write(
+        root.join("requests/main/stream.toml"),
+        "name = \"Stream\"\nmethod = \"GET\"\nurl = \"{{base}}/ndjson\"\n",
+    )
+    .unwrap();
+    let out = send(&home, &root, "main/stream", &["--jq", ".part"]);
+    assert_ok(&out, "run --jq on NDJSON");
+    assert_eq!(json(&out)["jq"]["output"], serde_json::json!(["he", "llo"]));
+    let joined =
+        send_text(&home, &root, "main/stream", &["--jq", "[., inputs] | map(.part) | add"]);
+    assert_eq!(joined, "\"hello\"\n");
+}
+
 /// A failed run whose reader has gone (stdout a closed pipe) still exits 1.
 #[test]
 fn a_failed_run_to_a_closed_stdout_exits_1() {
