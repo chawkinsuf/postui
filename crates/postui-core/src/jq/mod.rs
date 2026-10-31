@@ -210,7 +210,8 @@ pub fn run_with_cap(
 /// jq prints an error for that value and goes on with the next, but a run
 /// here is a result or an error (the bar shows one or the other, as does
 /// `run --jq`), and an error with partial output behind it would need a
-/// third state in both (#218, mine (approved)).
+/// third state in both (#218, mine (approved)). jq's per-value errors are
+/// #229.
 fn for_each_output(
     filter: &jaq_core::Filter<Data>,
     doc: &JqDocument,
