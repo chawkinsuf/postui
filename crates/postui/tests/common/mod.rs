@@ -145,7 +145,8 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// A local HTTP server for the commands that send. It answers by path:
 /// `/ok` 200 JSON `{"id":42}`; `/missing` 404 `nope`; `/echo` 200 with the
 /// request's `authorization` in `x-echo` and its body back; `/bytes` 200
-/// `ok\xff\xfe`; `/hang` never answers; anything else 200, empty.
+/// `ok\xff\xfe`; `/ndjson` 200 two NDJSON lines `{"part":…}`; `/hang` never
+/// answers; anything else 200, empty.
 pub struct Server {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
@@ -223,6 +224,11 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
             body.to_vec(),
         ),
         "/bytes" => ("200 OK", String::new(), b"ok\xff\xfe".to_vec()),
+        "/ndjson" => (
+            "200 OK",
+            "content-type: application/x-ndjson\r\n".into(),
+            b"{\"part\":\"he\"}\n{\"part\":\"llo\"}\n".to_vec(),
+        ),
         "/hang" => {
             held.lock().unwrap().push(stream);
             return;

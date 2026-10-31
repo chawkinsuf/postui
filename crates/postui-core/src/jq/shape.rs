@@ -44,8 +44,11 @@ pub fn shape(body: &str, limits: ShapeLimits) -> Option<Shape> {
 /// `shape` of a body the jq engine already parsed — the one walker; the
 /// text form parses with the same engine first.
 pub fn shape_of(doc: &JqDocument, limits: ShapeLimits) -> Shape {
+    // A stream's values merge at the root as an array's elements do.
     let mut schema = Schema::default();
-    schema.add_val(&doc.0);
+    for value in doc.0.iter() {
+        schema.add_val(value);
+    }
     build(schema, limits)
 }
 
@@ -702,6 +705,11 @@ data[]
     b: number
     []: boolean"
         );
+    }
+
+    #[test]
+    fn every_value_of_a_stream_is_merged_like_array_elements() {
+        assert_eq!(outline("{\"a\": 1}\n{\"a\": 2, \"b\": \"x\"}\n"), "a: number\nb?: string");
     }
 
     #[test]

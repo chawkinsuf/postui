@@ -4,10 +4,10 @@
 //! (`candidates`). Pure apart from `keys_at`; jaq's types never leave the
 //! module.
 
-use super::{Data, JqDocument, with_compiled};
-use jaq_core::{Ctx, Vars};
+use super::{JqDocument, for_each_output, with_compiled};
 use jaq_json::Val;
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::sync::OnceLock;
 
 /// How many outputs of the context expression are looked at for keys.
@@ -22,12 +22,9 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 /// never an error: a half-typed filter is normal here.
 pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
+    let mut outputs = 0;
     let _ = with_compiled(input_expr, |filter| {
-        let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
-        for item in filter.id.run((ctx, (*doc.0).clone())).take(COMPLETE_OUTPUTS) {
-            let Ok(val) = item else {
-                break;
-            };
+        for_each_output(filter, doc, |val| {
             if let Val::Obj(map) = &val {
                 for (k, _) in map.iter() {
                     if let Val::TStr(s) = k {
@@ -38,8 +35,13 @@ pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
                     }
                 }
             }
-        }
-        Ok(())
+            outputs += 1;
+            Ok(if outputs < COMPLETE_OUTPUTS {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            })
+        })
     });
     keys
 }
@@ -588,6 +590,12 @@ mod tests {
 
     fn doc() -> super::super::JqDocument {
         super::super::JqDocument::parse(DOC).expect("fixture is JSON")
+    }
+
+    #[test]
+    fn keys_come_from_every_value_of_a_stream() {
+        let stream = super::super::JqDocument::parse("{\"a\":1}\n{\"b\":2,\"a\":3}\n").unwrap();
+        assert_eq!(keys_at(".", &stream), vec!["a", "b"]);
     }
 
     fn closer_of(text: &str) -> Option<String> {

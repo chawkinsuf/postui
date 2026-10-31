@@ -2,12 +2,13 @@
 //! jaq's own types never leave this module: callers hand in body text and
 //! filter text, and get back JSON strings or a [`JqError`].
 
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 
 use jaq_core::load::{Arena, File, Loader};
-use jaq_core::{Compiler, Ctx, Vars, data};
+use jaq_core::{Compiler, Ctx, DataT, Lut, Vars, data::HasLut};
 use jaq_json::Val;
+use jaq_std::input::{HasInputs, Inputs, RcIter};
 
 pub mod ai;
 pub mod complete;
@@ -15,16 +16,43 @@ pub mod path;
 pub mod shape;
 pub use path::{PathSeg, compose, render_path};
 
-type Data = data::JustLut<Val>;
+/// What a filter runs on: JSON values, with the compiled lookup table and
+/// the values `input`/`inputs` read (`Globals`) as its global data.
+struct Data;
+
+impl DataT for Data {
+    type V<'a> = Val;
+    type Data<'a> = &'a Globals<'a>;
+}
+
+struct Globals<'a> {
+    lut: &'a Lut<Data>,
+    inputs: Inputs<'a, Val>,
+}
+
+impl<'a> HasLut<'a, Data> for &'a Globals<'a> {
+    fn lut(&self) -> &'a Lut<Data> {
+        self.lut
+    }
+}
+
+impl<'a> HasInputs<'a, Val> for &'a Globals<'a> {
+    fn inputs(&self) -> Inputs<'a, Val> {
+        self.inputs
+    }
+}
 
 /// Refuse to collect more than this much output text in one run — a
 /// `[range(1e9)]` typo must not take the app down.
 pub const OUTPUT_CAP: usize = 64 * 1024 * 1024;
 
 /// A body parsed once by jaq's reader, shared between runs (and threads:
-/// `jaq-json`'s `sync` feature makes `Val` `Arc`-backed).
+/// `jaq-json`'s `sync` feature makes `Val` `Arc`-backed). Every JSON value
+/// in the body, in order: one for a JSON body, several for a stream such as
+/// NDJSON, which a filter runs over the way jq runs over its inputs
+/// ([`for_each_output`]).
 #[derive(Clone)]
-pub struct JqDocument(Arc<Val>);
+pub struct JqDocument(Arc<[Val]>);
 
 impl std::fmt::Debug for JqDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -85,10 +113,17 @@ impl std::fmt::Display for JqError {
 }
 
 impl JqDocument {
+    /// Every whitespace-separated JSON value in `body`, as jq reads its
+    /// input. A body with no value, or with a bad one anywhere, is not JSON.
     pub fn parse(body: &str) -> Result<Self, JqError> {
-        jaq_json::read::parse_single(body.as_bytes())
-            .map(|v| JqDocument(Arc::new(v)))
-            .map_err(|e| JqError::Runtime { message: format!("not JSON: {e}") })
+        let not_json = |e| JqError::Runtime { message: format!("not JSON: {e}") };
+        let values: Vec<Val> = jaq_json::read::parse_many(body.as_bytes())
+            .collect::<Result<_, _>>()
+            .map_err(not_json)?;
+        if values.is_empty() {
+            return Err(JqError::Runtime { message: "not JSON: the body is empty".into() });
+        }
+        Ok(JqDocument(values.into()))
     }
 }
 
@@ -109,7 +144,8 @@ fn defs() -> impl Iterator<Item = jaq_core::load::parse::Def<&'static str>> {
 }
 
 fn funs() -> impl Iterator<Item = jaq_core::native::Fun<Data>> {
-    jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(jaq_json::funs())
+    let inputs = jaq_std::input::funs().into_vec().into_iter().map(jaq_core::native::run);
+    jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(inputs).chain(jaq_json::funs())
 }
 
 /// Compiles `code` against a fresh arena and hands the compiled filter to
@@ -144,16 +180,9 @@ pub fn run_with_cap(
     cap_bytes: usize,
 ) -> Result<Vec<String>, JqError> {
     with_compiled(code, |filter| {
-        let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
         let mut out = Vec::new();
         let mut total = 0usize;
-        for item in filter.id.run((ctx, (*doc.0).clone())) {
-            let val = item.map_err(|exn| JqError::Runtime {
-                message: match exn.get_err() {
-                    Ok(err) => err.to_string(),
-                    Err(_) => "filter broke out of its loop".to_string(),
-                },
-            })?;
+        for_each_output(filter, doc, |val| {
             let text = val.to_string();
             total += text.len();
             if total > cap_bytes {
@@ -162,9 +191,38 @@ pub fn run_with_cap(
                 });
             }
             out.push(text);
-        }
+            Ok(ControlFlow::Continue(()))
+        })?;
         Ok(out)
     })
+}
+
+/// Runs `filter` over `doc` the way jq runs a program over its inputs:
+/// once per value, in order, with `input`/`inputs` taking the values after
+/// the current one (so a run that reads them all is the last). `each` sees
+/// every output in order and may stop the run early; the first error, the
+/// filter's or `each`'s, ends it.
+fn for_each_output(
+    filter: &jaq_core::Filter<Data>,
+    doc: &JqDocument,
+    mut each: impl FnMut(Val) -> Result<ControlFlow<()>, JqError>,
+) -> Result<(), JqError> {
+    let values = RcIter::new(doc.0.iter().cloned().map(Ok));
+    let globals = Globals { lut: &filter.lut, inputs: &values };
+    while let Some(Ok(input)) = (&values).next() {
+        for item in filter.id.run((Ctx::<Data>::new(&globals, Vars::new([])), input)) {
+            let val = item.map_err(|exn| JqError::Runtime {
+                message: match exn.get_err() {
+                    Ok(err) => err.to_string(),
+                    Err(_) => "filter broke out of its loop".to_string(),
+                },
+            })?;
+            if each(val)?.is_break() {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
@@ -334,6 +392,47 @@ mod tests {
     fn non_json_bodies_are_rejected_at_parse() {
         let err = JqDocument::parse("<html>").unwrap_err();
         assert!(matches!(err, JqError::Runtime { .. }), "got {err:?}");
+    }
+
+    const STREAM: &str = "{\"a\":1,\"b\":\"x\"}\n{\"a\":2}\n{\"a\":3,\"c\":true}\n";
+
+    #[test]
+    fn a_stream_body_runs_the_filter_once_per_value_like_jq() {
+        let doc = JqDocument::parse(STREAM).expect("NDJSON is a stream of values");
+        assert_eq!(run(".a", &doc).unwrap(), vec!["1", "2", "3"]);
+        assert_eq!(
+            run(".", &JqDocument::parse("1 [2] \"x\"").unwrap()).unwrap(),
+            vec!["1", "[2]", "\"x\""]
+        );
+    }
+
+    #[test]
+    fn inputs_reads_the_values_after_the_current_one() {
+        let doc = JqDocument::parse(STREAM).unwrap();
+        assert_eq!(run("[., inputs] | map(.a)", &doc).unwrap(), vec!["[1,2,3]"]);
+        // `input` takes the next value, so the filter's next run starts after it.
+        let four = JqDocument::parse("1 2 3 4").unwrap();
+        assert_eq!(run("[., input]", &four).unwrap(), vec!["[1,2]", "[3,4]"]);
+    }
+
+    #[test]
+    fn inputs_on_a_single_value_body_yield_nothing() {
+        assert_eq!(run("[inputs]", &doc()).unwrap(), vec!["[]"]);
+    }
+
+    #[test]
+    fn a_runtime_error_on_any_value_is_the_whole_result() {
+        let err = run(".a | .x", &JqDocument::parse(STREAM).unwrap()).unwrap_err();
+        assert!(matches!(err, JqError::Runtime { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn a_bad_value_anywhere_in_a_stream_is_not_json() {
+        let err = JqDocument::parse("{\"a\":1}\n{oops}\n").unwrap_err();
+        assert!(err.message().starts_with("not JSON: byte offset"), "got {err:?}");
+        for empty in ["", " \n"] {
+            assert!(JqDocument::parse(empty).is_err(), "{empty:?} has no value");
+        }
     }
 
     #[test]

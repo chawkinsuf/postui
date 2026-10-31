@@ -68,7 +68,9 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   (postui's jq, jaq). `--view` uses the request's own filter, the one its
   response pane applies, and `--view=NAME` one of its saved `[[jq_view]]`s:
   reach for these first when a request has them, to keep a large body out
-  of your context. A filter that fails prints its error and no body.
+  of your context. A filter that fails prints its error and no body. A
+  streamed body of several JSON values (NDJSON) runs the filter once per
+  value, as jq does; `[., inputs]` gathers them all into one array.
 - `-o FILE` writes the body to a file instead of printing it. Alone, it
   writes the raw bytes: use it for a binary body, which prints as text.
   With `--jq` or `--view`, the results still print and the file gets the

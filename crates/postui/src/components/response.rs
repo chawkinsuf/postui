@@ -8311,7 +8311,9 @@ mod tests {
 
     #[test]
     fn the_arrows_scroll_and_the_ctrl_keys_page() {
-        let body = (0..100).map(|i| format!("{:>200}", i)).collect::<Vec<_>>().join("\n");
+        // Words, not bare numbers: a run of numbers is a JSON stream (#218).
+        let body = (0..100).map(|i| format!("{:>200}", format!("line {i}"))).collect::<Vec<_>>();
+        let body = body.join("\n");
         let mut a = ready(&body);
         let mut b = ready(&body);
         render(&mut a);
