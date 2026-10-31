@@ -200,8 +200,13 @@ pub fn run_with_cap(
 /// Runs `filter` over `doc` the way jq runs a program over its inputs:
 /// once per value, in order, with `input`/`inputs` taking the values after
 /// the current one (so a run that reads them all is the last). `each` sees
-/// every output in order and may stop the run early; the first error, the
-/// filter's or `each`'s, ends it.
+/// every output in order and may stop the run early.
+///
+/// Unlike jq, the first error, the filter's or `each`'s, ends the whole
+/// run: jq prints an error for that value and goes on with the next, but a
+/// run here is a result or an error (the bar shows one or the other, as
+/// does `run --jq`), and an error with partial output behind it would need
+/// a third state in both (#218, mine (approved)).
 fn for_each_output(
     filter: &jaq_core::Filter<Data>,
     doc: &JqDocument,

@@ -26,6 +26,9 @@ impl Default for ShapeLimits {
 pub struct Shape {
     pub outline: String,
     pub example_path: Option<String>,
+    /// The body is a stream of several values (NDJSON), merged into the
+    /// outline, which the prompt has to say: a filter runs once per value.
+    pub stream: bool,
 }
 
 /// The whole structure, one key per line, indented under its parent:
@@ -49,7 +52,7 @@ pub fn shape_of(doc: &JqDocument, limits: ShapeLimits) -> Shape {
     for value in doc.0.iter() {
         schema.add_val(value);
     }
-    build(schema, limits)
+    Shape { stream: doc.0.len() > 1, ..build(schema, limits) }
 }
 
 fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
@@ -64,7 +67,7 @@ fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
     // The example names keys the model can see: the deepest leaf among the
     // lines kept.
     let (outline, deepest) = outline.text();
-    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)) }
+    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)), stream: false }
 }
 
 /// Everything seen at one position of the document, merged.
@@ -709,7 +712,11 @@ data[]
 
     #[test]
     fn every_value_of_a_stream_is_merged_like_array_elements() {
-        assert_eq!(outline("{\"a\": 1}\n{\"a\": 2, \"b\": \"x\"}\n"), "a: number\nb?: string");
+        let stream =
+            shape("{\"a\": 1}\n{\"a\": 2, \"b\": \"x\"}\n", ShapeLimits::default()).unwrap();
+        assert_eq!(stream.outline, "a: number\nb?: string");
+        assert!(stream.stream, "the shape says it is a stream");
+        assert!(!shape("{\"a\": 1}", ShapeLimits::default()).unwrap().stream);
     }
 
     #[test]

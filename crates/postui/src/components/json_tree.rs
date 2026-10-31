@@ -274,7 +274,14 @@ impl JsonTree {
     /// Parses `text` as JSON and flattens it. A stream of values (NDJSON,
     /// or any whitespace-separated run of them) stacks them as
     /// [`Self::parse_many`] does, the way jq reads it (#218). Returns `None`
-    /// when the text holds no value or a bad one. Synchronous and
+    /// when the text holds no value or a bad one.
+    ///
+    /// Any such run is a stream, whatever the content type says: a
+    /// `text/plain` list of numbers (`200\n404`) opens on the Tree tab,
+    /// as a lone `200` always has, because jq reads it as JSON too and the
+    /// jq bar is only there with a tree. A value's path starts at `.` (jq's
+    /// path inside each input), so a path taken from the second value runs
+    /// on every value, as that filter does in jq. Synchronous and
     /// potentially slow on a large document: past
     /// `response::SYNC_PRETTY_BYTES` its caller runs it on a blocking
     /// worker rather than on the UI thread.

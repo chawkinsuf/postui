@@ -33,16 +33,27 @@ name only the last key of a path: find that key in the structure and
 write its whole path from the root, through every array with `[]`. Never
 write a bare `.key` unless that key is at the top level.";
 
+/// Said after the structure of a stream (NDJSON), which the outline merges
+/// into one value's: otherwise the model writes filters for one document.
+const STREAM: &str = "\
+\nThe document is a stream of JSON values, not one value: the filter runs once
+per value, in order, and the structure describes every value, merged. To work
+on all of them together (count, join, filter into one array), start the filter
+with `[., inputs]`.\n";
+
 /// The whole stdin text for the AI command: system section, structure,
-/// example path, current filter, and the user's sentence.
+/// example path, a stream note when the body is one, current filter, and
+/// the user's sentence.
 pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
     let current = if current_filter.trim().is_empty() { "(none)" } else { current_filter.trim() };
     let example = match &shape.example_path {
         Some(path) => format!("\nA full path in this document: {path}\n"),
         None => String::new(),
     };
+    let stream = if shape.stream { STREAM } else { "" };
     format!(
-        "{SYSTEM}\n\nStructure:\n{}\n{example}\nCurrent filter: {current}\n\nRequest: {request}\n",
+        "{SYSTEM}\n\nStructure:\n{}\n{example}{stream}\nCurrent filter: {current}\n\nRequest: \
+         {request}\n",
         shape.outline
     )
 }
@@ -206,7 +217,18 @@ mod tests {
     use super::*;
 
     fn shape(outline: &str, example: Option<&str>) -> Shape {
-        Shape { outline: outline.into(), example_path: example.map(str::to_string) }
+        Shape { outline: outline.into(), example_path: example.map(str::to_string), stream: false }
+    }
+
+    #[test]
+    fn a_stream_is_named_as_one_with_how_to_take_its_values_together() {
+        let single = prompt(&shape("a: number", None), "", "x");
+        assert!(!single.contains("stream"), "{single}");
+        let stream = prompt(&Shape { stream: true, ..shape("a: number", None) }, "", "x");
+        let note = stream.find("a stream of JSON values").expect("the stream is named");
+        assert!(stream.contains("[., inputs]"), "{stream}");
+        assert!(stream.find("Structure:").unwrap() < note, "the note follows the structure");
+        assert!(note < stream.find("Current filter:").unwrap(), "{stream}");
     }
 
     #[test]
