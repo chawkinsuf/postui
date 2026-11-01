@@ -283,6 +283,38 @@ impl Project {
     }
 }
 
+/// The arrival cascade for the request at `rel`, one of `arriving` (every
+/// request the op brings into `space`, relative slugs): each folder it
+/// sits in, outermost first, then the request itself. A folder is new
+/// when every listed request under it is arriving; `seen` holds the
+/// folders this op already handled, so a folder several arrivals share
+/// is placed once. `slugs` is the relisted listing.
+fn arrive_with_folders(
+    space: &str,
+    order: &mut Vec<String>,
+    rel: &str,
+    arriving: &[&str],
+    seen: &mut Vec<String>,
+    slugs: &[String],
+) -> Vec<OrderEdit> {
+    let exists = |s: &str| order::exists_in(slugs, s);
+    let mut edits = Vec::new();
+    for folder in order::ancestors(rel) {
+        if seen.iter().any(|f| f == folder) {
+            continue;
+        }
+        seen.push(folder.to_string());
+        let under = format!("{space}/{folder}/");
+        let new = slugs
+            .iter()
+            .filter_map(|s| s.strip_prefix(&under).map(|_| &s[space.len() + 1..]))
+            .all(|r| arriving.contains(&r));
+        edits.extend(order::arrive_folder(space, order, folder, new, &exists));
+    }
+    edits.extend(order::arrive(space, order, rel, &exists));
+    edits
+}
+
 impl Project {
     /// Reads `space`'s list from `meta`, hands it to `f`, and writes it
     /// back through `project.toml` only if `f` changed it. Refuses a
@@ -309,15 +341,32 @@ impl Project {
         Ok(edits)
     }
 
+    /// Every listed request's full slug: what the order cascades test
+    /// existence against (`order::exists_in`). Callers have relisted.
+    fn listed_slugs(&self) -> Vec<String> {
+        self.listing.iter().map(|l| l.slug.clone()).collect()
+    }
+
+    /// The request at `rel` (relative to `space`) has just appeared, with
+    /// the listing already relisted: each folder it sits in that is new,
+    /// outermost first, then the request itself takes the arrival rule
+    /// (spec 2026-11-01 reorder folders R10, R10a).
     pub(super) fn order_arrive(&mut self, space: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
-        let exists: Vec<String> = self.listing.iter().map(|l| l.slug.clone()).collect();
+        let slugs = self.listed_slugs();
         self.order_edit(space, |order| {
-            order::arrive(space, order, rel, &|s| exists.iter().any(|e| e == s))
+            arrive_with_folders(space, order, rel, &[rel], &mut Vec::new(), &slugs)
         })
     }
 
+    /// The request at `rel` has just left, with the listing already
+    /// relisted: its entry, then every folder entry it left empty (R9).
     pub(super) fn order_remove(&mut self, space: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
-        self.order_edit(space, |order| order::remove(space, order, rel))
+        let slugs = self.listed_slugs();
+        self.order_edit(space, |order| {
+            let mut edits = order::remove(space, order, rel);
+            edits.extend(order::prune_folders(space, order, rel, &|s| order::exists_in(&slugs, s)));
+            edits
+        })
     }
 
     pub(super) fn order_rename(
@@ -400,15 +449,25 @@ impl Project {
         to: &str,
         moves: &[(String, String)],
     ) -> Result<(), Error> {
+        let slugs = self.listed_slugs();
+        let exists = |s: &str| order::exists_in(&slugs, s);
         self.order_edit(from, |order| {
-            moves.iter().flat_map(|(f, _)| order::remove(from, order, f)).collect()
-        })?;
-        let exists: Vec<String> = self.listing.iter().map(|l| l.slug.clone()).collect();
-        self.order_edit(to, |order| {
             moves
                 .iter()
-                .flat_map(|(_, t)| order::arrive(to, order, t, &|s| exists.iter().any(|e| e == s)))
+                .flat_map(|(f, _)| {
+                    let mut edits = order::remove(from, order, f);
+                    edits.extend(order::prune_folders(from, order, f, &exists));
+                    edits
+                })
                 .collect()
+        })?;
+        let arriving: Vec<&str> = moves.iter().map(|(_, t)| t.as_str()).collect();
+        let mut seen = Vec::new();
+        self.order_edit(to, |order| {
+            arriving
+                .iter()
+                .flat_map(|t| arrive_with_folders(to, order, t, &arriving, &mut seen, &slugs))
+                .collect::<Vec<_>>()
         })?;
         Ok(())
     }
@@ -1195,6 +1254,116 @@ mod tests {
         assert!(
             matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml"))
         );
+    }
+
+    /// A project whose `main` space holds `slugs` and whose `[space.main]
+    /// order` is `order`; `auth` exists and is empty but listed.
+    fn folder_project(order: &[&str], slugs: &[&str]) -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
+        let list = order.iter().map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(", ");
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!(
+                "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [{list}]\n[space.auth]\norder = [\"x/\"]\n"
+            ),
+        )
+        .unwrap();
+        for slug in slugs {
+            let path = dir.path().join(format!("requests/{slug}.toml"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        }
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        (dir, p)
+    }
+
+    /// Spec 2026-11-01 reorder folders R9: a folder whose last request
+    /// leaves loses its entry, with every ancestor the same op emptied,
+    /// and undo puts the list back byte for byte.
+    #[test]
+    fn deleting_a_folders_last_request_drops_its_entry_and_undo_restores_it() {
+        let (dir, mut p) = folder_project(
+            &["b/", "a/", "a/c/", "a/c/x", "z/"],
+            &["main/a/c/x", "main/b/y", "main/z/q"],
+        );
+        let before = read(&dir, "project.toml");
+        p.delete_request("main/a/c/x").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "z/"]);
+        p.undo().unwrap();
+        assert_eq!(read(&dir, "project.toml"), before);
+    }
+
+    #[test]
+    fn deleting_a_request_whose_folder_keeps_others_leaves_the_entry() {
+        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/a/y", "main/b/z"]);
+        p.delete_request("main/a/x").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/"]);
+    }
+
+    #[test]
+    fn a_rename_out_of_a_folder_drops_it_and_into_a_new_one_appends_it() {
+        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
+        p.rename_request("main/a/x", "main/c/x").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "c/"]);
+    }
+
+    #[test]
+    fn a_create_in_a_new_folder_of_an_unarranged_level_writes_nothing() {
+        let (_dir, mut p) = folder_project(&["r"], &["main/r", "main/a/x"]);
+        p.create_request("main/c/New", req("u")).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["r"]);
+    }
+
+    #[test]
+    fn a_create_in_a_new_nested_folder_arrives_every_new_ancestor() {
+        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
+        p.create_request("main/c/d/New", req("u")).unwrap();
+        // `c/` arrives at an arranged level; `c/d/` at one with no folder
+        // entries, so it is left to sort by name.
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/"]);
+    }
+
+    /// R10a: an entry left behind by a folder emptied outside the app
+    /// never hands its slot to a new folder of that name.
+    #[test]
+    fn a_create_in_a_folder_made_again_drops_its_leftover_entry() {
+        let (_dir, mut p) = folder_project(&["c/", "b/", "a/"], &["main/a/x", "main/b/z"]);
+        p.create_request("main/c/New", req("u")).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/"]);
+    }
+
+    #[test]
+    fn a_create_in_an_existing_folder_keeps_its_slot() {
+        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
+        p.create_request("main/b/New", req("u")).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/"]);
+    }
+
+    #[test]
+    fn a_move_to_another_space_cascades_folders_on_both_sides() {
+        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
+        std::fs::create_dir_all(p.root().join("requests/auth/x")).unwrap();
+        std::fs::write(p.root().join("requests/auth/x/k.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
+        p.relist();
+        p.move_request("main/a/x", "auth").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/"]);
+        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "a/"]);
+    }
+
+    #[test]
+    fn move_all_cascades_folders_on_both_sides() {
+        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/a/y", "main/b/z"]);
+        std::fs::create_dir_all(p.root().join("requests/auth/x")).unwrap();
+        std::fs::write(p.root().join("requests/auth/x/k.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
+        p.relist();
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(order::space_order(p.meta(), "main").is_empty());
+        // Both arrive new, in the order `main` showed them.
+        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "b/", "a/"]);
     }
 
     /// Spec §5.2: a batch delete is one journal entry, refused whole on a
