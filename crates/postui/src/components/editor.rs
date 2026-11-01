@@ -4673,11 +4673,13 @@ impl Editor {
             // A click on the row puts the cursor on it (task #230), and it
             // lights under the pointer as a table row does. Registered
             // before the token, which floats over it.
-            let row_hit = crate::hit::Hit::ReferencedVarRow(name.clone());
-            let lit = cursor == Some(i) || ctx.hovered == Some(&row_hit);
-            let bg = if lit { theme.control_hover } else { theme.page };
+            let hovered = matches!(
+                ctx.hovered,
+                Some(crate::hit::Hit::ReferencedVarRow(h)) if h == name
+            );
+            let bg = if cursor == Some(i) || hovered { theme.control_hover } else { theme.page };
             let row_rect = Rect::new(area.x, y, area.width, 1);
-            hits.register(row_rect, row_hit);
+            hits.register(row_rect, crate::hit::Hit::ReferencedVarRow(name.clone()));
             crate::paint::fill(buf, row_rect, bg);
             let info = self.vars.describe(name);
             let token_piece = format!("{{{{{name}}}}}");

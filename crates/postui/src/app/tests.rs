@@ -16137,19 +16137,32 @@ fn a_referenced_row_click_finds_its_variable_after_the_commit() {
 fn a_hovered_section_row_lights_like_a_table_row() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    let lit = |app: &mut App, hit: Hit| {
+    // With the pointer on `hover`, whether the row `row` is drawn lit (read
+    // at its indent, clear of the pills' own hover fill).
+    let lit = |app: &mut App, hover: Hit, row: Hit| {
         app.editor.table.set_selected(None);
         render_once(app);
-        let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect for {hit:?}"));
-        app.handle_mouse(moved(r.x + 1, r.y));
+        let at = |app: &App, hit: &Hit| {
+            app.hits.rect_of(hit).unwrap_or_else(|| panic!("no rect for {hit:?}"))
+        };
+        let h = at(app, &hover);
+        app.handle_mouse(moved(h.x + 1, h.y));
+        let r = at(app, &row);
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
         terminal.backend().buffer()[(r.x + 1, r.y)].bg == app.theme.control_hover
     };
     let mut app = auto_rows_app(crate::config::KeyProfile::Arrows);
-    assert!(lit(&mut app, Hit::AutoHeaderRow(0)), "the hovered auto row");
+    let (accept, host) = (Hit::AutoHeaderRow(0), Hit::AutoHeaderRow(1));
+    assert!(lit(&mut app, accept.clone(), accept.clone()), "the hovered auto row");
+    assert!(!lit(&mut app, accept.clone(), host), "and only that one");
+    // Its pills are part of the row: hovering one lights it too.
+    assert!(lit(&mut app, Hit::AutoHeaderCopy(0), accept.clone()), "the copy pill's row");
+    assert!(lit(&mut app, Hit::AutoHeaderOverride(0), accept), "the pencil's row");
     let mut app = referenced_rows_app(crate::config::KeyProfile::Arrows);
-    assert!(lit(&mut app, Hit::ReferencedVarRow("x".into())), "the hovered referenced row");
+    let (x, y) = (Hit::ReferencedVarRow("x".into()), Hit::ReferencedVarRow("y".into()));
+    assert!(lit(&mut app, x.clone(), x.clone()), "the hovered referenced row");
+    assert!(!lit(&mut app, x, y), "and only that one");
 }
 
 /// Keeping the cursor is not keeping an open cell: a click on an auto pill
