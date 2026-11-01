@@ -930,10 +930,9 @@ impl Sidebar {
     /// pointer short of the passed sibling's far edge. For one-row
     /// siblings (every request) it puts the row at the pointer's slot.
     ///
-    /// The dragged row is found in `working` by its entry, and lands
-    /// before the sibling now below it on screen (after the one above, at
-    /// the end), so an entry a changed listing no longer shows keeps its
-    /// place and can never make it move the wrong sibling.
+    /// The dragged row is found among the rows by its key, never by
+    /// offset, so a listing that changed under the drag can never make it
+    /// move the wrong sibling; `working` becomes the order now on screen.
     pub fn drag_to_row(&mut self, i: usize) -> bool {
         let Some((key, space)) = self.drag.as_ref().map(|d| (d.key.clone(), d.space.clone()))
         else {
@@ -966,26 +965,12 @@ impl Sidebar {
         if at == start_at {
             return false;
         }
+        // The working order is the siblings as they now show. A sibling a
+        // reload listed or took away under the drag is simply in it or
+        // not; an entry no longer shown keeps its slot in the saved list,
+        // which `merge_level` leaves alone.
         let drag = self.drag.as_mut().expect("checked above");
-        // A sibling listed since the drag began (a reload under it) has no
-        // entry yet. It is drawn after every working entry, which the
-        // overlay lists, so it joins the end of `working`, where it shows.
-        for (e, _) in &shown {
-            if !drag.working.contains(e) {
-                drag.working.push(e.clone());
-            }
-        }
-        let moved = &shown[at].0;
-        let Some(cur) = drag.working.iter().position(|e| e == moved) else {
-            return false;
-        };
-        let entry = drag.working.remove(cur);
-        let pos = |e: &String| drag.working.iter().position(|w| w == e);
-        let slot = match shown.get(at + 1) {
-            Some((below, _)) => pos(below),
-            None => pos(&shown[at - 1].0).map(|p| p + 1),
-        };
-        drag.working.insert(slot.unwrap_or(cur), entry);
+        drag.working = shown.into_iter().map(|(e, _)| e).collect();
         true
     }
 
@@ -2726,13 +2711,13 @@ mod tests {
     fn drag_to_row_finds_the_dragged_request_by_slug_not_row_offset() {
         // The listing changes under a live drag (a reload rebuilt the rows
         // with one sibling gone): the dragged request is still the one
-        // that moves, and the working order is never touched by offset.
+        // that moves, and the working order is the rows now on screen.
         let mut s = Sidebar::default();
         s.refresh(listing(&["a", "b", "c", "d"]), "main", &expanded(&[]), &[]);
         assert!(s.begin_drag(3, "main"));
         s.refresh(listing(&["a", "c", "d"]), "main", &expanded(&[]), &[]);
         assert!(s.drag_to_row(0));
-        assert_eq!(s.drag.as_ref().unwrap().working, order(&["d", "a", "b", "c"]));
+        assert_eq!(s.drag.as_ref().unwrap().working, order(&["d", "a", "c"]));
     }
 
     #[test]
