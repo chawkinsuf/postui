@@ -170,30 +170,73 @@ pub fn check(code: &str) -> Result<(), JqError> {
     with_compiled(code, |_| Ok(()))
 }
 
-pub fn run(code: &str, doc: &JqDocument) -> Result<Vec<String>, JqError> {
+/// What a filter made of a document: every output, as compact JSON in
+/// order, and beside them the error of a value whose run failed. As in jq,
+/// an error ends only the run of the value it happened on, so the outputs
+/// are the other values' and those printed before it. When more than one
+/// value's run failed, `error` is the first one's, its message starting
+/// `first of N errors: ` (N counts failed runs: a filter reading
+/// `input`/`inputs` takes several values in one): one line for the bar's one row and for an agent reading
+/// `run --jq`, where jq prints a line per failing value (#229 spec, R3).
+/// The count leads because jaq's message holds the failing value, which
+/// on a long line runs past the bar's row, and it says "first" because
+/// the other values may have failed differently. It is part of the
+/// message, not a field of its own, so the bar and the CLI say it the
+/// same way from this one place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JqRun {
+    pub outputs: Vec<String>,
+    pub error: Option<JqError>,
+}
+
+/// Runs `code` over `doc`. `Err` is for what fails the whole run: a filter
+/// that doesn't compile, or output past the cap. A filter error on a value
+/// is the run's [`JqRun::error`], beside the outputs.
+pub fn run(code: &str, doc: &JqDocument) -> Result<JqRun, JqError> {
     run_with_cap(code, doc, OUTPUT_CAP)
 }
 
-pub fn run_with_cap(
-    code: &str,
-    doc: &JqDocument,
-    cap_bytes: usize,
-) -> Result<Vec<String>, JqError> {
+pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<JqRun, JqError> {
     with_compiled(code, |filter| {
-        let mut out = Vec::new();
+        let mut outputs = Vec::new();
         let mut total = 0usize;
+        let mut first = None;
+        let mut failed = 0usize;
         for_each_output(filter, doc, |item| {
-            let text = item?.to_string();
-            total += text.len();
-            if total > cap_bytes {
-                return Err(JqError::Runtime {
-                    message: format!("output too large to display (over {} bytes)", cap_bytes),
-                });
+            match item {
+                Ok(value) => {
+                    let text = value.to_string();
+                    total += text.len();
+                    if total > cap_bytes {
+                        return Err(JqError::Runtime {
+                            message: format!(
+                                "output too large to display (over {} bytes)",
+                                cap_bytes
+                            ),
+                        });
+                    }
+                    outputs.push(text);
+                }
+                // `for_each_output` ends the value's run on its error, so
+                // each one is a value that failed. Every one has had its
+                // message formatted (jaq's holds the value), though only
+                // the first is kept: a filter failing on every line of a
+                // big stream formats the whole body, where the run used to
+                // stop at the first error. Accepted to keep the error
+                // handling simple (the user, #229); jq formats every error
+                // too.
+                Err(e) => {
+                    failed += 1;
+                    first.get_or_insert(e);
+                }
             }
-            out.push(text);
             Ok(ControlFlow::Continue(()))
         })?;
-        Ok(out)
+        let error = first.map(|e| match failed {
+            1 => e,
+            n => JqError::Runtime { message: format!("first of {n} errors: {}", e.message()) },
+        });
+        Ok(JqRun { outputs, error })
     })
 }
 
@@ -203,15 +246,8 @@ pub fn run_with_cap(
 /// every output in order, a filter error included, and may stop the run
 /// early (`Break`) or end it with an error. An error it lets go
 /// (`Continue`) ends only that value's run, as in jq, and the run goes on
-/// with the next value: completion does that, so one odd line in a stream
-/// doesn't hide the keys of the rest.
-///
-/// [`run`] doesn't: there, unlike jq, the first error ends the whole run.
-/// jq prints an error for that value and goes on with the next, but a run
-/// here is a result or an error (the bar shows one or the other, as does
-/// `run --jq`), and an error with partial output behind it would need a
-/// third state in both (#218, mine (approved)). jq's per-value errors are
-/// #229.
+/// with the next value: [`run`] and completion both do that, so one odd
+/// line in a stream hides neither the results nor the keys of the rest.
 fn for_each_output(
     filter: &jaq_core::Filter<Data>,
     doc: &JqDocument,
@@ -329,19 +365,28 @@ mod tests {
         JqDocument::parse(DOC).expect("fixture is JSON")
     }
 
+    /// The outputs of a run that must not fail.
+    fn outputs(code: &str, doc: &JqDocument) -> Vec<String> {
+        let out = run(code, doc).unwrap();
+        assert_eq!(out.error, None, "{code:?}");
+        out.outputs
+    }
+
+    /// The error of a run that compiles but fails on its value.
+    fn runtime_error(code: &str, doc: &JqDocument) -> JqError {
+        run(code, doc).unwrap().error.expect("the run fails")
+    }
+
     #[test]
     fn a_filter_runs_and_returns_compact_json_outputs() {
-        let out = run(".data.items | length", &doc()).unwrap();
-        assert_eq!(out, vec!["2"]);
-        let out =
-            run(r#".data.items | map(select(.status == "active")) | map(.name)"#, &doc()).unwrap();
+        assert_eq!(outputs(".data.items | length", &doc()), vec!["2"]);
+        let out = outputs(r#".data.items | map(select(.status == "active")) | map(.name)"#, &doc());
         assert_eq!(out, vec![r#"["a"]"#]);
     }
 
     #[test]
     fn every_output_of_a_multi_output_filter_is_returned_in_order() {
-        let out = run(".data.items[] | .id", &doc()).unwrap();
-        assert_eq!(out, vec!["1", "2"]);
+        assert_eq!(outputs(".data.items[] | .id", &doc()), vec!["1", "2"]);
     }
 
     #[test]
@@ -377,8 +422,7 @@ mod tests {
     fn only_end_of_input_syntax_errors_are_incomplete() {
         assert!(!check("this is not jq").unwrap_err().incomplete());
         assert!(!check(".foo | nosuchfn(1)").unwrap_err().incomplete());
-        let doc = doc();
-        assert!(!run(".data.total | .x", &doc).unwrap_err().incomplete());
+        assert!(!runtime_error(".data.total | .x", &doc()).incomplete());
     }
 
     #[test]
@@ -394,8 +438,10 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_error_has_a_readable_message_and_no_partial_output() {
-        let err = run(".data.items[] | .id | .foo", &doc()).unwrap_err();
+    fn a_runtime_error_has_a_readable_message() {
+        let out = run(".data.items[] | .id | .foo", &doc()).unwrap();
+        assert!(out.outputs.is_empty(), "the first output already fails: {out:?}");
+        let err = out.error.expect("the run fails");
         let JqError::Runtime { message } = &err else {
             panic!("expected a runtime error, got {err:?}");
         };
@@ -413,9 +459,9 @@ mod tests {
     #[test]
     fn a_stream_body_runs_the_filter_once_per_value_like_jq() {
         let doc = JqDocument::parse(STREAM).expect("NDJSON is a stream of values");
-        assert_eq!(run(".a", &doc).unwrap(), vec!["1", "2", "3"]);
+        assert_eq!(outputs(".a", &doc), vec!["1", "2", "3"]);
         assert_eq!(
-            run(".", &JqDocument::parse("1 [2] \"x\"").unwrap()).unwrap(),
+            outputs(".", &JqDocument::parse("1 [2] \"x\"").unwrap()),
             vec!["1", "[2]", "\"x\""]
         );
     }
@@ -423,21 +469,62 @@ mod tests {
     #[test]
     fn inputs_reads_the_values_after_the_current_one() {
         let doc = JqDocument::parse(STREAM).unwrap();
-        assert_eq!(run("[., inputs] | map(.a)", &doc).unwrap(), vec!["[1,2,3]"]);
+        assert_eq!(outputs("[., inputs] | map(.a)", &doc), vec!["[1,2,3]"]);
         // `input` takes the next value, so the filter's next run starts after it.
         let four = JqDocument::parse("1 2 3 4").unwrap();
-        assert_eq!(run("[., input]", &four).unwrap(), vec!["[1,2]", "[3,4]"]);
+        assert_eq!(outputs("[., input]", &four), vec!["[1,2]", "[3,4]"]);
     }
 
     #[test]
     fn inputs_on_a_single_value_body_yield_nothing() {
-        assert_eq!(run("[inputs]", &doc()).unwrap(), vec!["[]"]);
+        assert_eq!(outputs("[inputs]", &doc()), vec!["[]"]);
     }
 
     #[test]
-    fn a_runtime_error_on_any_value_is_the_whole_result() {
-        let err = run(".a | .x", &JqDocument::parse(STREAM).unwrap()).unwrap_err();
+    fn an_error_ends_only_its_values_run_and_the_others_still_come_out() {
+        // The middle line has no `items`, as an Ollama-style stream's last
+        // line often doesn't.
+        let doc = JqDocument::parse(
+            "{\"items\":[{\"id\":1}]}\n{\"done\":true}\n{\"items\":[{\"id\":2}]}\n",
+        )
+        .unwrap();
+        let out = run(".items[] | .id", &doc).unwrap();
+        assert_eq!(out.outputs, vec!["1", "2"]);
+        let err = out.error.expect("the failing value's error is reported with them");
         assert!(matches!(err, JqError::Runtime { .. }), "got {err:?}");
+        assert!(err.message().contains("null as iterable"), "{err:?}");
+        assert!(!err.message().contains("errors:"), "one value failed: {err:?}");
+    }
+
+    #[test]
+    fn a_values_outputs_before_its_error_are_kept_as_jq_prints_them() {
+        let doc = JqDocument::parse(r#"[{"a":1},2,{"a":3}]"#).unwrap();
+        let out = run(".[] | .a", &doc).unwrap();
+        assert_eq!(out.outputs, vec!["1"], "the run of the one value ends at its error");
+        assert!(out.error.is_some());
+    }
+
+    #[test]
+    fn several_failing_values_report_the_first_error_with_their_count() {
+        let doc = JqDocument::parse("{\"a\":1}\n2\n{\"a\":3}\n\"x\"\n").unwrap();
+        let out = run(".a", &doc).unwrap();
+        assert_eq!(out.outputs, vec!["1", "3"]);
+        let first = run(".a", &JqDocument::parse("2").unwrap()).unwrap().error.unwrap();
+        let err = out.error.unwrap();
+        assert_eq!(err.message(), format!("first of 2 errors: {}", first.message()));
+    }
+
+    #[test]
+    fn a_run_with_no_error_has_none() {
+        let out = run(".a", &JqDocument::parse(STREAM).unwrap()).unwrap();
+        assert_eq!(out, JqRun { outputs: vec!["1".into(), "2".into(), "3".into()], error: None });
+    }
+
+    #[test]
+    fn the_cap_ends_the_whole_run_even_with_outputs_before_it() {
+        let doc = JqDocument::parse("1 2 3").unwrap();
+        let err = run_with_cap("if . == 3 then [range(1000)] else . end", &doc, 1024).unwrap_err();
+        assert!(err.message().contains("too large"), "{err:?}");
     }
 
     #[test]
@@ -469,7 +556,7 @@ mod tests {
         let err = check("this is not jq").unwrap_err();
         assert!(!err.message().is_empty());
         assert!(err.span().is_some());
-        let err = run(".data.total | .x", &doc()).unwrap_err();
+        let err = runtime_error(".data.total | .x", &doc());
         assert!(err.span().is_none(), "runtime errors have no span");
     }
 }

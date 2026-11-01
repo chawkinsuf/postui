@@ -2123,7 +2123,7 @@ pub(crate) fn jq_worker(
             }
         };
         jq_run(&code, &doc)
-            .map(|out| crate::components::response::JqRunOutput::from_outputs(fresh, out))
+            .map(|run| crate::components::response::JqRunOutput::from_run(fresh, run))
     })();
     Action::JqRunFinished { generation, run, result }
 }
