@@ -174,8 +174,9 @@ pub fn check(code: &str) -> Result<(), JqError> {
 /// order, and beside them the error of a value whose run failed. As in jq,
 /// an error ends only the run of the value it happened on, so the outputs
 /// are the other values' and those printed before it. When more than one
-/// value failed, `error` is the first one's, its message starting `first
-/// of N errors: `: one line for the bar's one row and for an agent reading
+/// value's run failed, `error` is the first one's, its message starting
+/// `first of N errors: ` (N counts failed runs: a filter reading
+/// `input`/`inputs` takes several values in one): one line for the bar's one row and for an agent reading
 /// `run --jq`, where jq prints a line per failing value (#229 spec, R3).
 /// The count leads because jaq's message holds the failing value, which
 /// on a long line runs past the bar's row, and it says "first" because

@@ -72,7 +72,7 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   streamed body of several JSON values (NDJSON) runs the filter once per
   value, as jq does; `[., inputs]` gathers them all into one array. A
   value the filter fails on prints the error, and the other values'
-  results still print.
+  results still print; the run still exits 1, so they may be incomplete.
 - `-o FILE` writes the body to a file instead of printing it. Alone, it
   writes the raw bytes: use it for a binary body, which prints as text.
   With `--jq` or `--view`, the results still print and the file gets the
