@@ -8333,8 +8333,8 @@ impl App {
                 true
             }
             Action::MoveSelectedRequest(delta) => {
-                if let Some(slug) = self.sidebar.selected_slug() {
-                    self.apply(Action::MoveRequest { slug, delta });
+                if let Some(key) = self.sidebar.selected_key() {
+                    self.move_sidebar_row(key, delta);
                 }
                 true
             }
@@ -10374,7 +10374,7 @@ impl App {
         match key {
             RowKey::Request(slug) => self.request_display(slug),
             RowKey::Folder(path) => {
-                format!("folder {}", path.rsplit('/').next().unwrap_or(path))
+                format!("folder {}", crate::components::sidebar::Sidebar::folder_name(path))
             }
         }
     }

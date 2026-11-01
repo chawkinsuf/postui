@@ -536,8 +536,8 @@ pub enum Action {
         path: String,
         delta: i32,
     },
-    /// `MoveRequest` for the selected sidebar row; a no-op when the
-    /// selection is not a request.
+    /// `MoveRequest` or `MoveFolder` for the selected sidebar row, as
+    /// alt+↑/↓ does; a no-op when nothing is selected.
     MoveSelectedRequest(i32),
     /// The Spaces tab's "Move all requests…" button: opens the chooser of
     /// the other spaces for the space `from`; picking one dispatches

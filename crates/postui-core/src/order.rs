@@ -173,10 +173,11 @@ pub(crate) fn level_is_listed(
     })
 }
 
-/// The arrival rule for a list entry of either kind: when its level
-/// already has a listed entry of its kind, it is appended (it lands last
-/// on screen); otherwise nothing is written and it sorts by name.
-fn append_if_listed(
+/// The arrival rule for a list entry of either kind (a request slug or a
+/// folder entry): when its level already has a listed entry of its kind,
+/// it is appended (it lands last on screen); otherwise nothing is written
+/// and it sorts by name.
+pub(crate) fn arrive(
     space: &str,
     order: &mut Vec<String>,
     entry: &str,
@@ -191,15 +192,6 @@ fn append_if_listed(
     let at = order.len();
     order.push(entry.to_string());
     vec![OrderEdit::Inserted { space: space.to_string(), rel: entry.to_string(), at }]
-}
-
-pub(crate) fn arrive(
-    space: &str,
-    order: &mut Vec<String>,
-    rel: &str,
-    exists: &dyn Fn(&str) -> bool,
-) -> Vec<OrderEdit> {
-    append_if_listed(space, order, rel, exists)
 }
 
 /// A folder at relative path `rel` appearing (spec 2026-11-01 R10,
@@ -220,7 +212,7 @@ pub(crate) fn arrive_folder(
     }
     let entry = folder_entry(rel);
     let mut edits = remove(space, order, &entry);
-    edits.extend(append_if_listed(space, order, &entry, exists));
+    edits.extend(arrive(space, order, &entry, exists));
     edits
 }
 

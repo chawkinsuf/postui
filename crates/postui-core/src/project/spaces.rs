@@ -247,8 +247,9 @@ impl Project {
         Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
     }
 
-    /// Rewrites one level of `space`'s request order to `shown`
-    /// (`order::set_level_order`'s merge rule). A drag: never merges.
+    /// Rewrites one level of `space`'s order to `shown`, entries of one
+    /// kind: request slugs, or folder entries (`order::merge_level`'s
+    /// rule). A drag: never merges.
     pub fn set_request_order(
         &mut self,
         space: &str,
@@ -260,7 +261,9 @@ impl Project {
         if before == after {
             return Ok(None);
         }
-        self.transaction("reorder requests", EntryMeta::default(), |p| {
+        let folders = shown.first().is_some_and(|e| crate::order::is_folder_entry(e));
+        let label = if folders { "reorder folders" } else { "reorder requests" };
+        self.transaction(label, EntryMeta::default(), |p| {
             p.order_edit(space, |order| {
                 *order = after.clone();
                 Vec::new()
@@ -270,7 +273,9 @@ impl Project {
         Ok(Some(ListChange { before, after }))
     }
 
-    /// alt+↑/↓: `rel` moves by `delta` among `shown`; a burst merges.
+    /// alt+↑/↓: the entry `rel` (a request slug or a folder entry, spec
+    /// 2026-11-01 reorder folders) moves by `delta` among `shown`, entries
+    /// of its kind; a burst merges.
     pub fn move_request_shown(
         &mut self,
         space: &str,
@@ -294,9 +299,12 @@ impl Project {
         if before == after {
             return Ok(None);
         }
+        // A folder's key is its path with the slash (`main/auth/`), which
+        // no request slug is, so the two kinds' bursts never merge.
         let key =
             MergeKey::RequestOrder { space: space.to_string(), slug: format!("{space}/{rel}") };
-        self.transaction_merging("move request", key, |p| {
+        let label = if crate::order::is_folder_entry(rel) { "move folder" } else { "move request" };
+        self.transaction_merging(label, key, |p| {
             p.order_edit(space, |order| {
                 *order = after.clone();
                 Vec::new()

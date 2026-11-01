@@ -369,7 +369,7 @@ impl Sidebar {
         }
         let paths: Vec<String> = folder_children.keys().cloned().collect();
         for path in postui_core::order::order_folders(&paths, order, space) {
-            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            let name = Self::folder_name(&path).to_string();
             let is_expanded = expanded.contains(&path);
             rows.push(Row::Folder { path: path.clone(), name, depth, expanded: is_expanded });
             if is_expanded {
@@ -820,10 +820,19 @@ impl Sidebar {
     /// The rows row `i` covers in its sibling group: itself, plus its open
     /// subtree for a folder.
     pub fn span_of(&self, i: usize) -> std::ops::Range<usize> {
-        let key = self.rows.get(i).map(Row::key);
-        self.siblings(i)
-            .and_then(|s| s.into_iter().find(|(k, _)| Some(k) == key.as_ref()))
-            .map_or(i..i + 1, |(_, r)| r)
+        let Some(Row::Folder { depth, .. }) = self.rows.get(i) else {
+            return i..i + 1;
+        };
+        let end = self.rows[i + 1..]
+            .iter()
+            .position(|r| r.depth() <= *depth)
+            .map_or(self.rows.len(), |n| i + 1 + n);
+        i..end
+    }
+
+    /// A folder's name as its row shows it: the last segment of its path.
+    pub fn folder_name(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
     }
 
     /// Row `i`'s entry in the order list (see [`Self::entry_of`]); empty
@@ -965,10 +974,12 @@ impl Sidebar {
         if at == start_at {
             return false;
         }
-        // The working order is the siblings as they now show. A sibling a
-        // reload listed or took away under the drag is simply in it or
-        // not; an entry no longer shown keeps its slot in the saved list,
-        // which `merge_level` leaves alone.
+        // The working order is the siblings as they now show. In the app
+        // the listing never changes under a live drag (a reload that
+        // changes the tree, and every landing, cancel it first), so this
+        // is `working` permuted; given a changed listing it still names
+        // exactly the rows on screen, and an entry no longer shown keeps
+        // its slot in the saved list, which `merge_level` leaves alone.
         let drag = self.drag.as_mut().expect("checked above");
         drag.working = shown.into_iter().map(|(e, _)| e).collect();
         true
