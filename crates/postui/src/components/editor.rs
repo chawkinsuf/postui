@@ -788,7 +788,7 @@ impl Editor {
                 // it anyway.
                 let stop = match name {
                     None => Stop::Section(*index),
-                    Some(n) => match self.referenced_var_names().iter().position(|r| r == n) {
+                    Some(n) => match self.referenced_row_of(n) {
                         Some(at) => Stop::Section(at),
                         None => self.recorded_stop(fallback).unwrap_or(Stop::Section(*index)),
                     },
@@ -4033,6 +4033,13 @@ impl Editor {
         names
     }
 
+    /// The Vars tab's referenced row for `name`, by the list as the fields
+    /// stand now: how undo's caret and a click on the row find it again
+    /// after the list was rebuilt.
+    pub fn referenced_row_of(&self, name: &str) -> Option<usize> {
+        self.referenced_var_names().iter().position(|r| r == name)
+    }
+
     /// Paints the Body tab's toolbar chip row: `format`/`minify`/
     /// `substitute`/`$EDITOR` chips for the body-only actions that
     /// alt+j/alt+g/alt+s/alt+e already bind, but had no mouse-reachable
@@ -4663,8 +4670,15 @@ impl Editor {
             if y >= max_y {
                 break;
             }
-            let bg = if cursor == Some(i) { theme.control_hover } else { theme.page };
-            crate::paint::fill(buf, Rect::new(area.x, y, area.width, 1), bg);
+            // A click on the row puts the cursor on it (task #230), and it
+            // lights under the pointer as a table row does. Registered
+            // before the token, which floats over it: hover and a left click
+            // are resolved past tokens, so both reach the row under one.
+            let lit = cursor == Some(i) || hovered_referenced_row(ctx) == Some(name.as_str());
+            let bg = if lit { theme.control_hover } else { theme.page };
+            let row_rect = Rect::new(area.x, y, area.width, 1);
+            hits.register(row_rect, crate::hit::Hit::ReferencedVarRow(name.clone()));
+            crate::paint::fill(buf, row_rect, bg);
             let info = self.vars.describe(name);
             let token_piece = format!("{{{{{name}}}}}");
             crate::paint::text(
@@ -4722,9 +4736,9 @@ impl Editor {
     /// request row may take over a `󰏫` after it (`Hit::AutoHeaderOverride`,
     /// task #20); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
-    /// whenever a row has a secret to reveal. Under them, a client-owned
-    /// row is a surface (`Hit::AutoHeaderRow`) whose hover lets the footer
-    /// say why it isn't sent.
+    /// whenever a row has a secret to reveal. Under them, each row is a
+    /// `Hit::AutoHeaderRow`: a click puts the cursor on it (task #230), and
+    /// a client-owned row's hover lets the footer say why it isn't sent.
     ///
     /// `skip` is how many of the section's lines (the divider first) sit
     /// above the view (task #56), and `cursor` the row under the focused
@@ -4783,11 +4797,12 @@ impl Editor {
             y += 1;
         }
 
+        let hovered = hovered_auto_row(ctx);
         for (i, row) in self.computed.rows.iter().enumerate().skip(skip.saturating_sub(1)) {
             if y >= max_y {
                 break;
             }
-            if cursor == Some(i) {
+            if cursor == Some(i) || hovered == Some(i) {
                 crate::paint::fill(
                     frame.buffer_mut(),
                     Rect::new(area.x, y, area.width, 1),
@@ -4864,11 +4879,10 @@ impl Editor {
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
-            // Only a client-owned row has something for the footer to say;
-            // every other row stays the bare pane, hover and all.
-            if client_owned {
-                hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
-            }
+            // The row under its tokens and pills: a click puts the cursor on
+            // it (task #230), and a client-owned row's hover is what the
+            // footer reads (#59).
+            hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
             // The tokens all lie in the value, so clipping them to the
             // whole row keeps them off the name. A struck (unsent) row's
             // tokens are tinted too, as a disabled table row's are: the
@@ -4897,6 +4911,29 @@ impl Editor {
             }
             y += 1;
         }
+    }
+}
+
+/// The auto row a hit belongs to, for hover styling: the row and its pills
+/// light that one row (task #230), as `table_editor`'s `hovered_row` does
+/// for a table row. A `{{token}}` in its value never comes here: hover is
+/// resolved past tokens (`HitMap::hit_at_ignoring_var_tokens`), so the row
+/// under one stays lit.
+fn hovered_auto_row(ctx: &DrawCtx) -> Option<usize> {
+    use crate::hit::Hit;
+    match ctx.hovered? {
+        Hit::AutoHeaderRow(i) | Hit::AutoHeaderCopy(i) | Hit::AutoHeaderOverride(i) => Some(*i),
+        _ => None,
+    }
+}
+
+/// The referenced row a hit belongs to, by its variable, for hover styling
+/// (task #230): the row alone, which has no pills; its `{{token}}` is
+/// resolved past, as on an auto row.
+fn hovered_referenced_row<'a>(ctx: &DrawCtx<'a>) -> Option<&'a str> {
+    match ctx.hovered? {
+        crate::hit::Hit::ReferencedVarRow(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -8501,9 +8538,12 @@ url = "https://api.example.com/users""#,
         let hit = Hit::AutoHeaderRow(i.expect("the default's auto row"));
         let row = app.hits.rect_of(&hit).expect("the auto row is a hover surface");
         assert_eq!(row.y, vy, "on the default's own row");
+        // Every auto row is one since task #230 (a click puts the cursor on
+        // it), and an ordinary one has nothing for the footer to say.
         let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
         let accept = Hit::AutoHeaderRow(accept.expect("the auto Accept row"));
-        assert_eq!(app.hits.rect_of(&accept), None, "an ordinary row stays the bare pane");
+        assert!(app.hits.rect_of(&accept).is_some(), "an ordinary row is a row too");
+        assert!(app.editor.client_owned_message(Some(&accept), false).is_empty());
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
         let (mx, my) = find_text(terminal.backend().buffer(), "Host cannot be set manually")
@@ -8511,7 +8551,8 @@ url = "https://api.example.com/users""#,
         let buf = terminal.backend().buffer();
         assert_eq!(buf[(mx, my)].fg, app.theme.error, "an error message");
 
-        // A click on the row does what one on the bare pane under it did.
+        // A click on the row focuses the editor (and, since task #230, puts
+        // the cursor on it).
         use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         app.focus = crate::layout::PaneId::Sidebar;
         app.handle_mouse(MouseEvent {

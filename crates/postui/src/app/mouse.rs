@@ -1283,6 +1283,20 @@ impl App {
         }
     }
 
+    /// A left click on the table's section row `j` (an auto or referenced
+    /// row, task #230): the editor takes the keyboard and the cursor lands
+    /// on the row, as a click on a table row's background lands it there.
+    /// `None` when the row the click named is gone (the open cell's commit
+    /// took its variable away): the editor still takes the keyboard.
+    fn click_section_row(&mut self, j: Option<usize>) -> bool {
+        self.update(Action::FocusPane(PaneId::Editor));
+        self.move_editor_caret(SubFocus::Content);
+        if let Some(j) = j {
+            self.editor.table.set_selected(Some(Stop::Section(j)));
+        }
+        self.update(Action::Render)
+    }
+
     /// A left click landing on response body text: a single click anchors
     /// a cell-wise sweep, a double click selects the word under it (and
     /// arms a word-wise sweep). Returns whether anything anchored — the
@@ -1561,8 +1575,8 @@ impl App {
         // copy pill and the section's reveal toggle are side actions, so
         // they keep the cursor that may be sitting on one, but they are
         // still a click away for an open cell, which commits first, as on
-        // main. A press on the rest of the section is the bare pane's, as
-        // before.
+        // main. A press on a section row is a click away too: its arm then
+        // puts the cursor on that row (task #230).
         let keeps_table_selection =
             keeps_open_cell || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
         if !keeps_open_cell {
@@ -2474,10 +2488,17 @@ impl App {
             // A drawn `{{token}}` is never a click target (`Down(Left)`
             // resolves past it); the arm keeps the match exhaustive.
             Hit::VarToken(_) => false,
-            // A surface of its own, as a table row is (its hover is what
-            // the footer reads, task #59). Its click focuses the editor,
-            // as a click anywhere in the auto section always has.
-            Hit::AutoHeaderRow(_) => self.update(Action::FocusPane(PaneId::Editor)),
+            // A section row is a cursor stop (spec 2026-10-25 S11), and a
+            // click puts the cursor on it, as ↓ would (S18 amended, task
+            // #230). The click is a click away from an open cell, which
+            // committed at the top of this function; an auto row doesn't
+            // move with that commit (an overridden row stays listed), and
+            // a referenced row is found again by its variable's name.
+            Hit::AutoHeaderRow(j) => self.click_section_row(Some(j)),
+            Hit::ReferencedVarRow(name) => {
+                let j = self.editor.referenced_row_of(&name);
+                self.click_section_row(j)
+            }
             // The tooltip's controls, which their keys share (#135).
             Hit::TipEdit(name) => self.press_tip_pill(crate::action::TipPill::Edit, name),
             Hit::TipCopy(name) => self.press_tip_pill(crate::action::TipPill::Copy, name),
