@@ -16162,7 +16162,10 @@ fn a_hovered_section_row_lights_like_a_table_row() {
     let mut app = referenced_rows_app(crate::config::KeyProfile::Arrows);
     let (x, y) = (Hit::ReferencedVarRow("x".into()), Hit::ReferencedVarRow("y".into()));
     assert!(lit(&mut app, x.clone(), x.clone()), "the hovered referenced row");
-    assert!(!lit(&mut app, x, y), "and only that one");
+    assert!(!lit(&mut app, x.clone(), y), "and only that one");
+    // Hover is resolved past a `{{token}}`, so the row under one stays lit.
+    // (`rect_of` takes the last `{{x}}` drawn: the section's, not a's cell.)
+    assert!(lit(&mut app, Hit::VarToken("x".into()), x), "the row under its token");
 }
 
 /// Keeping the cursor is not keeping an open cell: a click on an auto pill

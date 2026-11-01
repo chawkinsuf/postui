@@ -4672,7 +4672,8 @@ impl Editor {
             }
             // A click on the row puts the cursor on it (task #230), and it
             // lights under the pointer as a table row does. Registered
-            // before the token, which floats over it.
+            // before the token, which floats over it: hover and a left click
+            // are resolved past tokens, so both reach the row under one.
             let hovered = matches!(
                 ctx.hovered,
                 Some(crate::hit::Hit::ReferencedVarRow(h)) if h == name
@@ -4799,21 +4800,12 @@ impl Editor {
             y += 1;
         }
 
+        let hovered = hovered_auto_row(ctx);
         for (i, row) in self.computed.rows.iter().enumerate().skip(skip.saturating_sub(1)) {
             if y >= max_y {
                 break;
             }
-            // Lit under the cursor, and under the pointer anywhere on the
-            // row, its pills included, as a table row is (task #230).
-            let hovered = matches!(
-                ctx.hovered,
-                Some(
-                    crate::hit::Hit::AutoHeaderRow(h)
-                    | crate::hit::Hit::AutoHeaderCopy(h)
-                    | crate::hit::Hit::AutoHeaderOverride(h)
-                ) if *h == i
-            );
-            if cursor == Some(i) || hovered {
+            if cursor == Some(i) || hovered == Some(i) {
                 crate::paint::fill(
                     frame.buffer_mut(),
                     Rect::new(area.x, y, area.width, 1),
@@ -4922,6 +4914,19 @@ impl Editor {
             }
             y += 1;
         }
+    }
+}
+
+/// The auto row a hit belongs to, for hover styling: the row and its pills
+/// light that one row (task #230), as `table_editor`'s `hovered_row` does
+/// for a table row. A `{{token}}` in its value never comes here: hover is
+/// resolved past tokens (`HitMap::hit_at_ignoring_var_tokens`), so the row
+/// under one stays lit.
+fn hovered_auto_row(ctx: &DrawCtx) -> Option<usize> {
+    use crate::hit::Hit;
+    match ctx.hovered? {
+        Hit::AutoHeaderRow(i) | Hit::AutoHeaderCopy(i) | Hit::AutoHeaderOverride(i) => Some(*i),
+        _ => None,
     }
 }
 
