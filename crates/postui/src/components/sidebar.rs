@@ -406,7 +406,7 @@ impl Sidebar {
 
     /// Selects the row `key` names, if it is visible. `true` when it did.
     pub fn select_key(&mut self, key: &RowKey) -> bool {
-        match self.rows.iter().position(|r| Self::row_matches(r, key)) {
+        match self.row_of_key(key) {
             Some(i) => {
                 self.selected = Some(i);
                 self.ensure_visible = true;
@@ -817,6 +817,15 @@ impl Sidebar {
         Some(out)
     }
 
+    /// The rows row `i` covers in its sibling group: itself, plus its open
+    /// subtree for a folder.
+    pub fn span_of(&self, i: usize) -> std::ops::Range<usize> {
+        let key = self.rows.get(i).map(Row::key);
+        self.siblings(i)
+            .and_then(|s| s.into_iter().find(|(k, _)| Some(k) == key.as_ref()))
+            .map_or(i..i + 1, |(_, r)| r)
+    }
+
     /// Row `i`'s entry in the order list (see [`Self::entry_of`]); empty
     /// past the end.
     pub fn entry_at(&self, i: usize, space: &str) -> String {
@@ -958,20 +967,25 @@ impl Sidebar {
             return false;
         }
         let drag = self.drag.as_mut().expect("checked above");
+        // A sibling listed since the drag began (a reload under it) has no
+        // entry yet. It is drawn after every working entry, which the
+        // overlay lists, so it joins the end of `working`, where it shows.
+        for (e, _) in &shown {
+            if !drag.working.contains(e) {
+                drag.working.push(e.clone());
+            }
+        }
         let moved = &shown[at].0;
         let Some(cur) = drag.working.iter().position(|e| e == moved) else {
             return false;
         };
         let entry = drag.working.remove(cur);
+        let pos = |e: &String| drag.working.iter().position(|w| w == e);
         let slot = match shown.get(at + 1) {
-            Some((below, _)) => drag.working.iter().position(|e| e == below),
-            None => drag.working.iter().position(|e| *e == shown[at - 1].0).map(|p| p + 1),
+            Some((below, _)) => pos(below),
+            None => pos(&shown[at - 1].0).map(|p| p + 1),
         };
-        let Some(slot) = slot else {
-            drag.working.insert(cur, entry);
-            return false;
-        };
-        drag.working.insert(slot, entry);
+        drag.working.insert(slot.unwrap_or(cur), entry);
         true
     }
 
@@ -2610,6 +2624,19 @@ mod tests {
         for i in [2, 3, 4] {
             assert!(!s.drag_to_row(i), "row {i} keeps b/ below a/");
         }
+    }
+
+    #[test]
+    fn a_sibling_that_appears_under_a_live_drag_can_still_be_passed() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a/x", "c/z"]), "main", &expanded(&[]), &[]);
+        assert!(s.begin_drag(0, "main")); // a/
+        // A reload lists a new folder under the drag.
+        s.refresh(listing(&["a/x", "c/z", "d/q"]), "main", &expanded(&[]), &[]);
+        assert_eq!(row_slugs(&s), ["main/a/", "main/c/", "main/d/"]);
+        assert!(s.drag_to_row(2), "passes the new folder to the end");
+        s.rebuild("main", &expanded(&[]), &[]);
+        assert_eq!(row_slugs(&s), ["main/c/", "main/d/", "main/a/"]);
     }
 
     #[test]

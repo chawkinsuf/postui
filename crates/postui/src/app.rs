@@ -10268,14 +10268,15 @@ impl App {
     /// Rebuilds the sidebar rows from the listing it already holds — the
     /// per-motion path during a row drag, which must not re-read disk.
     ///
-    /// The band tracks the open request, and the dragged row *is* the
-    /// open request (a press opens it before a drag can start), so this
-    /// snaps `ListTravel` exactly as `refresh_sidebar` does: without it
-    /// the anim keeps easing toward the pressed row's index while
-    /// `rebuild` moves that row from slot to slot, and the `draw`
-    /// crossfade paints a partial band on both the stale target and the
-    /// row the open request used to be on — a ghost that lingers for the
-    /// rest of the drag.
+    /// The band tracks the open request, which a drag moves: a request
+    /// drag drags the open request itself (a press opens it before a drag
+    /// can start), and a folder drag can carry it inside the folder's open
+    /// subtree. So this snaps `ListTravel` exactly as `refresh_sidebar`
+    /// does: without it the anim keeps easing toward the open row's old
+    /// index while `rebuild` moves that row from slot to slot, and the
+    /// `draw` crossfade paints a partial band on both the stale target and
+    /// the row the open request used to be on — a ghost that lingers for
+    /// the rest of the drag.
     fn rebuild_sidebar(&mut self) {
         let expanded = self.expanded();
         let space = self.active_space();

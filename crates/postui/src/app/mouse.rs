@@ -236,7 +236,12 @@ impl App {
                 {
                     match self.sidebar.row_of_key(&pressed) {
                         None => self.sidebar_press = None,
-                        Some(i) if self.sidebar.row_at_y(m.row) != i => {
+                        // Off the pressed row's own block: a row for a
+                        // request, a folder's row and its open subtree,
+                        // where no motion can move anything.
+                        Some(i)
+                            if !self.sidebar.span_of(i).contains(&self.sidebar.row_at_y(m.row)) =>
+                        {
                             let space = self.active_space();
                             if self.sidebar.begin_drag(i, &space) {
                                 self.hovered = None;

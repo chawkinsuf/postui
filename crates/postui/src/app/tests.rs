@@ -5960,6 +5960,19 @@ fn an_open_folder_drags_with_its_requests() {
 }
 
 #[test]
+fn a_press_on_an_open_folder_drifting_onto_its_own_child_starts_no_drag() {
+    let (mut app, _dir) = folder_app();
+    app.sidebar.select_key(&RowKey::Folder("main/a".into()));
+    app.update(Action::ToggleSelectedFolder);
+    let a = folder_rect(&mut app, "main/a");
+    app.handle_mouse(left_down(a.x + 2, a.y));
+    app.handle_mouse(moved(a.x + 2, a.y + 1)); // onto main/a/x
+    assert!(app.sidebar.drag.is_none(), "its own block moves nothing");
+    app.handle_mouse(moved(a.x + 2, a.y + 2)); // onto b/
+    assert!(app.sidebar.drag.is_some(), "leaving the block starts the drag");
+}
+
+#[test]
 fn a_folder_drag_released_outside_or_cancelled_writes_nothing() {
     let (mut app, dir) = folder_app();
     let c = folder_rect(&mut app, "main/c");

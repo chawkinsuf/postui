@@ -285,30 +285,38 @@ impl Project {
 
 /// The arrival cascade for the request at `rel`, one of `arriving` (every
 /// request the op brings into `space`, relative slugs): each folder it
-/// sits in, outermost first, then the request itself. A folder is new
-/// when every listed request under it is arriving; `seen` holds the
-/// folders this op already handled, so a folder several arrivals share
-/// is placed once. `slugs` is the relisted listing.
+/// sits in, outermost first, then the request itself. `slugs` is the
+/// relisted listing, which no longer shows what the op took away, so
+/// the op names that itself: `departed` holds the relative slugs it
+/// moved out of `space`'s levels (a rename's old slug).
+///
+/// A folder is new when nothing was under it before the op: every listed
+/// request under it is arriving, and none of the departed ones sat in
+/// it. A rename from `a/x` to `a/sub/x` leaves `a/` where it was. `seen`
+/// holds the folders this op already handled, so a folder several
+/// arrivals share is placed once.
 fn arrive_with_folders(
     space: &str,
     order: &mut Vec<String>,
     rel: &str,
-    arriving: &[&str],
-    seen: &mut Vec<String>,
+    arriving: &std::collections::HashSet<&str>,
+    departed: &[&str],
+    seen: &mut std::collections::HashSet<String>,
     slugs: &[String],
 ) -> Vec<OrderEdit> {
     let exists = |s: &str| order::exists_in(slugs, s);
     let mut edits = Vec::new();
     for folder in order::ancestors(rel) {
-        if seen.iter().any(|f| f == folder) {
+        if !seen.insert(folder.to_string()) {
             continue;
         }
-        seen.push(folder.to_string());
-        let under = format!("{space}/{folder}/");
-        let new = slugs
-            .iter()
-            .filter_map(|s| s.strip_prefix(&under).map(|_| &s[space.len() + 1..]))
-            .all(|r| arriving.contains(&r));
+        let inside = format!("{folder}/");
+        let under = format!("{space}/{inside}");
+        let new = !departed.iter().any(|d| d.starts_with(&inside))
+            && slugs
+                .iter()
+                .filter_map(|s| s.strip_prefix(&under).map(|_| &s[space.len() + 1..]))
+                .all(|r| arriving.contains(r));
         edits.extend(order::arrive_folder(space, order, folder, new, &exists));
     }
     edits.extend(order::arrive(space, order, rel, &exists));
@@ -350,11 +358,19 @@ impl Project {
     /// The request at `rel` (relative to `space`) has just appeared, with
     /// the listing already relisted: each folder it sits in that is new,
     /// outermost first, then the request itself takes the arrival rule
-    /// (spec 2026-11-01 reorder folders R10, R10a).
-    pub(super) fn order_arrive(&mut self, space: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
+    /// (spec 2026-11-01 reorder folders R10, R10a). `departed` names what
+    /// the same op took out of `space` (see [`arrive_with_folders`]).
+    pub(super) fn order_arrive(
+        &mut self,
+        space: &str,
+        rel: &str,
+        departed: &[&str],
+    ) -> Result<Vec<OrderEdit>, Error> {
         let slugs = self.listed_slugs();
+        let arriving = std::collections::HashSet::from([rel]);
+        let mut seen = std::collections::HashSet::new();
         self.order_edit(space, |order| {
-            arrive_with_folders(space, order, rel, &[rel], &mut Vec::new(), &slugs)
+            arrive_with_folders(space, order, rel, &arriving, departed, &mut seen, &slugs)
         })
     }
 
@@ -390,7 +406,7 @@ impl Project {
             });
         }
         let mut edits = self.order_remove(space, from)?;
-        edits.extend(self.order_arrive(space, to)?);
+        edits.extend(self.order_arrive(space, to, &[from])?);
         Ok(edits)
     }
 
@@ -461,12 +477,15 @@ impl Project {
                 })
                 .collect()
         })?;
-        let arriving: Vec<&str> = moves.iter().map(|(_, t)| t.as_str()).collect();
-        let mut seen = Vec::new();
+        let arriving: std::collections::HashSet<&str> =
+            moves.iter().map(|(_, t)| t.as_str()).collect();
+        let mut seen = std::collections::HashSet::new();
         self.order_edit(to, |order| {
-            arriving
+            moves
                 .iter()
-                .flat_map(|t| arrive_with_folders(to, order, t, &arriving, &mut seen, &slugs))
+                .flat_map(|(_, t)| {
+                    arrive_with_folders(to, order, t, &arriving, &[], &mut seen, &slugs)
+                })
                 .collect::<Vec<_>>()
         })?;
         Ok(())
@@ -503,7 +522,7 @@ impl Project {
             p.fs_create_file(&request_rel(&slug)?, &req.to_toml_string())?;
             p.relist();
             if let Some((space, rel)) = Self::split_space(&slug) {
-                p.order_arrive(space, rel)?;
+                p.order_arrive(space, rel, &[])?;
             }
             Ok(())
         })?;
@@ -641,7 +660,7 @@ impl Project {
             let (from_space, from_rel) = Self::split_space(&slug).expect("validated");
             let (to_space, to_rel) = Self::split_space(&new_slug).expect("validated");
             p.order_remove(from_space, from_rel)?;
-            p.order_arrive(to_space, to_rel)?;
+            p.order_arrive(to_space, to_rel, &[])?;
             Ok(())
         })?;
         Ok(new_slug)
@@ -1307,6 +1326,17 @@ mod tests {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.rename_request("main/a/x", "main/c/x").unwrap();
         assert_eq!(order::space_order(p.meta(), "main"), ["b/", "c/"]);
+    }
+
+    /// A rename that changes level inside a folder leaves that folder where
+    /// it was: it never stopped existing, so it is not new (R10).
+    #[test]
+    fn a_rename_within_a_folder_keeps_the_folders_slot() {
+        let (_dir, mut p) = folder_project(&["a/", "b/"], &["main/a/x", "main/b/z"]);
+        p.rename_request("main/a/x", "main/a/sub/x").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/"]);
+        p.rename_request("main/a/sub/x", "main/a/x").unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/"]);
     }
 
     #[test]
