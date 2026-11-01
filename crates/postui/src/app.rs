@@ -467,10 +467,11 @@ pub struct App {
     /// one before it reads the next event, so a key or click never sees a
     /// stale size. `None` before the first frame.
     pub(crate) term_area: Option<ratatui::layout::Rect>,
-    /// A left press on a sidebar request row: `(row index, slug)`. Armed
-    /// by `on_hit`, cleared on release; becomes a live row drag the moment
-    /// the pointer moves onto another row (see `mouse.rs`).
-    pub sidebar_press: Option<(usize, String)>,
+    /// A left press on a sidebar request or folder row: `(row index, the
+    /// row)`. Armed by `on_hit`, cleared on release; becomes a live row
+    /// drag the moment the pointer moves onto another row (see
+    /// `mouse.rs`).
+    pub sidebar_press: Option<(usize, RowKey)>,
     /// A left press on a Manage screen list row (Environments or Spaces
     /// tab): `(row index, item)`. The Manage-screen twin of
     /// `sidebar_press` — armed by `on_hit` on either tab, cleared on
@@ -8324,52 +8325,11 @@ impl App {
                 true
             }
             Action::MoveRequest { slug, delta } => {
-                // The sidebar already holds the level's displayed order
-                // (the rows it painted), so a visible row moves without
-                // re-walking the request tree: one read-modify-write of
-                // `project.toml`, then the rows are rebuilt from the
-                // listing in hand. A row that isn't visible falls back to
-                // reading the displayed order from disk.
-                let space = self.active_space();
-                let shown = postui_core::storage::space_of(&slug)
-                    .filter(|s| *s == space)
-                    .and_then(|_| self.sidebar.row_of(&slug))
-                    .and_then(|i| self.sidebar.level_group(i, &space));
-                let (Some((level, shown)), Some(rel)) =
-                    (shown, postui_core::order::relative(&slug, &space))
-                else {
-                    // Every route here (alt+↑/↓ on the selection, the row
-                    // menu) names a visible row of the active space.
-                    self.toasts.push(
-                        format!("cannot move request: {slug} is not shown"),
-                        ToastKind::Warning,
-                    );
-                    return true;
-                };
-                let rel = rel.to_string();
-                let t = self.begin_op();
-                let Some(p) = self.project.as_mut() else {
-                    return true;
-                };
-                match p.move_request_shown(&space, &level, &shown, &rel, delta) {
-                    Ok(_) => {
-                        // Not a landing: nothing open or active changes,
-                        // and a held alt+↓ must not re-walk the tree per
-                        // step. The cursor stays on the moved row.
-                        self.rebuild_sidebar();
-                        self.sidebar.select_key(&RowKey::Request(slug.clone()));
-                        // A burst merges in core: the journal's top id
-                        // stays the same, so nothing is re-recorded and
-                        // the whole burst stays one undo step.
-                        self.record_project_step(
-                            t,
-                            crate::undo::StepLabel::reorder(self.request_display(&slug)),
-                        );
-                    }
-                    Err(e) => {
-                        self.toasts.push(format!("cannot move request: {e}"), ToastKind::Warning);
-                    }
-                }
+                self.move_sidebar_row(RowKey::Request(slug), delta);
+                true
+            }
+            Action::MoveFolder { path, delta } => {
+                self.move_sidebar_row(RowKey::Folder(path), delta);
                 true
             }
             Action::MoveSelectedRequest(delta) => {
@@ -10358,6 +10318,66 @@ impl App {
         self.hits.pane_at(x, y) == Some(PaneId::Sidebar)
     }
 
+    /// alt+↑/↓ and the row menu's Move up/down for a sidebar row, a request
+    /// or a folder: moves it `delta` places among its siblings.
+    ///
+    /// The sidebar already holds the sibling group's displayed order (the
+    /// rows it painted), so a visible row moves without re-walking the
+    /// request tree: one read-modify-write of `project.toml`, then the rows
+    /// are rebuilt from the listing in hand.
+    fn move_sidebar_row(&mut self, key: RowKey, delta: i32) {
+        let noun = match key {
+            RowKey::Request(_) => "request",
+            RowKey::Folder(_) => "folder",
+        };
+        let space = self.active_space();
+        let (RowKey::Request(full) | RowKey::Folder(full)) = &key;
+        let shown = postui_core::storage::space_of(full)
+            .filter(|s| *s == space)
+            .and_then(|_| self.sidebar.row_of_key(&key))
+            .and_then(|i| self.sidebar.level_group(i, &space).map(|g| (i, g)));
+        let Some((i, (level, shown))) = shown else {
+            // Every route here (alt+↑/↓ on the selection, the row menu)
+            // names a visible row of the active space.
+            self.toasts
+                .push(format!("cannot move {noun}: {full} is not shown"), ToastKind::Warning);
+            return;
+        };
+        let own = self.sidebar.entry_at(i, &space);
+        let label = self.reorder_label(&key);
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            return;
+        };
+        match p.move_request_shown(&space, &level, &shown, &own, delta) {
+            Ok(_) => {
+                // Not a landing: nothing open or active changes, and a
+                // held alt+↓ must not re-walk the tree per step. The cursor
+                // stays on the moved row.
+                self.rebuild_sidebar();
+                self.sidebar.select_key(&key);
+                // A burst merges in core: the journal's top id stays the
+                // same, so nothing is re-recorded and the whole burst stays
+                // one undo step.
+                self.record_project_step(t, crate::undo::StepLabel::reorder(label));
+            }
+            Err(e) => {
+                self.toasts.push(format!("cannot move {noun}: {e}"), ToastKind::Warning);
+            }
+        }
+    }
+
+    /// What a reorder's undo toast names: the request's display name, or
+    /// `folder <name>` (spec 2026-11-01 reorder folders R8).
+    fn reorder_label(&self, key: &RowKey) -> String {
+        match key {
+            RowKey::Request(slug) => self.request_display(slug),
+            RowKey::Folder(path) => {
+                format!("folder {}", path.rsplit('/').next().unwrap_or(path))
+            }
+        }
+    }
+
     /// Ends a row drag. `commit` writes the working order when it differs
     /// from the original; otherwise (release outside, Escape) the rows
     /// snap back. Either way the sidebar is rebuilt from disk truth and
@@ -10389,13 +10409,12 @@ impl App {
         }
         // The drag is already taken, so the landing's own drag cancel (it
         // calls back here) finds nothing to do.
-        let cursor = (drag.space == self.active_space())
-            .then(|| CursorAim::On(RowKey::Request(drag.slug.clone())));
+        let cursor = (drag.space == self.active_space()).then(|| CursorAim::On(drag.key.clone()));
         self.land(Landing { cursor, ..Landing::default() });
         if let Some(t) = reordered {
             self.record_project_step(
                 t,
-                crate::undo::StepLabel::reorder(self.request_display(&drag.slug)),
+                crate::undo::StepLabel::reorder(self.reorder_label(&drag.key)),
             );
         }
         true
@@ -10807,33 +10826,36 @@ impl App {
                 Action::PromptMoveRequestToSpace(slug.to_string()),
             )]
         };
+        // Whether the row is first / last of its sibling group: Move up /
+        // Move down are drawn disabled there.
+        let (first, last) = row_index
+            .and_then(|i| {
+                let sibs = self.sidebar.siblings(i)?;
+                let key = row.key();
+                Some((sibs.first()?.0 == key, sibs.last()?.0 == key))
+            })
+            .unwrap_or((true, true));
+        let move_item = |label: &'static str, edge: bool, action: Action| {
+            if edge { MenuItem::disabled(label) } else { MenuItem::new(label, action) }
+        };
         Some(match row {
             Row::Request { slug, broken: None, .. } => {
                 let moves = move_rows(slug);
-                let (first, last) = row_index
-                    .and_then(|i| self.sidebar.group_bounds(i).map(|b| (b.0 == i, b.1 == i)))
-                    .unwrap_or((true, true));
                 let mut items = vec![
                     MenuItem::new("Open", Action::OpenRequest(slug.clone())),
                     MenuItem::new("Duplicate", Action::DuplicateRequest),
                     MenuItem::new("Copy as curl", Action::CopyAsCurl(Some(slug.clone()))),
                     MenuItem::new("Replace with curl", Action::ReplaceWithCurl(Some(slug.clone()))),
-                    if first {
-                        MenuItem::disabled("Move up")
-                    } else {
-                        MenuItem::new(
-                            "Move up",
-                            Action::MoveRequest { slug: slug.clone(), delta: -1 },
-                        )
-                    },
-                    if last {
-                        MenuItem::disabled("Move down")
-                    } else {
-                        MenuItem::new(
-                            "Move down",
-                            Action::MoveRequest { slug: slug.clone(), delta: 1 },
-                        )
-                    },
+                    move_item(
+                        "Move up",
+                        first,
+                        Action::MoveRequest { slug: slug.clone(), delta: -1 },
+                    ),
+                    move_item(
+                        "Move down",
+                        last,
+                        Action::MoveRequest { slug: slug.clone(), delta: 1 },
+                    ),
                     MenuItem::new("Rename…", Action::PromptRenameRequest),
                 ];
                 items.extend(moves);
@@ -10861,6 +10883,8 @@ impl App {
                     "Import curl here\u{2026}",
                     Action::ImportCurl { folder: Some(path.clone()) },
                 ),
+                move_item("Move up", first, Action::MoveFolder { path: path.clone(), delta: -1 }),
+                move_item("Move down", last, Action::MoveFolder { path: path.clone(), delta: 1 }),
                 MenuItem::new(
                     if *expanded { "Collapse" } else { "Expand" },
                     Action::ToggleSelectedFolder,

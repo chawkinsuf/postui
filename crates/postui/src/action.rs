@@ -525,9 +525,15 @@ pub enum Action {
     PromptMoveSelectedRequestToSpace,
     /// Move the request `slug` `delta` positions among its siblings
     /// (clamped) — alt+up/alt+down and the row menu's Move up/down. Writes
-    /// `[space.<slug>] order`. Not an undo step.
+    /// `[space.<slug>] order`; an undo step, a quick burst one step.
     MoveRequest {
         slug: String,
+        delta: i32,
+    },
+    /// `MoveRequest` for the folder at full path `path` (`main/auth`)
+    /// among its sibling folders (spec 2026-11-01 reorder folders R5).
+    MoveFolder {
+        path: String,
         delta: i32,
     },
     /// `MoveRequest` for the selected sidebar row; a no-op when the

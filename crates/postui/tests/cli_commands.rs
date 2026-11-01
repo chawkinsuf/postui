@@ -160,6 +160,27 @@ fn requests_in_sidebar_order_with_paths() {
     assert_eq!(tree(&root), before, "requests writes nothing");
 }
 
+/// Spec 2026-11-01 reorder folders R11: the listing (and so `suite`, which
+/// runs through the same `displayed`) follows a folder entry, the way the
+/// sidebar draws it.
+#[test]
+fn requests_follow_the_folder_order() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::create_dir_all(root.join("requests/main/zz")).unwrap();
+    std::fs::write(root.join("requests/main/zz/q.toml"), "method = \"GET\"\nurl = \"u\"\n")
+        .unwrap();
+    let meta = std::fs::read_to_string(root.join("project.toml")).unwrap();
+    std::fs::write(root.join("project.toml"), meta + "\n[space.main]\norder = [\"zz/\"]\n")
+        .unwrap();
+    let out = home.run_json(&["requests", "-p", s(&root)]);
+    assert_ok(&out, "requests");
+    let v = json(&out);
+    let slugs: Vec<&str> =
+        v["requests"].as_array().unwrap().iter().map(|r| r["slug"].as_str().unwrap()).collect();
+    assert_eq!(slugs, ["main/list", "main/zz/q", "main/users/get-user", "admin/x"]);
+}
+
 /// Review Focus 1: a request that doesn't parse is listed with what is
 /// wrong.
 #[test]

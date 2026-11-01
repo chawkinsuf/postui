@@ -32,7 +32,11 @@ brainstorm"; this is that brainstorm.
   (today's order). Folder rows stay below the requests and stay
   alphabetical — folders exist only implicitly (a `/` in a request
   name), and ordering them is a later addition on the same list if it
-  is ever wanted.
+  is ever wanted. *(Amended 2026-11-01, task #224: folders now reorder
+  among their sibling folders, still below the requests, through `"x/"`
+  entries on the same list — see
+  `2026-11-01-reorder-folders-design.md`. The user asked to "keep them
+  separate if we can at least move the folders around".)*
 - **Listed entries that match no file are ignored for display and never
   rewritten away.** Same policy as invalid space names: a hand-written
   or stale entry is the user's; an app write preserves it in place.
@@ -305,7 +309,8 @@ shows; drag feels right at the edges.
 
 ## Out of scope
 
-- Reordering folders, or interleaving folders with requests.
+- Interleaving folders with requests. *(Reordering folders among
+  themselves left this list on 2026-11-01, task #224.)*
 - Drag to reparent (into a folder) or across spaces.
 - A "sort alphabetically" reset.
 - Ordering on the Manage screen. *(Superseded — see §Space drag

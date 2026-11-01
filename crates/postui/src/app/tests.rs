@@ -5865,6 +5865,192 @@ fn request_context_menu_offers_move_up_and_down_disabled_at_the_ends() {
     assert_eq!(down.action, Some(Action::MoveRequest { slug: "main/alpha".into(), delta: 1 }));
 }
 
+// --- folder reorder (spec 2026-11-01 reorder folders) ---
+
+/// `spaced_app` with three folders under `main`: rows alpha, beta, a/, b/,
+/// c/, all collapsed.
+fn folder_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = spaced_app();
+    for slug in ["main/a/x", "main/b/y", "main/c/z"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/f")).unwrap();
+    }
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
+    (app, dir)
+}
+
+fn folder_rows(app: &App) -> Vec<String> {
+    app.sidebar
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Folder { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn folder_row(app: &App, path: &str) -> usize {
+    app.sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Folder { path: p, .. } if p == path))
+        .expect("a folder row")
+}
+
+fn folder_rect(app: &mut App, path: &str) -> ratatui::layout::Rect {
+    render_once(app);
+    let i = folder_row(app, path);
+    row_rect(app, i)
+}
+
+fn saved_order(dir: &tempfile::TempDir) -> Vec<String> {
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
+    postui_core::order::space_order(&meta, "main").to_vec()
+}
+
+#[test]
+fn a_dropped_folder_drag_writes_folder_entries_and_undoes_onto_the_folder() {
+    let (mut app, dir) = folder_app();
+    let c = folder_rect(&mut app, "main/c");
+    let a = folder_rect(&mut app, "main/a");
+    let steps = app.history.undo_len();
+    app.handle_mouse(left_down(c.x + 2, c.y));
+    app.handle_mouse(moved(c.x + 2, a.y));
+    assert_eq!(folder_rows(&app), ["main/c", "main/a", "main/b"], "the rows follow live");
+    assert!(saved_order(&dir).is_empty(), "nothing written before the release");
+    app.handle_mouse(left_up(c.x + 2, a.y));
+    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert_eq!(folder_rows(&app), ["main/c", "main/a", "main/b"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
+    assert_eq!(app.history.undo_len(), steps + 1);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "requests stay above");
+
+    app.update(Action::Undo);
+    assert!(saved_order(&dir).is_empty());
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
+    assert!(
+        rendered_text(&mut app).contains("Undid reorder of folder c"),
+        "{}",
+        rendered_text(&mut app)
+    );
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
+}
+
+#[test]
+fn an_open_folder_drags_with_its_requests() {
+    let (mut app, dir) = folder_app();
+    app.sidebar.select_key(&RowKey::Folder("main/a".into()));
+    app.update(Action::ToggleSelectedFolder);
+    render_once(&mut app);
+    // rows: alpha, beta, a/, x, b/, c/
+    let b = folder_rect(&mut app, "main/b");
+    let a = folder_rect(&mut app, "main/a");
+    app.handle_mouse(left_down(b.x + 2, b.y));
+    app.handle_mouse(moved(b.x + 2, a.y));
+    app.handle_mouse(left_up(b.x + 2, a.y));
+    assert_eq!(saved_order(&dir), ["b/", "a/", "c/"]);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/a/x"]);
+    let a_row = folder_row(&app, "main/a");
+    assert!(
+        matches!(&app.sidebar.rows[a_row + 1], Row::Request { slug, .. } if slug == "main/a/x"),
+        "a/'s request travels under it"
+    );
+}
+
+#[test]
+fn a_folder_drag_released_outside_or_cancelled_writes_nothing() {
+    let (mut app, dir) = folder_app();
+    let c = folder_rect(&mut app, "main/c");
+    let a = folder_rect(&mut app, "main/a");
+    app.handle_mouse(left_down(c.x + 2, c.y));
+    app.handle_mouse(moved(c.x + 2, a.y));
+    let far = app.term_area.map(|t| t.width - 2).unwrap_or(100);
+    app.handle_mouse(moved(far, a.y));
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"], "outside previews the cancel");
+    app.handle_mouse(left_up(far, a.y));
+    assert!(saved_order(&dir).is_empty());
+
+    let c = folder_rect(&mut app, "main/c");
+    app.handle_mouse(left_down(c.x + 2, c.y));
+    app.handle_mouse(moved(c.x + 2, a.y));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
+    assert!(saved_order(&dir).is_empty());
+}
+
+#[test]
+fn a_folder_drag_over_a_request_row_pins_to_the_first_folder_slot() {
+    let (mut app, dir) = folder_app();
+    let c = folder_rect(&mut app, "main/c");
+    let alpha = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(c.x + 2, c.y));
+    app.handle_mouse(moved(c.x + 2, alpha.y));
+    app.handle_mouse(left_up(c.x + 2, alpha.y));
+    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"]);
+}
+
+#[test]
+fn a_click_on_a_folder_still_selects_and_a_double_click_toggles() {
+    let (mut app, dir) = folder_app();
+    let a = folder_rect(&mut app, "main/a");
+    app.handle_mouse(left_down(a.x + 2, a.y));
+    app.handle_mouse(left_up(a.x + 2, a.y));
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/a".into())));
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.sidebar_press.is_none());
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "still closed");
+    app.handle_mouse(left_down(a.x + 2, a.y));
+    app.handle_mouse(left_up(a.x + 2, a.y));
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/a/x"], "opened");
+    assert!(saved_order(&dir).is_empty());
+}
+
+#[test]
+fn quick_keyboard_folder_moves_roll_up_and_keep_the_cursor() {
+    let (mut app, dir) = folder_app();
+    app.sidebar.select_key(&RowKey::Folder("main/c".into()));
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    let steps = app.history.undo_len();
+    let alt_up = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+    app.handle_key(alt_up);
+    app.handle_key(alt_up);
+    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
+    assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
+    app.handle_key(alt_up);
+    assert_eq!(app.history.undo_len(), steps + 1, "a no-op move records nothing");
+
+    app.update(Action::Undo);
+    assert!(saved_order(&dir).is_empty());
+    app.update(Action::Redo);
+    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert!(
+        rendered_text(&mut app).contains("Redid reorder of folder c"),
+        "{}",
+        rendered_text(&mut app)
+    );
+}
+
+#[test]
+fn folder_context_menu_offers_move_up_and_down_disabled_at_the_ends() {
+    let (mut app, dir) = folder_app();
+    let a = folder_rect(&mut app, "main/a");
+    app.handle_mouse(right_down(a.x + 1, a.y));
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else { panic!("context menu") };
+    let up = menu.items.iter().find(|i| i.label == "Move up").expect("Move up");
+    let down = menu.items.iter().find(|i| i.label == "Move down").expect("Move down");
+    assert!(up.action.is_none(), "first folder: Move up is disabled");
+    let down = down.action.clone();
+    assert_eq!(down, Some(Action::MoveFolder { path: "main/a".into(), delta: 1 }));
+    app.modals.pop();
+    app.update(down.unwrap());
+    assert_eq!(saved_order(&dir), ["b/", "a/", "c/"]);
+}
+
 #[test]
 fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     let (mut app, dir) = spaced_app();
@@ -28224,8 +28410,8 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     assert_eq!(
-        app.sidebar_press.as_ref().map(|(i, s)| (*i, s.as_str())),
-        Some((1, "main/beta")),
+        app.sidebar_press.clone(),
+        Some((1, RowKey::Request("main/beta".into()))),
         "the press re-arms on the row it opened, at its restored index"
     );
 
@@ -28244,7 +28430,10 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     let (mut app, _dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert_eq!(app.sidebar_press.as_ref().map(|(_, s)| s.as_str()), Some("main/alpha"));
+    assert_eq!(
+        app.sidebar_press.as_ref().map(|(_, k)| k.clone()),
+        Some(RowKey::Request("main/alpha".into()))
+    );
     app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
     app.text_drag = Some(TextDrag::Field(crate::keyroute::FieldId::Body));
 
@@ -28594,8 +28783,8 @@ fn a_rebuild_between_press_and_motion_drags_the_pressed_request() {
     assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
     app.handle_mouse(moved(r0.x + 2, r0.y)); // now row 0 is main/beta
     assert_eq!(
-        app.sidebar.drag.as_ref().map(|d| d.slug.as_str()),
-        Some("main/alpha"),
+        app.sidebar.drag.as_ref().map(|d| d.key.clone()),
+        Some(RowKey::Request("main/alpha".into())),
         "the pressed slug is dragged, not whatever now sits at the old index"
     );
     app.handle_mouse(left_up(110, 30)); // cancel

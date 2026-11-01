@@ -270,7 +270,7 @@ pub(crate) fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<Ord
 /// entries of the other kind, entries not named in `slugs` — stale ones)
 /// keeps its slot. Duplicates in `existing` collapse to their first
 /// occurrence.
-pub(crate) fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String> {
+pub fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String> {
     let mut deduped: Vec<&String> = Vec::new();
     for e in existing {
         if !deduped.contains(&e) {

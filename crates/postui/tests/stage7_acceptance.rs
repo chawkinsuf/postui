@@ -260,7 +260,10 @@ fn right_click_folder_row_offers_new_request_here_and_expand() {
         .expect("a folder row for users/");
 
     press(&mut app, Hit::SidebarRow(folder), right_down);
-    assert_eq!(menu_labels(&app), vec!["New request here…", "Import curl here…", "Expand"]);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["New request here…", "Import curl here…", "Move up", "Move down", "Expand"]
+    );
 
     press(&mut app, Hit::DropdownRow(0), left_down);
     let Some(Modal::Prompt { kind, input, .. }) = app.modals.top() else {
@@ -278,8 +281,11 @@ fn expanded_folder_row_offers_collapse() {
     let folder = app.sidebar.rows.iter().position(|r| matches!(r, Row::Folder { .. })).unwrap();
 
     press(&mut app, Hit::SidebarRow(folder), right_down);
-    assert_eq!(menu_labels(&app), vec!["New request here…", "Import curl here…", "Collapse"]);
-    press(&mut app, Hit::DropdownRow(2), left_down);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["New request here…", "Import curl here…", "Move up", "Move down", "Collapse"]
+    );
+    press(&mut app, Hit::DropdownRow(4), left_down);
     assert!(
         app.sidebar.rows.iter().all(|r| !matches!(r, Row::Request { .. })),
         "the folder collapsed, hiding its request"

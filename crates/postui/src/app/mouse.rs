@@ -234,12 +234,7 @@ impl App {
                     && !other_drag
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)))
                 {
-                    match self
-                        .sidebar
-                        .rows
-                        .iter()
-                        .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == pressed))
-                    {
+                    match self.sidebar.row_of_key(&pressed) {
                         None => self.sidebar_press = None,
                         Some(i) if self.sidebar.row_at_y(m.row) != i => {
                             let space = self.active_space();
@@ -1862,14 +1857,18 @@ impl App {
                     // drag; the click itself still opens the request (the
                     // drag only starts once the pointer leaves the row).
                     Some(Row::Request { slug, broken: None, .. }) => {
-                        self.sidebar_press = Some((i, slug.clone()));
+                        self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
                         self.update(Action::OpenRequest(slug))
                     }
                     Some(Row::Request { slug, broken: Some(_), .. }) => {
-                        self.sidebar_press = Some((i, slug.clone()));
+                        self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
                         self.update(Action::ShowRequestError(slug))
                     }
-                    Some(Row::Folder { .. }) => {
+                    // A folder row arms a drag of the folder (spec
+                    // 2026-11-01 reorder folders R2); the click itself
+                    // still only selects, and a double click toggles.
+                    Some(Row::Folder { path, .. }) => {
+                        self.sidebar_press = Some((i, RowKey::Folder(path)));
                         if clicks.list == 2 {
                             self.update(Action::ToggleSelectedFolder)
                         } else {

@@ -49,11 +49,13 @@ name = "Staging"
 - `[default_headers]`: sent with every request, unless the request sets the
   same header. The value can use `{{variables}}`.
 - `[space.<name>]`: `name` (display name), and `order`, the sidebar order of
-  the space's requests as slugs relative to the space (`["login",
-  "orders/list-orders"]`). postui writes `order` when the user reorders;
+  the space's requests and folders: request slugs relative to the space,
+  and folder paths ending in `/` (`["login", "orders/list-orders",
+  "orders/", "users/"]`). postui writes `order` when the user reorders;
   leave it alone unless asked. Within each level (the space's root or one
-  folder) the requests it names come first, in its order, then the rest
-  by display name; a level's folders follow its requests, by name.
+  folder) the requests come first, then the folders. Each kind lists the
+  ones `order` names first, in its order, then the rest: requests by
+  display name, folders by name.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
 

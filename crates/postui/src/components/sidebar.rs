@@ -129,27 +129,43 @@ pub struct Sidebar {
     fold_row: Option<(RowKey, RowKey)>,
 }
 
-/// A live drag of one sidebar request row: the working order the pointer
-/// has arranged so far, for the one level the dragged row belongs to.
+/// A live drag of one sidebar row, a request or a folder (spec 2026-11-01
+/// reorder folders): the working order the pointer has arranged so far,
+/// for the dragged row's sibling group. The entries are the order list's
+/// own: relative request slugs, or folder entries (`"auth/"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowDrag {
-    pub slug: String,          // full slug of the dragged request
+    pub key: RowKey,           // the dragged row
     pub space: String,         // the space the drag started in
     pub level: String,         // level within the space ("" root, "auth", …)
-    pub original: Vec<String>, // sibling order at drag start (relative slugs)
-    pub working: Vec<String>,  // current on-screen order (relative slugs)
+    pub original: Vec<String>, // sibling order at drag start (entries)
+    pub working: Vec<String>,  // current on-screen order (entries)
 }
 
 /// The parts of a row rebuild that are the same at every folder level:
-/// which folders are open, the space being drawn, its saved order list,
-/// and the live-drag overlay (level, working order) that replaces the
-/// saved order for the one level a drag is rearranging.
+/// which folders are open, the space being drawn, and the order list it
+/// is drawn with (a live drag's working order already merged in).
 #[derive(Clone, Copy)]
 struct LevelCtx<'a> {
     expanded: &'a BTreeSet<String>,
     space: &'a str,
     order: &'a [String],
-    overlay: Option<(&'a str, &'a [String])>,
+}
+
+impl Row {
+    /// The row's identity across a rebuild.
+    pub fn key(&self) -> RowKey {
+        match self {
+            Row::Folder { path, .. } => RowKey::Folder(path.clone()),
+            Row::Request { slug, .. } => RowKey::Request(slug.clone()),
+        }
+    }
+
+    fn depth(&self) -> usize {
+        match self {
+            Row::Folder { depth, .. } | Row::Request { depth, .. } => *depth,
+        }
+    }
 }
 
 impl Sidebar {
@@ -188,17 +204,23 @@ impl Sidebar {
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
-        // The overlay is a set of slugs relative to the space the drag
+        // A live drag's working order is merged into the saved list for its
+        // one level and kind, so the rows show it while the level's other
+        // kind (a request drag's folders, a folder drag's requests) keeps
+        // its saved order. The entries are relative to the space the drag
         // started in; if the space changed under a live drag (a space
-        // switch with the button still held) it means nothing here, so the
-        // rows fall back to the new space's saved order.
-        let overlay = self
-            .drag
-            .as_ref()
-            .filter(|d| d.space == space)
-            .map(|d| (d.level.as_str(), d.working.as_slice()));
+        // switch with the button still held) they mean nothing here, so
+        // the rows fall back to the new space's saved order.
+        let merged;
+        let order = match self.drag.as_ref().filter(|d| d.space == space) {
+            Some(d) => {
+                merged = postui_core::order::merge_level(order, &d.level, &d.working);
+                merged.as_slice()
+            }
+            None => order,
+        };
         let mut rows = Vec::new();
-        let ctx = LevelCtx { expanded, space, order, overlay };
+        let ctx = LevelCtx { expanded, space, order };
         Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
         // The row a closed folder hid is remembered only while it is still
@@ -275,7 +297,7 @@ impl Sidebar {
         let mut sorted: Vec<RequestListing> =
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
-        let ctx = LevelCtx { expanded, space, order, overlay: None };
+        let ctx = LevelCtx { expanded, space, order };
         let mut rows = Vec::new();
         Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
@@ -308,10 +330,11 @@ impl Sidebar {
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
     /// the root): direct requests first — the ones in `order` in list
-    /// order, then the rest by display name — then subfolders in name
-    /// order, recursing into each expanded one. `entries` must already be
-    /// sorted by slug (the folder grouping walks slug paths) and every
-    /// entry must start with `prefix`.
+    /// order, then the rest by display name — then subfolders, likewise
+    /// the listed ones first and the rest by name, recursing into each
+    /// expanded one. `entries` must already be sorted by slug (the folder
+    /// grouping walks slug paths) and every entry must start with
+    /// `prefix`.
     fn build_rows(
         entries: &[RequestListing],
         prefix: &str,
@@ -319,7 +342,7 @@ impl Sidebar {
         ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
     ) {
-        let LevelCtx { expanded, space, order, overlay } = *ctx;
+        let LevelCtx { expanded, space, order } = *ctx;
         let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
             std::collections::BTreeMap::new();
         let mut requests: Vec<&RequestListing> = Vec::new();
@@ -333,13 +356,7 @@ impl Sidebar {
                 requests.push(e);
             }
         }
-        let this_level =
-            prefix.strip_prefix(&format!("{space}/")).unwrap_or("").trim_end_matches('/');
-        let order_here: &[String] = match overlay {
-            Some((level, working)) if level == this_level => working,
-            _ => order,
-        };
-        let requests = postui_core::order::order_level(&requests, order_here, space);
+        let requests = postui_core::order::order_level(&requests, order, space);
         for e in requests {
             let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
             rows.push(Row::Request {
@@ -350,13 +367,14 @@ impl Sidebar {
                 method: e.method,
             });
         }
-        for (path, children) in folder_children {
+        let paths: Vec<String> = folder_children.keys().cloned().collect();
+        for path in postui_core::order::order_folders(&paths, order, space) {
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             let is_expanded = expanded.contains(&path);
             rows.push(Row::Folder { path: path.clone(), name, depth, expanded: is_expanded });
             if is_expanded {
                 let child_prefix = format!("{path}/");
-                Self::build_rows(&children, &child_prefix, depth + 1, ctx, rows);
+                Self::build_rows(&folder_children[&path], &child_prefix, depth + 1, ctx, rows);
             }
         }
     }
@@ -364,10 +382,7 @@ impl Sidebar {
     /// The currently selected row's identity (a folder path or a request
     /// slug), stable across a rebuild even though row indices shift.
     pub fn selected_key(&self) -> Option<RowKey> {
-        match self.rows.get(self.selected?)? {
-            Row::Folder { path, .. } => Some(RowKey::Folder(path.clone())),
-            Row::Request { slug, .. } => Some(RowKey::Request(slug.clone())),
-        }
+        Some(self.rows.get(self.selected?)?.key())
     }
 
     /// The folder an import from the sidebar lands in (spec 2026-10-15
@@ -764,26 +779,58 @@ impl Sidebar {
         }
     }
 
-    /// The first and last row index of the level `i` belongs to: the
-    /// contiguous run of request rows at `i`'s depth. Requests of one
-    /// level are always contiguous (they precede that level's folders,
-    /// and a folder row separates them from the next level), so this run
-    /// is exactly the drag/move group. `None` for a folder row.
-    pub fn group_bounds(&self, i: usize) -> Option<(usize, usize)> {
-        let depth = match self.rows.get(i)? {
-            Row::Request { depth, .. } => *depth,
-            Row::Folder { .. } => return None,
-        };
-        let same = |r: &Row| matches!(r, Row::Request { depth: d, .. } if *d == depth);
+    /// Row `i`'s sibling group, the drag/move group, in row order: each
+    /// sibling's identity and the rows it covers.
+    ///
+    /// - A request row's siblings are the contiguous run of request rows
+    ///   at its depth, one row each. Requests of one level are always
+    ///   contiguous (they precede that level's folders, and a folder row
+    ///   separates them from the next level).
+    /// - A folder row's siblings are the folder rows at its depth under
+    ///   the same parent, each covering its own row and its open subtree
+    ///   (spec 2026-11-01 reorder folders R3). They follow the level's
+    ///   requests and run until a shallower row or the end.
+    pub fn siblings(&self, i: usize) -> Option<Vec<(RowKey, std::ops::Range<usize>)>> {
+        let row = self.rows.get(i)?;
+        let depth = row.depth();
+        let folder = matches!(row, Row::Folder { .. });
+        let sibling = |r: &Row| r.depth() == depth && matches!(r, Row::Folder { .. }) == folder;
+        // A folder's run also takes in the rows of its siblings' subtrees.
+        let member = |r: &Row| sibling(r) || (folder && r.depth() > depth);
         let mut first = i;
-        while first > 0 && same(&self.rows[first - 1]) {
+        while first > 0 && member(&self.rows[first - 1]) {
             first -= 1;
         }
-        let mut last = i;
-        while last + 1 < self.rows.len() && same(&self.rows[last + 1]) {
-            last += 1;
+        let mut end = i + 1;
+        while end < self.rows.len() && member(&self.rows[end]) {
+            end += 1;
         }
-        Some((first, last))
+        let mut out: Vec<(RowKey, std::ops::Range<usize>)> = Vec::new();
+        for j in first..end {
+            if sibling(&self.rows[j]) {
+                if let Some((_, prev)) = out.last_mut() {
+                    prev.end = j;
+                }
+                out.push((self.rows[j].key(), j..end));
+            }
+        }
+        Some(out)
+    }
+
+    /// Row `i`'s entry in the order list (see [`Self::entry_of`]); empty
+    /// past the end.
+    pub fn entry_at(&self, i: usize, space: &str) -> String {
+        self.rows.get(i).map(|r| Self::entry_of(&r.key(), space)).unwrap_or_default()
+    }
+
+    /// A row's entry in the order list: its slug relative to `space` for a
+    /// request, its relative path plus `/` for a folder.
+    fn entry_of(key: &RowKey, space: &str) -> String {
+        let rel = |s: &str| postui_core::order::relative(s, space).unwrap_or(s).to_string();
+        match key {
+            RowKey::Request(slug) => rel(slug),
+            RowKey::Folder(path) => postui_core::order::folder_entry(&rel(path)),
+        }
     }
 
     /// The row index a screen row `y` maps to, given the last draw's scroll
@@ -815,31 +862,26 @@ impl Sidebar {
         }
     }
 
-    /// The level row `i` belongs to and that level's requests as the rows
-    /// show them right now — relative slugs, in display order. This is
-    /// what a drag rearranges and what a keyboard move shifts. `None` for
-    /// a folder row.
+    /// The level row `i` belongs to and its sibling group as the rows show
+    /// it right now, as order-list entries in display order (request
+    /// slugs, or folder entries, relative to `space`). This is what a drag
+    /// rearranges and what a keyboard move shifts.
     pub fn level_group(&self, i: usize, space: &str) -> Option<(String, Vec<String>)> {
-        let (first, last) = self.group_bounds(i)?;
-        let rel =
-            |slug: &str| postui_core::order::relative(slug, space).unwrap_or(slug).to_string();
-        let group: Vec<String> = self.rows[first..=last]
-            .iter()
-            .filter_map(|r| match r {
-                Row::Request { slug, .. } => Some(rel(slug)),
-                _ => None,
-            })
-            .collect();
-        let Row::Request { slug, .. } = self.rows.get(i)? else {
-            return None;
-        };
-        let level = postui_core::order::level_of(&rel(slug)).to_string();
+        let group: Vec<String> =
+            self.siblings(i)?.iter().map(|(k, _)| Self::entry_of(k, space)).collect();
+        let own = Self::entry_of(&self.rows.get(i)?.key(), space);
+        let level = postui_core::order::entry_level(&own).to_string();
         Some((level, group))
     }
 
     /// The request row for `slug`, if it is visible.
     pub fn row_of(&self, slug: &str) -> Option<usize> {
-        self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+        self.row_of_key(&RowKey::Request(slug.to_string()))
+    }
+
+    /// The row `key` names, if it is visible.
+    pub fn row_of_key(&self, key: &RowKey) -> Option<usize> {
+        self.rows.iter().position(|r| Self::row_matches(r, key))
     }
 
     /// The listing the rows were last built from: every space, not just
@@ -848,17 +890,15 @@ impl Sidebar {
         &self.listing
     }
 
-    /// Starts a drag of row `i`: records its level's sibling order as both
-    /// `original` and the starting `working` order. Refuses a folder row.
+    /// Starts a drag of row `i`, a request or a folder: records its
+    /// sibling group's order as both `original` and the starting
+    /// `working` order.
     pub fn begin_drag(&mut self, i: usize, space: &str) -> bool {
         let Some((level, group)) = self.level_group(i, space) else {
             return false;
         };
-        let Some(Row::Request { slug, .. }) = self.rows.get(i) else {
-            return false;
-        };
         self.drag = Some(RowDrag {
-            slug: slug.clone(),
+            key: self.rows[i].key(),
             space: space.to_string(),
             level,
             original: group.clone(),
@@ -867,37 +907,71 @@ impl Sidebar {
         true
     }
 
-    /// Moves the dragged request so it sits at the group slot under row
-    /// `i` (clamped to the group). Returns whether the working order
-    /// changed; the caller then `rebuild`s. The rows mirror `working`
-    /// (the overlay is what built them), so the target row's offset from
-    /// the group's first row is its index in `working`; the dragged
-    /// request itself is found in `working` by slug, so a listing that
-    /// changed under the drag can never make it move the wrong sibling.
+    /// Moves the dragged row toward the pointer's row `i` within its
+    /// sibling group (clamped to the group). Returns whether the working
+    /// order changed; the caller then `rebuild`s.
+    ///
+    /// The rule (spec 2026-11-01 reorder folders R4): the dragged row
+    /// passes the sibling above once `i` is on or above that sibling's
+    /// first row, and the one below once `i` is on or below its last row,
+    /// repeating while that holds. A folder can be many rows tall, and a
+    /// rule that took "the sibling under the pointer" as the target would
+    /// swap a short row past a tall one and straight back on the next
+    /// motion event; this one is stable, because a pass leaves the
+    /// pointer short of the passed sibling's far edge. For one-row
+    /// siblings (every request) it puts the row at the pointer's slot.
+    ///
+    /// The dragged row is found in `working` by its entry, and lands
+    /// before the sibling now below it on screen (after the one above, at
+    /// the end), so an entry a changed listing no longer shows keeps its
+    /// place and can never make it move the wrong sibling.
     pub fn drag_to_row(&mut self, i: usize) -> bool {
-        let Some((slug, space)) = self.drag.as_ref().map(|d| (d.slug.clone(), d.space.clone()))
+        let Some((key, space)) = self.drag.as_ref().map(|d| (d.key.clone(), d.space.clone()))
         else {
             return false;
         };
-        let Some(cur_row) =
-            self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
-        else {
+        let Some(sibs) = self.row_of_key(&key).and_then(|row| self.siblings(row)) else {
             return false;
         };
-        let Some((first, last)) = self.group_bounds(cur_row) else {
+        let first = sibs[0].1.start;
+        let mut shown: Vec<(String, usize)> =
+            sibs.iter().map(|(k, r)| (Self::entry_of(k, &space), r.len())).collect();
+        let Some(start_at) = sibs.iter().position(|(k, _)| *k == key) else {
             return false;
         };
-        let rel = postui_core::order::relative(&slug, &space).unwrap_or(&slug);
-        let drag = self.drag.as_mut().expect("checked above");
-        let Some(cur) = drag.working.iter().position(|s| s == rel) else {
-            return false;
+        let top = |shown: &[(String, usize)], j: usize| -> usize {
+            first + shown[..j].iter().map(|(_, h)| h).sum::<usize>()
         };
-        let target = i.clamp(first, last) - first;
-        if cur == target || target >= drag.working.len() {
+        let mut at = start_at;
+        loop {
+            if at > 0 && i <= top(&shown, at - 1) {
+                shown.swap(at - 1, at);
+                at -= 1;
+            } else if at + 1 < shown.len() && i + 1 >= top(&shown, at + 1) + shown[at + 1].1 {
+                shown.swap(at, at + 1);
+                at += 1;
+            } else {
+                break;
+            }
+        }
+        if at == start_at {
             return false;
         }
-        let moved = drag.working.remove(cur);
-        drag.working.insert(target, moved);
+        let drag = self.drag.as_mut().expect("checked above");
+        let moved = &shown[at].0;
+        let Some(cur) = drag.working.iter().position(|e| e == moved) else {
+            return false;
+        };
+        let entry = drag.working.remove(cur);
+        let slot = match shown.get(at + 1) {
+            Some((below, _)) => drag.working.iter().position(|e| e == below),
+            None => drag.working.iter().position(|e| *e == shown[at - 1].0).map(|p| p + 1),
+        };
+        let Some(slot) = slot else {
+            drag.working.insert(cur, entry);
+            return false;
+        };
+        drag.working.insert(slot, entry);
         true
     }
 
@@ -932,7 +1006,12 @@ impl Component for Sidebar {
                 _ => None,
             }
         {
-            return self.selected_slug().map(|slug| Action::MoveRequest { slug, delta });
+            return match self.selected_row()? {
+                Row::Request { slug, .. } => {
+                    Some(Action::MoveRequest { slug: slug.clone(), delta })
+                }
+                Row::Folder { path, .. } => Some(Action::MoveFolder { path: path.clone(), delta }),
+            };
         }
         match ev.code {
             KeyCode::Down if plain => {
@@ -1205,10 +1284,7 @@ impl Component for Sidebar {
             });
             let is_cursor =
                 ctx.focused && self.selected == Some(i) && !is_band_row && band_alpha.is_none();
-            let is_dragged = matches!(
-                (row, self.drag.as_ref()),
-                (Row::Request { slug, .. }, Some(d)) if *slug == d.slug
-            );
+            let is_dragged = self.drag.as_ref().is_some_and(|d| Self::row_matches(row, &d.key));
 
             // The dragged row keeps the selected fill while it travels, so
             // it reads the same as the settled selection band.
@@ -2461,25 +2537,122 @@ mod tests {
         }
     }
 
+    /// The row spans of row `i`'s sibling group, as `(start, end)`.
+    fn spans(s: &Sidebar, i: usize) -> Vec<(usize, usize)> {
+        s.siblings(i).expect("a row").into_iter().map(|(_, r)| (r.start, r.end)).collect()
+    }
+
     #[test]
-    fn group_bounds_covers_one_levels_requests() {
+    fn siblings_cover_one_levels_requests_or_folders_with_their_open_subtrees() {
         let mut s = Sidebar::default();
         s.refresh(
-            listing(&["a", "b", "auth/x", "auth/y", "auth/deep/z"]),
+            listing(&["a", "b", "auth/x", "auth/y", "auth/deep/z", "billing/q"]),
             "main",
             &expanded(&["auth", "auth/deep"]),
             &[],
         );
-        // rows: a b auth/ x y deep/ z
-        assert_eq!(s.group_bounds(0), Some((0, 1)));
-        assert_eq!(s.group_bounds(1), Some((0, 1)));
-        assert_eq!(s.group_bounds(2), None, "a folder row has no group");
-        assert_eq!(s.group_bounds(3), Some((3, 4)));
-        assert_eq!(s.group_bounds(6), Some((6, 6)));
+        // rows: 0 a, 1 b, 2 auth/, 3 x, 4 y, 5 deep/, 6 z, 7 billing/
+        assert_eq!(spans(&s, 0), [(0, 1), (1, 2)]);
+        assert_eq!(spans(&s, 1), [(0, 1), (1, 2)]);
+        assert_eq!(spans(&s, 2), [(2, 7), (7, 8)], "auth/ carries its open subtree");
+        assert_eq!(spans(&s, 7), [(2, 7), (7, 8)]);
+        assert_eq!(spans(&s, 3), [(3, 4), (4, 5)]);
+        assert_eq!(spans(&s, 5), [(5, 7)], "deep/ is auth's only folder");
+        assert_eq!(spans(&s, 6), [(6, 7)]);
     }
 
     #[test]
-    fn group_bounds_stops_at_a_folder_row_between_equal_depths() {
+    fn folders_follow_the_order_list_below_their_levels_requests() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            listing(&["r", "a/x", "b/y", "c/z"]),
+            "main",
+            &expanded(&[]),
+            &order(&["c/", "r", "a/"]),
+        );
+        assert_eq!(row_slugs(&s), ["main/r", "main/c/", "main/a/", "main/b/"]);
+    }
+
+    #[test]
+    fn a_folder_drag_moves_its_open_subtree_with_it() {
+        let mut s = Sidebar::default();
+        let open = expanded(&["a"]);
+        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &[]);
+        // rows: 0 r, 1 a/, 2 x, 3 y, 4 b/
+        assert!(s.begin_drag(4, "main"));
+        let d = s.drag.as_ref().unwrap();
+        assert_eq!(d.key, RowKey::Folder("main/b".into()));
+        assert_eq!(d.original, ["a/", "b/"]);
+        assert_eq!(d.level, "");
+        assert!(s.drag_to_row(1), "the pointer on a/'s first row");
+        s.rebuild("main", &open, &[]);
+        assert_eq!(row_slugs(&s), ["main/r", "main/b/", "main/a/", "main/a/x", "main/a/y"]);
+    }
+
+    /// Spec 2026-11-01 reorder folders R4: a short folder passes a tall
+    /// one and stays passed while the pointer rests inside it.
+    #[test]
+    fn a_folder_drag_past_a_tall_neighbour_never_flips_back() {
+        let mut s = Sidebar::default();
+        let open = expanded(&["a"]);
+        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &[]);
+        assert!(s.begin_drag(4, "main"));
+        assert!(s.drag_to_row(1));
+        s.rebuild("main", &open, &[]);
+        // rows: 0 r, 1 b/, 2 a/, 3 x, 4 y — the pointer over a/'s block.
+        for i in [1, 2, 3] {
+            assert!(!s.drag_to_row(i), "row {i} keeps b/ above a/");
+        }
+        assert!(s.drag_to_row(4), "a/'s last row passes it");
+        s.rebuild("main", &open, &[]);
+        assert_eq!(row_slugs(&s), ["main/r", "main/a/", "main/a/x", "main/a/y", "main/b/"]);
+        // rows: 0 r, 1 a/, 2 x, 3 y, 4 b/ — back to the start, and stable.
+        for i in [2, 3, 4] {
+            assert!(!s.drag_to_row(i), "row {i} keeps b/ below a/");
+        }
+    }
+
+    #[test]
+    fn a_folder_drag_clamps_to_its_own_group() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["r", "a/x", "b/z"]), "main", &expanded(&[]), &[]);
+        // rows: 0 r, 1 a/, 2 b/
+        assert!(s.begin_drag(2, "main"));
+        assert!(s.drag_to_row(0), "a request row pins to the first folder slot");
+        s.rebuild("main", &expanded(&[]), &[]);
+        assert_eq!(row_slugs(&s), ["main/r", "main/b/", "main/a/"]);
+    }
+
+    #[test]
+    fn a_request_drag_keeps_its_levels_folder_order_and_back() {
+        let mut s = Sidebar::default();
+        let saved = order(&["g/", "f/"]);
+        s.refresh(listing(&["a", "b", "f/x", "g/y"]), "main", &expanded(&[]), &saved);
+        // rows: 0 a, 1 b, 2 g/, 3 f/
+        assert!(s.begin_drag(1, "main"));
+        assert!(s.drag_to_row(0));
+        s.rebuild("main", &expanded(&[]), &saved);
+        assert_eq!(row_slugs(&s), ["main/b", "main/a", "main/g/", "main/f/"]);
+        s.drag = None;
+        let saved = order(&["b", "a"]);
+        s.rebuild("main", &expanded(&[]), &saved);
+        assert!(s.begin_drag(3, "main"));
+        assert!(s.drag_to_row(2));
+        s.rebuild("main", &expanded(&[]), &saved);
+        assert_eq!(row_slugs(&s), ["main/b", "main/a", "main/g/", "main/f/"]);
+    }
+
+    #[test]
+    fn alt_up_and_down_on_a_folder_row_dispatch_move_folder() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a/x", "b/y"]), "main", &expanded(&[]), &[]);
+        s.selected = Some(1);
+        let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!(s.handle_key(ev), Some(Action::MoveFolder { path: "main/b".into(), delta: -1 }));
+    }
+
+    #[test]
+    fn siblings_of_requests_stop_at_a_folder_row_between_equal_depths() {
         // Two sibling subtrees at the *same* depth under different
         // folders: depth alone would run them together, so the folder row
         // sitting between them has to break the run.
@@ -2492,14 +2665,10 @@ mod tests {
         );
         // rows: auth/ x y billing/ z — x, y and z are all depth 1.
         assert_eq!(row_slugs(&s).len(), 5);
-        assert_eq!(s.group_bounds(1), Some((1, 2)), "auth's two requests");
-        assert_eq!(s.group_bounds(2), Some((1, 2)));
-        assert_eq!(s.group_bounds(3), None, "billing's folder row");
-        assert_eq!(
-            s.group_bounds(4),
-            Some((4, 4)),
-            "billing's one request is its own group, not auth's"
-        );
+        assert_eq!(spans(&s, 1), [(1, 2), (2, 3)], "auth's two requests");
+        assert_eq!(spans(&s, 2), [(1, 2), (2, 3)]);
+        assert_eq!(spans(&s, 3), [(0, 3), (3, 5)], "billing's folder row and auth's");
+        assert_eq!(spans(&s, 4), [(4, 5)], "billing's one request is its own group, not auth's");
     }
 
     #[test]
@@ -2540,11 +2709,21 @@ mod tests {
     }
 
     #[test]
-    fn begin_drag_refuses_a_folder_row() {
+    fn draw_paints_the_grip_glyph_on_a_dragged_folder_row() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "auth/x"]), "main", &expanded(&[]), &[]);
-        assert!(!s.begin_drag(1, "main"));
-        assert!(s.drag.is_none());
+        s.refresh(listing(&["a/x", "b/y"]), "main", &expanded(&[]), &[]);
+        assert!(s.begin_drag(1, "main")); // main/b
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let dragged = hits.rect_of(&Hit::SidebarRow(1)).expect("dragged row hit");
+        let other = hits.rect_of(&Hit::SidebarRow(0)).expect("other row hit");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(dragged.x, dragged.y)].symbol(), "\u{22ee}");
+        assert_ne!(buf[(other.x, other.y)].symbol(), "\u{22ee}");
     }
 
     #[test]
