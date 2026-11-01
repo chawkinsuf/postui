@@ -13624,6 +13624,7 @@ fn editing_a_selector_field_token_opens_the_select_picker() {
         .rect_of(&crate::hit::Hit::VarToken("user".into()))
         .expect("the token registers a hit");
     app.handle_mouse(moved(r.x, r.y));
+    rest_tips(&mut app);
     click_hit(&mut app, Hit::TipEdit("user".into()));
 
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
@@ -29094,8 +29095,9 @@ fn tooltip_text(app: &mut App) -> String {
     rendered_text_at(app, 120, 40)
 }
 
-/// Moves the pointer onto the drawn `{{name}}` token and re-renders so
-/// the tooltip (and its controls) are painted and registered.
+/// Moves the pointer onto the drawn `{{name}}` token, lets its dwell run
+/// out without sleeping (#233), and re-renders so the tooltip (and its
+/// controls) are painted and registered.
 fn hover_token(app: &mut App, name: &str) {
     render_once(app);
     let r = app
@@ -29103,7 +29105,50 @@ fn hover_token(app: &mut App, name: &str) {
         .rect_of(&Hit::VarToken(name.to_string()))
         .unwrap_or_else(|| panic!("no {{{{{name}}}}} drawn"));
     app.handle_mouse(moved(r.x + 1, r.y));
+    rest_tips(app);
+}
+
+/// Draws, lets the caret's and the pointer's dwells run out without
+/// sleeping, and draws the tip: the tip as a user resting on a token sees
+/// it (#233).
+fn rest_tips(app: &mut App) {
     render_once(app);
+    app.run_out_tip_dwells();
+    render_once(app);
+}
+
+/// The pointer's tip waits out its own dwell, longer than the caret's
+/// (#233): none on the frame the pointer arrives, none after the caret's
+/// 200 ms, and the token's once the pointer has rested 500 ms. Moving to
+/// another token starts the wait again, and leaving the token closes the
+/// tip on the next frame, before any tick.
+#[test]
+fn a_resting_pointer_raises_its_tip_only_after_its_dwell() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.editor.url = crate::components::line_input::LineInput::new("{{base_url}} {{other}}");
+    render_once(&mut app);
+    let first = app.hits.rect_of(&Hit::VarToken("base_url".into())).expect("drawn");
+    let second = app.hits.rect_of(&Hit::VarToken("other".into())).expect("drawn");
+
+    app.handle_mouse(moved(first.x + 1, first.y));
+    render_once(&mut app);
+    app.update(Action::Tick);
+    assert_eq!(app.var_token_tip(), None, "nothing on arrival");
+    app.pointer_dwell.backdate(std::time::Duration::from_millis(250));
+    app.update(Action::Tick);
+    assert_eq!(app.var_token_tip(), None, "the caret's dwell is not enough");
+    app.pointer_dwell.backdate(std::time::Duration::from_millis(300));
+    assert!(app.update(Action::Tick), "the tick that finishes the dwell redraws");
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()));
+
+    app.handle_mouse(moved(second.x + 1, second.y));
+    render_once(&mut app);
+    assert_eq!(app.var_token_tip(), None, "another token is a new wait");
+    rest_tips(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("other".into()));
+
+    app.handle_mouse(moved(second.x, second.y + 5));
+    assert_eq!(app.var_token_tip(), None, "off the token, the tip goes at once");
 }
 
 /// A `{{token}}` is text: clicking it lands the caret in the URL under
@@ -29645,7 +29690,7 @@ fn tooltip_holds_the_instance_it_was_raised_for_when_a_token_is_drawn_twice() {
     assert_eq!(instances.len(), 2, "{instances:?}");
     let url_token = instances[0];
     app.handle_mouse(moved(url_token.x + 1, url_token.y));
-    render_once(&mut app);
+    rest_tips(&mut app);
     let tip = app.var_token_tip().unwrap();
     assert_eq!(tip.anchor, url_token);
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
@@ -29738,7 +29783,7 @@ fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one()
     // Hover the URL bar's instance (the first drawn), then hold its panel.
     let url_token = app.hits.rects_of(&Hit::VarToken("base_url".into()))[0];
     app.handle_mouse(moved(url_token.x + 1, url_token.y));
-    render_once(&mut app);
+    rest_tips(&mut app);
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
     app.handle_mouse(moved(panel.x + 2, panel.bottom() - 1));
     render_once(&mut app);
@@ -30053,16 +30098,6 @@ fn a_selection_wins_over_the_carets_token() {
 
 // --- #135: the variable tooltip by keyboard --------------------------------
 
-/// Draws, lets the caret's dwell run out without sleeping, and draws the
-/// tip: the caret tip as a user resting on a token sees it.
-fn rest_caret(app: &mut App) {
-    render_once(app);
-    app.update(Action::Tick);
-    app.caret_token_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
-    app.update(Action::Tick);
-    render_once(app);
-}
-
 /// A caret resting in a token in an open table cell raises its tip, on
 /// every tab with a table, after the dwell and not before; a caret just
 /// after the closing braces raises none.
@@ -30074,12 +30109,12 @@ fn a_resting_caret_in_an_open_cell_raises_its_tip() {
         render_once(&mut app);
         app.update(Action::Tick);
         assert!(app.var_token_tip().is_none(), "{tab:?}: not before the dwell");
-        rest_caret(&mut app);
+        rest_tips(&mut app);
         assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()), "{tab:?}");
     }
     let (mut app, _dir, _out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 12);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert!(app.var_token_tip().is_none(), "after the braces is outside");
 }
 
@@ -30090,7 +30125,7 @@ fn a_cell_left_open_under_another_pane_raises_no_tip() {
     let (mut app, _dir, _out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
     app.focus = PaneId::Response;
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert!(app.editor.table.editing.is_some(), "the cell is still open");
     assert!(app.var_token_tip().is_none());
 }
@@ -30102,7 +30137,7 @@ fn a_caret_tip_sits_against_the_token_the_caret_is_in() {
     // The caret in the header's instance.
     let (mut app, _dir, _out) = tooltip_app("base_url");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     let url_y = app.editor.last_url_text_area.unwrap().y;
     assert_eq!(app.hits.rects_of(&Hit::VarToken("base_url".into())).len(), 2);
     let tip = app.var_token_tip().expect("the header's tip");
@@ -30118,7 +30153,7 @@ fn a_caret_tip_sits_against_the_token_the_caret_is_in() {
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
     app.editor.url.set_cursor(3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert_eq!(app.hits.rects_of(&Hit::VarToken("base_url".into())).len(), 2);
     let tip = app.var_token_tip().expect("the URL's tip");
     assert_eq!(tip.anchor.y, url_y, "against the URL's token");
@@ -30130,7 +30165,7 @@ fn a_caret_tip_sits_against_the_token_the_caret_is_in() {
 fn alt_o_edits_the_tips_variable_and_keeps_the_cell_open() {
     let (mut app, _dir, _out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "Bearer {{base_url}}", 10);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     app.handle_key(alt('o'));
     assert!(
         matches!(
@@ -30152,13 +30187,13 @@ fn alt_o_edits_the_tips_variable_and_keeps_the_cell_open() {
 fn alt_n_copies_and_alt_h_reveals_the_tips_variable() {
     let (mut app, _dir, out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     app.handle_key(alt('n'));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
 
     let (mut app, _dir, out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{api_key}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert!(!tooltip_text(&mut app).contains("sk-super-secret"), "masked");
     app.handle_key(alt('n'));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "sk-super-secret");
@@ -30183,12 +30218,12 @@ fn the_tip_keys_do_nothing_without_their_pill() {
     assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
     assert!(app.toasts.messages().is_empty(), "and nothing said");
     // A plain value has no reveal; an undefined one nothing to copy.
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     app.handle_key(alt('h'));
     assert!(app.tip_revealed.is_none());
     let (mut app, _dir, out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{nowhere}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     app.handle_key(alt('n'));
     assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
 }
@@ -30206,7 +30241,7 @@ fn the_tip_keys_leave_a_hover_tip_to_its_pills() {
 
     let (mut app, _dir, out) = tooltip_app("api_key");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     hover_token(&mut app, "api_key");
     assert_eq!(app.var_token_tip().map(|t| t.name), Some("api_key".into()));
     app.handle_key(alt('n'));
@@ -30224,7 +30259,7 @@ fn an_open_tooltip_puts_its_edit_key_in_the_footer() {
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
     render_once(&mut app);
     assert!(app.hits.rect_of(&edit).is_none(), "no tooltip, no chip");
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     let chip = app.hits.rect_of(&edit).expect("the edit chip");
     let tabs = app.hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1))).unwrap();
     assert!(chip.x > tabs.x, "after the pane's chips");
@@ -30259,7 +30294,7 @@ fn a_tip_key_is_bound_only_while_its_pill_shows() {
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
     render_once(&mut app);
     assert_eq!(app.lookup_key(&combo("alt+o")), None, "no tooltip yet");
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert_eq!(app.lookup_key(&combo("alt+o")), Some(Action::TipPill(TipPill::Edit)));
     assert_eq!(app.lookup_key(&combo("alt+n")), Some(Action::TipPill(TipPill::Copy)));
     assert_eq!(app.lookup_key(&combo("alt+h")), None, "a plain value has no reveal");
@@ -30274,7 +30309,7 @@ fn the_tip_keys_work_in_the_vim_profile() {
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
     app.editor.url.set_cursor(3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()));
     app.handle_key(alt('n'));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
@@ -30296,7 +30331,7 @@ fn a_body_caret_tip_sits_against_the_bodys_token() {
     app.editor.set_body_text("{\n  \"u\": \"{{base_url}}\"\n}");
     app.update(Action::ToggleBodyVars);
     app.editor.body.cursor = edtui::Index2::new(1, 11);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     let url_y = app.editor.last_url_text_area.unwrap().y;
     assert_eq!(app.hits.rects_of(&Hit::VarToken("base_url".into())).len(), 2);
     let tip = app.var_token_tip().expect("the body's tip");
@@ -30311,7 +30346,7 @@ fn a_body_caret_tip_sits_against_the_bodys_token() {
 fn the_palette_runs_a_tip_key_on_the_tip_it_covered() {
     let (mut app, _dir, out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     app.update(Action::OpenPalette);
     render_once(&mut app);
     for c in "copy the tooltip".chars() {
@@ -30347,7 +30382,7 @@ fn the_palette_lists_only_the_open_tooltips_pills() {
     ] {
         let (mut app, _dir, _out) = tooltip_app("x");
         open_value_cell(&mut app, EditorTab::Headers, value, 3);
-        rest_caret(&mut app);
+        rest_tips(&mut app);
         app.update(Action::OpenPalette);
         let want: Vec<Action> = want.into_iter().map(|p| on(p, name)).collect();
         assert_eq!(rows(&app), want, "{name}");
@@ -30372,7 +30407,7 @@ fn the_palette_lists_no_pills_for_a_hover_tooltip() {
 fn leaving_the_editor_takes_the_caret_tip_down_at_once() {
     let (mut app, _dir, out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{api_key}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     assert!(app.var_token_tip().is_some());
     app.focus = PaneId::Response; // the cell stays open, as after a click
     render_once(&mut app);
@@ -30388,7 +30423,7 @@ fn leaving_the_editor_takes_the_caret_tip_down_at_once() {
 fn a_palette_pick_ignores_a_token_under_the_pointer() {
     let (mut app, _dir, out) = tooltip_app("api_key");
     open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
-    rest_caret(&mut app);
+    rest_tips(&mut app);
     app.update(Action::OpenPalette);
     render_once(&mut app);
     // The pointer rests over the URL's {{api_key}}, under the palette.

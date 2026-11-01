@@ -84,11 +84,20 @@ fn token_rect(app: &mut App, name: &str) -> Rect {
         .unwrap_or_else(|| panic!("no VarToken registered for {name}"))
 }
 
-/// Hovers the middle of `name`'s drawn span and returns its rect.
+/// Hovers the middle of `name`'s drawn span, rests there past the
+/// pointer's dwell (#233), and returns its rect.
 fn hover_token(app: &mut App, name: &str) -> Rect {
     let r = token_rect(app, name);
-    app.handle_mouse(moved(r.x + 1, r.y));
+    rest_at(app, r.x + 1, r.y);
     r
+}
+
+/// Moves the pointer to `(x, y)` and lets its tooltip dwell run out
+/// without sleeping (#233).
+fn rest_at(app: &mut App, x: u16, y: u16) {
+    app.handle_mouse(moved(x, y));
+    draw(app);
+    app.run_out_tip_dwells();
 }
 
 /// Clicks a hit the tooltip registers (its pills), drawing first so the
@@ -329,7 +338,7 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
     assert_eq!(buf[(r.x, r.y)].fg, app.theme.accent);
 
     // Hovering the token neither blurs the table nor drops its selection...
-    app.handle_mouse(moved(r.x + 1, r.y));
+    rest_at(&mut app, r.x + 1, r.y);
     assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     assert!(app.var_token_tip().is_some());
     assert_eq!(
@@ -433,7 +442,7 @@ fn body_editor_tokens_are_tinted_and_hoverable() {
     let body = app.hits.rect_of(&Hit::BodyEditor).unwrap();
     assert!(r.x >= body.x && r.right() <= body.right());
 
-    app.handle_mouse(moved(r.x + 1, r.y));
+    rest_at(&mut app, r.x + 1, r.y);
     let frame = dump(&mut app);
     assert!(frame.contains("http://qa.test"), "{frame}");
 }
@@ -452,7 +461,7 @@ fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
     app.update(Action::Tick);
     draw(&mut app);
     assert!(app.var_token_tip().is_none(), "no dwell yet is not resting");
-    // The dwell is wall-clock (see `App::track_caret_token`), not
+    // The dwell is wall-clock (see `App::track_tip_dwells`), not
     // tick-counted -- real time is fine here, matching the sleep-based
     // settle precedent elsewhere in the app-level tests.
     std::thread::sleep(std::time::Duration::from_millis(250));

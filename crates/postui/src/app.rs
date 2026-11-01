@@ -50,6 +50,68 @@ const CLOSE_THE_DIALOG_FIRST: &str = "Close the dialog first";
 /// something else on screen was mid-animation.
 const CARET_TIP_DWELL: Duration = Duration::from_millis(200);
 
+/// Wall-clock dwell the pointer must rest on one drawn `{{token}}` before
+/// its tooltip appears (task #233). Longer than the caret's: a pointer
+/// crosses tokens on its way to something else, and is left parked on one
+/// after a click, far more often than a caret is, and a tip that opens
+/// at once covers the text around the token.
+const POINTER_TIP_DWELL: Duration = Duration::from_millis(500);
+
+/// One thing that must stay put for a while before it counts: the token
+/// the caret rests in, or the drawn token the pointer rests on. The
+/// variable tooltip opens once its dwell is done, so a caret or pointer
+/// only passing through never flashes one up. Tracked on every `Tick`.
+#[derive(Debug)]
+struct Dwell<T> {
+    /// What is resting, and since when.
+    on: Option<(T, Instant)>,
+    /// Whether `on` has rested past its dwell, kept apart from the clock
+    /// so [`Dwell::track`] reports the one tick it crosses (for the
+    /// redraw) and not every later one.
+    done: bool,
+}
+
+impl<T> Default for Dwell<T> {
+    fn default() -> Self {
+        Self { on: None, done: false }
+    }
+}
+
+impl<T: PartialEq> Dwell<T> {
+    /// Tracks `current` at `now`: a change restarts the clock (and ends a
+    /// done dwell), and resting `after` finishes it. Returns whether
+    /// [`Dwell::done_on`] changed, so the tick redraws.
+    fn track(&mut self, current: Option<T>, now: Instant, after: Duration) -> bool {
+        if current.as_ref() != self.on.as_ref().map(|(t, _)| t) {
+            let was_done = self.done;
+            self.on = current.map(|t| (t, now));
+            self.done = false;
+            return was_done;
+        }
+        match &self.on {
+            Some((_, since)) if !self.done && now.duration_since(*since) >= after => {
+                self.done = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What has rested past its dwell, if anything.
+    fn done_on(&self) -> Option<&T> {
+        self.on.as_ref().filter(|_| self.done).map(|(t, _)| t)
+    }
+
+    /// Moves the clock back by `by`, as if the rest began that much
+    /// earlier: tests run the dwell out without sleeping.
+    #[cfg(any(test, feature = "test-util"))]
+    fn backdate(&mut self, by: Duration) {
+        if let Some((_, since)) = &mut self.on {
+            *since -= by;
+        }
+    }
+}
+
 /// A variable tooltip to draw: which name, and the on-screen span of the
 /// token it belongs to (the tooltip is placed against it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,18 +441,12 @@ pub struct App {
     /// change, so `begin_hover_fade` can restart the well's own fade on
     /// entry alone and hold it through moves between the well's own chips.
     url_well_hovered: bool,
-    /// The token the keyboard caret is resting in, and when it started
-    /// resting there. The tooltip appears once it's been resting
-    /// [`CARET_TIP_DWELL`], so a caret merely passing through a token on
-    /// its way somewhere else never flashes one up.
-    caret_token: Option<String>,
-    caret_token_since: Option<Instant>,
-    /// Whether the tooltip for `caret_token` has already crossed
-    /// [`CARET_TIP_DWELL`] and is showing -- tracked separately from
-    /// `caret_token_since` so `track_caret_token` can report the one tick
-    /// the dwell threshold is crossed (for the redraw) without re-reporting
-    /// it on every later tick while still resting in the same token.
-    caret_tip_shown: bool,
+    /// The token the keyboard caret is resting in; its tooltip appears
+    /// once it has rested [`CARET_TIP_DWELL`].
+    caret_dwell: Dwell<String>,
+    /// The drawn token (name and rect) the pointer is resting on; its
+    /// tooltip appears once it has rested [`POINTER_TIP_DWELL`] (#233).
+    pointer_dwell: Dwell<TokenTip>,
     /// The secret the tooltip is showing unmasked (its `reveal` toggle):
     /// the token's name *and* the value revealed, so a different secret
     /// under the same name (another environment's, after a cycle) comes
@@ -1965,9 +2021,8 @@ impl App {
             last_pointer_shape: PointerShape::Default,
             pointer: None,
             url_well_hovered: false,
-            caret_token: None,
-            caret_token_since: None,
-            caret_tip_shown: false,
+            caret_dwell: Dwell::default(),
+            pointer_dwell: Dwell::default(),
             tip_revealed: None,
             drag: None,
             text_drag: None,
@@ -3008,39 +3063,41 @@ impl App {
         true
     }
 
-    /// Per-`Tick` bookkeeping for the caret-resting tooltip: tracks how long
-    /// (wall-clock) the caret has sat inside one `{{token}}`, resetting
-    /// whenever it moves to a different token (or out of every token).
-    /// Returns whether the tooltip's visibility could have changed, so the
-    /// tick redraws.
-    fn track_caret_token(&mut self, now: Instant) -> bool {
-        let token = self.caret_tip_allowed().then(|| self.editor.caret_token()).flatten();
-        if token != self.caret_token {
-            let was_showing = self.caret_tip_shown;
-            self.caret_token_since = token.is_some().then_some(now);
-            self.caret_token = token;
-            self.caret_tip_shown = false;
-            return was_showing;
-        }
-        if self.caret_token.is_none() || self.caret_tip_shown {
-            return false;
-        }
-        let Some(since) = self.caret_token_since else {
-            return false;
-        };
-        if now.duration_since(since) >= CARET_TIP_DWELL {
-            self.caret_tip_shown = true;
-            return true;
-        }
-        false
+    /// Per-`Tick` bookkeeping for the tooltip's two dwells: how long
+    /// (wall-clock) the caret has sat inside one `{{token}}`, and the
+    /// pointer on one drawn token (the last frame's), each restarting
+    /// whenever it moves to a different token or off every token. Returns
+    /// whether the tooltip's visibility could have changed, so the tick
+    /// redraws.
+    fn track_tip_dwells(&mut self, now: Instant) -> bool {
+        let caret = self.caret_tip_allowed().then(|| self.editor.caret_token()).flatten();
+        let pointer = self
+            .pointer
+            .and_then(|(x, y)| self.hits.var_token_at(x, y))
+            .map(|(name, anchor)| TokenTip { name: name.to_string(), anchor });
+        let caret_changed = self.caret_dwell.track(caret, now, CARET_TIP_DWELL);
+        let pointer_changed = self.pointer_dwell.track(pointer, now, POINTER_TIP_DWELL);
+        caret_changed || pointer_changed
+    }
+
+    /// Runs both tooltip dwells out, as if the caret and the pointer had
+    /// rested where they are (against the last drawn frame) for a second:
+    /// tests raise a resting tip without sleeping.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn run_out_tip_dwells(&mut self) {
+        let now = Instant::now();
+        self.track_tip_dwells(now);
+        self.caret_dwell.backdate(Duration::from_secs(1));
+        self.pointer_dwell.backdate(Duration::from_secs(1));
+        self.track_tip_dwells(now);
     }
 
     /// The variable tooltip to draw this frame, if any: the tip the
     /// pointer is resting on (`tip_held`, shown only while its token is
     /// still drawn at the very anchor the tip was raised at, so the tip
     /// closes by itself once the token leaves the screen or moves), else
-    /// the token under the pointer, or —
-    /// with no hover — the one the caret has been resting in for
+    /// the token the pointer has rested on for [`POINTER_TIP_DWELL`]
+    /// (#233), else the one the caret has been resting in for
     /// [`CARET_TIP_DWELL`].
     /// Suppressed while a modal is up: the tooltip draws above everything
     /// else, and must not float over a dialog.
@@ -3059,10 +3116,17 @@ impl App {
         {
             return hits.var_token_drawn_at(held.anchor, &held.name).then(|| held.clone());
         }
+        // Read against this frame's token under the pointer, not the
+        // dwell's alone (the last frame's): a pointer that has left its
+        // token, or a token that moved out from under it, closes the tip
+        // now rather than at the next tick.
         if let Some((x, y)) = self.pointer
             && let Some((name, anchor)) = hits.var_token_at(x, y)
+            && let Some(rested) = self.pointer_dwell.done_on()
+            && rested.name == name
+            && rested.anchor == anchor
         {
-            return Some(TokenTip { name: name.to_string(), anchor });
+            return Some(rested.clone());
         }
         self.caret_tip_in(hits)
     }
@@ -3070,13 +3134,13 @@ impl App {
     /// The caret's tooltip, read off `hits`: what [`Self::var_token_tip_in`]
     /// shows with no pointer tip.
     fn caret_tip_in(&self, hits: &crate::hit::HitMap) -> Option<TokenTip> {
-        if !self.caret_tip_shown || !self.caret_tip_allowed() {
+        if !self.caret_tip_allowed() {
             return None;
         }
         // Against the instance the caret is in, not another drawn token of
         // the same name; none when the field's window cuts it or the body
         // wraps it, as a token drawn nowhere raises none (#135).
-        let name = self.caret_token.clone()?;
+        let name = self.caret_dwell.done_on()?.clone();
         let (drawn, anchor) = hits.caret_token()?;
         (drawn == name).then_some(TokenTip { name, anchor })
     }
@@ -3900,7 +3964,7 @@ impl App {
                 };
                 let now = Instant::now();
                 let flag_changed = self.poll_edit_flag(now, false);
-                let tip_changed = self.track_caret_token(now);
+                let tip_changed = self.track_tip_dwells(now);
                 // The testbed's looping motion demos self-drive from here,
                 // never from any other screen's tick path — see
                 // `tick_testbed_demos`.
