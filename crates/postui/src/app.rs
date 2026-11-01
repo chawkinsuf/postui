@@ -3075,31 +3075,32 @@ impl App {
     /// changed, so the caller redraws.
     pub(crate) fn track_tip_dwells(&mut self, now: Instant) -> bool {
         let caret = self.caret_tip_allowed().then(|| self.editor.caret_token()).flatten();
-        let pointer = self.pointer_rests_on();
+        let pointer = self.pointer_rests_on_in(&self.hits);
         let caret_changed = self.caret_dwell.track(caret, now, CARET_TIP_DWELL);
         let pointer_changed = self.pointer_dwell.track(pointer, now, POINTER_TIP_DWELL);
         caret_changed || pointer_changed
     }
 
-    /// The token the pointer rests on, as the last drawn frame shows it:
-    /// what the pointer can see. Nothing while a dialog is up (no tip
-    /// shows then, and the dialog hides the tokens under it). On the
-    /// drawn tip, the tip's own token: its panel hides the tokens under
-    /// it, which [`crate::hit::HitMap::var_token_at`] would still find,
-    /// and the pointer can go from a token to its tip and back without
-    /// the tip closing. Read off the frame, not `tip_held` (set by mouse
-    /// events), so a tip that opens under a still pointer counts too.
-    fn pointer_rests_on(&self) -> Option<TokenTip> {
+    /// The token the pointer rests on, as `hits` shows it: what the
+    /// pointer can see. The dwell reads the last drawn frame; the tooltip
+    /// reads the frame being drawn and shows only a token whose dwell is
+    /// done, so the two answer by one rule. Nothing while a dialog is up
+    /// (no tip shows then, and the dialog hides the tokens under it). On
+    /// the drawn tip, the tip's own token: its panel hides the tokens
+    /// under it, which [`crate::hit::HitMap::var_token_at`] would still
+    /// find, and the pointer can go from a token to its tip and back
+    /// without the tip closing. Read off the frame, not `tip_held` (set
+    /// by mouse events), so a tip that opens under a still pointer counts
+    /// too.
+    fn pointer_rests_on_in(&self, hits: &HitMap) -> Option<TokenTip> {
         if !self.modals.is_empty() {
             return None;
         }
         let (x, y) = self.pointer?;
-        if self.hits.hit_at_ignoring_var_tokens(x, y).and_then(Hit::tip_name).is_some() {
+        if hits.hit_at_ignoring_var_tokens(x, y).and_then(Hit::tip_name).is_some() {
             return self.drawn_tip.clone();
         }
-        self.hits
-            .var_token_at(x, y)
-            .map(|(name, anchor)| TokenTip { name: name.to_string(), anchor })
+        hits.var_token_at(x, y).map(|(name, anchor)| TokenTip { name: name.to_string(), anchor })
     }
 
     /// Runs both tooltip dwells out, as if the caret and the pointer had
@@ -3138,17 +3139,14 @@ impl App {
         {
             return hits.var_token_drawn_at(held.anchor, &held.name).then(|| held.clone());
         }
-        // Read against this frame's token under the pointer, not the
+        // Read against what the pointer rests on in this frame, not the
         // dwell's alone (the last frame's): a pointer that has left its
         // token, or a token that moved out from under it, closes the tip
         // now rather than at the next tick.
-        if let Some((x, y)) = self.pointer
-            && let Some((name, anchor)) = hits.var_token_at(x, y)
-            && let Some(rested) = self.pointer_dwell.done_on()
-            && rested.name == name
-            && rested.anchor == anchor
+        if let Some(on) = self.pointer_rests_on_in(hits)
+            && self.pointer_dwell.done_on() == Some(&on)
         {
-            return Some(rested.clone());
+            return Some(on);
         }
         self.caret_tip_in(hits)
     }
