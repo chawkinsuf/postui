@@ -16034,6 +16034,124 @@ fn an_auto_pill_click_keeps_the_cursor_on_its_auto_row() {
     assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)), "the copy pill keeps it");
 }
 
+/// Task #230 (spec 2026-10-25 S18, amended): a click on an auto row puts
+/// the table's cursor on it, as ↓ would, and the editor takes the
+/// keyboard, in both profiles. Its keys then act on it: `y` copies it.
+#[test]
+fn a_click_on_an_auto_row_moves_the_cursor_onto_it() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for profile in [Arrows, Vim] {
+        let mut app = auto_rows_app(profile);
+        app.editor.table.set_selected(None);
+        app.focus = PaneId::Sidebar;
+        app.editor.sub_focus = SubFocus::None;
+        click_hit(&mut app, Hit::AutoHeaderRow(1));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Section(1)), "{profile:?}: on Host");
+        assert_eq!(app.focus, PaneId::Editor, "{profile:?}");
+        assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?}");
+        click_hit(&mut app, Hit::AutoHeaderRow(0));
+        assert_eq!(app.editor.auto_row_cursor(), Some(0), "{profile:?}: on Accept");
+        let yank = if profile == Vim { "yy" } else { "y" };
+        type_chars(&mut app, yank);
+        assert_eq!(last_copied(&app).as_deref(), Some("application/json"), "{profile:?}");
+    }
+}
+
+/// Task #230: a click on an auto row is still a click away from an open
+/// cell, which commits first; the cursor then lands on the clicked row.
+#[test]
+fn a_click_on_an_auto_row_commits_an_open_cell_first() {
+    let mut app = auto_rows_app(crate::config::KeyProfile::Arrows);
+    app.update(Action::TableAddRow);
+    type_chars(&mut app, "X-New");
+    assert!(app.editor.table.editing.is_some(), "the new row's name is open");
+    click_hit(&mut app, Hit::AutoHeaderRow(0));
+    assert!(app.editor.table.editing.is_none(), "the cell committed");
+    assert!(app.editor.headers.contains_key("X-New"), "with its typing");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)));
+}
+
+/// A Vars tab whose request references `{{u}}` in the URL and `{{x}}`,
+/// `{{y}}` in its vars' values, so the referenced rows are u, x, y, with
+/// the editor's content focused on `+ Add`, drawn once.
+fn referenced_rows_app(profile: crate::config::KeyProfile) -> App {
+    let mut app = App::new_for_test();
+    app.use_profile(profile);
+    app.editor.url = LineInput::new("https://{{u}}/");
+    for (k, v) in [("a", "{{x}}"), ("b", "{{y}}")] {
+        app.editor
+            .variables
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Vars;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Add));
+    render_once(&mut app);
+    app
+}
+
+/// Task #230: a click on a referenced row puts the cursor on it, in both
+/// profiles, as it does on an auto row.
+#[test]
+fn a_click_on_a_referenced_row_moves_the_cursor_onto_it() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for profile in [Arrows, Vim] {
+        let mut app = referenced_rows_app(profile);
+        app.focus = PaneId::Sidebar;
+        click_hit(&mut app, Hit::ReferencedVarRow("y".into()));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Section(2)), "{profile:?}: on y");
+        assert_eq!(app.focus, PaneId::Editor, "{profile:?}");
+        assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?}");
+    }
+}
+
+/// Task #230: the click commits an open cell first, and that commit can
+/// rebuild the referenced list (it is in first-seen order). The cursor
+/// lands on the clicked variable's row, found by name, and goes nowhere
+/// when the commit took the variable away.
+#[test]
+fn a_referenced_row_click_finds_its_variable_after_the_commit() {
+    let open_a_typed = |app: &mut App| {
+        app.editor.table.set_selected(Some(Stop::Row(0)));
+        let map = app.editor.variables.clone();
+        app.editor.table.begin_edit_selected(&map);
+        app.editor.table.handle_key(tab_key(), &mut app.editor.variables);
+        let edit = app.editor.table.editing.as_mut().expect("a's value cell is open");
+        edit.input.set_text("plain");
+    };
+    let mut app = referenced_rows_app(crate::config::KeyProfile::Arrows);
+    open_a_typed(&mut app);
+    click_hit(&mut app, Hit::ReferencedVarRow("y".into()));
+    assert_eq!(app.editor.variables["a"].value, "plain", "the cell committed");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(1)), "y is row 1 now");
+
+    let mut app = referenced_rows_app(crate::config::KeyProfile::Arrows);
+    open_a_typed(&mut app);
+    click_hit(&mut app, Hit::ReferencedVarRow("x".into()));
+    assert_eq!(app.editor.table.selected(), None, "x went with the commit");
+}
+
+/// Task #230: a section row lights under the pointer, as a table row does.
+#[test]
+fn a_hovered_section_row_lights_like_a_table_row() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let lit = |app: &mut App, hit: Hit| {
+        app.editor.table.set_selected(None);
+        render_once(app);
+        let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect for {hit:?}"));
+        app.handle_mouse(moved(r.x + 1, r.y));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        terminal.backend().buffer()[(r.x + 1, r.y)].bg == app.theme.control_hover
+    };
+    let mut app = auto_rows_app(crate::config::KeyProfile::Arrows);
+    assert!(lit(&mut app, Hit::AutoHeaderRow(0)), "the hovered auto row");
+    let mut app = referenced_rows_app(crate::config::KeyProfile::Arrows);
+    assert!(lit(&mut app, Hit::ReferencedVarRow("x".into())), "the hovered referenced row");
+}
+
 /// Keeping the cursor is not keeping an open cell: a click on an auto pill
 /// still commits the cell being typed in, as on main, so its typing is
 /// never left open behind the click (and the copy pill never copies past

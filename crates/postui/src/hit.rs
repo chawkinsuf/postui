@@ -159,11 +159,16 @@ pub enum Hit {
     /// over (`HeaderRow::overriding_row`): adds the header to the request
     /// with its value open for editing (task #20).
     AutoHeaderOverride(usize),
-    /// Row `i` of that section as a whole, under its tokens and copy icon,
-    /// registered only for a client-owned row: a surface, like a table
-    /// row, whose hover lets the footer say why it isn't sent (task #59).
-    /// A click on it focuses the editor.
+    /// Row `i` of that section as a whole, under its tokens and pills, like
+    /// a table row's background: a click puts the table's cursor on it
+    /// (task #230), and a client-owned row's hover lets the footer say why
+    /// it isn't sent (task #59).
     AutoHeaderRow(usize),
+    /// The Vars tab's referenced row for this variable, as a whole: a click
+    /// puts the table's cursor on it (task #230). It names the variable,
+    /// not the row's index: the click commits an open cell first, and that
+    /// can rebuild the list, which is in first-seen order.
+    ReferencedVarRow(String),
     /// The single "reveal"/"hide" toggle shown above the computed-headers
     /// section when at least one row would otherwise show a masked secret.
     AutoHeaderReveal,
@@ -465,15 +470,13 @@ impl PointerShape {
             Some(Hit::SplitHandle) => PointerShape::RowResize,
             // The variable tooltip's panel between its pills: a click there
             // is only swallowed, so it is chrome, not a button.
-            // An auto header row is a surface, hovered only for the footer.
             // The strip's control band is the strip without the drag.
             Some(
                 Hit::Pane(_)
                 | Hit::StripControls
                 | Hit::ModalOutside
                 | Hit::ModalBody
-                | Hit::TipPanel(_)
-                | Hit::AutoHeaderRow(_),
+                | Hit::TipPanel(_),
             ) => PointerShape::Default,
             Some(_) => PointerShape::Pointer,
         }
@@ -918,8 +921,11 @@ mod tests {
         assert_eq!(PointerShape::for_hit(Some(&Hit::Pane(PaneId::Sidebar))), PointerShape::Default);
         assert_eq!(PointerShape::for_hit(Some(&Hit::ModalOutside)), PointerShape::Default);
         assert_eq!(PointerShape::for_hit(Some(&Hit::ModalBody)), PointerShape::Default);
-        // Task #59: an auto header row is a surface.
-        assert_eq!(PointerShape::for_hit(Some(&Hit::AutoHeaderRow(0))), PointerShape::Default);
+        // Task #230: an auto or referenced row is clicked to put the
+        // cursor on it, so it takes the hand, as a table row does.
+        for row in [Hit::AutoHeaderRow(0), Hit::ReferencedVarRow("x".into()), Hit::TableRow(0)] {
+            assert_eq!(PointerShape::for_hit(Some(&row)), PointerShape::Pointer, "{row:?}");
+        }
         // Task #33: the variable tooltip's panel is an arrow; its pills
         // (the tip's buttons) keep the hand.
         assert_eq!(PointerShape::for_hit(Some(&Hit::TipPanel("x".into()))), PointerShape::Default);
