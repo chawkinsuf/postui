@@ -508,6 +508,9 @@ fn hovering_a_url_token_pops_its_value_and_scope() {
         row: token.y,
         modifiers: KeyModifiers::NONE,
     });
+    // The pointer rests past its dwell before the tip opens (#233).
+    render(&mut app);
+    app.run_out_tip_dwells();
 
     let frame = render(&mut app);
     assert!(frame.contains("http://qa.test"), "the tooltip names the value: {frame}");
@@ -675,6 +678,9 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
         row: token.y,
         modifiers: KeyModifiers::NONE,
     });
+    // The pointer rests past its dwell before the tip opens (#233).
+    render(&mut app);
+    app.run_out_tip_dwells();
     let frame = render(&mut app);
     assert!(frame.contains("us-east-1"), "the request shows the selected entry's value: {frame}");
     assert!(frame.contains("zone  us "), "...and names the entry it came from: {frame}");

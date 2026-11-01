@@ -151,7 +151,10 @@ impl App {
         // not be left down.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || ended || noted || regated || asked || disarmed
+        // The pointer may have left its token, or come back to it: the
+        // tooltip's wait restarts here, not at the next tick (#233).
+        let tipped = self.track_tip_dwells(std::time::Instant::now());
+        changed || ended || noted || regated || asked || disarmed || tipped
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -855,8 +858,18 @@ impl App {
     /// row button, a pane's action pills after a view switch — would keep
     /// stale hover styling until the mouse next moved. Called after every
     /// frame draw; returns whether anything changed (the caller schedules a
-    /// repaint). Inert mid-drag, matching the move handler.
+    /// repaint). The styling is inert mid-drag, matching the move handler;
+    /// the tooltip's waits are not.
     pub fn resync_hover(&mut self) -> bool {
+        // A frame can move a token from under a still pointer, cover it
+        // with a tip or a dialog, or bring one there: the tooltip's waits
+        // follow the frame (#233), drag or no drag.
+        let tipped = self.track_tip_dwells(std::time::Instant::now());
+        tipped | self.resync_hover_styling()
+    }
+
+    /// [`Self::resync_hover`]'s styling half: `hovered`/`hovered_token`.
+    fn resync_hover_styling(&mut self) -> bool {
         if self.drag.is_some()
             || self.text_drag.is_some()
             || self.resize.is_some()
