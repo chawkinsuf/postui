@@ -11121,6 +11121,22 @@ mod tests {
         assert!(r.jq_bar().error.is_none() && !r.jq_bar().stale);
     }
 
+    /// A big body's run goes through the pool worker and an action: the
+    /// value's error must come through both beside the outputs.
+    #[test]
+    fn a_background_run_that_fails_on_one_value_lands_its_error_with_the_outputs() {
+        let mut r = ready(PART_FAILING);
+        let req = r.apply_jq(".items[]", 0).expect("over the sync limit: background");
+        let action = crate::app::jq_worker(req.generation, req.run, req.code, req.doc, req.body);
+        let crate::action::Action::JqRunFinished { generation, run, result } = action else {
+            panic!("the worker answers with its run: {action:?}");
+        };
+        assert!(r.attach_jq_result(generation, run, result));
+        assert_eq!(r.view().unwrap().view_text(), "1\n2");
+        assert!(!r.jq_bar().stale);
+        assert!(r.jq_bar().error.is_some(), "the error survives the worker and the action");
+    }
+
     #[test]
     fn a_value_error_with_nothing_else_to_show_is_a_failed_run() {
         let body = "{\"items\":[null]}\n{\"done\":true}\n";
@@ -11132,9 +11148,10 @@ mod tests {
         assert_eq!(r.view().unwrap().view_text(), "1\n0", "last good output stays");
         assert!(r.jq_bar().stale);
         assert!(r.jq_bar().error.is_some() && r.jq_bar().note.is_none());
-        // No output at all besides the error: the same.
+        // Back to a good run, so the next one has a fresh tree to keep.
         r.apply_jq(".items | length", SYNC_PRETTY_BYTES);
-        // The first value has no `done` (dropped), the second's is `true`.
+        // No output at all besides the error: the same. The first value
+        // has no `done` (dropped), the second's is `true`.
         r.apply_jq(".done | select(.) | .x", SYNC_PRETTY_BYTES);
         assert_eq!(r.view().unwrap().view_text(), "1\n0");
         assert!(r.jq_bar().stale && r.jq_bar().error.is_some());

@@ -455,9 +455,10 @@ fn record(
             // The request is sent and can't be resent safely: the report
             // keeps what came back, as if there were no `-o` (a filter's
             // results, then, and no body: they are what the reader asked
-            // to see). When the filter fails too, the two errors are all
-            // that prints, with no `-o` hint ("if everything fails ...
-            // just show the errors", the user, #223).
+            // to see). When the filter fails too, the two errors print with
+            // no `-o` hint and no body ("if everything fails ... just show
+            // the errors", the user, #223), beside whatever results the
+            // filter's other values gave (#229).
             Err(e) => {
                 report.error = Some(mask.apply(&e.message));
                 show_body = jq.is_none();

@@ -219,10 +219,11 @@ pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<Jq
                 // `for_each_output` ends the value's run on its error, so
                 // each one is a value that failed. Every one has had its
                 // message formatted (jaq's holds the value), though only
-                // the first is kept: that costs what the value would have
-                // cost as an output (`to_string` above), so a failing run
-                // is never dearer than a passing one, and jq formats every
-                // error too.
+                // the first is kept: a filter failing on every line of a
+                // big stream formats the whole body, where the run used to
+                // stop at the first error. Accepted to keep the error
+                // handling simple (the user, #229); jq formats every error
+                // too.
                 Err(e) => {
                     failed += 1;
                     first.get_or_insert(e);

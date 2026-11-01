@@ -87,3 +87,11 @@ there too (`[{"a":1},2] | .[] | .a` prints `1`, then the error).
   filter's output.
 - R7: exit 1 even though some results printed, so a script still sees the
   filter failed.
+
+*Amended 2026-11-01, after review round 3:* every failing value's error
+message is still formatted (jaq's message holds the value) though only the
+first is kept, so a filter failing on every line of a big stream formats
+the whole body where the run used to stop at line 1. Formatting only the
+first was offered and declined: "i just want to keep this simple. we need
+to give enough information to fix the error without blowing out the
+context. but i dont want to get too complicated handing errors" (you).
