@@ -4674,11 +4674,8 @@ impl Editor {
             // lights under the pointer as a table row does. Registered
             // before the token, which floats over it: hover and a left click
             // are resolved past tokens, so both reach the row under one.
-            let hovered = matches!(
-                ctx.hovered,
-                Some(crate::hit::Hit::ReferencedVarRow(h)) if h == name
-            );
-            let bg = if cursor == Some(i) || hovered { theme.control_hover } else { theme.page };
+            let lit = cursor == Some(i) || hovered_referenced_row(ctx) == Some(name.as_str());
+            let bg = if lit { theme.control_hover } else { theme.page };
             let row_rect = Rect::new(area.x, y, area.width, 1);
             hits.register(row_rect, crate::hit::Hit::ReferencedVarRow(name.clone()));
             crate::paint::fill(buf, row_rect, bg);
@@ -4926,6 +4923,16 @@ fn hovered_auto_row(ctx: &DrawCtx) -> Option<usize> {
     use crate::hit::Hit;
     match ctx.hovered? {
         Hit::AutoHeaderRow(i) | Hit::AutoHeaderCopy(i) | Hit::AutoHeaderOverride(i) => Some(*i),
+        _ => None,
+    }
+}
+
+/// The referenced row a hit belongs to, by its variable, for hover styling
+/// (task #230): the row alone, which has no pills; its `{{token}}` is
+/// resolved past, as on an auto row.
+fn hovered_referenced_row<'a>(ctx: &DrawCtx<'a>) -> Option<&'a str> {
+    match ctx.hovered? {
+        crate::hit::Hit::ReferencedVarRow(name) => Some(name),
         _ => None,
     }
 }

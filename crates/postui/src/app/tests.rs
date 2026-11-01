@@ -16071,6 +16071,24 @@ fn a_click_on_an_auto_row_commits_an_open_cell_first() {
     assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)));
 }
 
+/// Task #230: an auto row's click trusts the index its hit was drawn with,
+/// since the click-away commit is a Headers cell's and the auto rows don't
+/// hang on the request's rows: one a typed row overrides stays listed,
+/// struck (#57). Here the commit overrides the very row clicked.
+#[test]
+fn an_auto_row_click_lands_on_it_when_the_commit_overrides_it() {
+    let mut app = auto_rows_app(crate::config::KeyProfile::Arrows);
+    app.update(Action::TableAddRow);
+    type_chars(&mut app, "Accept");
+    click_hit(&mut app, Hit::AutoHeaderRow(0));
+    assert!(app.editor.headers.contains_key("Accept"), "the typed row committed");
+    render_once(&mut app);
+    let row = &app.editor.computed.rows[0];
+    assert_eq!(row.header.name, "Accept", "still auto row 0");
+    assert!(!row.sent(), "struck now: the typed row overrides it");
+    assert_eq!(app.editor.auto_row_cursor(), Some(0), "the cursor is on the row clicked");
+}
+
 /// A Vars tab whose request references `{{u}}` in the URL and `{{x}}`,
 /// `{{y}}` in its vars' values, so the referenced rows are u, x, y, with
 /// the editor's content focused on `+ Add`, drawn once.
@@ -16163,9 +16181,17 @@ fn a_hovered_section_row_lights_like_a_table_row() {
     let (x, y) = (Hit::ReferencedVarRow("x".into()), Hit::ReferencedVarRow("y".into()));
     assert!(lit(&mut app, x.clone(), x.clone()), "the hovered referenced row");
     assert!(!lit(&mut app, x.clone(), y), "and only that one");
-    // Hover is resolved past a `{{token}}`, so the row under one stays lit.
-    // (`rect_of` takes the last `{{x}}` drawn: the section's, not a's cell.)
-    assert!(lit(&mut app, Hit::VarToken("x".into()), x), "the row under its token");
+    // Hover is resolved past a `{{token}}`, so the row under one stays lit:
+    // the pointer on the section's `{{x}}` (a's value cell draws one too).
+    let row = app.hits.rect_of(&x).expect("x's row");
+    let token = app.hits.rects_of(&Hit::VarToken("x".into()));
+    let token = token.iter().find(|t| t.y == row.y).expect("the section's {{x}}");
+    app.handle_mouse(moved(token.x + 1, token.y));
+    assert_eq!(app.hits.hit_at_ignoring_var_tokens(token.x + 1, token.y), Some(&x));
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let bg = terminal.backend().buffer()[(row.x + 1, row.y)].bg;
+    assert_eq!(bg, app.theme.control_hover, "the row under its token");
 }
 
 /// Keeping the cursor is not keeping an open cell: a click on an auto pill
