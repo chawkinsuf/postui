@@ -29168,6 +29168,48 @@ fn a_pointer_back_from_the_tip_onto_its_token_keeps_the_tip() {
     assert_eq!(app.var_token_tip().map(|t| t.anchor), Some(token), "still up, no new wait");
 }
 
+/// A pointer that leaves its token and comes back between two ticks
+/// waits again: the wait follows the mouse events, not the tick alone
+/// (#233).
+#[test]
+fn a_pointer_off_and_back_between_ticks_waits_again() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let token = app.var_token_tip().expect("the rested tip").anchor;
+    app.handle_mouse(moved(token.x, token.y + 8));
+    render_once(&mut app);
+    app.handle_mouse(moved(token.x + 1, token.y));
+    render_once(&mut app);
+    assert_eq!(app.var_token_tip(), None, "back on the token is a new wait");
+}
+
+/// A caret tip that opens over a still pointer covers the tokens under
+/// its panel: the pointer rests on the tip, so no covered token's wait
+/// runs out and swaps the tip for one the user can't see (#233).
+#[test]
+fn a_tip_opened_over_a_still_pointer_is_what_the_pointer_rests_on() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.editor.active_tab = EditorTab::Body;
+    let line = "{{zz}} ".repeat(16);
+    app.editor.set_body_text(&[line.as_str(); 12].join("\n"));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.editor.url.set_cursor(3);
+    rest_tips(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()), "the caret's tip");
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    let covered = app
+        .hits
+        .rects_of(&Hit::VarToken("zz".into()))
+        .into_iter()
+        .find(|r| panel.contains(ratatui::layout::Position { x: r.x, y: r.y }))
+        .expect("the panel covers a body token");
+    // A pointer that was already there: no mouse event, so no hold.
+    app.pointer = Some((covered.x, covered.y));
+    rest_tips(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()), "no swap to zz");
+}
+
 /// A pointer resting on a token under a dialog does no waiting: when the
 /// dialog closes, its token's wait starts then, so no tip jumps up the
 /// moment the dialog goes (#233).

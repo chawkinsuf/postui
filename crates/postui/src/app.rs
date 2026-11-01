@@ -3064,32 +3064,42 @@ impl App {
         true
     }
 
-    /// Per-`Tick` bookkeeping for the tooltip's two dwells: how long
-    /// (wall-clock) the caret has sat inside one `{{token}}`, and the
-    /// pointer on one drawn token (the last frame's), each restarting
-    /// whenever it moves to a different token or off every token. Returns
-    /// whether the tooltip's visibility could have changed, so the tick
-    /// redraws.
-    ///
-    /// What the pointer rests on is what it can see: nothing while a
-    /// dialog is up (no tip shows then, and the tokens under the dialog
-    /// are hidden), and the tip's own token while it rests on the tip's
-    /// panel (`tip_held`), not a token the panel covers. So the pointer
-    /// can go from a token to its tip and back without the tip closing.
-    fn track_tip_dwells(&mut self, now: Instant) -> bool {
+    /// Bookkeeping for the tooltip's two dwells: how long (wall-clock) the
+    /// caret has sat inside one `{{token}}`, and the pointer on one drawn
+    /// token, each restarting whenever it moves to a different token or
+    /// off every token. Run wherever either can change, not on the tick
+    /// alone: after every mouse event and every drawn frame
+    /// (`resync_hover`), so a pointer that leaves a token and comes back
+    /// between two ticks waits again; and on every `Tick`, which finishes
+    /// a dwell. Returns whether the tooltip's visibility could have
+    /// changed, so the caller redraws.
+    pub(crate) fn track_tip_dwells(&mut self, now: Instant) -> bool {
         let caret = self.caret_tip_allowed().then(|| self.editor.caret_token()).flatten();
-        let pointer = if !self.modals.is_empty() {
-            None
-        } else if self.tip_held {
-            self.drawn_tip.clone()
-        } else {
-            self.pointer
-                .and_then(|(x, y)| self.hits.var_token_at(x, y))
-                .map(|(name, anchor)| TokenTip { name: name.to_string(), anchor })
-        };
+        let pointer = self.pointer_rests_on();
         let caret_changed = self.caret_dwell.track(caret, now, CARET_TIP_DWELL);
         let pointer_changed = self.pointer_dwell.track(pointer, now, POINTER_TIP_DWELL);
         caret_changed || pointer_changed
+    }
+
+    /// The token the pointer rests on, as the last drawn frame shows it:
+    /// what the pointer can see. Nothing while a dialog is up (no tip
+    /// shows then, and the dialog hides the tokens under it). On the
+    /// drawn tip, the tip's own token: its panel hides the tokens under
+    /// it, which [`crate::hit::HitMap::var_token_at`] would still find,
+    /// and the pointer can go from a token to its tip and back without
+    /// the tip closing. Read off the frame, not `tip_held` (set by mouse
+    /// events), so a tip that opens under a still pointer counts too.
+    fn pointer_rests_on(&self) -> Option<TokenTip> {
+        if !self.modals.is_empty() {
+            return None;
+        }
+        let (x, y) = self.pointer?;
+        if self.hits.hit_at_ignoring_var_tokens(x, y).and_then(Hit::tip_name).is_some() {
+            return self.drawn_tip.clone();
+        }
+        self.hits
+            .var_token_at(x, y)
+            .map(|(name, anchor)| TokenTip { name: name.to_string(), anchor })
     }
 
     /// Runs both tooltip dwells out, as if the caret and the pointer had
