@@ -174,9 +174,14 @@ pub fn check(code: &str) -> Result<(), JqError> {
 /// order, and beside them the error of a value whose run failed. As in jq,
 /// an error ends only the run of the value it happened on, so the outputs
 /// are the other values' and those printed before it. When more than one
-/// value failed, `error` is the first one's, its message ending `(N values
-/// failed)`: one line for the bar's one row and for an agent reading
+/// value failed, `error` is the first one's, its message starting `first
+/// of N errors: `: one line for the bar's one row and for an agent reading
 /// `run --jq`, where jq prints a line per failing value (#229 spec, R3).
+/// The count leads because jaq's message holds the failing value, which
+/// on a long line runs past the bar's row, and it says "first" because
+/// the other values may have failed differently. It is part of the
+/// message, not a field of its own, so the bar and the CLI say it the
+/// same way from this one place.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JqRun {
     pub outputs: Vec<String>,
@@ -222,7 +227,7 @@ pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<Jq
         })?;
         let error = first.map(|e| match failed {
             1 => e,
-            n => JqError::Runtime { message: format!("{} ({n} values failed)", e.message()) },
+            n => JqError::Runtime { message: format!("first of {n} errors: {}", e.message()) },
         });
         Ok(JqRun { outputs, error })
     })
@@ -481,7 +486,7 @@ mod tests {
         let err = out.error.expect("the failing value's error is reported with them");
         assert!(matches!(err, JqError::Runtime { .. }), "got {err:?}");
         assert!(err.message().contains("null as iterable"), "{err:?}");
-        assert!(!err.message().contains("values failed"), "one value failed: {err:?}");
+        assert!(!err.message().contains("errors:"), "one value failed: {err:?}");
     }
 
     #[test]
@@ -499,7 +504,7 @@ mod tests {
         assert_eq!(out.outputs, vec!["1", "3"]);
         let first = run(".a", &JqDocument::parse("2").unwrap()).unwrap().error.unwrap();
         let err = out.error.unwrap();
-        assert_eq!(err.message(), format!("{} (2 values failed)", first.message()));
+        assert_eq!(err.message(), format!("first of 2 errors: {}", first.message()));
     }
 
     #[test]

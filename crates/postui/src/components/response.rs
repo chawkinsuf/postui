@@ -3688,7 +3688,10 @@ impl Response {
                 match tree {
                     // A value's error and nothing else worth showing (no
                     // output, only nulls, or not JSON): a failed run, so
-                    // the previous tree stays (#229 spec, R6).
+                    // the previous tree stays (#229 spec, R6). Over output
+                    // that isn't JSON, the value's error is the one shown,
+                    // as `run --jq` does: one error at a time, the other
+                    // shows once it is fixed.
                     _ if error.is_some() && (nothing || tree.is_none()) => {
                         self.jq.error = error;
                         self.jq.stale = true;

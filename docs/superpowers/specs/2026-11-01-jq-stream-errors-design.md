@@ -27,7 +27,7 @@ there too (`[{"a":1},2] | .[] | .a` prints `1`, then the error).
 |---|---|---|
 | R1 | A runtime error ends only the run of the value it happened on; the run goes on with the next value. | you (#218: "it would be good if it processed like jq did if you passed it ndjson"; this bug filed on your "anyone could make a filter that fails ... file a new bug ticket") |
 | R2 | The outputs a value produced before its error are kept, as jq prints them. On a single-value body this means outputs before the error are kept too (changes the 2026-09-03 spec row). | mine (approved) |
-| R3 | A run reports one error: the first. When more than one value failed, its message ends `(N values failed)`. N counts the runs that failed: a filter reading `input`/`inputs` takes several values in one run, but "values" is what the user thinks in. | mine (approved) |
+| R3 | A run reports one error: the first. When more than one value failed, its message starts `first of N errors: `. N counts the runs that failed (a filter reading `input`/`inputs` takes several values in one run). *Amended 2026-11-01, review round 1:* the count first wrote `(N values failed)` at the end, but jaq's message holds the failing value, so on a long line the count ran off the bar's row. Leading with `N values failed: ` "makes it seem like all the errors were the same error" (you), hence "first of". | mine (approved); "first of" from your note |
 | R4 | Compile errors, a body that is not JSON, and output past the cap stay whole-run errors with no outputs, as today. | mine (approved) |
 | R5 | Bar: a run with an error and outputs worth showing shows those outputs in the tree, as a good run does (chip and filter badge not dimmed), with the error in red on the row under the bar. | mine (approved) |
 | R6 | Bar: a run with an error and nothing worth showing (no output, all `null`, or output that is not JSON) is a failed run as today: the error under the bar, the previous tree kept, chip dimmed. | mine (approved) |
@@ -42,7 +42,7 @@ there too (`[{"a":1},2] | .[] | .a` prints `1`, then the error).
   `Err` is R4's whole-run errors only. The collecting closure stops
   propagating a filter error with `?`: it records the first error, counts
   failed values, and lets `for_each_output` go on to the next value (it
-  already ends that value's run on an error). The count suffix (R3) is put
+  already ends that value's run on an error). The count prefix (R3) is put
   on the message in core, so the bar and the CLI show the same text.
   `for_each_output`'s doc paragraph about `run` not doing this goes.
 - **TUI.** `JqRunOutput` gains `error: Option<JqError>`, filled from
@@ -63,7 +63,7 @@ there too (`[{"a":1},2] | .[] | .a` prints `1`, then the error).
 
 - core: a stream with one failing value yields the other values'
   outputs and the error (R1); a value's outputs before its error are kept
-  (R2); two failing values give the first message with `(2 values failed)`
+  (R2); two failing values give the first message after `first of 2 errors: `
   (R3); the cap and compile errors are still `Err` (R4). Rename
   `a_runtime_error_on_any_value_is_the_whole_result`.
 - response: a landed run with outputs and an error shows the tree, not

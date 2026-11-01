@@ -348,6 +348,7 @@ fn run_jq(
         Ok(run) => run,
         Err(e) => return (None, Some(e.message())),
     };
+    let error = run.error.map(|e| e.message());
     let results: Result<Vec<serde_json::Value>, String> = run
         .outputs
         .into_iter()
@@ -358,9 +359,16 @@ fn run_jq(
         })
         .collect();
     match results {
-        Err(message) => (None, Some(message)),
+        // A result jaq printed that isn't JSON (`nan`, a non-string key)
+        // drops them all. A value's run error, if there was one too, is
+        // the one reported, as the jq bar does (`land_jq_result`): one
+        // error at a time, the other shows once it is fixed. Both at once
+        // is rare enough not to report two.
+        Err(not_json) => (None, Some(error.unwrap_or(not_json))),
+        // Partial results beside the error are the point (#229 spec, R7):
+        // `jq.output` not null no longer means success; `jq.error` and
+        // the exit code say the run failed.
         Ok(results) => {
-            let error = run.error.map(|e| e.message());
             let output = (error.is_none() || !results.is_empty()).then_some(results);
             (output, error)
         }
