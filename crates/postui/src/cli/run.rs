@@ -311,7 +311,8 @@ struct JqReport {
 impl JqReport {
     /// The failing filter's error as the text prints it: with how to keep
     /// the body it failed on, which isn't printed (#223), when nothing kept
-    /// it.
+    /// it. Also when other values' results printed (#229): the value it
+    /// failed on is still only in the body.
     fn failure(&self) -> Option<String> {
         let error = self.error.as_ref()?;
         Some(match self.suggest_output {
