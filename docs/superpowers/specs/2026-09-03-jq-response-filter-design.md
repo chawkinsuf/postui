@@ -82,6 +82,10 @@ pub fn run(filter: &JqFilter, doc: &JqDocument) -> Result<Vec<String>, JqError>;
   done once per response and cached (see Response component).
 - `run` collects all outputs. An error mid-stream discards the partial
   outputs and returns the error, matching jq's exit behaviour.
+  *Amended 2026-11-01 (#229, mine (approved)):* jq keeps the outputs printed
+  before an error, and an error ends only the run of the value it happened
+  on. `run` now returns the outputs with the first error beside them
+  (`JqRun`); see `2026-11-01-jq-stream-errors-design.md`.
 - Spans: jaq's lex/parse errors carry the offending token as a sub-slice
   of the source; the module recovers the byte offset by pointer arithmetic
   against the code string and falls back to `None` if the slice is not
