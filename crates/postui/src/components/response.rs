@@ -8,7 +8,7 @@ use crate::layout::PaneId;
 use crate::theme::Theme;
 use crate::vim::engine::SearchMemory;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
-use postui_core::jq::{JqDocument, JqError};
+use postui_core::jq::{JqDocument, JqError, JqRun};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -330,11 +330,15 @@ pub struct JqBar {
     /// Set on every bar edit — text or the on/off switch;
     /// [`Response::take_jq_edited`] clears it.
     edited: bool,
+    /// Why the filter failed, drawn under the bar: it doesn't compile, the
+    /// body isn't JSON, or a value's run failed. Beside a tree that isn't
+    /// stale, the run failed on some values and the tree is the rest's
+    /// output (#229).
     pub error: Option<JqError>,
-    /// The last run produced nothing to show: it failed (`error` says
-    /// why, and the previous good tree stays) or every output was `null`
-    /// (`note` says which, and the full body shows). Either way the tree
-    /// on screen is not this filter's output.
+    /// The last run produced nothing to show: it failed with no output
+    /// worth showing (`error` says why, and the previous good tree stays)
+    /// or every output was `null` (`note` says which, and the full body
+    /// shows). Either way the tree on screen is not this filter's output.
     pub stale: bool,
     /// Why a run that succeeded still shows the full body: every output
     /// was `null` (or one array of nothing but nulls) → `"null"`; no
@@ -658,9 +662,10 @@ pub struct JqCompleteRequest {
 }
 
 /// What a jq run hands back: the document it parsed (when it had to), the
-/// filter's outputs as jq would print them, and those outputs already
-/// flattened into a tree. The tree is built where the run ran — on the
-/// blocking pool for a big body — because flattening a multi-megabyte
+/// filter's outputs as jq would print them, the error of a value whose run
+/// failed (`JqRun::error`, beside the other values' outputs), and those
+/// outputs already flattened into a tree. The tree is built where the run
+/// ran — on the blocking pool for a big body — because flattening a multi-megabyte
 /// output takes several times longer than the filter itself, and doing it
 /// on the UI thread froze the app for exactly the stretch the bar's
 /// spinner is meant to cover.
@@ -669,15 +674,24 @@ pub struct JqRunOutput {
     pub doc: Option<JqDocument>,
     pub outputs: Vec<String>,
     /// `None` when an output is not JSON (jq's `@text`-style strings) —
-    /// reported as an error on attach.
-    pub tree: Option<JsonTree>,
+    /// reported as an error on attach. Boxed because it rides in
+    /// `Action::JqRunFinished`: inline, it and `error` made `Action` too
+    /// large to pass around by value (clippy's `large_enum_variant`).
+    pub tree: Option<Box<JsonTree>>,
+    pub error: Option<JqError>,
 }
 
 impl JqRunOutput {
-    /// Flattens `outputs` into the tree on the calling thread.
+    /// Flattens the run's outputs into the tree on the calling thread.
+    pub fn from_run(doc: Option<JqDocument>, run: JqRun) -> Self {
+        let tree = JsonTree::parse_many(&run.outputs).map(Box::new);
+        Self { doc, outputs: run.outputs, tree, error: run.error }
+    }
+
+    /// A run with no error.
+    #[cfg(test)]
     pub fn from_outputs(doc: Option<JqDocument>, outputs: Vec<String>) -> Self {
-        let tree = JsonTree::parse_many(&outputs);
-        Self { doc, outputs, tree }
+        Self::from_run(doc, JqRun { outputs, error: None })
     }
 }
 
@@ -3415,8 +3429,8 @@ impl Response {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
             // back, just the outputs.
-            let result = postui_core::jq::run(code_trim, &doc)
-                .map(|outputs| JqRunOutput::from_outputs(None, outputs));
+            let result =
+                postui_core::jq::run(code_trim, &doc).map(|run| JqRunOutput::from_run(None, run));
             self.land_jq_result(result);
             return None;
         }
@@ -3657,19 +3671,30 @@ impl Response {
         true
     }
 
-    /// Shows a finished run's result: the filtered tree, or the full body
-    /// with a note or an error. Both callers hold the view it ran for.
+    /// Shows a finished run's result: the filtered tree (with the error of
+    /// a value that failed, if one did), or the full body with a note, or
+    /// the previous tree with an error. Both callers hold the view it ran
+    /// for.
     fn land_jq_result(&mut self, result: Result<JqRunOutput, JqError>) {
         let view = self.view.as_mut().expect("a jq result lands on a ready view");
         self.jq.pending = None;
         view.awaiting_filter = false;
         match result {
-            Ok(JqRunOutput { doc, outputs, tree }) => {
+            Ok(JqRunOutput { doc, outputs, tree, error }) => {
                 if let Some(doc) = doc {
                     view.jq_doc = Some(doc);
                 }
+                let nothing = outputs.is_empty() || all_null(&outputs);
                 match tree {
-                    Some(_) if outputs.is_empty() || all_null(&outputs) => {
+                    // A value's error and nothing else worth showing (no
+                    // output, only nulls, or not JSON): a failed run, so
+                    // the previous tree stays (#229 spec, R6).
+                    _ if error.is_some() && (nothing || tree.is_none()) => {
+                        self.jq.error = error;
+                        self.jq.stale = true;
+                        self.jq.note = None;
+                    }
+                    Some(_) if nothing => {
                         // Nothing to show: keep the full body up with a
                         // note rather than replace it with `null`s.
                         view.jq_outputs = 1;
@@ -3684,11 +3709,14 @@ impl Response {
                         view.h_scroll = 0;
                         view.recompute_matches();
                     }
+                    // This filter's outputs, shown even when a value
+                    // failed: the tree is its output, so not stale, and the
+                    // error sits under the bar beside it (R5).
                     Some(tree) => {
                         view.jq_outputs = outputs.len();
-                        view.set_jq_tree(Some(tree));
+                        view.set_jq_tree(Some(*tree));
                         view.jq_tree_code = view.jq_applied.clone();
-                        self.jq.error = None;
+                        self.jq.error = error;
                         self.jq.stale = false;
                         self.jq.note = None;
                         view.clear_sel();
@@ -11069,6 +11097,44 @@ mod tests {
             r.view().unwrap().view_text().starts_with("{"),
             "no good output yet: the body stays"
         );
+    }
+
+    /// A stream whose middle line lacks `items`, as an Ollama-style
+    /// stream's last line often does (#229).
+    const PART_FAILING: &str = "{\"items\":[1]}\n{\"done\":true}\n{\"items\":[2]}\n";
+
+    #[test]
+    fn a_run_that_fails_on_one_value_shows_the_others_outputs_with_the_error() {
+        let mut r = ready(PART_FAILING);
+        r.apply_jq(".items[]", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().view_text(), "1\n2", "the other values' outputs show");
+        assert_eq!(r.jq_output_count(), 2);
+        assert!(!r.jq_bar().stale, "the tree is this filter's output");
+        let err = r.jq_bar().error.clone().expect("the failing value's error is shown with it");
+        assert!(err.message().contains("iterable"), "{err:?}");
+        assert_eq!(r.jq_bar().note, None);
+        // The next good run clears the error.
+        r.apply_jq(".items?", SYNC_PRETTY_BYTES);
+        assert!(r.jq_bar().error.is_none() && !r.jq_bar().stale);
+    }
+
+    #[test]
+    fn a_value_error_with_nothing_else_to_show_is_a_failed_run() {
+        let body = "{\"items\":[null]}\n{\"done\":true}\n";
+        let mut r = ready(body);
+        r.apply_jq(".items | length", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().view_text(), "1\n0");
+        // Only a null besides the error: the previous tree stays.
+        r.apply_jq(".items[]", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().view_text(), "1\n0", "last good output stays");
+        assert!(r.jq_bar().stale);
+        assert!(r.jq_bar().error.is_some() && r.jq_bar().note.is_none());
+        // No output at all besides the error: the same.
+        r.apply_jq(".items | length", SYNC_PRETTY_BYTES);
+        // The first value has no `done` (dropped), the second's is `true`.
+        r.apply_jq(".done | select(.) | .x", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().view_text(), "1\n0");
+        assert!(r.jq_bar().stale && r.jq_bar().error.is_some());
     }
 
     /// The error span jaq reports is a byte range into `code.trim()`, not

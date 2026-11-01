@@ -212,6 +212,12 @@ nothing works ... Just show the errors").
 This replaces "With `--jq`, FILE gets the jq output instead" above and the
 #215 amendment's first sentence.
 
+*Amended 2026-11-01 (#229, mine (approved)):* a filter that fails on some
+values of a stream prints the other values' results (stdout, `jq.output`)
+and the first error (stderr, `jq.error`, its message ending `(N values
+failed)` when more than one did), exit 1. `jq.output` is `null` only when
+the filter failed with no results. See `2026-11-01-jq-stream-errors-design.md`.
+
 `postui suite [-p] [--space S] [--env E] [--select SEL=OPT]... [--timeout SECS] [-o FILE]`
 
 - Runs every request in the project, or in space S, **one at a time in

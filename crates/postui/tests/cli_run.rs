@@ -546,6 +546,28 @@ fn run_jq_runs_over_every_value_of_a_stream() {
     assert_eq!(joined, "\"hello\"\n");
 }
 
+/// A filter that fails on one value of a stream still prints the other
+/// values' results, with the error, and exits 1 (#229).
+#[test]
+fn run_jq_prints_the_other_values_results_beside_an_error() {
+    let (home, _server, root) = served();
+    std::fs::write(
+        root.join("requests/main/stream.toml"),
+        "name = \"Stream\"\nmethod = \"GET\"\nurl = \"{{base}}/ndjson\"\n",
+    )
+    .unwrap();
+    // `"he" | .x` fails; `"llo"` comes out.
+    let filter = ".part | if . == \"he\" then .x else . end";
+    let out = send(&home, &root, "main/stream", &["--jq", filter]);
+    assert_eq!(out.status.code(), Some(1));
+    let v = json(&out);
+    assert_eq!(v["jq"]["output"], serde_json::json!(["llo"]));
+    assert!(v["jq"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{}", v["jq"]);
+    let (code, out, err) = streams(&home, &root, "main/stream", &["--jq", filter]);
+    assert_eq!((code, out.as_str()), (Some(1), "\"llo\"\n"));
+    assert!(err.starts_with("postui: jq: ") && err.contains("-o FILE"), "{err}");
+}
+
 /// A failed run whose reader has gone (stdout a closed pipe) still exits 1.
 #[test]
 fn a_failed_run_to_a_closed_stdout_exits_1() {

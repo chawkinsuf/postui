@@ -334,18 +334,37 @@ pub(super) fn millis(d: Duration) -> u64 {
 
 /// Runs `filter` over the body `text`, unmasked (masking first would break
 /// the JSON where a mask lands in a number or an escape): each result is
-/// parsed as the JSON jq printed, then masked as a tree.
-fn run_jq(filter: &str, text: &str, mask: &Mask) -> Result<Vec<serde_json::Value>, String> {
-    let doc = jq::JqDocument::parse(text).map_err(|e| e.message())?;
-    let results = jq::run(filter, &doc).map_err(|e| e.message())?;
-    results
+/// parsed as the JSON jq printed, then masked as a tree. Returns the
+/// results and the error (unmasked) as `JqReport` holds them: a filter
+/// that failed on some values of a stream has both, the other values'
+/// results and the first error (#229); `None` results only when it failed
+/// with none.
+fn run_jq(
+    filter: &str,
+    text: &str,
+    mask: &Mask,
+) -> (Option<Vec<serde_json::Value>>, Option<String>) {
+    let run = match jq::JqDocument::parse(text).and_then(|doc| jq::run(filter, &doc)) {
+        Ok(run) => run,
+        Err(e) => return (None, Some(e.message())),
+    };
+    let results: Result<Vec<serde_json::Value>, String> = run
+        .outputs
         .into_iter()
         .map(|r| {
             let value: serde_json::Value =
                 serde_json::from_str(&r).map_err(|e| format!("a result isn't JSON: {e}"))?;
             Ok(mask.apply_json(value))
         })
-        .collect()
+        .collect();
+    match results {
+        Err(message) => (None, Some(message)),
+        Ok(results) => {
+            let error = run.error.map(|e| e.message());
+            let output = (error.is_none() || !results.is_empty()).then_some(results);
+            (output, error)
+        }
+    }
 }
 
 /// `file` made absolute against the working directory.
@@ -398,14 +417,11 @@ fn record(
     // against printing 24 KB of stream on a failure (mine (approved)); the
     // skill tells the agent to add `-o` for such requests.
     if let Some(filter) = jq {
-        let (results, error) = match run_jq(filter, text(), mask) {
-            Ok(results) => (Some(results), None),
-            Err(message) => (None, Some(mask.apply(&message))),
-        };
+        let (results, error) = run_jq(filter, text(), mask);
         report.jq = Some(JqReport {
             filter: mask.apply(filter),
             output: results,
-            error,
+            error: error.map(|message| mask.apply(&message)),
             suggest_output: output.is_none() && !raw.bytes.is_empty(),
         });
     }

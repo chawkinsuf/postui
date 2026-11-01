@@ -25566,7 +25566,12 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     );
     let Action::JqRunFinished {
         result:
-            Ok(crate::components::response::JqRunOutput { doc: Some(_), outputs, tree: Some(tree) }),
+            Ok(crate::components::response::JqRunOutput {
+                doc: Some(_),
+                outputs,
+                tree: Some(tree),
+                error: None,
+            }),
         ..
     } = &action
     else {

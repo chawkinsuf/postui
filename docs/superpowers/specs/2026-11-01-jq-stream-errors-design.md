@@ -31,7 +31,7 @@ there too (`[{"a":1},2] | .[] | .a` prints `1`, then the error).
 | R4 | Compile errors, a body that is not JSON, and output past the cap stay whole-run errors with no outputs, as today. | mine (approved) |
 | R5 | Bar: a run with an error and outputs worth showing shows those outputs in the tree, as a good run does (chip and filter badge not dimmed), with the error in red on the row under the bar. | mine (approved) |
 | R6 | Bar: a run with an error and nothing worth showing (no output, all `null`, or output that is not JSON) is a failed run as today: the error under the bar, the previous tree kept, chip dimmed. | mine (approved) |
-| R7 | `run --jq`: the outputs print (stdout, `jq.output`) and so does the error (the `postui: jq:` stderr line with its `-o` hint, `jq.error`); exit 1. `jq.output` is `null` only when there is no output at all. | mine (approved) |
+| R7 | `run --jq`: the outputs print (stdout, `jq.output`) and so does the error (the `postui: jq:` stderr line with its `-o` hint, `jq.error`); exit 1. `jq.output` is `null` only when the filter failed with no output (a filter that succeeds with none is `[]`, as before). | mine (approved) |
 | R8 | The skill's "A filter that fails prints its error and no body" says the other values' results still print. | mine (approved) |
 
 ## Design
