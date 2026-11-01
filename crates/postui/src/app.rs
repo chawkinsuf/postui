@@ -52,9 +52,10 @@ const CARET_TIP_DWELL: Duration = Duration::from_millis(200);
 
 /// Wall-clock dwell the pointer must rest on one drawn `{{token}}` before
 /// its tooltip appears (task #233). Longer than the caret's: a pointer
-/// crosses tokens on its way to something else, and is left parked on one
-/// after a click, far more often than a caret is, and a tip that opens
-/// at once covers the text around the token.
+/// crosses tokens on its way to something else far more often than a
+/// caret does, and a tip that opens at once covers the text around the
+/// token. A click into a token is the caret's business: it lands the
+/// caret there, whose own dwell raises the tip (#135).
 const POINTER_TIP_DWELL: Duration = Duration::from_millis(500);
 
 /// One thing that must stay put for a while before it counts: the token
@@ -3069,12 +3070,23 @@ impl App {
     /// whenever it moves to a different token or off every token. Returns
     /// whether the tooltip's visibility could have changed, so the tick
     /// redraws.
+    ///
+    /// What the pointer rests on is what it can see: nothing while a
+    /// dialog is up (no tip shows then, and the tokens under the dialog
+    /// are hidden), and the tip's own token while it rests on the tip's
+    /// panel (`tip_held`), not a token the panel covers. So the pointer
+    /// can go from a token to its tip and back without the tip closing.
     fn track_tip_dwells(&mut self, now: Instant) -> bool {
         let caret = self.caret_tip_allowed().then(|| self.editor.caret_token()).flatten();
-        let pointer = self
-            .pointer
-            .and_then(|(x, y)| self.hits.var_token_at(x, y))
-            .map(|(name, anchor)| TokenTip { name: name.to_string(), anchor });
+        let pointer = if !self.modals.is_empty() {
+            None
+        } else if self.tip_held {
+            self.drawn_tip.clone()
+        } else {
+            self.pointer
+                .and_then(|(x, y)| self.hits.var_token_at(x, y))
+                .map(|(name, anchor)| TokenTip { name: name.to_string(), anchor })
+        };
         let caret_changed = self.caret_dwell.track(caret, now, CARET_TIP_DWELL);
         let pointer_changed = self.pointer_dwell.track(pointer, now, POINTER_TIP_DWELL);
         caret_changed || pointer_changed

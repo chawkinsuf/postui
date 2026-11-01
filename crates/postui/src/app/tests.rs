@@ -29151,6 +29151,43 @@ fn a_resting_pointer_raises_its_tip_only_after_its_dwell() {
     assert_eq!(app.var_token_tip(), None, "off the token, the tip goes at once");
 }
 
+/// The pointer can go from a token to its tip's panel and back without
+/// the tip closing: resting on the panel is resting on the tip's token,
+/// so no tick in between restarts the wait (#233).
+#[test]
+fn a_pointer_back_from_the_tip_onto_its_token_keeps_the_tip() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let token = app.var_token_tip().expect("the rested tip").anchor;
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    app.handle_mouse(moved(panel.x + 2, panel.bottom() - 1));
+    render_once(&mut app);
+    app.update(Action::Tick);
+    app.handle_mouse(moved(token.x + 1, token.y));
+    render_once(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.anchor), Some(token), "still up, no new wait");
+}
+
+/// A pointer resting on a token under a dialog does no waiting: when the
+/// dialog closes, its token's wait starts then, so no tip jumps up the
+/// moment the dialog goes (#233).
+#[test]
+fn a_dialog_holds_the_pointers_wait_until_it_closes() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    render_once(&mut app);
+    let token = app.hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
+    app.handle_mouse(moved(token.x + 1, token.y));
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    assert!(app.modals.top().is_some(), "a dialog is up");
+    rest_tips(&mut app);
+    app.modals.pop();
+    render_once(&mut app);
+    app.update(Action::Tick);
+    assert_eq!(app.var_token_tip(), None, "the wait starts when the dialog goes");
+    rest_tips(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()));
+}
+
 /// A `{{token}}` is text: clicking it lands the caret in the URL under
 /// the pointer, exactly as a click on any other character does, and
 /// opens nothing. The tooltip's edit pill is the route to the variable.
