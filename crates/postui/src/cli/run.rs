@@ -292,7 +292,10 @@ struct ResponseReport {
     body_json: Option<serde_json::Value>,
 }
 
-/// What `--jq` made of the body: each result parsed as JSON, or why not.
+/// What `--jq` made of the body: each result parsed as JSON, and why the
+/// filter failed. Both can be set: a filter that failed on some values of
+/// a stream has the other values' results beside the error (#229), so a
+/// result list is not success; `error` and the exit code say that.
 #[derive(Serialize)]
 struct JqReport {
     filter: String,
@@ -360,14 +363,18 @@ fn run_jq(
         .collect();
     match results {
         // A result jaq printed that isn't JSON (`nan`, a non-string key)
-        // drops them all. A value's run error, if there was one too, is
-        // the one reported, as the jq bar does (`land_jq_result`): one
-        // error at a time, the other shows once it is fixed. Both at once
-        // is rare enough not to report two.
+        // drops them all, as it did before #229 (jaq and serde disagreeing
+        // on what is JSON is #228's). A value's run error, if there was
+        // one too, is the one reported, as the jq bar does
+        // (`land_jq_result`): one error at a time, the other shows once it
+        // is fixed. Both at once is rare enough not to report two.
         Err(not_json) => (None, Some(error.unwrap_or(not_json))),
         // Partial results beside the error are the point (#229 spec, R7):
         // `jq.output` not null no longer means success; `jq.error` and
-        // the exit code say the run failed.
+        // the exit code say the run failed. Only-null results print too,
+        // as jq prints them: the bar's "nothing to show" for nulls is a
+        // display rule for typing, and a clean run of nulls prints them
+        // here as well.
         Ok(results) => {
             let output = (error.is_none() || !results.is_empty()).then_some(results);
             (output, error)

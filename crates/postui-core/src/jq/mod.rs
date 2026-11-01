@@ -182,7 +182,7 @@ pub fn check(code: &str) -> Result<(), JqError> {
 /// the other values may have failed differently. It is part of the
 /// message, not a field of its own, so the bar and the CLI say it the
 /// same way from this one place.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JqRun {
     pub outputs: Vec<String>,
     pub error: Option<JqError>,
@@ -217,7 +217,12 @@ pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<Jq
                     outputs.push(text);
                 }
                 // `for_each_output` ends the value's run on its error, so
-                // each one is a value that failed.
+                // each one is a value that failed. Every one has had its
+                // message formatted (jaq's holds the value), though only
+                // the first is kept: that costs what the value would have
+                // cost as an output (`to_string` above), so a failing run
+                // is never dearer than a passing one, and jq formats every
+                // error too.
                 Err(e) => {
                     failed += 1;
                     first.get_or_insert(e);
