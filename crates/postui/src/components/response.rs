@@ -3691,7 +3691,10 @@ impl Response {
                     // the previous tree stays (#229 spec, R6). Over output
                     // that isn't JSON, the value's error is the one shown,
                     // as `run --jq` does: one error at a time, the other
-                    // shows once it is fixed.
+                    // shows once it is fixed. Only nulls count as nothing
+                    // here, as they do for a clean run (the note arm): a
+                    // display rule for typing, so `run --jq`, which prints
+                    // what jq prints, shows them beside the error (R7).
                     _ if error.is_some() && (nothing || tree.is_none()) => {
                         self.jq.error = error;
                         self.jq.stale = true;
@@ -3714,7 +3717,9 @@ impl Response {
                     }
                     // This filter's outputs, shown even when a value
                     // failed: the tree is its output, so not stale, and the
-                    // error sits under the bar beside it (R5).
+                    // error sits under the bar beside it (R5). Structural
+                    // verbs compose onto it (`jq_tree_code`) like any tree
+                    // on screen, so its error carries into what they build.
                     Some(tree) => {
                         view.jq_outputs = outputs.len();
                         view.set_jq_tree(Some(*tree));
@@ -5063,8 +5068,9 @@ type TabLabels = Vec<(String, Option<(&'static str, ratatui::style::Color)>)>;
 /// never drift from what's actually painted.
 ///
 /// The `Tree` tab wears a filter badge (nf-md-filter) while a jq filter is
-/// applied: `theme.accent` normally, `theme.error` while the last run
-/// failed and the tree on screen is stale.
+/// applied: `theme.accent` normally, `theme.error` while the tree on screen
+/// is stale (`JqBar::stale`). A run that failed on some values but shows
+/// the rest's output is not stale, so its badge stays accent (#229, R5).
 pub fn response_tab_defs(
     view: &ReadyView,
     bar: &JqBar,
