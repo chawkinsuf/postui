@@ -115,11 +115,22 @@ impl std::fmt::Display for JqError {
 impl JqDocument {
     /// Every whitespace-separated JSON value in `body`, as jq reads its
     /// input. A body with no value, or with a bad one anywhere, is not JSON.
-    /// A server-sent events body is the stream of its events' JSON payloads
-    /// ([`crate::sse::json_payloads`], #220).
+    /// A server-sent events body is the stream of its events' data instead
+    /// ([`crate::sse::data`], #220), and there an event whose data isn't a
+    /// JSON value (`[DONE]`) is skipped rather than failing the body.
     pub fn parse(body: &str) -> Result<Self, JqError> {
-        let sse = crate::sse::json_payloads(body);
-        let body = sse.as_deref().unwrap_or(body);
+        if let Some(events) = crate::sse::data(body) {
+            let values: Vec<Val> = events
+                .iter()
+                .filter_map(|d| jaq_json::read::parse_single(d.as_bytes()).ok())
+                .collect();
+            if values.is_empty() {
+                return Err(JqError::Runtime {
+                    message: "not JSON: no event's data is a JSON value".into(),
+                });
+            }
+            return Ok(JqDocument(values.into()));
+        }
         let not_json = |e| JqError::Runtime { message: format!("not JSON: {e}") };
         let values: Vec<Val> = jaq_json::read::parse_many(body.as_bytes())
             .collect::<Result<_, _>>()
@@ -539,8 +550,8 @@ mod tests {
                     data: [DONE]\n\n";
         let doc = JqDocument::parse(body).expect("an SSE body is a stream of its payloads");
         assert_eq!(outputs(".choices[0].delta.content", &doc), vec!["\"Hi\"", "\"!\""]);
-        let err = JqDocument::parse("data: [DONE]\n\n").unwrap_err();
-        assert!(err.message().starts_with("not JSON"), "no JSON payload: {err:?}");
+        let err = JqDocument::parse("data: [DONE]\n\ndata: 1 2\n\n").unwrap_err();
+        assert_eq!(err.message(), "not JSON: no event's data is a JSON value");
     }
 
     #[test]

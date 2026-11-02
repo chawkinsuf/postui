@@ -1,48 +1,53 @@
 //! Server-sent events (`text/event-stream`), as streamed LLM APIs send
-//! them, read as the stream of JSON values their events carry (#220).
+//! them, read as the stream of values their events carry (#220).
 //!
 //! An SSE body is not JSON, but its events' `data:` payloads usually are,
-//! one value per event. [`json_payloads`] turns such a body into the NDJSON
-//! text of those payloads, so the jq engine and the Tree tab read it the
-//! way they read any stream (#218): the filter runs once per event.
+//! one value per event. [`data`] hands back those payloads, and the jq
+//! engine and the Tree tab each read them as a stream (#218): the filter
+//! runs once per event, the tree stacks them. Each reader skips the
+//! payloads its own parser can't read (OpenAI's closing `[DONE]`), so a
+//! payload is never checked by one parser and read by another, which
+//! don't accept quite the same JSON (#228).
 
-/// The JSON payloads of `body`'s events, one per line, when `body` is a
-/// server-sent events stream; `None` when it isn't one.
+use std::borrow::Cow;
+
+/// Every event's data in `body`, in order, when `body` is a server-sent
+/// events stream; `None` when it isn't one.
 ///
 /// A body is an event stream by its shape, whatever its content type, as
 /// a stream of JSON values is (#218): every line is a field the standard
 /// names (`data`, `event`, `id`, `retry`), a `:` comment or blank, and at
-/// least one is `data`. Only the data reaches the result: an event's
-/// `event` name and `id` are dropped, so a filter sees the payload itself
-/// (Anthropic's payloads repeat their event name as `.type`). A payload
-/// that isn't JSON, such as OpenAI's closing `[DONE]`, is skipped rather
-/// than failing the whole body. Unlike the standard, an event the body ends
-/// in without a blank line is kept: the body is a finished response, and a
-/// stream cut short should still show what it got.
-pub fn json_payloads(body: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut data: Option<String> = None;
+/// least one is `data`. The standard ignores a field it doesn't know; this
+/// reading refuses the body instead, because with no content type to go
+/// on, the known names are what tell a stream from text or YAML that
+/// happens to have a `data:` line, and the streams postui is for (LLM
+/// APIs) send only those four.
+///
+/// Only the data comes back: an event's `event` name and `id` are dropped,
+/// so a filter sees the payload itself (Anthropic's payloads repeat their
+/// event name as `.type`). Several `data` lines in one event are one
+/// payload, joined by newlines, as the standard says. Unlike the standard,
+/// an event the body ends in without a blank line is kept: the body is a
+/// finished response, and a stream cut short should still show what it got.
+pub fn data(body: &str) -> Option<Vec<Cow<'_, str>>> {
+    let mut events = Vec::new();
+    let mut pending: Option<Cow<str>> = None;
     let mut any_data = false;
     for text in body.lines() {
         match line(text)? {
-            Line::Blank => push_json(data.take(), &mut out),
+            Line::Blank => events.extend(pending.take()),
             Line::Field("data", value) => {
                 any_data = true;
-                match &mut data {
-                    // Several `data` lines in one event are one payload,
-                    // joined by newlines, as the standard says.
-                    Some(d) => {
-                        d.push('\n');
-                        d.push_str(value);
-                    }
-                    None => data = Some(value.to_string()),
-                }
+                pending = Some(match pending.take() {
+                    Some(d) => Cow::Owned(format!("{d}\n{value}")),
+                    None => Cow::Borrowed(value),
+                });
             }
             Line::Comment | Line::Field(..) => {}
         }
     }
-    push_json(data, &mut out);
-    any_data.then_some(out)
+    events.extend(pending);
+    any_data.then_some(events)
 }
 
 /// Whether `body` starts the way an event stream does, without reading the
@@ -72,15 +77,6 @@ fn line(text: &str) -> Option<Line<'_>> {
     ["data", "event", "id", "retry"].contains(&name).then_some(Line::Field(name, value))
 }
 
-/// Ends an event: its payload goes on a line of its own when it is JSON.
-fn push_json(data: Option<String>, out: &mut String) {
-    let Some(data) = data else { return };
-    if serde_json::from_str::<serde::de::IgnoredAny>(&data).is_ok() {
-        out.push_str(&data);
-        out.push('\n');
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,14 +85,19 @@ mod tests {
                           data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n\n\
                           data: [DONE]\n\n";
 
+    fn data_of(body: &str) -> Option<Vec<String>> {
+        data(body).map(|d| d.into_iter().map(Cow::into_owned).collect())
+    }
+
     #[test]
-    fn each_events_json_payload_is_one_line() {
+    fn each_events_data_comes_back_in_order() {
         assert_eq!(
-            json_payloads(OPENAI).as_deref(),
-            Some(
-                "{\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\
-                 {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n"
-            )
+            data_of(OPENAI).unwrap(),
+            [
+                "{\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}",
+                "{\"choices\":[{\"delta\":{\"content\":\"!\"}}]}",
+                "[DONE]",
+            ]
         );
     }
 
@@ -112,28 +113,21 @@ mod tests {
                     data: {\"type\": \"ping\"}\n\
                     \n";
         assert_eq!(
-            json_payloads(body).as_deref(),
-            Some("{\"type\":\"message_start\"}\n{\"type\": \"ping\"}\n")
+            data_of(body).unwrap(),
+            ["{\"type\":\"message_start\"}", "{\"type\": \"ping\"}"]
         );
     }
 
     #[test]
     fn several_data_lines_are_one_payload_joined_by_newlines() {
         let body = "data: {\"a\":\ndata: 1}\n\ndata:{\"b\":2}\n\n";
-        assert_eq!(json_payloads(body).as_deref(), Some("{\"a\":\n1}\n{\"b\":2}\n"));
-    }
-
-    #[test]
-    fn payloads_that_are_not_json_are_skipped() {
-        let body = "data: ping\n\ndata: {\"a\":1}\n\ndata: [DONE]\n\n";
-        assert_eq!(json_payloads(body).as_deref(), Some("{\"a\":1}\n"));
-        assert_eq!(json_payloads("data: [DONE]\n\n").as_deref(), Some(""));
+        assert_eq!(data_of(body).unwrap(), ["{\"a\":\n1}", "{\"b\":2}"]);
     }
 
     #[test]
     fn crlf_lines_and_a_last_event_with_no_blank_line_are_read() {
         let body = "data: {\"a\":1}\r\n\r\ndata: {\"a\":2}";
-        assert_eq!(json_payloads(body).as_deref(), Some("{\"a\":1}\n{\"a\":2}\n"));
+        assert_eq!(data_of(body).unwrap(), ["{\"a\":1}", "{\"a\":2}"]);
     }
 
     #[test]
@@ -143,11 +137,12 @@ mod tests {
             "{\"a\":1}\n{\"a\":2}\n",
             "<html>data: 1</html>",
             "hello\ndata: {}\n",
+            "name: x\ndata: 1\n",
             "event: only\nid: 1\n\n",
             "",
             "\n\n",
         ] {
-            assert_eq!(json_payloads(body), None, "{body:?}");
+            assert_eq!(data_of(body), None, "{body:?}");
         }
     }
 

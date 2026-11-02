@@ -286,13 +286,20 @@ impl JsonTree {
     /// `response::SYNC_PRETTY_BYTES` its caller runs it on a blocking
     /// worker rather than on the UI thread.
     ///
-    /// A server-sent events body stacks its events' JSON payloads, the
-    /// values jq runs on ([`postui_core::sse::json_payloads`], #220).
+    /// A server-sent events body stacks its events' data, the values jq
+    /// runs on ([`postui_core::sse::data`], #220), skipping an event whose
+    /// data isn't JSON (`[DONE]`) as jq does.
     pub fn parse(text: &str) -> Option<JsonTree> {
-        let sse = postui_core::sse::json_payloads(text);
-        let text = sse.as_deref().unwrap_or(text);
-        let values = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
-        let tree = Self::from_values(values.map(Result::ok))?;
+        let tree = match postui_core::sse::data(text) {
+            Some(events) => Self::from_values(
+                events.iter().filter_map(|d| serde_json::from_str(d).ok()).map(Some),
+            ),
+            None => Self::from_values(
+                serde_json::Deserializer::from_str(text)
+                    .into_iter::<serde_json::Value>()
+                    .map(Result::ok),
+            ),
+        }?;
         (!tree.lines.is_empty()).then_some(tree)
     }
 
