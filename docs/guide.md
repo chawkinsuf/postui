@@ -26,8 +26,8 @@ The header's project chip switches between the projects you've opened.
 Requests are grouped into **spaces**: top-level folders under `requests/`.
 One space shows at a time, and each remembers the request you had open; the
 header's space chip switches between them. Inside a space, requests can sit in
-folders, which fold. Requests can be reordered, by key or by dragging, and
-moved to another space.
+folders, which fold. Requests and folders can be reordered, by key or by
+dragging, and requests moved to another space.
 
 The **Manage** screen (`alt+r`) edits a project's variables, environments and
 spaces, and has a Settings tab for postui itself.
@@ -141,3 +141,10 @@ a sidebar row, a table row or the response tree for its menu.
 Mouse capture turns off your terminal's own drag-to-select. To select text for
 your terminal to copy, hold `Shift` while dragging; most terminals bypass
 capture for that.
+
+## Command line
+
+Outside the app, `postui` is also a command for scripts and coding agents: it
+lists a project's requests and variables, checks the project, and sends one
+request or all of them. The README's [command line](../README.md#command-line)
+section has examples, and `postui help` lists every command.

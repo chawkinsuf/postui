@@ -37,6 +37,9 @@
   AI command write it from the response's shape, never its values.
 - **curl in and out.** Paste a curl command into the sidebar to import it as a
   request, or copy any request as curl.
+- **A command line for scripts and agents.** List a project's requests and
+  variables, check it, and send one request or all of them, from a shell or
+  a coding agent.
 - **Undo for everything.** Edits, deletes, renames and moves all undo, even
   after you've moved on to another request.
 - **Themes.** Built-in dark and light themes, your terminal's own colors, a
@@ -146,6 +149,26 @@ themes.
 On macOS, keys shown here as `alt+` are `opt+`, and your terminal's
 option-as-alt setting needs to be on for `opt+` letter keys to reach postui.
 `postui --setup` prints how to turn it on in your terminal.
+
+## Command line
+
+The same project works from the shell:
+
+```sh
+postui requests                          # the project's requests
+postui run main/users/list-users         # send one and print the response
+postui run main/users/list-users --jq '.[].name'
+postui suite                             # send them all: status and timing
+postui check                             # validate the files and variables
+```
+
+Run these in the folder that holds `project.toml`, or name the project with
+`-p <dir|name>`. A request is named by its slug, as `postui requests` lists
+it. Output is text; most commands print JSON with `--json`. `postui help`
+lists every command and `postui help <command>` gives its usage.
+
+For coding agents, `postui skill install` installs a Claude Code skill that
+teaches them postui's commands and project files.
 
 ## License
 
