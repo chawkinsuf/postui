@@ -525,13 +525,19 @@ pub enum Action {
     PromptMoveSelectedRequestToSpace,
     /// Move the request `slug` `delta` positions among its siblings
     /// (clamped) — alt+up/alt+down and the row menu's Move up/down. Writes
-    /// `[space.<slug>] order`. Not an undo step.
+    /// `[space.<slug>] order`; an undo step, a quick burst one step.
     MoveRequest {
         slug: String,
         delta: i32,
     },
-    /// `MoveRequest` for the selected sidebar row; a no-op when the
-    /// selection is not a request.
+    /// `MoveRequest` for the folder at full path `path` (`main/auth`)
+    /// among its sibling folders (spec 2026-11-01 reorder folders R5).
+    MoveFolder {
+        path: String,
+        delta: i32,
+    },
+    /// `MoveRequest` or `MoveFolder` for the selected sidebar row, as
+    /// alt+↑/↓ does; a no-op when nothing is selected.
     MoveSelectedRequest(i32),
     /// The Spaces tab's "Move all requests…" button: opens the chooser of
     /// the other spaces for the space `from`; picking one dispatches

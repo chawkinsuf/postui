@@ -6,7 +6,7 @@
 #![cfg(any(test, feature = "test-util"))]
 
 use crate::model::HttpRequest;
-use crate::order::{OrderEdit, level_of, merge_level, space_order, write_order};
+use crate::order::{OrderEdit, entry_level, merge_level, space_order, write_order};
 use crate::project::{
     DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, LAYOUT_TOML, LOCAL_DIR, LayoutState, ListChange,
     LocalState, Project, ProjectError, ProjectMeta, SECRETS_TOML, STATE_TOML, TRASH_DIR,
@@ -634,7 +634,7 @@ pub fn set_level_order(
     slugs: &[String],
 ) -> Result<Option<ListChange>, ProjectError> {
     debug_assert!(
-        slugs.iter().all(|s| level_of(s) == level),
+        slugs.iter().all(|s| entry_level(s) == level),
         "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
     );
     let mut change = None;
