@@ -978,7 +978,10 @@ impl crate::text::Lines for BufferLines<'_> {
 impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
         // A big body is parsed off-thread; until that lands there is no
-        // tree to show. One that looks like JSON (starts with `{` or `[`)
+        // tree to show. One that looks like JSON (starts with `{` or `[`,
+        // or like an event stream, whose payloads make a tree, #220: the
+        // first line alone decides, so a big text body that only starts
+        // like one spins first, as a big `{` body that isn't JSON does)
         // still leads with the Tree tab — showing its spinner, the same
         // pane it will settle on — rather than flashing the raw body first;
         // `attach_tree` kicks it back to Raw should the parse prove it
@@ -986,7 +989,8 @@ impl ReadyView {
         // with Raw at once, no spinner to sit through.
         let parsing = data.body.len() > SYNC_PRETTY_BYTES;
         let tree = if parsing { None } else { JsonTree::parse(&data.body) };
-        let looks_json = data.body.trim_start().starts_with(['{', '[']);
+        let looks_json = data.body.trim_start().starts_with(['{', '['])
+            || postui_core::sse::starts_like(&data.body);
         let mode = if tree.is_some() || (parsing && looks_json) {
             ViewMode::Pretty
         } else {
@@ -7728,6 +7732,22 @@ mod tests {
         let v = r.view().unwrap();
         assert!(v.parsing, "the parse still runs (the body might yet be JSON)");
         assert_eq!(v.mode, ViewMode::Raw, "no spinner to sit through");
+    }
+
+    #[test]
+    fn a_big_event_stream_leads_with_the_tree_tab_as_a_small_one_does() {
+        let event = "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n";
+        let body = event.repeat(SYNC_PRETTY_BYTES / event.len() + 1);
+        let r = ready(&body);
+        let v = r.view().unwrap();
+        assert!(v.parsing, "a big body is parsed off-thread");
+        assert_eq!(v.mode, ViewMode::Pretty, "the Tree tab leads, as it will once the parse lands");
+        let small = ready(event);
+        assert_eq!(
+            small.view().unwrap().mode,
+            ViewMode::Pretty,
+            "a small event stream has its tree at once"
+        );
     }
 
     #[test]

@@ -71,6 +71,9 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   of your context. A filter that fails prints its error and no body. A
   streamed body of several JSON values (NDJSON) runs the filter once per
   value, as jq does; `[., inputs]` gathers them all into one array. A
+  server-sent events body (a streamed LLM reply) is read the same way, one
+  value per event's JSON `data:` (`[DONE]` and other non-JSON data are
+  skipped, event names dropped). A
   value the filter fails on prints the error, and the other values'
   results still print; the run still exits 1, so they may be incomplete.
 - `-o FILE` writes the body to a file instead of printing it. Alone, it
