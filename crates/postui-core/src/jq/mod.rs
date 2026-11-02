@@ -121,6 +121,7 @@ impl JqDocument {
     pub fn parse(body: &str) -> Result<Self, JqError> {
         let event = |d: &str| jaq_json::read::parse_single(d.as_bytes()).ok();
         if let Some(values) = crate::sse::values(body, event) {
+            let values: Vec<Val> = values.collect();
             if values.is_empty() {
                 return Err(JqError::Runtime {
                     message: "not JSON: no event's data is a JSON value".into(),

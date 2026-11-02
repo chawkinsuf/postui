@@ -35,37 +35,45 @@ use std::borrow::Cow;
 /// mark, which the standard also allows, are not read, as a JSON body with
 /// a byte-order mark isn't: no LLM API sends either.
 fn data(body: &str) -> Option<Vec<Cow<'_, str>>> {
+    // Most bodies are not event streams: tell from the first bytes, before
+    // `lines` looks for the end of a first line that may be all the body.
+    if !starts_like(body) {
+        return None;
+    }
     let mut events = Vec::new();
     let mut pending: Option<Cow<str>> = None;
-    let mut any_data = false;
     for text in body.lines() {
         match line(text)? {
             Line::Blank => events.extend(pending.take()),
-            Line::Field("data", value) => {
-                any_data = true;
-                match &mut pending {
-                    Some(d) => {
-                        let d = d.to_mut();
-                        d.push('\n');
-                        d.push_str(value);
-                    }
-                    None => pending = Some(Cow::Borrowed(value)),
+            Line::Field("data", value) => match &mut pending {
+                Some(d) => {
+                    let d = d.to_mut();
+                    d.push('\n');
+                    d.push_str(value);
                 }
-            }
+                None => pending = Some(Cow::Borrowed(value)),
+            },
             Line::Comment | Line::Field(..) => {}
         }
     }
     events.extend(pending);
-    any_data.then_some(events)
+    // Every `data` line makes or extends an event: none means no data.
+    (!events.is_empty()).then_some(events)
 }
 
 /// The values `parse` reads from `body`'s events, in order, when `body` is
 /// an event stream (see `data`); `None` when it isn't one. An event whose
 /// data `parse` can't read (`[DONE]`) is skipped, so each reader skips by
 /// its own parser.
-pub fn values<T>(body: &str, parse: impl Fn(&str) -> Option<T>) -> Option<Vec<T>> {
-    Some(data(body)?.iter().filter_map(|d| parse(d)).collect())
+pub fn values<'a, T: 'a>(
+    body: &'a str,
+    parse: impl Fn(&str) -> Option<T> + 'a,
+) -> Option<impl Iterator<Item = T> + 'a> {
+    Some(data(body)?.into_iter().filter_map(move |d| parse(&d)))
 }
+
+/// The fields the standard names; a line with any other is no event stream's.
+const FIELDS: [&str; 4] = ["data", "event", "id", "retry"];
 
 /// Whether `body` starts the way an event stream does, reading only the
 /// start of its first line that is not blank: for a body too big to read
@@ -80,8 +88,7 @@ pub fn starts_like(body: &str) -> bool {
     let head = &rest.as_bytes()[..rest.len().min(6)];
     let end = head.iter().position(|b| matches!(b, b':' | b'\r' | b'\n')).unwrap_or(head.len());
     let name = &head[..end];
-    (end < head.len() || end == rest.len())
-        && [&b"data"[..], b"event", b"id", b"retry"].contains(&name)
+    (end < head.len() || end == rest.len()) && FIELDS.iter().any(|f| f.as_bytes() == name)
 }
 
 enum Line<'a> {
@@ -102,7 +109,7 @@ fn line(text: &str) -> Option<Line<'_>> {
     // A line with no colon is a field with an empty value.
     let (name, value) = text.split_once(':').unwrap_or((text, ""));
     let value = value.strip_prefix(' ').unwrap_or(value);
-    ["data", "event", "id", "retry"].contains(&name).then_some(Line::Field(name, value))
+    FIELDS.contains(&name).then_some(Line::Field(name, value))
 }
 
 #[cfg(test)]

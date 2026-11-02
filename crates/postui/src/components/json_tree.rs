@@ -292,7 +292,7 @@ impl JsonTree {
     pub fn parse(text: &str) -> Option<JsonTree> {
         let event = |d: &str| serde_json::from_str(d).ok();
         let tree = match postui_core::sse::values(text, event) {
-            Some(values) => Self::from_values(values.into_iter().map(Some)),
+            Some(values) => Self::from_values(values.map(Some)),
             None => Self::from_values(
                 serde_json::Deserializer::from_str(text)
                     .into_iter::<serde_json::Value>()
