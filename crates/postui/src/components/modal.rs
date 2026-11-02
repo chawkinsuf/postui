@@ -1517,30 +1517,25 @@ impl ModalStack {
                 // Only a changed box writes (#205). The box is seeded
                 // with what the chosen scope stores, "(not set)" when
                 // nothing (`stored_in`, at open and on every cycle), so
-                // a box equal to that is untouched: confirming it writes
-                // nothing, and in particular never declares an empty
-                // value in a scope that stored none. Emptying a stored
-                // value is a change, so it writes the empty value;
+                // a box equal to that is untouched and writes nothing.
+                // Emptying a stored value is a change and writes "";
                 // removing it outright is the Remove button.
                 //
                 // So a "(not set)" box confirms as not set, whichever
-                // scope it is on: what the box shows is what the confirm
-                // leaves (#205, mine (approved)). The cost, taken
+                // scope it is on (mine (approved)). The cost, taken
                 // knowingly: this dialog can't declare an empty value in
-                // a scope that stores none (say, an empty request value
-                // over a non-empty default); the Vars tab and the
-                // Variable Manager can. An untouched confirm closes with
-                // no toast: nothing changed, so there is nothing to
-                // report, as an untouched Settings field closes silently.
+                // a scope that stores none (an empty request value over
+                // a non-empty default); the Vars tab and the Variable
+                // Manager can. A no-op confirm closes with no toast, as
+                // an untouched Settings field does. The comparison is
+                // with what the dialog showed when it opened, so a file
+                // changed outside meanwhile is not overwritten by a box
+                // nobody touched.
                 let stored = stored_in(scope_values, chosen).unwrap_or("");
-                // Pending removals land first. The chosen scope
-                // is the one exception: cycling back onto a
-                // removed scope (which now stores nothing) and
-                // typing a value means "set it after all" (the
-                // write replaces the removal); leaving its box
-                // empty means the removal stands and nothing blank
-                // is written.
                 let keep_write = value != stored;
+                // Pending removals land first, except on the chosen
+                // scope when it writes: a value typed onto a removed
+                // scope replaces the removal.
                 let mut actions: Vec<Action> = pending_removals
                     .iter()
                     .filter(|l| !(keep_write && *l == chosen))

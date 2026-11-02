@@ -14604,9 +14604,11 @@ fn an_untouched_confirm_on_a_scope_that_stores_nothing_writes_nothing() {
     };
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "Project default");
+    let steps = app.history.undo_len();
     click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "confirm closes the popup");
     assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+    assert_eq!(app.history.undo_len(), steps, "no undo step");
 
     // Again, cycled onto the active env, which stores nothing either.
     app.update(Action::OpenVarTokenPopup("req_only".into()));
@@ -14623,6 +14625,29 @@ fn an_untouched_confirm_on_a_scope_that_stores_nothing_writes_nothing() {
     assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
     let row = &app.editor.variables["req_only"];
     assert_eq!((row.value.as_str(), row.enabled), ("v", false), "the row is untouched");
+}
+
+/// #205: a staged Remove of the env value, then a confirm with the box
+/// untouched on the scope the dialog moved to: only the removal applies.
+/// The default the dialog landed on is not written back.
+#[test]
+fn a_removal_then_an_untouched_confirm_applies_only_the_removal() {
+    let (mut app, dir) = token_popup_app();
+    let vars_path = dir.path().join("variables.toml");
+    let vars_before = std::fs::read_to_string(&vars_path).unwrap();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    app.handle_key(alt('d'));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the popup stays open")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Project default");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!qa.contains("base_url"), "the env value is gone: {qa}");
+    assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+    assert_eq!(app.history.undo_len(), steps + 1, "one step: the removal");
 }
 
 /// #205: an untouched confirm on This request (an enabled row, written
