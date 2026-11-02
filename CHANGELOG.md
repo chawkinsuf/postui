@@ -15,8 +15,8 @@ read a project, send its requests and check them.
   `requests` and `vars` list what a project holds; `check` validates its
   files and variables; `init` starts one; `run` sends a request and prints
   the response; `suite` sends every request and reports status and timing.
-  Output is text, or JSON with `--json`. `postui help` gives each command's
-  usage and options.
+  Output is text; most commands print JSON with `--json`. `postui help`
+  gives each command's usage and options.
 - `postui edit begin` and `postui edit end` mark an agent's edit of a project,
   and `postui edit status` shows it. An edit needs the project closed in
   postui; while one is in progress, postui won't open the project and shows
@@ -25,6 +25,8 @@ read a project, send its requests and check them.
 - `postui skill install` installs a Claude Code skill that teaches an agent
   postui's commands and project files, and `postui skill show` prints it.
 - Sidebar folders reorder among their siblings, by drag or `alt+↑`/`alt+↓`.
+  Their order is saved with the requests' in the space's `order` list in
+  `project.toml`, as `"name/"` entries.
 - jq filters run over every value of a streamed (NDJSON) body. An error ends
   only that value's run, as in jq.
 - A pasted curl command with a `# @name` comment, and nothing to ask about,
@@ -41,6 +43,7 @@ read a project, send its requests and check them.
   second.
 - A click on an auto header or a referenced variable row moves the table
   cursor to it.
+- A curl import takes at most 50 commands at a time.
 
 ### Fixed
 
