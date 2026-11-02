@@ -104,10 +104,26 @@ impl App {
             let msg = format!("{n} curl commands; import at most {CURL_IMPORT_LIMIT} at a time");
             return self.toasts.push(msg, ToastKind::Error);
         }
+        // An input that refuses to close stops the import (#227, the #75
+        // rule): an import can declare secrets (`variables.toml` and the
+        // secrets file), the state a Manager input belongs to, so the
+        // refused typing must not be carried across it. It stops whatever
+        // the paste holds, rather than looking for secrets first: simpler,
+        // and a refused input is rare. A plain open or create of a request
+        // writes no variables, which is why those go on past a refusal
+        // through `leaving_unsaved`'s check alone
+        // (`a_refused_close_in_the_dirty_gate_check_fails_no_action`).
+        // The inputs that did close stay closed, as for every
+        // `close_inputs_or_stop` caller.
+        if !self.close_inputs_or_stop(true) {
+            return;
+        }
         let run = Box::new(CurlImportRun::new(batch, folder));
         // Each create opens its request, replacing the editor: ask once,
         // up front. Discard discards there and then, so skipping every
-        // prompt afterwards still leaves what the answer said.
+        // prompt afterwards still leaves what the answer said. The gate
+        // asks through `leaving_unsaved` like every other, so none can
+        // forget the cell; its close is a no-op after the one above.
         if self.leaving_unsaved() {
             self.dirty_gate_split(
                 "import",
@@ -338,7 +354,10 @@ impl App {
     /// (U7). Everything that can refuse (the clipboard, the parse, the
     /// target's file, the variables' sort, a `# @name` rename's checks)
     /// runs before the gate, so a
-    /// refusal only toasts and the gate's answer is never left undone.
+    /// refusal only toasts and the gate's answer is never left undone. An
+    /// open input that refuses to close also stops it there; that stop
+    /// alone marks the action failed (`close_inputs_or_stop`'s contract),
+    /// while the refusals before it only toast.
     pub(super) fn replace_with_curl(&mut self, slug: Option<String>) -> bool {
         if self.refuse_without_project() {
             return true;
@@ -355,9 +374,17 @@ impl App {
         }
         // The editor as it stands, as Copy as curl reads it: an open cell's
         // text and an open field's keys land first, as their own steps (the
-        // flush commits the cell and closes the field's session; the
-        // capture takes whatever else is pending).
-        self.flush_field_session();
+        // close commits the cell and closes the field's session; the
+        // capture takes whatever else is pending). A Manager or Settings
+        // input that refuses to close stops the replace, as it stops an
+        // import (#227, the #75 rule): a replace declares its secrets too.
+        // It closes here, before the reload below (which would cancel a
+        // refused Manager input on a changed file instead) and so before
+        // the checks after it: a replace those refuse leaves the inputs
+        // closed, their typing saved, which is a close, not a loss.
+        if !self.close_inputs_or_stop(true) {
+            return true;
+        }
         self.capture_undo();
         // The variables are sorted against the files as they are now, as
         // Send and Copy as curl read them (plan P6).
@@ -401,7 +428,7 @@ impl App {
         let replace = CurlReplace { import, notes, vars, rename };
         match other {
             // Every gate asks through `leaving_unsaved`, so none can forget
-            // the cell; here the flush above has already committed it.
+            // the cell; its close is a no-op after the one above.
             Some(slug) if self.leaving_unsaved() => {
                 let replace = Box::new(replace);
                 self.dirty_gate("open", Action::ForceReplaceWithCurl { slug, replace });
