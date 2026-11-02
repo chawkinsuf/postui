@@ -105,9 +105,13 @@ impl App {
             return self.toasts.push(msg, ToastKind::Error);
         }
         // An input that refuses to close stops the import (#227, the #75
-        // rule): each create opens its request, a change the refused
-        // typing must not be carried across. `leaving_unsaved` below
-        // closes inputs too, but can't stop.
+        // rule): an import declares its secrets (`variables.toml` and the
+        // secrets file), the state a Manager input belongs to, so the
+        // refused typing must not be carried across it. A plain open or
+        // create of a request writes no variables, which is why those go
+        // on past a refusal through `leaving_unsaved`'s check alone
+        // (`a_refused_close_in_the_dirty_gate_check_fails_no_action`).
+        // `leaving_unsaved` below closes inputs too, but can't stop.
         if !self.close_inputs_or_stop(true) {
             return;
         }
@@ -345,7 +349,9 @@ impl App {
     /// (U7). Everything that can refuse (the clipboard, the parse, the
     /// target's file, the variables' sort, a `# @name` rename's checks)
     /// runs before the gate, so a
-    /// refusal only toasts and the gate's answer is never left undone.
+    /// refusal only toasts and the gate's answer is never left undone. An
+    /// open input that refuses to close also stops it there, and marks the
+    /// action failed, as every `close_inputs_or_stop` caller does.
     pub(super) fn replace_with_curl(&mut self, slug: Option<String>) -> bool {
         if self.refuse_without_project() {
             return true;
@@ -365,7 +371,7 @@ impl App {
         // close commits the cell and closes the field's session; the
         // capture takes whatever else is pending). A Manager or Settings
         // input that refuses to close stops the replace, as it stops an
-        // import (#227, the #75 rule).
+        // import (#227, the #75 rule): a replace declares its secrets too.
         if !self.close_inputs_or_stop(true) {
             return true;
         }

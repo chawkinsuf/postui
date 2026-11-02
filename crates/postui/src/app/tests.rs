@@ -34991,6 +34991,7 @@ fn a_refused_input_stops_a_replace_with_curl() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = refused_manager_cell_app(dir.path(), "curl -X POST https://x/replaced");
     let url = app.editor.url.text().to_string();
+    app.last_action_failed = false;
     app.update(Action::ReplaceWithCurl(None));
     assert_eq!(app.editor.url.text(), url, "the editor is not replaced");
     assert!(app.varmanager.grid.editing.is_some(), "the typing is kept");
