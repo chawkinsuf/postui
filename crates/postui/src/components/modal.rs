@@ -428,7 +428,7 @@ pub(crate) fn value_popup_choices(
     scope_values: &[(String, Option<String>)],
     request_disabled: bool,
 ) -> (Vec<&'static str>, &'static str) {
-    let stores = |label: &str| scope_values.iter().any(|(l, v)| l == label && v.is_some());
+    let stores = |label: &str| stored_in(scope_values, label).is_some();
     let has_env = scope_values.iter().any(|(l, _)| l == "Active env value");
     let request_supplies = stores("This request") && !request_disabled;
     let env_stored = stores("Active env value");
@@ -1529,7 +1529,9 @@ impl ModalStack {
                 // knowingly: this dialog can't declare an empty value in
                 // a scope that stores none (say, an empty request value
                 // over a non-empty default); the Vars tab and the
-                // Variable Manager can.
+                // Variable Manager can. An untouched confirm closes with
+                // no toast: nothing changed, so there is nothing to
+                // report, as an untouched Settings field closes silently.
                 let stored = stored_in(scope_values, chosen).unwrap_or("");
                 // Pending removals land first. The chosen scope
                 // is the one exception: cycling back onto a

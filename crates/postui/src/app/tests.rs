@@ -14625,6 +14625,31 @@ fn an_untouched_confirm_on_a_scope_that_stores_nothing_writes_nothing() {
     assert_eq!((row.value.as_str(), row.enabled), ("v", false), "the row is untouched");
 }
 
+/// #205: an untouched confirm on This request (an enabled row, written
+/// through the editor rather than a file) leaves the request as it was.
+#[test]
+fn an_untouched_confirm_on_this_request_leaves_the_request_clean() {
+    let (mut app, _dir) = token_popup_app();
+    app.editor.variables.insert(
+        "base_url".into(),
+        postui_core::model::Entry { value: "http://req.local".into(), enabled: true },
+    );
+    app.editor.set_saved(None);
+    let unsaved = app.editor_holds_unsaved();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "This request");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(app.history.undo_len(), steps, "no undo step");
+    assert_eq!(app.editor_holds_unsaved(), unsaved, "the request is as it was");
+    assert_eq!(app.editor.variables["base_url"].value, "http://req.local");
+}
+
 /// #205: on a scope that stores a value, an untouched confirm changes
 /// nothing, while emptying the box is a change and writes the empty value
 /// (the untouched check must not swallow it).

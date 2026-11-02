@@ -8992,11 +8992,11 @@ impl App {
     /// Builds and opens the value-edit popup for a simple (or
     /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
     /// seeded with the landing scope's stored value (the effective one)
-    /// and a `destination` choice
-    /// preselected to whichever scope supplies that value today — the
-    /// request's `[variables]` overlay, the active environment's flat
-    /// value, or the declaration default. Confirming dispatches
-    /// `Action::ConfirmEditVarValue`, which writes the chosen scope.
+    /// and a `destination` choice preselected to whichever scope supplies
+    /// that value today — the request's `[variables]` overlay, the active
+    /// environment's flat value, or the declaration default. Confirming
+    /// dispatches `Action::ConfirmEditVarValue`, which writes the chosen
+    /// scope when the box changed (#205).
     fn open_edit_value_popup(&mut self, name: &str) -> bool {
         use crate::components::modal::{Modal, PromptField, PromptKind};
 
