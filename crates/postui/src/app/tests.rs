@@ -14583,6 +14583,48 @@ fn retyping_a_removed_disabled_request_var_writes_it_still_disabled() {
     assert!(!row.enabled);
 }
 
+/// #205: a variable declared nowhere whose only row is a disabled request
+/// row. The popup opens on Project default, "(not set)". Confirming it
+/// untouched writes nothing: no `default = ""` appears in variables.toml.
+/// The same holds for the env scope cycled to while it stores nothing.
+#[test]
+fn an_untouched_confirm_on_a_scope_that_stores_nothing_writes_nothing() {
+    let (mut app, dir) = token_popup_app();
+    app.editor
+        .variables
+        .insert("req_only".into(), postui_core::model::Entry { value: "v".into(), enabled: false });
+    let vars_path = dir.path().join("variables.toml");
+    let env_path = dir.path().join("environments/qa.toml");
+    let vars_before = std::fs::read_to_string(&vars_path).unwrap();
+    let env_before = std::fs::read_to_string(&env_path).unwrap();
+
+    app.update(Action::OpenVarTokenPopup("req_only".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Project default");
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+
+    // Again, cycled onto the active env, which stores nothing either.
+    app.update(Action::OpenVarTokenPopup("req_only".into()));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Active env value");
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), env_before);
+    assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+    let row = &app.editor.variables["req_only"];
+    assert_eq!((row.value.as_str(), row.enabled), ("v", false), "the row is untouched");
+}
+
 /// #154: with the env value marked for removal, the popup re-lands on the
 /// scope that would supply. A disabled request row supplies nothing, so
 /// that is the default, not This request.

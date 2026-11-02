@@ -1505,7 +1505,7 @@ impl ModalStack {
                     source: *source,
                 }]
             }
-            PromptKind::EditVarValue { name, pending_removals, .. } => {
+            PromptKind::EditVarValue { name, scope_values, pending_removals, .. } => {
                 // An emptied value is a legitimate edit, so no
                 // non-empty filter here; removing the stored
                 // value outright is the Remove button.
@@ -1513,14 +1513,25 @@ impl ModalStack {
                     fields.iter().find(|f| f.key == "value").map(|f| f.input.text().to_string())?;
                 let chosen = get("destination").unwrap_or_default();
                 let destination = destination_from_label(chosen);
+                // Only a changed box writes (#205). The box is seeded
+                // with what the chosen scope stores, "(not set)" when
+                // nothing (`resync_after_choice_cycle`), so a box equal
+                // to that is untouched: confirming it writes nothing,
+                // and in particular never declares an empty value in a
+                // scope that stored none.
+                let stored = scope_values
+                    .iter()
+                    .find(|(label, _)| label == chosen)
+                    .and_then(|(_, v)| v.as_deref())
+                    .unwrap_or("");
                 // Pending removals land first. The chosen scope
                 // is the one exception: cycling back onto a
-                // removed scope and typing a value means "set
-                // it after all" (the write replaces the
-                // removal); leaving its box empty means the
-                // removal stands and nothing blank is written.
-                let chosen_pending = pending_removals.iter().any(|l| l == chosen);
-                let keep_write = !(chosen_pending && value.is_empty());
+                // removed scope (which now stores nothing) and
+                // typing a value means "set it after all" (the
+                // write replaces the removal); leaving its box
+                // empty means the removal stands and nothing blank
+                // is written.
+                let keep_write = value != stored;
                 let mut actions: Vec<Action> = pending_removals
                     .iter()
                     .filter(|l| !(keep_write && *l == chosen))
