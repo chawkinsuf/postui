@@ -158,7 +158,9 @@ pub enum PromptKind {
     /// next supplier), applied by [`stage_value_removal`]'s confirm-time
     /// twin below; Cancel simply drops them with the popup. Confirming
     /// emits one `Action::RemoveVarValue` per pending scope and then
-    /// `Action::ConfirmEditVarValue`.
+    /// `Action::ConfirmEditVarValue`, but only when the box differs from
+    /// what the chosen scope stores: an untouched confirm writes nothing
+    /// (#205).
     ///
     /// `request_disabled`: the request's `[variables]` row is unchecked
     /// (#154). Its "This request" entry still holds the row's stored
@@ -363,14 +365,20 @@ pub(crate) fn resync_after_choice_cycle(kind: &PromptKind, fields: &mut [PromptF
     else {
         return;
     };
-    let seed = scope_values
-        .iter()
-        .find(|(label, _)| *label == dest)
-        .and_then(|(_, v)| v.clone())
-        .unwrap_or_default();
+    let seed = stored_in(scope_values, &dest).unwrap_or_default().to_string();
     if let Some(value_field) = fields.iter_mut().find(|f| f.key == "value") {
         value_field.input = LineInput::new(&seed);
     }
+}
+
+/// What the value popup's `label` scope stores, `None` when nothing. The
+/// one lookup behind the box's seed (at open and on a cycle), the Remove
+/// affordance and the confirm's untouched check, so all four agree.
+pub(crate) fn stored_in<'a>(
+    scope_values: &'a [(String, Option<String>)],
+    label: &str,
+) -> Option<&'a str> {
+    scope_values.iter().find(|(l, _)| l == label).and_then(|(_, v)| v.as_deref())
 }
 
 /// The value popup's empty value box: a muted "(not set)" (the variable
@@ -403,11 +411,7 @@ pub(crate) fn chosen_scope(
         .find(|f| f.key == "destination")
         .map(|f| f.input.text().to_string())
         .unwrap_or_default();
-    let stored = scope_values
-        .iter()
-        .find(|(label, _)| *label == chosen)
-        .and_then(|(_, v)| v.as_ref())
-        .is_some();
+    let stored = stored_in(scope_values, &chosen).is_some();
     (chosen, stored)
 }
 
@@ -424,7 +428,7 @@ pub(crate) fn value_popup_choices(
     scope_values: &[(String, Option<String>)],
     request_disabled: bool,
 ) -> (Vec<&'static str>, &'static str) {
-    let stores = |label: &str| scope_values.iter().any(|(l, v)| l == label && v.is_some());
+    let stores = |label: &str| stored_in(scope_values, label).is_some();
     let has_env = scope_values.iter().any(|(l, _)| l == "Active env value");
     let request_supplies = stores("This request") && !request_disabled;
     let env_stored = stores("Active env value");
@@ -1505,22 +1509,33 @@ impl ModalStack {
                     source: *source,
                 }]
             }
-            PromptKind::EditVarValue { name, pending_removals, .. } => {
-                // An emptied value is a legitimate edit, so no
-                // non-empty filter here; removing the stored
-                // value outright is the Remove button.
+            PromptKind::EditVarValue { name, scope_values, pending_removals, .. } => {
                 let value =
                     fields.iter().find(|f| f.key == "value").map(|f| f.input.text().to_string())?;
                 let chosen = get("destination").unwrap_or_default();
                 let destination = destination_from_label(chosen);
-                // Pending removals land first. The chosen scope
-                // is the one exception: cycling back onto a
-                // removed scope and typing a value means "set
-                // it after all" (the write replaces the
-                // removal); leaving its box empty means the
-                // removal stands and nothing blank is written.
-                let chosen_pending = pending_removals.iter().any(|l| l == chosen);
-                let keep_write = !(chosen_pending && value.is_empty());
+                // Only a changed box writes (#205). The box is seeded
+                // with what the chosen scope stores, "(not set)" when
+                // nothing (`stored_in`, at open and on every cycle), so
+                // a box equal to that is untouched and writes nothing.
+                // Emptying a stored value is a change and writes "";
+                // removing it outright is the Remove button.
+                //
+                // So a "(not set)" box confirms as not set, whichever
+                // scope it is on (mine (approved)). The cost, taken
+                // knowingly: this dialog can't declare an empty value in
+                // a scope that stores none (an empty request value over
+                // a non-empty default); the Vars tab and the Variable
+                // Manager can. A no-op confirm closes with no toast, as
+                // an untouched Settings field does. The comparison is
+                // with what the dialog showed when it opened, so a file
+                // changed outside meanwhile is not overwritten by a box
+                // nobody touched.
+                let stored = stored_in(scope_values, chosen).unwrap_or("");
+                let keep_write = value != stored;
+                // Pending removals land first, except on the chosen
+                // scope when it writes: a value typed onto a removed
+                // scope replaces the removal.
                 let mut actions: Vec<Action> = pending_removals
                     .iter()
                     .filter(|l| !(keep_write && *l == chosen))

@@ -8991,11 +8991,12 @@ impl App {
 
     /// Builds and opens the value-edit popup for a simple (or
     /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
-    /// seeded with the current effective value and a `destination` choice
-    /// preselected to whichever scope supplies that value today — the
-    /// request's `[variables]` overlay, the active environment's flat
-    /// value, or the declaration default. Confirming dispatches
-    /// `Action::ConfirmEditVarValue`, which writes the chosen scope.
+    /// seeded with the landing scope's stored value (the effective one)
+    /// and a `destination` choice preselected to whichever scope supplies
+    /// that value today — the request's `[variables]` overlay, the active
+    /// environment's flat value, or the declaration default. Confirming
+    /// dispatches `Action::ConfirmEditVarValue`, which writes the chosen
+    /// scope when the box changed (#205).
     fn open_edit_value_popup(&mut self, name: &str) -> bool {
         use crate::components::modal::{Modal, PromptField, PromptKind};
 
@@ -9018,7 +9019,7 @@ impl App {
         let default_value = self.variables().vars.get(name).and_then(|d| d.default.clone());
         let mut scope_values = vec![
             ("Project default".to_string(), default_value),
-            ("This request".to_string(), request_value.clone()),
+            ("This request".to_string(), request_value),
         ];
         if self.active_env().is_some() {
             let env_value = self.env_data().values.get(name).cloned();
@@ -9027,11 +9028,12 @@ impl App {
 
         let (choices, preselect) =
             crate::components::modal::value_popup_choices(&scope_values, request_disabled);
-        let seed = match crate::components::modal::destination_from_label(preselect) {
-            crate::action::ExtractDestination::Request => request_value,
-            _ => self.resolved().values.get(name).cloned(),
-        }
-        .unwrap_or_default();
+        // The landing scope supplies the value, so its stored value is the
+        // effective one. Read from `scope_values`, the confirm's untouched
+        // check reads the same thing (#205).
+        let seed = crate::components::modal::stored_in(&scope_values, preselect)
+            .unwrap_or_default()
+            .to_string();
 
         let mut destination = PromptField::choice("destination", "Write to", &choices);
         destination.input = LineInput::new(preselect);

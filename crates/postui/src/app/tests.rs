@@ -14583,6 +14583,127 @@ fn retyping_a_removed_disabled_request_var_writes_it_still_disabled() {
     assert!(!row.enabled);
 }
 
+/// #205: a variable declared nowhere whose only row is a disabled request
+/// row. The popup opens on Project default, "(not set)". Confirming it
+/// untouched writes nothing: no `default = ""` appears in variables.toml.
+/// The same holds for the env scope cycled to while it stores nothing.
+#[test]
+fn an_untouched_confirm_on_a_scope_that_stores_nothing_writes_nothing() {
+    let (mut app, dir) = token_popup_app();
+    app.editor
+        .variables
+        .insert("req_only".into(), postui_core::model::Entry { value: "v".into(), enabled: false });
+    let vars_path = dir.path().join("variables.toml");
+    let env_path = dir.path().join("environments/qa.toml");
+    let vars_before = std::fs::read_to_string(&vars_path).unwrap();
+    let env_before = std::fs::read_to_string(&env_path).unwrap();
+
+    app.update(Action::OpenVarTokenPopup("req_only".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Project default");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+    assert_eq!(app.history.undo_len(), steps, "no undo step");
+
+    // Again, cycled onto the active env, which stores nothing either.
+    app.update(Action::OpenVarTokenPopup("req_only".into()));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Active env value");
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), env_before);
+    assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+    let row = &app.editor.variables["req_only"];
+    assert_eq!((row.value.as_str(), row.enabled), ("v", false), "the row is untouched");
+}
+
+/// #205: a staged Remove of the env value, then a confirm with the box
+/// untouched on the scope the dialog moved to: only the removal applies.
+/// The default the dialog landed on is not written back.
+#[test]
+fn a_removal_then_an_untouched_confirm_applies_only_the_removal() {
+    let (mut app, dir) = token_popup_app();
+    let vars_path = dir.path().join("variables.toml");
+    let vars_before = std::fs::read_to_string(&vars_path).unwrap();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    app.handle_key(alt('d'));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the popup stays open")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Project default");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!qa.contains("base_url"), "the env value is gone: {qa}");
+    assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before);
+    assert_eq!(app.history.undo_len(), steps + 1, "one step: the removal");
+}
+
+/// #205: an untouched confirm on This request (an enabled row, written
+/// through the editor rather than a file) leaves the request as it was.
+#[test]
+fn an_untouched_confirm_on_this_request_leaves_the_request_clean() {
+    let (mut app, _dir) = token_popup_app();
+    app.editor.variables.insert(
+        "base_url".into(),
+        postui_core::model::Entry { value: "http://req.local".into(), enabled: true },
+    );
+    app.editor.set_saved(None);
+    let unsaved = app.editor_holds_unsaved();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "This request");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(app.history.undo_len(), steps, "no undo step");
+    assert_eq!(app.editor_holds_unsaved(), unsaved, "the request is as it was");
+    assert_eq!(app.editor.variables["base_url"].value, "http://req.local");
+}
+
+/// #205: on a scope that stores a value, an untouched confirm changes
+/// nothing, while emptying the box is a change and writes the empty value
+/// (the untouched check must not swallow it).
+#[test]
+fn an_untouched_confirm_on_a_stored_scope_changes_nothing_and_an_emptied_one_writes() {
+    let (mut app, dir) = token_popup_app();
+    let env_path = dir.path().join("environments/qa.toml");
+    let env_before = std::fs::read_to_string(&env_path).unwrap();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "https://qa.example.com", "seeded from the env");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(app.history.undo_len(), steps, "no undo step");
+    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), env_before);
+
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    for _ in 0.."https://qa.example.com".len() {
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    click_modal_confirm(&mut app);
+    let on_disk = std::fs::read_to_string(&env_path).unwrap();
+    assert!(on_disk.contains("base_url = \"\""), "{on_disk}");
+}
+
 /// #154: with the env value marked for removal, the popup re-lands on the
 /// scope that would supply. A disabled request row supplies nothing, so
 /// that is the default, not This request.
