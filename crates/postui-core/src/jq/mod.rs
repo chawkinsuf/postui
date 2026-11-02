@@ -116,14 +116,11 @@ impl JqDocument {
     /// Every whitespace-separated JSON value in `body`, as jq reads its
     /// input. A body with no value, or with a bad one anywhere, is not JSON.
     /// A server-sent events body is the stream of its events' data instead
-    /// ([`crate::sse::data`], #220), and there an event whose data isn't a
+    /// ([`crate::sse::values`], #220), and there an event whose data isn't a
     /// JSON value (`[DONE]`) is skipped rather than failing the body.
     pub fn parse(body: &str) -> Result<Self, JqError> {
-        if let Some(events) = crate::sse::data(body) {
-            let values: Vec<Val> = events
-                .iter()
-                .filter_map(|d| jaq_json::read::parse_single(d.as_bytes()).ok())
-                .collect();
+        let event = |d: &str| jaq_json::read::parse_single(d.as_bytes()).ok();
+        if let Some(values) = crate::sse::values(body, event) {
             if values.is_empty() {
                 return Err(JqError::Runtime {
                     message: "not JSON: no event's data is a JSON value".into(),

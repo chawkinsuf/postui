@@ -287,13 +287,12 @@ impl JsonTree {
     /// worker rather than on the UI thread.
     ///
     /// A server-sent events body stacks its events' data, the values jq
-    /// runs on ([`postui_core::sse::data`], #220), skipping an event whose
+    /// runs on ([`postui_core::sse::values`], #220), skipping an event whose
     /// data isn't JSON (`[DONE]`) as jq does.
     pub fn parse(text: &str) -> Option<JsonTree> {
-        let tree = match postui_core::sse::data(text) {
-            Some(events) => Self::from_values(
-                events.iter().filter_map(|d| serde_json::from_str(d).ok()).map(Some),
-            ),
+        let event = |d: &str| serde_json::from_str(d).ok();
+        let tree = match postui_core::sse::values(text, event) {
+            Some(values) => Self::from_values(values.into_iter().map(Some)),
             None => Self::from_values(
                 serde_json::Deserializer::from_str(text)
                     .into_iter::<serde_json::Value>()

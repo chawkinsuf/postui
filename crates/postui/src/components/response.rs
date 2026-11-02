@@ -979,7 +979,9 @@ impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
         // A big body is parsed off-thread; until that lands there is no
         // tree to show. One that looks like JSON (starts with `{` or `[`,
-        // or like an event stream, whose payloads make a tree, #220)
+        // or like an event stream, whose payloads make a tree, #220: the
+        // first line alone decides, so a big text body that only starts
+        // like one spins first, as a big `{` body that isn't JSON does)
         // still leads with the Tree tab — showing its spinner, the same
         // pane it will settle on — rather than flashing the raw body first;
         // `attach_tree` kicks it back to Raw should the parse prove it

@@ -2,8 +2,9 @@
 //! them, read as the stream of values their events carry (#220).
 //!
 //! An SSE body is not JSON, but its events' `data:` payloads usually are,
-//! one value per event. [`data`] hands back those payloads, and the jq
-//! engine and the Tree tab each read them as a stream (#218): the filter
+//! one value per event. [`values`] hands back what a reader's parser makes
+//! of those payloads, and the jq engine and the Tree tab each read them as
+//! a stream (#218): the filter
 //! runs once per event, the tree stacks them. Each reader skips the
 //! payloads its own parser can't read (OpenAI's closing `[DONE]`), so a
 //! payload is never checked by one parser and read by another, which
@@ -29,7 +30,11 @@ use std::borrow::Cow;
 /// payload, joined by newlines, as the standard says. Unlike the standard,
 /// an event the body ends in without a blank line is kept: the body is a
 /// finished response, and a stream cut short should still show what it got.
-pub fn data(body: &str) -> Option<Vec<Cow<'_, str>>> {
+///
+/// Lines end in `\n` or `\r\n`; a bare `\r` ending and a leading byte-order
+/// mark, which the standard also allows, are not read, as a JSON body with
+/// a byte-order mark isn't: no LLM API sends either.
+fn data(body: &str) -> Option<Vec<Cow<'_, str>>> {
     let mut events = Vec::new();
     let mut pending: Option<Cow<str>> = None;
     let mut any_data = false;
@@ -38,10 +43,14 @@ pub fn data(body: &str) -> Option<Vec<Cow<'_, str>>> {
             Line::Blank => events.extend(pending.take()),
             Line::Field("data", value) => {
                 any_data = true;
-                pending = Some(match pending.take() {
-                    Some(d) => Cow::Owned(format!("{d}\n{value}")),
-                    None => Cow::Borrowed(value),
-                });
+                match &mut pending {
+                    Some(d) => {
+                        let d = d.to_mut();
+                        d.push('\n');
+                        d.push_str(value);
+                    }
+                    None => pending = Some(Cow::Borrowed(value)),
+                }
             }
             Line::Comment | Line::Field(..) => {}
         }
@@ -50,10 +59,29 @@ pub fn data(body: &str) -> Option<Vec<Cow<'_, str>>> {
     any_data.then_some(events)
 }
 
-/// Whether `body` starts the way an event stream does, without reading the
-/// rest: for a body too big to read on the UI thread.
+/// The values `parse` reads from `body`'s events, in order, when `body` is
+/// an event stream (see `data`); `None` when it isn't one. An event whose
+/// data `parse` can't read (`[DONE]`) is skipped, so each reader skips by
+/// its own parser.
+pub fn values<T>(body: &str, parse: impl Fn(&str) -> Option<T>) -> Option<Vec<T>> {
+    Some(data(body)?.iter().filter_map(|d| parse(d)).collect())
+}
+
+/// Whether `body` starts the way an event stream does, reading only the
+/// start of its first line that is not blank: for a body too big to read
+/// on the UI thread, whose first line may be all of it.
 pub fn starts_like(body: &str) -> bool {
-    body.lines().find(|l| !l.is_empty()).and_then(line).is_some()
+    let rest = body.trim_start_matches(['\r', '\n']);
+    if rest.starts_with(':') {
+        return true;
+    }
+    // The longest field name is five bytes; past it, the name has ended
+    // or the line is no field.
+    let head = &rest.as_bytes()[..rest.len().min(6)];
+    let end = head.iter().position(|b| matches!(b, b':' | b'\r' | b'\n')).unwrap_or(head.len());
+    let name = &head[..end];
+    (end < head.len() || end == rest.len())
+        && [&b"data"[..], b"event", b"id", b"retry"].contains(&name)
 }
 
 enum Line<'a> {
@@ -152,6 +180,10 @@ mod tests {
         assert!(starts_like("\nevent: x\n"));
         assert!(starts_like(": comment\n"));
         assert!(starts_like("data\n"));
+        assert!(starts_like("data"));
+        assert!(starts_like("\r\nretry: 5"));
+        assert!(!starts_like("database: x"));
+        assert!(!starts_like("ident"));
         assert!(!starts_like("{\"data\": 1}"));
         assert!(!starts_like("hello\ndata: 1\n"));
         assert!(!starts_like(""));
