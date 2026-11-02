@@ -104,6 +104,13 @@ impl App {
             let msg = format!("{n} curl commands; import at most {CURL_IMPORT_LIMIT} at a time");
             return self.toasts.push(msg, ToastKind::Error);
         }
+        // An input that refuses to close stops the import (#227, the #75
+        // rule): each create opens its request, a change the refused
+        // typing must not be carried across. `leaving_unsaved` below
+        // closes inputs too, but can't stop.
+        if !self.close_inputs_or_stop(true) {
+            return;
+        }
         let run = Box::new(CurlImportRun::new(batch, folder));
         // Each create opens its request, replacing the editor: ask once,
         // up front. Discard discards there and then, so skipping every
@@ -355,9 +362,13 @@ impl App {
         }
         // The editor as it stands, as Copy as curl reads it: an open cell's
         // text and an open field's keys land first, as their own steps (the
-        // flush commits the cell and closes the field's session; the
-        // capture takes whatever else is pending).
-        self.flush_field_session();
+        // close commits the cell and closes the field's session; the
+        // capture takes whatever else is pending). A Manager or Settings
+        // input that refuses to close stops the replace, as it stops an
+        // import (#227, the #75 rule).
+        if !self.close_inputs_or_stop(true) {
+            return true;
+        }
         self.capture_undo();
         // The variables are sorted against the files as they are now, as
         // Send and Copy as curl read them (plan P6).

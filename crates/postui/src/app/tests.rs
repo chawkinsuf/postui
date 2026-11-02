@@ -34949,6 +34949,54 @@ fn a_refused_input_stops_a_project_switch_before_its_gate() {
     assert!(app.varmanager.grid.editing.is_some(), "the typing is kept");
 }
 
+/// A `var_project` app with a Manager grid cell open on a value it refuses
+/// ("description" as an option name), and `clip` on the clipboard.
+fn refused_manager_cell_app(dir: &std::path::Path, clip: &str) -> App {
+    var_project(dir);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.to_path_buf());
+    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    c.set_read_for_test(clip);
+    app.set_clipboard_for_test(c);
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    app
+}
+
+/// #227: Import curl whose open input refuses to close stops there, as a
+/// project switch does (#75): no prompt, nothing created, the typing kept.
+/// Both a named clean paste (created without a prompt, #147) and an
+/// unnamed one (the prompt).
+#[test]
+fn a_refused_input_stops_a_curl_import() {
+    for clip in ["# @name Listed\ncurl https://x/users", "curl https://x/users"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = refused_manager_cell_app(dir.path(), clip);
+        let before = app.proj().requests().len();
+        app.last_action_failed = false;
+        app.update(Action::ImportCurl { folder: None });
+        assert!(app.modals.is_empty(), "no prompt: {clip}");
+        assert_eq!(app.proj().requests().len(), before, "nothing created: {clip}");
+        assert!(app.varmanager.grid.editing.is_some(), "the typing is kept: {clip}");
+        assert!(app.last_action_failed, "the import stopped: {clip}");
+    }
+}
+
+/// #227: Replace with curl stops on a refused input the same way: the
+/// request in the editor is not replaced.
+#[test]
+fn a_refused_input_stops_a_replace_with_curl() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = refused_manager_cell_app(dir.path(), "curl -X POST https://x/replaced");
+    let url = app.editor.url.text().to_string();
+    app.update(Action::ReplaceWithCurl(None));
+    assert_eq!(app.editor.url.text(), url, "the editor is not replaced");
+    assert!(app.varmanager.grid.editing.is_some(), "the typing is kept");
+    assert!(app.last_action_failed, "the replace stopped");
+}
+
 /// A delete of an option whose name cell is live closes the cell first:
 /// the rename lands, and the delete of the old name reads as already gone,
 /// with no "Deleted" toast for an option that survives.
