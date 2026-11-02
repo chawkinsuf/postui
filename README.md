@@ -164,9 +164,10 @@ postui check                             # validate the files and variables
 
 Run them in the project's folder (the one with `project.toml`), or name it
 with `-p <dir|name>`. A request is named by its slug, as `postui requests`
-lists it. Output is text, or JSON with `--json`. `postui help` lists the commands and
-`postui help <command>` gives each one's options. `postui skill install`
-installs a Claude Code skill that teaches a coding agent to use them.
+lists it. Output is text, or JSON with `--json`. `postui help` lists the
+commands and `postui help <command>` gives a command's usage. `postui skill
+install` installs a Claude Code skill that teaches a coding agent to use
+them.
 
 ## License
 

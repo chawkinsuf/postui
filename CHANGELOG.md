@@ -15,15 +15,15 @@ read a project, send its requests and check them.
   `requests` and `vars` list what a project holds; `check` validates its
   files and variables; `init` starts one; `run` sends a request and prints
   the response; `suite` sends every request and reports status and timing.
-  Output is text, or JSON with `--json`. `postui help <command>` gives each
-  one's options.
+  Output is text, or JSON with `--json`. `postui help` gives each command's
+  usage and options.
 - `postui edit begin` and `postui edit end` mark an agent's edit of a project,
   and `postui edit status` shows it. An edit needs the project closed in
   postui; while one is in progress, postui won't open the project and shows
-  "Updates in progress" until it ends. `edit end` checks the project first,
-  and `--force` ends an edit that is no longer running.
+  "Updates in progress" until it ends. `edit end` checks the project first;
+  `--force` ends the edit anyway, for one that is no longer running.
 - `postui skill install` installs a Claude Code skill that teaches an agent
-  postui's commands and project files.
+  postui's commands and project files, and `postui skill show` prints it.
 - Sidebar folders reorder among their siblings, by drag or `alt+↑`/`alt+↓`.
 - jq filters run over every value of a streamed (NDJSON) body. An error ends
   only that value's run, as in jq.
@@ -47,8 +47,8 @@ read a project, send its requests and check them.
 - Many fixes to the Variable Manager, request renames, the response pane,
   the footer and the Vim profile.
 - The value dialog no longer writes an empty value when confirmed untouched.
-- Import curl and Replace with curl stop while a Variable Manager or Settings
-  input holds a value it can't save.
+- A curl import and Replace with curl stop while a Variable Manager or
+  Settings input holds a value it can't save.
 
 ## [0.2.0] - 2026-10-27
 
