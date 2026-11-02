@@ -162,8 +162,9 @@ postui suite                             # send them all: status and timing
 postui check                             # validate the files and variables
 ```
 
-Commands read the project in the current directory, or the one `-p` names.
-Output is text, or JSON with `--json`. `postui help` lists the commands and
+Run them in the project's folder (the one with `project.toml`), or name it
+with `-p <dir|name>`. A request is named by its slug, as `postui requests`
+lists it. Output is text, or JSON with `--json`. `postui help` lists the commands and
 `postui help <command>` gives each one's options. `postui skill install`
 installs a Claude Code skill that teaches a coding agent to use them.
 

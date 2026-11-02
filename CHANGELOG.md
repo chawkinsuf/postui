@@ -11,14 +11,17 @@ read a project, send its requests and check them.
 
 ### Added
 
-- Commands for the shell: `projects`, `show`, `requests` and `vars` list what
-  a project holds; `check` validates its files and variables; `init` starts
-  one; `run` sends a request and prints the response; `suite` sends every
-  request and reports status and timing. Output is text, or JSON with
-  `--json`. `postui help <command>` gives each one's options.
-- `postui edit begin` and `postui edit end` mark an agent's edit of a project.
-  While one is in progress, postui won't open the project and shows "Updates
-  in progress" until it ends.
+- Commands for the shell: `projects` lists the projects postui knows; `show`,
+  `requests` and `vars` list what a project holds; `check` validates its
+  files and variables; `init` starts one; `run` sends a request and prints
+  the response; `suite` sends every request and reports status and timing.
+  Output is text, or JSON with `--json`. `postui help <command>` gives each
+  one's options.
+- `postui edit begin` and `postui edit end` mark an agent's edit of a project,
+  and `postui edit status` shows it. An edit needs the project closed in
+  postui; while one is in progress, postui won't open the project and shows
+  "Updates in progress" until it ends. `edit end` checks the project first,
+  and `--force` ends an edit that is no longer running.
 - `postui skill install` installs a Claude Code skill that teaches an agent
   postui's commands and project files.
 - Sidebar folders reorder among their siblings, by drag or `alt+↑`/`alt+↓`.
@@ -30,6 +33,8 @@ read a project, send its requests and check them.
 
 ### Changed
 
+- A project opens in one postui window at a time: a second window refuses
+  it with "it is open in another postui window".
 - Every request asks for JSON (`Accept: application/json`), a GET included,
   unless a header or project default sets `Accept`.
 - The variable tooltip waits until the pointer rests on a token for half a
