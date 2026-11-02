@@ -9144,7 +9144,9 @@ impl App {
     /// state like this, just close the input before the change in state").
     /// The functions that change it call this first: the env switch, the
     /// project switch and create, undo/redo, a Manage tab switch, closing
-    /// the screen, quitting, and the dirty gate's check (`leaving_unsaved`).
+    /// the screen, a curl import and Replace with curl (both declare
+    /// secrets, #227), quitting, and the dirty gate's check
+    /// (`leaving_unsaved`).
     /// Three close only the Variable Manager's input (`close_manager_input`):
     /// a journaled op (`begin_op`), which writes the project and nothing a
     /// Settings field holds; Reload from disk, which keeps a live Settings

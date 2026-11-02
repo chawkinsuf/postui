@@ -34971,12 +34971,20 @@ fn refused_manager_cell_app(dir: &std::path::Path, clip: &str) -> App {
 /// unnamed one (the prompt).
 #[test]
 fn a_refused_input_stops_a_curl_import() {
-    for clip in ["# @name Listed\ncurl https://x/users", "curl https://x/users"] {
+    for clip in [
+        // A paste that would declare a secret (spec R7): nothing is.
+        "# @name Me\nexport TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/me",
+        "# @name Listed\ncurl https://x/users",
+        "curl https://x/users",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let mut app = refused_manager_cell_app(dir.path(), clip);
+        let vars_path = dir.path().join("variables.toml");
+        let vars_before = std::fs::read_to_string(&vars_path).unwrap();
         let before = app.proj().requests().len();
         app.last_action_failed = false;
         app.update(Action::ImportCurl { folder: None });
+        assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), vars_before, "{clip}");
         assert!(app.modals.is_empty(), "no prompt: {clip}");
         assert_eq!(app.proj().requests().len(), before, "nothing created: {clip}");
         assert!(app.varmanager.grid.editing.is_some(), "the typing is kept: {clip}");

@@ -111,15 +111,17 @@ impl App {
         // create of a request writes no variables, which is why those go
         // on past a refusal through `leaving_unsaved`'s check alone
         // (`a_refused_close_in_the_dirty_gate_check_fails_no_action`).
-        // `leaving_unsaved` below closes inputs too, but can't stop.
+        // The inputs that did close stay closed, as for every
+        // `close_inputs_or_stop` caller.
         if !self.close_inputs_or_stop(true) {
             return;
         }
         let run = Box::new(CurlImportRun::new(batch, folder));
         // Each create opens its request, replacing the editor: ask once,
         // up front. Discard discards there and then, so skipping every
-        // prompt afterwards still leaves what the answer said.
-        if self.leaving_unsaved() {
+        // prompt afterwards still leaves what the answer said. Every input
+        // is closed above, so the gate asks `editor_holds_unsaved` alone.
+        if self.editor_holds_unsaved() {
             self.dirty_gate_split(
                 "import",
                 Action::BeginCurlImport { run: run.clone(), discard: false },
@@ -350,8 +352,9 @@ impl App {
     /// target's file, the variables' sort, a `# @name` rename's checks)
     /// runs before the gate, so a
     /// refusal only toasts and the gate's answer is never left undone. An
-    /// open input that refuses to close also stops it there, and marks the
-    /// action failed, as every `close_inputs_or_stop` caller does.
+    /// open input that refuses to close also stops it there; that stop
+    /// alone marks the action failed (`close_inputs_or_stop`'s contract),
+    /// while the refusals before it only toast.
     pub(super) fn replace_with_curl(&mut self, slug: Option<String>) -> bool {
         if self.refuse_without_project() {
             return true;
@@ -417,9 +420,9 @@ impl App {
         let import = commands.into_iter().next().expect("checked: one command");
         let replace = CurlReplace { import, notes, vars, rename };
         match other {
-            // Every gate asks through `leaving_unsaved`, so none can forget
-            // the cell; here the flush above has already committed it.
-            Some(slug) if self.leaving_unsaved() => {
+            // Every input, the cell included, was closed above, so the gate
+            // asks `editor_holds_unsaved` alone.
+            Some(slug) if self.editor_holds_unsaved() => {
                 let replace = Box::new(replace);
                 self.dirty_gate("open", Action::ForceReplaceWithCurl { slug, replace });
             }
