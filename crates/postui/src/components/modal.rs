@@ -1522,6 +1522,14 @@ impl ModalStack {
                 // value in a scope that stored none. Emptying a stored
                 // value is a change, so it writes the empty value;
                 // removing it outright is the Remove button.
+                //
+                // So a "(not set)" box confirms as not set, whichever
+                // scope it is on: what the box shows is what the confirm
+                // leaves (#205, mine (approved)). The cost, taken
+                // knowingly: this dialog can't declare an empty value in
+                // a scope that stores none (say, an empty request value
+                // over a non-empty default); the Vars tab and the
+                // Variable Manager can.
                 let stored = stored_in(scope_values, chosen).unwrap_or("");
                 // Pending removals land first. The chosen scope
                 // is the one exception: cycling back onto a
