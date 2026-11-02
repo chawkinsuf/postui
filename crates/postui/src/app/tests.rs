@@ -14625,6 +14625,35 @@ fn an_untouched_confirm_on_a_scope_that_stores_nothing_writes_nothing() {
     assert_eq!((row.value.as_str(), row.enabled), ("v", false), "the row is untouched");
 }
 
+/// #205: on a scope that stores a value, an untouched confirm changes
+/// nothing, while emptying the box is a change and writes the empty value
+/// (the untouched check must not swallow it).
+#[test]
+fn an_untouched_confirm_on_a_stored_scope_changes_nothing_and_an_emptied_one_writes() {
+    let (mut app, dir) = token_popup_app();
+    let env_path = dir.path().join("environments/qa.toml");
+    let env_before = std::fs::read_to_string(&env_path).unwrap();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "https://qa.example.com", "seeded from the env");
+    let steps = app.history.undo_len();
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    assert_eq!(app.history.undo_len(), steps, "no undo step");
+    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), env_before);
+
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    for _ in 0.."https://qa.example.com".len() {
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    click_modal_confirm(&mut app);
+    let on_disk = std::fs::read_to_string(&env_path).unwrap();
+    assert!(on_disk.contains("base_url = \"\""), "{on_disk}");
+}
+
 /// #154: with the env value marked for removal, the popup re-lands on the
 /// scope that would supply. A disabled request row supplies nothing, so
 /// that is the default, not This request.
