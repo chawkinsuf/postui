@@ -115,7 +115,11 @@ impl std::fmt::Display for JqError {
 impl JqDocument {
     /// Every whitespace-separated JSON value in `body`, as jq reads its
     /// input. A body with no value, or with a bad one anywhere, is not JSON.
+    /// A server-sent events body is the stream of its events' JSON payloads
+    /// ([`crate::sse::json_payloads`], #220).
     pub fn parse(body: &str) -> Result<Self, JqError> {
+        let sse = crate::sse::json_payloads(body);
+        let body = sse.as_deref().unwrap_or(body);
         let not_json = |e| JqError::Runtime { message: format!("not JSON: {e}") };
         let values: Vec<Val> = jaq_json::read::parse_many(body.as_bytes())
             .collect::<Result<_, _>>()
@@ -525,6 +529,18 @@ mod tests {
         let doc = JqDocument::parse("1 2 3").unwrap();
         let err = run_with_cap("if . == 3 then [range(1000)] else . end", &doc, 1024).unwrap_err();
         assert!(err.message().contains("too large"), "{err:?}");
+    }
+
+    #[test]
+    fn an_event_stream_runs_the_filter_once_per_json_payload() {
+        let body = "event: delta\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        let doc = JqDocument::parse(body).expect("an SSE body is a stream of its payloads");
+        assert_eq!(outputs(".choices[0].delta.content", &doc), vec!["\"Hi\"", "\"!\""]);
+        let err = JqDocument::parse("data: [DONE]\n\n").unwrap_err();
+        assert!(err.message().starts_with("not JSON"), "no JSON payload: {err:?}");
     }
 
     #[test]

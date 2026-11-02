@@ -285,7 +285,12 @@ impl JsonTree {
     /// potentially slow on a large document: past
     /// `response::SYNC_PRETTY_BYTES` its caller runs it on a blocking
     /// worker rather than on the UI thread.
+    ///
+    /// A server-sent events body stacks its events' JSON payloads, the
+    /// values jq runs on ([`postui_core::sse::json_payloads`], #220).
     pub fn parse(text: &str) -> Option<JsonTree> {
+        let sse = postui_core::sse::json_payloads(text);
+        let text = sse.as_deref().unwrap_or(text);
         let values = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
         let tree = Self::from_values(values.map(Result::ok))?;
         (!tree.lines.is_empty()).then_some(tree)
@@ -935,6 +940,14 @@ mod tests {
         let stacked = JsonTree::parse_many(&["{\"a\":1}".into(), "{\"a\":2}".into()]).unwrap();
         assert_eq!(t.full_text_lines(), stacked.full_text_lines());
         assert_eq!(t.full_text_lines(), ["{", "  \"a\": 1", "}", "{", "  \"a\": 2", "}"]);
+    }
+
+    #[test]
+    fn an_event_stream_stacks_its_json_payloads() {
+        let body = "event: x\ndata: {\"a\":1}\n\ndata: {\"a\":2}\n\ndata: [DONE]\n\n";
+        let t = JsonTree::parse(body).expect("an SSE body has a tree");
+        assert_eq!(t.full_text_lines(), ["{", "  \"a\": 1", "}", "{", "  \"a\": 2", "}"]);
+        assert!(JsonTree::parse("data: [DONE]\n\n").is_none(), "no JSON payload, no tree");
     }
 
     #[test]

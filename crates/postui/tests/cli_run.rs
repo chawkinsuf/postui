@@ -546,6 +546,22 @@ fn run_jq_runs_over_every_value_of_a_stream() {
     assert_eq!(joined, "\"hello\"\n");
 }
 
+/// A server-sent events body runs the filter once per JSON payload, as
+/// streamed LLM replies are read (#220); `[DONE]` is skipped.
+#[test]
+fn run_jq_runs_over_every_json_payload_of_an_event_stream() {
+    let (home, _server, root) = served();
+    std::fs::write(
+        root.join("requests/main/sse.toml"),
+        "name = \"Sse\"\nmethod = \"GET\"\nurl = \"{{base}}/sse\"\n",
+    )
+    .unwrap();
+    let out = send(&home, &root, "main/sse", &["--jq", ".part"]);
+    assert_ok(&out, "run --jq on SSE");
+    assert_eq!(json(&out)["jq"]["output"], serde_json::json!(["he", "llo"]));
+    assert_eq!(send_text(&home, &root, "main/sse", &["--jq", ".part"]), "\"he\"\n\"llo\"\n");
+}
+
 /// A filter that fails on one value of a stream still prints the other
 /// values' results, with the error, and exits 1 (#229).
 #[test]

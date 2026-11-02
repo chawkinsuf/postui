@@ -65,6 +65,7 @@ pub mod prepare;
 /// The open project. `project::Project` owns every read and write of
 /// project files; the modules beside it hold only pure helpers.
 pub mod project;
+pub mod sse;
 pub mod storage;
 pub mod varedit;
 pub mod varmodel;
