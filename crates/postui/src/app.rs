@@ -10407,6 +10407,7 @@ impl App {
         let label = self.reorder_label(&key);
         let t = self.begin_op();
         let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
             return;
         };
         match p.move_request_shown(&space, &level, &shown, &own, delta) {
@@ -10422,6 +10423,7 @@ impl App {
                 self.record_project_step(t, crate::undo::StepLabel::reorder(label));
             }
             Err(e) => {
+                self.op_in_flight = false;
                 self.toasts.push(format!("cannot move {noun}: {e}"), ToastKind::Warning);
             }
         }

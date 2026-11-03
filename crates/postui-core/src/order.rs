@@ -118,22 +118,36 @@ pub fn split_level<'a>(entries: &[&'a RequestListing], prefix: &str) -> Level<'a
     level
 }
 
+/// An order list's entries by slot, for [`order_entries`]: built once per
+/// walk of a space (or sidebar rebuild) and read at every level. An entry
+/// the list holds twice keeps its first slot.
+#[derive(Debug)]
+pub struct OrderIndex<'a>(HashMap<&'a str, usize>);
+
+impl<'a> OrderIndex<'a> {
+    pub fn new(order: &'a [String]) -> Self {
+        let mut first: HashMap<&str, usize> = HashMap::new();
+        for (i, e) in order.iter().enumerate() {
+            first.entry(e.as_str()).or_insert(i);
+        }
+        OrderIndex(first)
+    }
+}
+
 /// One level's items of both kinds in the order they draw (spec
-/// 2026-11-02 drag into folders D3, D6): the ones `order` names in list
-/// order, whatever the kind; then the unlisted requests by display name
-/// (slug as the tiebreak); then the unlisted folders by path. On a
-/// complete list this is plain list order. `requests` and `folders`
-/// (full paths) must all sit in the same level of `space`.
+/// 2026-11-02 drag into folders D3, D6): the ones the list (`order`, its
+/// [`OrderIndex`]) names in list order, whatever the kind; then the
+/// unlisted requests by display name (slug as the tiebreak); then the
+/// unlisted folders by path. On a complete list this is plain list order.
+/// `requests` and `folders` (full paths) must all sit in the same level
+/// of `space`.
 pub fn order_entries<'a>(
     requests: &[&'a RequestListing],
     folders: &[&'a str],
-    order: &[String],
+    order: &OrderIndex<'_>,
     space: &str,
 ) -> Vec<LevelItem<'a>> {
-    let mut first: HashMap<&str, usize> = HashMap::new();
-    for (i, e) in order.iter().enumerate() {
-        first.entry(e.as_str()).or_insert(i);
-    }
+    let first = &order.0;
     let mut listed: Vec<(usize, LevelItem<'a>)> = Vec::new();
     let mut unlisted_requests: Vec<&'a RequestListing> = Vec::new();
     let mut unlisted_folders: Vec<&'a str> = Vec::new();
@@ -380,13 +394,13 @@ fn walk_space(
     let prefix = format!("{space}/");
     let entries: Vec<&RequestListing> =
         listing.iter().filter(|e| e.slug.starts_with(&prefix)).collect();
-    walk_level(&entries, &prefix, order, space, visit);
+    walk_level(&entries, &prefix, &OrderIndex::new(order), space, visit);
 }
 
 fn walk_level(
     entries: &[&RequestListing],
     prefix: &str,
-    order: &[String],
+    order: &OrderIndex<'_>,
     space: &str,
     visit: &mut dyn FnMut(LevelItem<'_>),
 ) {
@@ -428,7 +442,7 @@ mod tests {
 
     /// One level's requests in draw order (a level with no folders).
     fn requests_drawn(requests: &[&RequestListing], order: &[String]) -> Vec<String> {
-        order_entries(requests, &[], order, "main")
+        order_entries(requests, &[], &OrderIndex::new(order), "main")
             .into_iter()
             .map(|i| match i {
                 LevelItem::Request(r) => r.slug.clone(),
@@ -440,7 +454,7 @@ mod tests {
     /// One level's folders in draw order (a level with no requests).
     fn folders_drawn(paths: &[String], order: &[String]) -> Vec<String> {
         let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-        order_entries(&[], &paths, order, "main")
+        order_entries(&[], &paths, &OrderIndex::new(order), "main")
             .into_iter()
             .map(|i| match i {
                 LevelItem::Request(r) => r.slug.clone(),
@@ -462,7 +476,7 @@ mod tests {
         let out = order_entries(
             &[&zeta, &alpha, &b, &c],
             &["main/f", "main/e", "main/d"],
-            &order,
+            &OrderIndex::new(&order),
             "main",
         );
         assert_eq!(
@@ -536,6 +550,15 @@ mod tests {
             "a".to_string(),
         ];
         let out = requests_drawn(&[&a, &b], &order);
+        assert_eq!(out, ["main/b", "main/a"]);
+    }
+
+    /// An entry the list holds twice draws at its first slot.
+    #[test]
+    fn a_duplicate_entry_keeps_its_first_slot() {
+        let a = entry("main/a", None);
+        let b = entry("main/b", None);
+        let out = requests_drawn(&[&a, &b], &v(&["b", "a", "b"]));
         assert_eq!(out, ["main/b", "main/a"]);
     }
 

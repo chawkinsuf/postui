@@ -341,6 +341,17 @@ fn arrive_with_folders(
     edits
 }
 
+/// Whether `slugs` (a listing's full slugs) shows a folder at full path
+/// `path` spelled in any case: some request sits under it. A folder move
+/// asks this once the disk says its destination directory exists, so on
+/// a case-insensitive filesystem (macOS) a shown folder differing only in
+/// case is the clash it is (spec 2026-11-02 drag into folders D18), not a
+/// directory of files that aren't requests.
+fn shows_folder_ignoring_case(slugs: &[String], path: &str) -> bool {
+    let under = format!("{path}/").to_lowercase();
+    slugs.iter().any(|s| s.to_lowercase().starts_with(&under))
+}
+
 /// Each of `spaces` whose list in `meta` [`order::complete_order`]
 /// changes, with the completed list.
 fn completed_lists(
@@ -362,7 +373,9 @@ fn completed_lists(
 impl Project {
     /// Reads `space`'s list from `meta`, hands it to `f`, and writes it
     /// back through `project.toml` only if `f` changed it. Refuses a
-    /// space that does not exist on disk (no orphan tables).
+    /// space that does not exist on disk (no orphan tables). Every order
+    /// write goes through here, so with no `project.toml` it writes
+    /// nothing.
     pub(super) fn order_edit(
         &mut self,
         space: &str,
@@ -372,6 +385,12 @@ impl Project {
         let mut after = before.clone();
         let edits = f(&mut after);
         if after == before {
+            return Ok(Vec::new());
+        }
+        // A bare directory never gains a `project.toml` behind the user's
+        // back (see `ensure_spaces`; `complete_order` keeps it too): with
+        // none, the list stays unwritten and the level draws by D6's rule.
+        if !self.disk.is_file(&rel(PROJECT_TOML)?) {
             return Ok(Vec::new());
         }
         // Only a real edit needs the space's directory to exist (an
@@ -489,8 +508,8 @@ impl Project {
         let entries: Vec<&RequestListing> =
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
         let items = order::split_level(&entries, &prefix);
-        let order = order::space_order(&self.meta, space);
-        order::order_entries(&items.requests, &items.folder_paths(), order, space)
+        let order = order::OrderIndex::new(order::space_order(&self.meta, space));
+        order::order_entries(&items.requests, &items.folder_paths(), &order, space)
             .iter()
             .filter_map(|i| i.entry(space))
             .collect()
@@ -547,27 +566,22 @@ impl Project {
         let unread = spaces
             .iter()
             .any(|s| order::space_order(&on_disk, s) != order::space_order(&self.meta, s));
-        if !unread && completed_lists(&self.listing, &on_disk, &spaces, whole).is_empty() {
+        let lists = completed_lists(&self.listing, &on_disk, &spaces, whole);
+        if !unread && lists.is_empty() {
             return Ok(false);
         }
         let outside_edit = self.disk.changed(&path);
-        let listing = std::mem::take(&mut self.listing);
-        let mut wrote = false;
-        let result = self.edit_project_toml(|doc| {
-            // A document that doesn't parse is left as it is, and
-            // `edit_project_toml` reports it.
-            let Ok(meta) = toml::from_str::<ProjectMeta>(&doc.to_string()) else { return };
-            for (space, after) in completed_lists(&listing, &meta, &spaces, whole) {
-                order::write_order(doc, &space, &after);
-                wrote = true;
+        // The lists built from the peeked text are the ones written: the
+        // document `edit_project_toml` reads is that same file.
+        self.edit_project_toml(|doc| {
+            for (space, after) in &lists {
+                order::write_order(doc, space, after);
             }
-        });
-        self.listing = listing;
-        result?;
+        })?;
         if outside_edit {
             self.force_reload = true;
         }
-        Ok(wrote)
+        Ok(!lists.is_empty())
     }
 
     /// One read-modify-write per space, however many requests moved.
@@ -923,10 +937,13 @@ impl Project {
         // that holds no file at any depth goes to the trash as part of the
         // move (undo brings it back). One holding files that aren't
         // requests is refused, naming the directory, since the sidebar
-        // shows no folder there to clash with.
+        // shows no folder there to clash with. The disk saying it exists
+        // with no folder shown at that exact path can be a shown folder
+        // spelled in another case (a case-insensitive filesystem): that is
+        // the clash, so the shown folders are matched in any case.
         let mut leftover = false;
         if self.disk.exists(&to_dir) {
-            if order::exists_in(&self.listed_slugs(), &format!("{new_path}/")) {
+            if shows_folder_ignoring_case(&self.listed_slugs(), &new_path) {
                 return Err(Error::AlreadyExists(name.to_string()));
             }
             if self.tree_holds_files(&to_dir)? {
@@ -1051,8 +1068,8 @@ impl Project {
     /// §5.2: a counted `dd` is one step). Duplicates are dropped. Every
     /// slug is pre-flighted (valid and present) before the first file
     /// moves, the way [`Self::move_all_requests`] does, so a refusal
-    /// deletes nothing. The per-slug deletes nest inside one transaction,
-    /// which they join, so the journal gets one entry.
+    /// deletes nothing. The per-slug deletes share one transaction, so the
+    /// journal gets one entry, and the list is completed once at its top.
     pub fn delete_requests(&mut self, slugs: &[String]) -> Result<(), Error> {
         let mut batch: Vec<String> = Vec::new();
         for s in slugs {
@@ -1067,11 +1084,11 @@ impl Project {
             }
         }
         let meta = self.meta_for_moves(Vec::new());
-        // Each delete completes the list first (D5), the first before any
-        // file moves.
+        // The list is completed once, before any file moves (D5).
         self.transaction("delete requests", meta, |p| {
+            p.complete_order()?;
             for s in &batch {
-                p.delete_request(s)?;
+                p.delete_one(s)?;
             }
             Ok(())
         })
@@ -1083,23 +1100,29 @@ impl Project {
             return Err(Error::NotFound(slug.to_string()));
         }
         let meta = self.meta_for_moves(Vec::new());
-        let slug = slug.to_string();
         self.transaction("delete request", meta, |p| {
             p.complete_order()?;
-            p.fs_trash(&path)?;
-            p.open_requests.shift_remove(&slug);
-            p.relist();
-            if let Some((space, rel)) = Self::split_space(&slug) {
-                p.order_remove(space, rel)?;
-            }
-            Ok(())
+            p.delete_one(slug)
         })
+    }
+
+    /// One delete inside its caller's transaction, the list already
+    /// completed: the file trashed, then its entry and any folder it
+    /// emptied out of the list.
+    fn delete_one(&mut self, slug: &str) -> Result<(), Error> {
+        self.fs_trash(&request_rel(slug)?)?;
+        self.open_requests.shift_remove(slug);
+        self.relist();
+        if let Some((space, rel)) = Self::split_space(slug) {
+            self.order_remove(space, rel)?;
+        }
+        Ok(())
     }
 
     /// `<name> copy`, `<name> copy 2`, … next to its source; a broken
     /// file is byte-copied to `<slug>-copy`.
     pub fn duplicate_request(&mut self, slug: &str) -> Result<String, Error> {
-        self.duplicate_with(slug, slug, false)
+        self.duplicate_request_at(slug, slug, false)
     }
 
     /// The put entry point (piece 4 spec §5.2: `p`/`P`): a duplicate whose
@@ -1117,7 +1140,12 @@ impl Project {
         anchor: &str,
         above: bool,
     ) -> Result<String, Error> {
-        self.duplicate_with(slug, anchor, above)
+        self.duplicate_source(slug)?;
+        let meta = self.meta_for_moves(Vec::new());
+        self.transaction("duplicate request", meta, |p| {
+            p.complete_order()?;
+            p.duplicate_one(slug, anchor, above)
+        })
     }
 
     /// A counted put (`{N}p`): `count` copies as one undo entry, the way
@@ -1132,24 +1160,35 @@ impl Project {
         above: bool,
         count: usize,
     ) -> Result<Vec<String>, Error> {
+        self.duplicate_source(slug)?;
         let meta = self.meta_for_moves(Vec::new());
-        // Each copy completes the list first (D5), the first before any
-        // file is made.
+        // The list is completed once, before any file is made (D5).
         self.transaction("duplicate requests", meta, |p| {
+            p.complete_order()?;
             let mut made: Vec<String> = Vec::new();
             for _ in 0..count.max(1) {
                 let at = match made.last() {
                     Some(prev) if !above => prev.clone(),
                     _ => anchor.to_string(),
                 };
-                made.push(p.duplicate_request_at(slug, &at, above)?);
+                made.push(p.duplicate_one(slug, &at, above)?);
             }
             Ok(made)
         })
     }
 
-    /// The shared body.
-    fn duplicate_with(&mut self, slug: &str, anchor: &str, above: bool) -> Result<String, Error> {
+    /// Refuses a duplicate whose source is not a request file, before
+    /// anything is written.
+    fn duplicate_source(&self, slug: &str) -> Result<(), Error> {
+        if !self.disk.is_file(&request_rel(slug)?) {
+            return Err(Error::NotFound(slug.to_string()));
+        }
+        Ok(())
+    }
+
+    /// The body a single duplicate and a counted put share: one copy,
+    /// inside its caller's transaction, the list already completed.
+    fn duplicate_one(&mut self, slug: &str, anchor: &str, above: bool) -> Result<String, Error> {
         let source = request_rel(slug)?;
         let bytes =
             self.disk.read_bytes(&source)?.ok_or_else(|| Error::NotFound(slug.to_string()))?;
@@ -1189,34 +1228,28 @@ impl Project {
                 (new_slug, bytes)
             }
         };
-        let meta = self.meta_for_moves(Vec::new());
-        let anchor = anchor.to_string();
-        self.transaction("duplicate request", meta, |p| {
-            p.complete_order()?;
-            let path = request_rel(&new_slug)?;
-            p.disk.write_new(&path, "")?;
-            p.record(Op::Created { path: path.clone() });
-            p.disk.write_bytes(&path, &text)?;
-            p.relist();
-            // The anchor is listed (every list names every item, spec
-            // 2026-11-02 drag into folders D5), so the copy goes beside it;
-            // an anchor in another space has no place here, and the copy
-            // arrives (D4).
-            match (Self::split_space(&anchor), Self::split_space(&new_slug)) {
-                (Some((a_space, a_rel)), Some((space, rel))) if a_space == space => {
-                    if above {
-                        p.order_insert_before(space, a_rel, rel)?;
-                    } else {
-                        p.order_insert_after(space, a_rel, rel)?;
-                    }
+        let path = request_rel(&new_slug)?;
+        self.disk.write_new(&path, "")?;
+        self.record(Op::Created { path: path.clone() });
+        self.disk.write_bytes(&path, &text)?;
+        self.relist();
+        // The anchor is listed (every list names every item, spec
+        // 2026-11-02 drag into folders D5), so the copy goes beside it; an
+        // anchor in another space has no place here, and the copy arrives
+        // (D4).
+        match (Self::split_space(anchor), Self::split_space(&new_slug)) {
+            (Some((a_space, a_rel)), Some((space, rel))) if a_space == space => {
+                if above {
+                    self.order_insert_before(space, a_rel, rel)?;
+                } else {
+                    self.order_insert_after(space, a_rel, rel)?;
                 }
-                (_, Some((space, rel))) => {
-                    p.order_arrive(space, rel, &[])?;
-                }
-                _ => {}
             }
-            Ok(())
-        })?;
+            (_, Some((space, rel))) => {
+                self.order_arrive(space, rel, &[])?;
+            }
+            _ => {}
+        }
         Ok(new_slug)
     }
 }
@@ -2595,10 +2628,15 @@ mod tests {
         assert!(main_order(&p).is_empty());
     }
 
-    /// D5: a reorder on a list naming nothing merges into the completed
-    /// list, a drag and a keyboard move alike.
+    /// A reorder on a list naming nothing writes its level as the sidebar
+    /// drew it, unlisted items included, so that level ends complete, a
+    /// drag and a keyboard move alike. It does not complete the rest of
+    /// the list (the folder's inside is left to the refresh write): the
+    /// reorders are the ops that don't (spec 2026-11-02 drag into folders
+    /// §3, `Project`, new round 1; replaces "merges into the completed
+    /// list").
     #[test]
-    fn a_reorder_on_a_list_naming_nothing_completes_it_in_the_same_step() {
+    fn a_reorder_on_a_list_naming_nothing_writes_its_level_as_drawn() {
         let (dir, mut p) = unordered_fixture();
         write(&dir, "requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n");
         p.relist();
@@ -2606,7 +2644,7 @@ mod tests {
         undo_redo_exact(&dir, &mut p, |p| {
             p.set_request_order("main", "", &shown).unwrap();
         });
-        assert_eq!(main_order(&p), ["c", "a", "b", "f/", "f/x"]);
+        assert_eq!(main_order(&p), ["c", "a", "b", "f/"]);
         let (dir, mut p) = unordered_fixture();
         let shown: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
         undo_redo_exact(&dir, &mut p, |p| {
@@ -3014,5 +3052,47 @@ mod tests {
         assert_eq!(read(&dir, "project.toml"), folder_moved);
         assert!(dir.path().join("requests/main/v1/get.toml").is_file());
         assert!(p.held_request("main/v1/get").is_some());
+    }
+
+    /// No order write creates a `project.toml` (spec 2026-11-02 drag into
+    /// folders §3, `Project`): in a bare directory (the TUI opens one when
+    /// the registry's last project lost its `project.toml`) a create, a
+    /// rename into a folder, Move to space and a drop all go through and
+    /// write no list, as `ensure_spaces` keeps it.
+    #[test]
+    fn order_writes_never_make_a_project_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        for slug in ["main/a", "main/b", "main/f/x", "auth/z"] {
+            write(&dir, &format!("requests/{slug}.toml"), "method = \"GET\"\nurl = \"u\"\n");
+        }
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let none = |dir: &tempfile::TempDir| !dir.path().join("project.toml").exists();
+        assert!(none(&dir));
+        let (slug, _) = p.create_request("main/New", req("u")).unwrap();
+        assert!(p.request_exists(&slug));
+        assert!(none(&dir), "a create");
+        let (slug, _) = p.rename_request("main/a", "main/g/A").unwrap();
+        assert!(p.request_exists(&slug));
+        assert!(none(&dir), "a rename into a folder");
+        let slug = p.move_request("main/b", "auth").unwrap();
+        assert!(p.request_exists(&slug));
+        assert!(none(&dir), "Move to space");
+        let (slug, _) = p.move_to_level(&req_item("main/new"), "f", 0).unwrap();
+        assert!(p.request_exists(&slug));
+        assert!(none(&dir), "a drop");
+    }
+
+    /// D18 on a case-insensitive filesystem (macOS): once the disk says the
+    /// destination directory exists, a shown folder whose path differs
+    /// only in case is the folder it clashes with.
+    #[test]
+    fn a_shown_folder_matches_its_path_in_any_case() {
+        let slugs: Vec<String> =
+            ["main/Users/login", "main/usersx/a"].iter().map(|s| s.to_string()).collect();
+        assert!(shows_folder_ignoring_case(&slugs, "main/users"));
+        assert!(shows_folder_ignoring_case(&slugs, "main/Users"));
+        assert!(shows_folder_ignoring_case(&slugs, "main/USERSX"));
+        assert!(!shows_folder_ignoring_case(&slugs, "main/user"), "a whole segment only");
+        assert!(!shows_folder_ignoring_case(&slugs, "main/Users/login"), "a request is no folder");
     }
 }

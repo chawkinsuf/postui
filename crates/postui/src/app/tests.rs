@@ -6413,6 +6413,23 @@ fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
     assert!(!app.op_in_flight);
 }
 
+/// alt+↓ whose write fails, and one with no project, clear the op-in-flight
+/// mark themselves, as the drop does, rather than leaning on `dispatch`'s
+/// safety net.
+#[test]
+fn a_keyboard_move_that_fails_leaves_no_op_in_flight() {
+    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    let meta_path = dir.path().join("project.toml");
+    std::fs::write(&meta_path, "spaces = [\n").unwrap();
+    app.move_sidebar_row(RowKey::Request("main/gamma".into()), -1);
+    assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("cannot move request")));
+    assert!(!app.op_in_flight);
+    app.project = None;
+    app.move_sidebar_row(RowKey::Request("main/gamma".into()), -1);
+    assert!(!app.op_in_flight);
+}
+
 #[test]
 fn a_dropped_row_drag_is_its_own_undo_step() {
     let (mut app, dir) = three_row_app();

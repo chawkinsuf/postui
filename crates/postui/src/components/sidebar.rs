@@ -187,12 +187,12 @@ impl DragDraw<'_> {
 
 /// The parts of a row rebuild that are the same at every folder level:
 /// which folders are open, the space being drawn, the order list it is
-/// drawn with, and a live drag's block.
+/// drawn with (indexed once per rebuild), and a live drag's block.
 #[derive(Clone, Copy)]
 struct LevelCtx<'a> {
     expanded: &'a BTreeSet<String>,
     space: &'a str,
-    order: &'a [String],
+    order: &'a postui_core::order::OrderIndex<'a>,
     drag: Option<&'a DragDraw<'a>>,
 }
 
@@ -256,7 +256,8 @@ impl Sidebar {
             .filter(|d| d.space == space)
             .and_then(|d| Self::drag_draw(&entries, d));
         let mut rows = Vec::new();
-        let ctx = LevelCtx { expanded, space, order, drag: drag.as_ref() };
+        let order = postui_core::order::OrderIndex::new(order);
+        let ctx = LevelCtx { expanded, space, order: &order, drag: drag.as_ref() };
         Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
         // The row a closed folder hid is remembered only while it is still
@@ -332,7 +333,8 @@ impl Sidebar {
         let prefix = format!("{space}/");
         let entries: Vec<&RequestListing> =
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
-        let ctx = LevelCtx { expanded, space, order, drag: None };
+        let order = postui_core::order::OrderIndex::new(order);
+        let ctx = LevelCtx { expanded, space, order: &order, drag: None };
         let mut rows = Vec::new();
         Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
