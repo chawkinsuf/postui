@@ -38002,3 +38002,300 @@ fn an_order_that_cannot_be_written_toasts_and_still_draws() {
     );
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/aaa"]);
 }
+
+/// The column over the names of the row at `r`, right of every indent.
+fn names_x(r: ratatui::layout::Rect) -> u16 {
+    r.x + 12
+}
+
+/// D17, D19: a request dropped in a folder moves there: its file keeps
+/// its name, the order gets it where it showed, the cursor is on its new
+/// slug, and the open request stays open with its unsaved edits. One undo
+/// step, named for where it went.
+#[test]
+fn a_request_dropped_in_a_folder_moves_there_and_stays_open() {
+    let (mut app, dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let steps = app.history.undo_len();
+    let r0 = row_rect(&mut app, 0);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), r3.y));
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
+    // Made directly: a press on a dirty open request raises the Unsaved
+    // changes dialog instead of a drag (the spec's known limits, #236).
+    app.editor.url.set_text("https://x/edited");
+    assert!(app.editor.is_dirty());
+    app.handle_mouse(left_up(names_x(r0), r3.y));
+
+    assert!(app.sidebar.drag.is_none());
+    assert!(dir.path().join("requests/main/auth/alpha.toml").is_file(), "the file moved");
+    assert!(!dir.path().join("requests/main/alpha.toml").exists());
+    assert_eq!(saved_order(&dir), ["beta", "auth/", "auth/x", "auth/alpha"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/auth/x", "main/auth/alpha"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Request("main/auth/alpha".into())));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/alpha"), "still open");
+    assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/auth/alpha"));
+    assert_eq!(app.editor.url.text(), "https://x/edited", "the unsaved edit stays");
+    assert!(app.editor.is_dirty());
+    assert!(!app.op_in_flight);
+    assert_eq!(app.history.undo_len(), steps + 1, "one step");
+
+    // Undo the move itself, not the edit made by hand above.
+    app.editor.url.set_text("https://x/1");
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert!(!dir.path().join("requests/main/auth/alpha.toml").exists());
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "auth/", "auth/x"]);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Undid move of alpha to auth"), "{text}");
+    app.update(Action::Redo);
+    assert!(dir.path().join("requests/main/auth/alpha.toml").is_file());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/alpha"));
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Redid move of alpha to auth"), "{text}");
+}
+
+/// `spaced_app` with `auth/` (`x`) and `box/` (`y`), both open: rows
+/// alpha, beta, auth/, x, box/, y.
+fn two_folder_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = spaced_app();
+    for slug in ["main/auth/x", "main/box/y"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/f")).unwrap();
+    }
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.extend(["main/auth".to_string(), "main/box".to_string()]);
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    (app, dir)
+}
+
+/// D17, D19: a folder dropped in another folder moves whole, the open
+/// request inside it following, still open and unsaved; the folder stays
+/// open and the cursor is on it. Undo names it.
+#[test]
+fn a_folder_dropped_in_a_folder_carries_the_open_request() {
+    let (mut app, dir) = two_folder_app();
+    app.update(Action::ForceOpenRequest("main/auth/x".into()));
+    app.editor.url.set_text("https://x/edited");
+    let auth = folder_rect(&mut app, "main/auth");
+    let boxed = folder_rect(&mut app, "main/box");
+    app.handle_mouse(left_down(names_x(auth), auth.y));
+    app.handle_mouse(moved(names_x(auth), boxed.y)); // an open folder: first inside
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("box".to_string(), 0));
+    app.handle_mouse(left_up(names_x(auth), boxed.y));
+
+    assert!(dir.path().join("requests/main/box/auth/x.toml").is_file(), "the directory moved");
+    assert!(!dir.path().join("requests/main/auth").exists());
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "box/"]);
+    assert_eq!(level_order(&dir, "box"), ["box/auth/", "box/y"]);
+    assert_eq!(level_order(&dir, "box/auth"), ["box/auth/x"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/box/auth".into())));
+    assert!(app.expanded().contains("main/box/auth"), "it stays open");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/box/auth/x", "main/box/y"]);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/box/auth/x"), "still open");
+    assert_eq!(app.editor.url.text(), "https://x/edited", "the unsaved edit stays");
+
+    app.editor.url.set_text("https://x/f");
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/auth/x.toml").is_file());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/x"));
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Undid move of folder auth to box"), "{text}");
+}
+
+/// D17, D19: to the top level, the toast says so.
+#[test]
+fn a_folder_dropped_at_the_top_level_names_it() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/users/v1/get", &req("https://x/g"))
+        .unwrap();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/users".to_string());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    // rows: alpha, beta, users/, v1/
+    let v1 = folder_rect(&mut app, "main/users/v1");
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(names_x(v1), v1.y));
+    app.handle_mouse(moved(names_x(v1), r0.y));
+    app.handle_mouse(left_up(names_x(v1), r0.y));
+    assert!(dir.path().join("requests/main/v1/get.toml").is_file());
+    assert_eq!(level_order(&dir, ""), ["v1/", "alpha", "beta"], "users/ went with its last item");
+    app.update(Action::Undo);
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Undid move of folder v1 to the top level"), "{text}");
+    assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
+}
+
+/// D9: dragged onto closed `b/` (rows alpha, beta, a/, b/, c/), `alpha`
+/// waits above it with the dwell on `b/`.
+fn dwelling_on_b() -> (App, tempfile::TempDir, ratatui::layout::Rect) {
+    let (mut app, dir) = folder_app();
+    let r0 = row_rect(&mut app, 0);
+    let b = folder_rect(&mut app, "main/b");
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), b.y));
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
+    assert_eq!(app.sidebar.rows[3].key(), RowKey::Folder("main/b".into()), "under the pointer");
+    let dwell = app.sidebar.drag.as_ref().unwrap().dwell.clone();
+    assert_eq!(dwell.map(|(p, _)| p).as_deref(), Some("main/b"));
+    (app, dir, b)
+}
+
+/// Ages the live drag's dwell past the spring delay.
+fn age_the_dwell(app: &mut App) {
+    let dwell = app.sidebar.drag.as_mut().unwrap().dwell.as_mut().expect("a dwell");
+    dwell.1 = std::time::Instant::now()
+        .checked_sub(crate::components::sidebar::SPRING_DWELL)
+        .expect("a clock past the delay");
+}
+
+/// D9, D16: resting 800 ms on a closed folder opens it on the tick, the
+/// block first inside, the folder row shifted up one so the pointer is
+/// on the block; the drop lands it there. The folder stays open.
+#[test]
+fn a_rest_on_a_closed_folder_springs_it_on_the_tick() {
+    let (mut app, dir, b) = dwelling_on_b();
+    app.update(Action::Tick);
+    assert!(!app.expanded().contains("main/b"), "not before the delay");
+    age_the_dwell(&mut app);
+    assert!(app.update(Action::Tick), "a repaint is due");
+    assert!(app.expanded().contains("main/b"), "open, as a user open is");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("b".to_string(), 0));
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().dwell, None);
+    assert_eq!(app.sidebar.rows[2].key(), RowKey::Folder("main/b".into()), "shifted up one");
+    assert_eq!(app.sidebar.rows[3].key(), RowKey::Request("main/alpha".into()), "the block");
+    app.handle_mouse(left_up(names_x(b), b.y));
+    assert!(dir.path().join("requests/main/b/alpha.toml").is_file());
+    assert_eq!(level_order(&dir, "b"), ["b/alpha", "b/y"]);
+    assert!(app.expanded().contains("main/b"), "still open after the drop");
+}
+
+/// D9: motion along the folder's row keeps the dwell's time, and motion
+/// checks the spring too: the tick's sleep restarts with every event.
+#[test]
+fn a_rest_on_a_closed_folder_springs_it_on_motion() {
+    let (mut app, _dir, b) = dwelling_on_b();
+    let since = app.sidebar.drag.as_ref().unwrap().dwell.clone().unwrap().1;
+    app.handle_mouse(moved(names_x(b) + 3, b.y));
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().dwell.clone().unwrap().1, since);
+    assert!(!app.expanded().contains("main/b"));
+    age_the_dwell(&mut app);
+    app.handle_mouse(moved(names_x(b) + 1, b.y));
+    assert!(app.expanded().contains("main/b"));
+    assert_eq!(app.sidebar.rows[3].key(), RowKey::Request("main/alpha".into()));
+}
+
+/// D16: a cancel puts the block back and leaves a sprung folder open.
+#[test]
+fn a_cancel_leaves_a_sprung_folder_open() {
+    let (mut app, dir, _b) = dwelling_on_b();
+    age_the_dwell(&mut app);
+    app.update(Action::Tick);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.expanded().contains("main/b"), "still open");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/b/y"]);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file(), "nothing moved");
+}
+
+/// D16: a space switch cancels the drag, and nothing springs after it.
+#[test]
+fn a_space_switch_mid_dwell_cancels_and_springs_nothing() {
+    let (mut app, _dir, _b) = dwelling_on_b();
+    age_the_dwell(&mut app);
+    app.update(Action::SwitchSpace("auth".into()));
+    assert!(app.sidebar.drag.is_none());
+    app.update(Action::Tick);
+    assert!(!app.expanded().contains("main/b"));
+}
+
+/// D18: a request dropped where its folder already shows one of that name
+/// is refused: a warning names the clash, nothing moves, no step, and the
+/// rows snap back.
+#[test]
+fn a_request_clash_toasts_and_snaps_back() {
+    let (mut app, dir) = spaced_app();
+    let mut named = req("https://x/3");
+    named.name = Some("alpha".into());
+    postui_core::fixtures::save_request(dir.path(), "main/auth/x", &named).unwrap();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/auth".into());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    // rows: alpha, beta, auth/, x (named "alpha")
+    let before = saved_order(&dir);
+    let steps = app.history.undo_len();
+    let r0 = row_rect(&mut app, 0);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), r3.y));
+    app.handle_mouse(left_up(names_x(r0), r3.y));
+    assert!(
+        app.toasts.messages().contains(&"auth already has a request named \"alpha\""),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(dir.path().join("requests/main/alpha.toml").is_file(), "nothing moved");
+    assert_eq!(saved_order(&dir), before);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/auth/x"], "snapped back");
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Request("main/alpha".into())));
+    assert_eq!(app.history.undo_len(), steps);
+    assert!(!app.op_in_flight);
+}
+
+/// D18: a folder dropped where a folder of its name shows is refused.
+#[test]
+fn a_folder_clash_toasts_and_snaps_back() {
+    let (mut app, dir) = spaced_app();
+    for slug in ["main/a/x", "main/box/a/y"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/f")).unwrap();
+    }
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/box".into());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    // rows: alpha, beta, a/, box/, a/ (box's, closed)
+    let a = folder_rect(&mut app, "main/a");
+    let inner = folder_rect(&mut app, "main/box/a");
+    app.handle_mouse(left_down(names_x(a), a.y));
+    app.handle_mouse(moved(names_x(a), inner.y));
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("box".to_string(), 0));
+    app.handle_mouse(left_up(names_x(a), inner.y));
+    assert!(
+        app.toasts.messages().contains(&"box already has a folder named \"a\""),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(dir.path().join("requests/main/a/x.toml").is_file(), "nothing moved");
+    assert_eq!(folder_rows(&app), ["main/a", "main/box", "main/box/a"], "snapped back");
+    assert!(!app.op_in_flight);
+}
+
+/// D13, D14: below the last row the block goes last; above the first row
+/// with the list at its top it goes first. Both drop as reorders (D20).
+#[test]
+fn above_the_first_row_and_below_the_last_reorder_to_the_ends() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(names_x(r2), r2.y));
+    app.handle_mouse(moved(names_x(r2), r1.y));
+    app.handle_mouse(moved(names_x(r2), r0.y - 1));
+    assert_eq!(request_rows(&app), ["main/gamma", "main/alpha", "main/beta"]);
+    app.handle_mouse(left_up(names_x(r2), r0.y - 1));
+    assert_eq!(saved_order(&dir), ["gamma", "alpha", "beta"]);
+
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), r1.y));
+    app.handle_mouse(moved(names_x(r0), r2.y + 3));
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    app.handle_mouse(left_up(names_x(r0), r2.y + 3));
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "gamma"]);
+}

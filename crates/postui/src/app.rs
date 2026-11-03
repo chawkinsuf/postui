@@ -3984,6 +3984,8 @@ impl App {
                     None => false,
                 };
                 let now = Instant::now();
+                // A drag resting on a closed folder springs it open (D9).
+                let sprung = self.spring_sidebar_drag(now);
                 let flag_changed = self.poll_edit_flag(now, false);
                 let tip_changed = self.track_tip_dwells(now);
                 // The testbed's looping motion demos self-drive from here,
@@ -4018,6 +4020,7 @@ impl App {
                     || now_animating
                     || was_animating
                     || edge_scrolled
+                    || sprung
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
@@ -10308,9 +10311,18 @@ impl App {
     /// is the one `Up(Left)` commits on. The list's own edge rows are
     /// inside the pane, so edge auto-scroll is untouched. Motion back onto
     /// a row maps it again as usual.
+    ///
+    /// Below the last row is D13, above the first row with the list at its
+    /// top D14. Every motion also checks the spring (D9): the tick's sleep
+    /// restarts with every event, so a pointer moving along a folder's row
+    /// must not hold it off.
     pub fn sidebar_drag_to(&mut self, x: u16, y: u16) -> bool {
         let changed = if !self.sidebar_drag_inside(x, y) {
             self.sidebar.drag_home()
+        } else if self.sidebar.below_rows(y) {
+            self.sidebar.drag_below(x)
+        } else if self.sidebar.above_rows(y) {
+            self.sidebar.drag_above()
         } else {
             let i = self.sidebar.row_at_y(y);
             self.sidebar.drag_to(i, x)
@@ -10318,7 +10330,33 @@ impl App {
         if changed {
             self.rebuild_sidebar();
         }
-        changed
+        self.spring_sidebar_drag(Instant::now()) || changed
+    }
+
+    /// D9's spring: a closed folder the drag has rested on for
+    /// `SPRING_DWELL` opens, as a user open is (persisted, and left open
+    /// after the drop or a cancel, D16), and the block goes in as its first
+    /// item. Only in the space the drag started in. `true` when it sprang.
+    fn spring_sidebar_drag(&mut self, now: Instant) -> bool {
+        use crate::components::sidebar::SPRING_DWELL;
+        let Some(drag) = self.sidebar.drag.as_ref() else {
+            return false;
+        };
+        let Some((path, since)) = drag.dwell.clone() else {
+            return false;
+        };
+        if drag.space != self.active_space() || now.saturating_duration_since(since) < SPRING_DWELL
+        {
+            return false;
+        }
+        if let Some(p) = self.project.as_mut() {
+            let mut expanded = p.local().expanded.clone();
+            expanded.insert(path.clone());
+            p.set_expanded(expanded);
+        }
+        self.sidebar.drag_into(&path);
+        self.rebuild_sidebar();
+        true
     }
 
     /// Whether `(x, y)` is over the sidebar pane: where a row drag may be
@@ -10408,6 +10446,11 @@ impl App {
         // place names the *old* space's levels — so this is a cancel
         // however the drag ended.
         let commit = commit && drag.space == self.active_space();
+        // A drop in another level moves the block there (D17).
+        if commit && drag.target.0 != drag.origin.0 {
+            self.drop_in_level(drag);
+            return true;
+        }
         let mut reordered = None;
         // A drop in the block's own level is a reorder (D20).
         if commit
@@ -10440,6 +10483,102 @@ impl App {
             );
         }
         true
+    }
+
+    /// A drop in another level than the block's own (spec 2026-11-02 drag
+    /// into folders D17–D19): `Project::move_to_level` moves the request
+    /// or the folder's directory there as one undo step, at the place the
+    /// rows showed. Everything that names a moved request follows it, as
+    /// after a rename; the cursor lands on what was dragged, and a moved
+    /// folder stays open with whatever was open inside it. A refusal (a
+    /// clash, D18) toasts and the rows snap back.
+    fn drop_in_level(&mut self, drag: crate::components::sidebar::RowDrag) {
+        use crate::components::sidebar::Sidebar;
+        use postui_core::project::{Error, TreeItem};
+        let (level, at) = drag.target.clone();
+        let dest = if level.is_empty() {
+            "the top level".to_string()
+        } else {
+            Sidebar::folder_name(&level).to_string()
+        };
+        let what = self.reorder_label(&drag.key);
+        let (item, from, carried, open_inside) = match &drag.key {
+            RowKey::Request(slug) => {
+                (TreeItem::Request(slug.clone()), slug.clone(), vec![slug.clone()], Vec::new())
+            }
+            RowKey::Folder(path) => {
+                let under = format!("{path}/");
+                let carried: Vec<String> = self
+                    .sidebar
+                    .listing()
+                    .iter()
+                    .filter(|l| l.slug.starts_with(&under))
+                    .map(|l| l.slug.clone())
+                    .collect();
+                let open_inside: Vec<String> = self
+                    .expanded()
+                    .into_iter()
+                    .filter(|e| e == path || e.starts_with(&under))
+                    .collect();
+                (TreeItem::Folder(path.clone()), path.clone(), carried, open_inside)
+            }
+        };
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
+            return;
+        };
+        match p.move_to_level(&item, &level, at) {
+            Ok(to) => {
+                // A request's slug or a folder's path: what is under the
+                // old one is under the new one now.
+                for slug in &carried {
+                    self.follow_move(slug, &format!("{to}{}", &slug[from.len()..]));
+                }
+                for open in &open_inside {
+                    self.sidebar.pending_expand.insert(format!("{to}{}", &open[from.len()..]));
+                }
+                let key = match drag.key {
+                    RowKey::Request(_) => RowKey::Request(to),
+                    RowKey::Folder(_) => RowKey::Folder(to),
+                };
+                self.land(Landing { cursor: Some(CursorAim::On(key)), ..Landing::default() });
+                self.record_project_step(t, crate::undo::StepLabel::moved(what, dest));
+            }
+            Err(e) => {
+                self.op_in_flight = false;
+                let noun = match item {
+                    TreeItem::Request(_) => "request",
+                    TreeItem::Folder(_) => "folder",
+                };
+                let msg = match e {
+                    Error::AlreadyExists(name) => {
+                        format!("{dest} already has a {noun} named {name:?}")
+                    }
+                    e => format!("cannot move {what}: {e}"),
+                };
+                self.toasts.push(msg, ToastKind::Warning);
+                self.land(Landing { cursor: Some(CursorAim::On(drag.key)), ..Landing::default() });
+            }
+        }
+    }
+
+    /// The request at `from` now lives at `to` after an op of this app
+    /// (a rename, a drop in another folder): `follow_slug`'s followers,
+    /// and the editor and its shadow when they hold it, re-keyed in place
+    /// without reloading, so unsaved edits stay.
+    fn follow_move(&mut self, from: &str, to: &str) {
+        self.follow_slug(from, to);
+        if self.editor.slug.as_deref() == Some(from) {
+            self.editor.slug = Some(to.to_string());
+            // The body's engine state follows too (amendment C2).
+            self.vim_body_moved(Some(from));
+            if let Some(shadow) = self.shadow.as_mut()
+                && shadow.slug.as_deref() == Some(from)
+            {
+                shadow.slug = Some(to.to_string());
+            }
+        }
     }
 
     /// Pointer motion during a Manage screen list-row drag (Environments or
@@ -11098,13 +11237,19 @@ impl App {
         match p.rename_request(from, to) {
             Ok((slug, leaf)) => {
                 let label = crate::undo::StepLabel::rename(leaf.clone());
-                self.follow_slug(from, &slug);
-                // The editor follows the new slug in place, never
-                // reloading.
-                if self.editor.slug.as_deref() == Some(from) {
-                    self.editor.slug = Some(slug.clone());
-                    // The body's engine state follows too (amendment C2).
-                    self.vim_body_moved(Some(from));
+                let was_open = self.editor.slug.as_deref() == Some(from);
+                let shadowed =
+                    self.shadow.as_ref().is_some_and(|s| s.slug.as_deref() == Some(from));
+                // The editor and its shadow follow the new slug in place,
+                // never reloading. The shadow is re-keyed as the rename's
+                // undo and redo re-key it (`after_replay`): the rename is
+                // the project step, so the next capture must not see the
+                // slug change (it would only re-seed, dropping an edit made
+                // in the same event, as a replace with curl makes). Only the
+                // key moves; what the shadow holds otherwise is untouched,
+                // so no pending edit is swallowed.
+                self.follow_move(from, &slug);
+                if was_open {
                     // The rename wrote the new display name to
                     // disk; mirror it in both the live fields and
                     // the saved snapshot so a rename alone never
@@ -11113,20 +11258,11 @@ impl App {
                     if let Some(saved) = self.editor.saved.as_mut() {
                         saved.name = Some(leaf);
                     }
-                    // The shadow is re-keyed too, name included, as the
-                    // rename's undo and redo re-key it (`after_replay`):
-                    // the rename is the project step, so the next capture
-                    // must see neither the slug change (it would only
-                    // re-seed, dropping an edit made in the same event, as
-                    // a replace with curl makes) nor the name (a rename that
-                    // keeps the slug would record it as an editor edit, and
-                    // undoing that put the old name back over the file's).
-                    // Only the key moves; what the shadow holds otherwise is
-                    // untouched, so no pending edit is swallowed.
-                    if let Some(shadow) = self.shadow.as_mut()
-                        && shadow.slug.as_deref() == Some(from)
-                    {
-                        shadow.slug = Some(slug.clone());
+                    // The shadow takes the name too: a rename that keeps
+                    // the slug would otherwise record it as an editor edit,
+                    // and undoing that put the old name back over the
+                    // file's.
+                    if shadowed && let Some(shadow) = self.shadow.as_mut() {
                         shadow.req.name = self.editor.name.clone();
                     }
                 }
