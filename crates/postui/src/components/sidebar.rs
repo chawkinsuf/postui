@@ -260,11 +260,12 @@ impl Sidebar {
         let ctx = LevelCtx { expanded, space, order: &order, drag: drag.as_ref() };
         Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
-        // The row a closed folder hid is remembered only while it is still
-        // listed: once an outside delete takes it, the folder row's keys
-        // (`h`, `l`, `zo`) act on the folder again.
+        // The row a closed folder hid is remembered only while the space
+        // drawn still lists it: once an outside delete takes it, the folder
+        // row's keys (`h`, `l`, `zo`) act on the folder again, and another
+        // space's rows forget it.
         if let Some((real, _)) = &self.fold_row
-            && !Self::listed(&self.listing, real)
+            && !Self::listed(&entries, real)
         {
             self.fold_row = None;
         }
@@ -550,7 +551,7 @@ impl Sidebar {
 
     /// Whether `key` names a request in `listing`, or a folder holding one
     /// (a folder exists only through the requests under it).
-    fn listed(listing: &[RequestListing], key: &RowKey) -> bool {
+    fn listed(listing: &[&RequestListing], key: &RowKey) -> bool {
         match key {
             RowKey::Request(slug) => listing.iter().any(|l| l.slug == *slug),
             RowKey::Folder(path) => listing.iter().any(|l| {
@@ -3536,6 +3537,21 @@ mod tests {
         assert_eq!(s.fold_cursor(), Some(auth), "still listed through its request: kept");
         s.refresh(listing(&["top", "api/ping", "zeta/z1"]), "main", &open, &[]);
         assert_eq!(s.fold_cursor(), Some(api), "its last request gone: forgotten");
+    }
+
+    /// The hidden row counts only while the space being drawn lists it: a
+    /// switch to another space forgets it, though the listing still holds
+    /// it for `space_counts`. An empty space is the case to check: one with
+    /// rows moves the cursor, which forgets it anyway.
+    #[test]
+    fn a_space_switch_forgets_the_hidden_row() {
+        let pong = RowKey::Request("main/api/pong".into());
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &pong);
+        press(&mut s, &mut open, FoldKey::Z(crate::action::FoldOp::Close, 1));
+        assert_eq!(s.fold_cursor(), Some(pong), "remembered in its own space");
+        let main = listing(&["top", "api/ping", "api/pong", "api/auth/login", "zeta/z1"]);
+        s.refresh(main, "empty", &open, &[]);
+        assert_eq!(s.fold_row, None, "another space's rows: forgotten");
     }
 
     /// One fold probe: the folders open before, the cursor, the keys, the

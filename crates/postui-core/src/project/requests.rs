@@ -488,7 +488,7 @@ impl Project {
         anchor: &str,
         rel: &str,
     ) -> Result<Vec<OrderEdit>, Error> {
-        self.order_insert_beside(space, anchor, rel, 1)
+        self.order_insert_beside(space, anchor, rel, true)
     }
 
     /// `order_insert_after`'s twin for a put *above* the anchor: the new
@@ -499,33 +499,25 @@ impl Project {
         anchor: &str,
         rel: &str,
     ) -> Result<Vec<OrderEdit>, Error> {
-        self.order_insert_beside(space, anchor, rel, 0)
+        self.order_insert_beside(space, anchor, rel, false)
     }
 
-    /// `rel` put `offset` past `anchor`'s index (0 above it, 1 below). An
-    /// entry already naming `rel` (a stale one a partial walk kept, D7)
-    /// goes first, as in [`order::insert_before`], so the copy lands beside
-    /// its anchor (D4), never in the old entry's slot.
+    /// `rel` put right above or `below` `anchor`, by
+    /// [`order::insert_beside`] (an entry already naming `rel`, a stale one
+    /// a partial walk kept (D7), goes first, so the copy lands beside its
+    /// anchor, D4). An anchor the list doesn't name writes nothing.
     fn order_insert_beside(
         &mut self,
         space: &str,
         anchor: &str,
         rel: &str,
-        offset: usize,
+        below: bool,
     ) -> Result<Vec<OrderEdit>, Error> {
         self.order_edit(space, |order| {
             if !order.iter().any(|e| e == anchor) {
                 return Vec::new();
             }
-            let mut edits = order::remove(space, order, rel);
-            let Some(i) = order.iter().position(|e| e == anchor) else { return edits };
-            order.insert(i + offset, rel.to_string());
-            edits.push(OrderEdit::Inserted {
-                space: space.to_string(),
-                rel: rel.to_string(),
-                at: i + offset,
-            });
-            edits
+            order::insert_beside(space, order, rel, Some(anchor), below)
         })
     }
 
@@ -586,7 +578,11 @@ impl Project {
             .filter(|space| space_rel(space).is_ok_and(|dir| self.disk.is_dir(&dir)))
             .cloned()
             .collect();
-        let text = self.disk.peek(&path)?.unwrap_or_default();
+        // A file removed since the `is_file` check is no project.toml: an
+        // empty document here would lead `edit_project_toml` to make one.
+        let Some(text) = self.disk.peek(&path)? else {
+            return Ok(false);
+        };
         // A `project.toml` that doesn't parse is never overwritten, and
         // completing an order is never the reason an op fails: the op goes
         // on as it would have, and fails at its own order write if it has
@@ -630,6 +626,13 @@ impl Project {
     /// is. The op's own order writes, if any, report their failures, and
     /// the refresh after it toasts this one (spec 2026-11-02 drag into
     /// folders §3, `Project`).
+    ///
+    /// Each op calls it at the top of its own transaction, not from
+    /// [`Self::order_edit`] or `transaction` (D5): it must run before the
+    /// op's file change, since a same-level rename needs the old name
+    /// still listed to complete the list where it drew, and `order_edit`
+    /// runs after that change; `transaction` is shared by ops that never
+    /// touch an order (variables, environments).
     fn complete_order_for_op(&mut self) {
         let _ = self.complete_order();
     }
@@ -892,6 +895,16 @@ impl Project {
             return Err(Error::NotFound(full.to_string()));
         };
         let (space, rel) = (space.to_string(), rel.to_string());
+        // `at` indexes the rows the sidebar drew from the listing as it
+        // stands, so the anchor is read from that listing, before the
+        // relist below: one removed outside above the slot since would
+        // otherwise shift it. It is an entry string, so it holds through
+        // the relist; if its item has gone, the op's completion drops its
+        // entry (D7) and the drop lands last.
+        let anchor = self.level_entries(&space, level).into_iter().nth(at);
+        // The checks read the disk as it is now: a request added outside
+        // since the last relist can clash (D18).
+        self.relist();
         let listed = self.listed_slugs();
         let present = if is_folder {
             folder_rel(full)?;
@@ -911,7 +924,6 @@ impl Project {
         if !level.is_empty() && !order::exists_in(&listed, &format!("{space}/{level}/")) {
             return Err(Error::NotFound(format!("{space}/{level}")));
         }
-        let anchor = self.level_entries(&space, level).into_iter().nth(at);
         let dest = if level.is_empty() { space.clone() } else { format!("{space}/{level}") };
         if is_folder {
             self.move_folder_to(full, &space, &rel, &dest, anchor)
@@ -1014,6 +1026,11 @@ impl Project {
             let entry = order::folder_entry(&new_rel);
             // The edit list stays empty: no caller of `order_edit` reads it.
             p.order_edit(space, |order| {
+                // Nothing was on disk at the new path (D18 refused it), so
+                // an entry already under it (one a partial walk kept, D7)
+                // names nothing; left in, it would take the moved
+                // contents' first slot.
+                order.retain(|e| !e.starts_with(&entry));
                 order::rename_prefix(order, rel, &new_rel);
                 order::insert_before(space, order, &entry, anchor.as_deref());
                 order::prune_folders(space, order, rel, &|s| order::exists_in(&slugs, s));
@@ -3111,6 +3128,82 @@ mod tests {
         assert!(dir.path().join("requests/main/x/users/b.toml").is_file());
         assert_eq!(read(&dir, "project.toml"), before);
         assert_eq!(p.journal_len(), 0);
+    }
+
+    /// D18 against the disk as it is: a request of the clashing name
+    /// written outside since the last relist still refuses the drop.
+    #[test]
+    fn a_request_move_onto_a_name_written_since_the_last_relist_is_refused() {
+        let (dir, mut p) = tree_fixture();
+        write(
+            &dir,
+            "requests/main/users/hc.toml",
+            "name = \"HEALTH\"\nmethod = \"GET\"\nurl = \"u\"\n",
+        );
+        let r = p.move_to_level(&req_item("main/health"), "users", 0);
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "Health"), "{r:?}");
+        assert!(dir.path().join("requests/main/health.toml").is_file());
+        assert!(!dir.path().join("requests/main/users/health.toml").exists());
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// D17: `at` counts the rows as the sidebar drew them, from the
+    /// listing before the move relists, so a request removed outside
+    /// above the slot doesn't shift the drop.
+    #[test]
+    fn a_drop_slot_counts_the_rows_as_drawn_before_an_outside_removal() {
+        let (dir, mut p) = tree_fixture();
+        std::fs::remove_file(dir.path().join("requests/main/health.toml")).unwrap();
+        // The top level as drawn: users/, health, orders/; slot 2 is
+        // above orders/.
+        let (new, _) = p.move_to_level(&req_item("main/users/login"), "", 2).unwrap();
+        assert_eq!(new, "main/login");
+        assert_eq!(
+            main_order(&p),
+            [
+                "users/",
+                "users/v1/",
+                "users/v1/list",
+                "users/v1/get",
+                "login",
+                "orders/",
+                "orders/new"
+            ]
+        );
+    }
+
+    /// D17 over D7: entries already under a moved folder's new path (a
+    /// partial walk kept them) name nothing, since D18 refused anything of
+    /// that name on disk, so they go: the moved contents keep their own
+    /// order and appear once.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_move_drops_stale_entries_under_its_new_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = tree_fixture();
+        write(
+            &dir,
+            "project.toml",
+            "spaces = [\"main\"]\n\n[space.main]\norder = [\"v1/get\", \"users/\", \"users/login\", \"users/v1/\", \"users/v1/list\", \"users/v1/get\", \"health\", \"v1/\", \"orders/\", \"orders/new\"]\n",
+        );
+        let orders = dir.path().join("requests/main/orders");
+        std::fs::set_permissions(&orders, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
+        std::fs::set_permissions(&orders, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(r.unwrap().0, "main/v1");
+        assert_eq!(
+            main_order(&p),
+            [
+                "v1/",
+                "users/",
+                "users/login",
+                "v1/list",
+                "v1/get",
+                "health",
+                "orders/",
+                "orders/new"
+            ]
+        );
     }
 
     /// D2: a folder can't go inside itself or one of its own folders.

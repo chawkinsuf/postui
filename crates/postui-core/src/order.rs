@@ -246,8 +246,23 @@ pub(crate) fn insert_before(
     entry: &str,
     anchor: Option<&str>,
 ) -> Vec<OrderEdit> {
+    insert_beside(space, order, entry, anchor, false)
+}
+
+/// [`insert_before`], or right below `anchor` when `below` (a put below
+/// its anchor, D4): an entry already naming `entry` goes first, so it
+/// lands beside the anchor, never in the old entry's slot.
+pub(crate) fn insert_beside(
+    space: &str,
+    order: &mut Vec<String>,
+    entry: &str,
+    anchor: Option<&str>,
+    below: bool,
+) -> Vec<OrderEdit> {
     let mut edits = remove(space, order, entry);
-    let at = anchor.and_then(|a| order.iter().position(|e| e == a)).unwrap_or(order.len());
+    let at = anchor
+        .and_then(|a| order.iter().position(|e| e == a))
+        .map_or(order.len(), |i| i + usize::from(below));
     order.insert(at, entry.to_string());
     edits.push(OrderEdit::Inserted { space: space.to_string(), rel: entry.to_string(), at });
     edits
