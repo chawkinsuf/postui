@@ -10207,12 +10207,11 @@ impl App {
             self.snap_sidebar_travel();
             return;
         };
-        p.relist();
-        // Every list names every item (spec 2026-11-02 drag into folders
-        // D5, D5a): what a list misses is written in where it draws, so
-        // the rows are the same whether or not the write lands. The write
-        // goes through `Disk`, which re-stamps `project.toml`, so the next
-        // poll does not see it as an outside change. Not an undo step.
+        // Re-lists, then writes in what a list misses where it draws (spec
+        // 2026-11-02 drag into folders D5a), so the rows are the same
+        // whether or not the write lands. The write goes through `Disk`,
+        // which re-stamps `project.toml`, so the next poll does not see it
+        // as an outside change. Not an undo step.
         let order_error = p.complete_order().err().map(|e| e.to_string());
         let listing = p.requests().to_vec();
         let warning = p.listing_warning();
@@ -10515,25 +10514,16 @@ impl App {
             Sidebar::folder_name(&level).to_string()
         };
         let what = self.reorder_label(&drag.key);
-        let (item, from, carried, open_inside) = match &drag.key {
-            RowKey::Request(slug) => {
-                (TreeItem::Request(slug.clone()), slug.clone(), vec![slug.clone()], Vec::new())
-            }
+        let (item, from, open_inside) = match &drag.key {
+            RowKey::Request(slug) => (TreeItem::Request(slug.clone()), slug.clone(), Vec::new()),
             RowKey::Folder(path) => {
                 let under = format!("{path}/");
-                let carried: Vec<String> = self
-                    .sidebar
-                    .listing()
-                    .iter()
-                    .filter(|l| l.slug.starts_with(&under))
-                    .map(|l| l.slug.clone())
-                    .collect();
                 let open_inside: Vec<String> = self
                     .expanded()
                     .into_iter()
                     .filter(|e| e == path || e.starts_with(&under))
                     .collect();
-                (TreeItem::Folder(path.clone()), path.clone(), carried, open_inside)
+                (TreeItem::Folder(path.clone()), path.clone(), open_inside)
             }
         };
         let t = self.begin_op();
@@ -10542,11 +10532,11 @@ impl App {
             return;
         };
         match p.move_to_level(&item, &level, at) {
-            Ok(to) => {
-                // A request's slug or a folder's path: what is under the
-                // old one is under the new one now.
-                for slug in &carried {
-                    self.follow_move(slug, &format!("{to}{}", &slug[from.len()..]));
+            Ok((to, moves)) => {
+                // Every request the move carried, the dragged one or the
+                // folder's.
+                for (old, new) in &moves {
+                    self.follow_move(old, new);
                 }
                 // The new paths open; the old ones stay in the open set on
                 // purpose. Undo moves the folder back to its old path, and

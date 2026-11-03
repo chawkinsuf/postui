@@ -252,7 +252,24 @@ impl Project {
     /// 2026-11-02 D3). A drag: never merges. The journal label is a plain
     /// "reorder": a mixed level's first entry says nothing about what
     /// moved, and the app's undo toast names that itself.
+    ///
+    /// The list is completed first, in the same step (spec 2026-11-02 drag
+    /// into folders D5), and `shown` merged into the completed list.
     pub fn set_request_order(
+        &mut self,
+        space: &str,
+        level: &str,
+        shown: &[String],
+    ) -> Result<Option<ListChange>, Error> {
+        self.transaction("reorder", EntryMeta::default(), |p| {
+            p.complete_order()?;
+            p.write_level(space, level, shown)
+        })
+    }
+
+    /// `space`'s list with `level` rewritten to `shown`
+    /// (`order::merge_level`), written when it changes.
+    fn write_level(
         &mut self,
         space: &str,
         level: &str,
@@ -263,12 +280,9 @@ impl Project {
         if before == after {
             return Ok(None);
         }
-        self.transaction("reorder", EntryMeta::default(), |p| {
-            p.order_edit(space, |order| {
-                *order = after.clone();
-                Vec::new()
-            })
-            .map(|_| ())
+        self.order_edit(space, |order| {
+            *order = after.clone();
+            Vec::new()
         })?;
         Ok(Some(ListChange { before, after }))
     }
@@ -294,24 +308,16 @@ impl Project {
         let mut shown = shown.to_vec();
         let moved = shown.remove(pos);
         shown.insert(target, moved);
-        let before = crate::order::space_order(&self.meta, space).to_vec();
-        let after = crate::order::merge_level(&before, level, &shown);
-        if before == after {
-            return Ok(None);
-        }
         // A folder's key is its path with the slash (`main/auth/`), which
         // no request slug is, so the two kinds' bursts never merge.
         let key =
             MergeKey::RequestOrder { space: space.to_string(), slug: format!("{space}/{rel}") };
         let label = if crate::order::is_folder_entry(rel) { "move folder" } else { "move request" };
+        // Completed first, in the same step (D5), as `set_request_order`.
         self.transaction_merging(label, key, |p| {
-            p.order_edit(space, |order| {
-                *order = after.clone();
-                Vec::new()
-            })
-            .map(|_| ())
-        })?;
-        Ok(Some(ListChange { before, after }))
+            p.complete_order()?;
+            p.write_level(space, level, &shown)
+        })
     }
 }
 
@@ -474,7 +480,10 @@ mod tests {
             )
             .unwrap();
         }
-        p.relist();
+        // From a complete list, as the TUI's refresh leaves it (spec
+        // 2026-11-02 drag into folders D5a): a step that also completes
+        // the list writes `project.toml` twice and stands alone.
+        p.complete_order().unwrap();
         let shown: Vec<String> = ["a", "b", "c", "ping"].iter().map(|s| s.to_string()).collect();
         p.move_request_shown("main", "", &shown, "c", -1).unwrap();
         let shown: Vec<String> = ["a", "c", "b", "ping"].iter().map(|s| s.to_string()).collect();

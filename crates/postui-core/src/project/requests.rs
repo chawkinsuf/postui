@@ -341,6 +341,24 @@ fn arrive_with_folders(
     edits
 }
 
+/// Each of `spaces` whose list in `meta` [`order::complete_order`]
+/// changes, with the completed list.
+fn completed_lists(
+    listing: &[RequestListing],
+    meta: &ProjectMeta,
+    spaces: &[String],
+    drop_dead: bool,
+) -> Vec<(String, Vec<String>)> {
+    spaces
+        .iter()
+        .filter_map(|space| {
+            let before = order::space_order(meta, space);
+            let after = order::complete_order(listing, before, space, drop_dead);
+            (after != before).then(|| (space.clone(), after))
+        })
+        .collect()
+}
+
 impl Project {
     /// Reads `space`'s list from `meta`, hands it to `f`, and writes it
     /// back through `project.toml` only if `f` changed it. Refuses a
@@ -478,46 +496,73 @@ impl Project {
             .collect()
     }
 
-    /// Writes every space's list complete, as it draws (spec 2026-11-02
-    /// drag into folders D5, D5a, D7: [`order::complete_order`]), in one
-    /// write of `project.toml` through `edit_project_toml`. The TUI calls
-    /// it whenever it re-lists, outside any transaction, so it is never an
-    /// undo step. Returns whether it wrote. A read-only project (the CLI)
-    /// writes nothing, and neither does a directory with no
-    /// `project.toml`, which never gains one behind the user's back (see
-    /// [`Self::ensure_spaces`]).
+    /// Re-lists, then writes every space's list complete, as it draws
+    /// (spec 2026-11-02 drag into folders D5, D5a, D7:
+    /// [`order::complete_order`]), in one write of `project.toml` through
+    /// `edit_project_toml`. Returns whether it wrote.
     ///
-    /// Only a listing that is whole is written from: D7 drops the entries
-    /// the listing doesn't name, so a walk that failed part way (an
-    /// unreadable directory, reported as a warning about no one file) or
-    /// a space whose directory is missing would erase their arrangement.
-    /// Those write nothing; the next whole listing completes them.
+    /// Every op that changes an order calls it first inside its own
+    /// transaction, so the write is part of the op's undo step (D5), and
+    /// the op then works on a complete list; the TUI also calls it
+    /// whenever it re-lists, outside any transaction (D5a).
+    ///
+    /// Each list is built from the order in `project.toml` as it is on
+    /// disk, never from `self.meta`, so an outside edit postui hasn't read
+    /// yet (a `git checkout`) is kept (D5a). When the file's lists differ
+    /// from `self.meta`'s, it goes through `edit_project_toml` even with
+    /// nothing to write, so `self.meta` holds the lists the op goes on to
+    /// change. Deciding that peeks at the file rather than reading it: a
+    /// read records the file's stamp, and the next `poll` would then never
+    /// re-read the rest of an outside edit. For the same reason a call
+    /// that did read a file changed outside leaves that `poll` due.
+    ///
+    /// Only a whole listing drops entries naming nothing (D7): after a walk
+    /// that failed part way (an unreadable folder, reported as a warning
+    /// about no one file) what is missing is still added, but every entry
+    /// is kept. A space whose directory is missing is left alone. A
+    /// read-only project (the CLI) writes nothing, and neither does a
+    /// directory with no `project.toml`, which never gains one behind the
+    /// user's back (see [`Self::ensure_spaces`]).
     pub fn complete_order(&mut self) -> Result<bool, Error> {
-        if self.disk.is_read_only() || !self.disk.is_file(&rel(PROJECT_TOML)?) {
+        self.relist();
+        let path = rel(PROJECT_TOML)?;
+        if self.disk.is_read_only() || !self.disk.is_file(&path) {
             return Ok(false);
         }
-        if self.listing_warnings.iter().any(|w| w.file.is_none()) {
-            return Ok(false);
-        }
-        let changed: Vec<(String, Vec<String>)> = self
+        let whole = !self.listing_warnings.iter().any(|w| w.file.is_none());
+        let spaces: Vec<String> = self
             .spaces
             .iter()
             .filter(|space| space_rel(space).is_ok_and(|dir| self.disk.is_dir(&dir)))
-            .filter_map(|space| {
-                let before = order::space_order(&self.meta, space);
-                let after = order::complete_order(&self.listing, before, space);
-                (after != before).then(|| (space.clone(), after))
-            })
+            .cloned()
             .collect();
-        if changed.is_empty() {
+        let text = self.disk.peek(&path)?.unwrap_or_default();
+        let on_disk: ProjectMeta =
+            toml::from_str(&text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+        let unread = spaces
+            .iter()
+            .any(|s| order::space_order(&on_disk, s) != order::space_order(&self.meta, s));
+        if !unread && completed_lists(&self.listing, &on_disk, &spaces, whole).is_empty() {
             return Ok(false);
         }
-        self.edit_project_toml(|doc| {
-            for (space, after) in &changed {
-                order::write_order(doc, space, after);
+        let outside_edit = self.disk.changed(&path);
+        let listing = std::mem::take(&mut self.listing);
+        let mut wrote = false;
+        let result = self.edit_project_toml(|doc| {
+            // A document that doesn't parse is left as it is, and
+            // `edit_project_toml` reports it.
+            let Ok(meta) = toml::from_str::<ProjectMeta>(&doc.to_string()) else { return };
+            for (space, after) in completed_lists(&listing, &meta, &spaces, whole) {
+                order::write_order(doc, &space, &after);
+                wrote = true;
             }
-        })?;
-        Ok(true)
+        });
+        self.listing = listing;
+        result?;
+        if outside_edit {
+            self.force_reload = true;
+        }
+        Ok(wrote)
     }
 
     /// One read-modify-write per space, however many requests moved.
@@ -581,6 +626,7 @@ impl Project {
         req.name = Some(leaf.clone());
         let meta = self.meta_for_moves(Vec::new());
         self.transaction("create request", meta, |p| {
+            p.complete_order()?;
             p.fs_create_file(&request_rel(&slug)?, &req.to_toml_string())?;
             p.relist();
             if let Some((space, rel)) = Self::split_space(&slug) {
@@ -660,6 +706,7 @@ impl Project {
         let meta = self.meta_for_moves(vec![(from_slug.to_string(), to_slug.clone())]);
         let from_slug = from_slug.to_string();
         self.transaction("rename request", meta, |p| {
+            p.complete_order()?;
             if to_slug != from_slug {
                 p.fs_rename(&from_path, &to_path)?;
             }
@@ -720,6 +767,7 @@ impl Project {
         let meta = self.meta_for_moves(vec![(slug.to_string(), new_slug.clone())]);
         let slug = slug.to_string();
         self.transaction("move request", meta, |p| {
+            p.complete_order()?;
             p.fs_rename(&from_path, &to_path)?;
             if let Some(req) = p.open_requests.shift_remove(&slug) {
                 p.open_requests.insert(new_slug.clone(), req);
@@ -737,13 +785,17 @@ impl Project {
     /// A sidebar drop in another folder (spec 2026-11-02 drag into folders
     /// D17–D19): moves `item` into `level` of its own space (relative,
     /// `""` for the top level) as one undo step, and returns its new slug
-    /// (a request) or full path (a folder).
+    /// (a request) or full path (a folder) with the `(old, new)` slug of
+    /// every request it moved.
     ///
     /// `at` is the slot among `level`'s items, both kinds, as they draw
     /// before the move; it is read before anything moves, so a folder the
     /// move is about to empty still counts, as the sidebar drew it (D15).
-    /// The item's entry leaves its old level and lands above the item at
-    /// `at` (last past the end); an emptied folder's entry goes (R9).
+    /// It is read as the item it names, not as an index, so it holds
+    /// after the move completes the list (D5): completion lists every item
+    /// that draws, that one included, without moving any. The item's entry
+    /// leaves its old level and lands above the item at `at` (last past
+    /// the end); an emptied folder's entry goes (R9).
     ///
     /// A request keeps its file name, `-2`, `-3`, … when the folder has it,
     /// and its text. A folder's directory moves whole, every request under
@@ -761,7 +813,7 @@ impl Project {
         item: &TreeItem,
         level: &str,
         at: usize,
-    ) -> Result<String, Error> {
+    ) -> Result<(String, Moves), Error> {
         let (full, is_folder) = match item {
             TreeItem::Request(slug) => (slug.as_str(), false),
             TreeItem::Folder(path) => (path.as_str(), true),
@@ -807,7 +859,7 @@ impl Project {
         rel: &str,
         dest: &str,
         anchor: Option<String>,
-    ) -> Result<String, Error> {
+    ) -> Result<(String, Moves), Error> {
         let leaf = slug.rsplit_once('/').map_or(slug, |(_, leaf)| leaf);
         let new_slug = self.free_slug(&format!("{dest}/{leaf}"), &[]);
         let new_leaf = new_slug.rsplit_once('/').map_or(new_slug.as_str(), |(_, leaf)| leaf);
@@ -822,8 +874,10 @@ impl Project {
         let from_path = request_rel(slug)?;
         let to_path = request_rel(&new_slug)?;
         let new_rel = order::relative(&new_slug, space).unwrap_or(&new_slug).to_string();
-        let meta = self.meta_for_moves(vec![(slug.to_string(), new_slug.clone())]);
+        let moves = vec![(slug.to_string(), new_slug.clone())];
+        let meta = self.meta_for_moves(moves.clone());
         self.transaction("move request to folder", meta, |p| {
+            p.complete_order()?;
             p.fs_rename(&from_path, &to_path)?;
             if let Some(held) = p.open_requests.shift_remove(slug) {
                 p.open_requests.insert(new_slug.clone(), held);
@@ -840,7 +894,7 @@ impl Project {
             })?;
             Ok(())
         })?;
-        Ok(new_slug)
+        Ok((new_slug, moves))
     }
 
     /// [`Self::move_to_level`] for a folder, checked but for D18: the way
@@ -853,7 +907,7 @@ impl Project {
         rel: &str,
         dest: &str,
         anchor: Option<String>,
-    ) -> Result<String, Error> {
+    ) -> Result<(String, Moves), Error> {
         let name = rel.rsplit_once('/').map_or(rel, |(_, name)| name);
         let new_path = format!("{dest}/{name}");
         let from_dir = folder_rel(path)?;
@@ -889,6 +943,7 @@ impl Project {
             .collect();
         let meta = self.meta_for_moves(moves.clone());
         self.transaction("move folder to folder", meta, |p| {
+            p.complete_order()?;
             if leftover {
                 p.fs_trash(&to_dir)?;
             }
@@ -901,22 +956,16 @@ impl Project {
             p.relist();
             let slugs = p.listed_slugs();
             let entry = order::folder_entry(&new_rel);
+            // The edit list stays empty: no caller of `order_edit` reads it.
             p.order_edit(space, |order| {
                 order::rename_prefix(order, rel, &new_rel);
-                let mut edits = vec![OrderEdit::Renamed {
-                    space: space.to_string(),
-                    from: order::folder_entry(rel),
-                    to: entry.clone(),
-                }];
-                edits.extend(order::insert_before(space, order, &entry, anchor.as_deref()));
-                edits.extend(order::prune_folders(space, order, rel, &|s| {
-                    order::exists_in(&slugs, s)
-                }));
-                edits
+                order::insert_before(space, order, &entry, anchor.as_deref());
+                order::prune_folders(space, order, rel, &|s| order::exists_in(&slugs, s));
+                Vec::new()
             })?;
             Ok(())
         })?;
-        Ok(new_path)
+        Ok((new_path, moves))
     }
 
     /// Whether the directory `dir` holds a file at any depth.
@@ -964,6 +1013,10 @@ impl Project {
             reserved.push(target.clone());
             pairs.push((slug.clone(), target));
         }
+        // Moving nothing changes no order, so it writes nothing (D5).
+        if pairs.is_empty() {
+            return Ok((pairs, left_behind));
+        }
         let meta = self.meta_for_moves(pairs.clone());
         let rel_pairs: Vec<(String, String)> = pairs
             .iter()
@@ -975,6 +1028,7 @@ impl Project {
             })
             .collect();
         self.transaction("move all requests", meta, |p| {
+            p.complete_order()?;
             for (f, t) in &pairs {
                 p.fs_rename(&request_rel(f)?, &request_rel(t)?)?;
                 if let Some(req) = p.open_requests.shift_remove(f) {
@@ -1008,6 +1062,8 @@ impl Project {
             }
         }
         let meta = self.meta_for_moves(Vec::new());
+        // Each delete completes the list first (D5), the first before any
+        // file moves.
         self.transaction("delete requests", meta, |p| {
             for s in &batch {
                 p.delete_request(s)?;
@@ -1024,6 +1080,7 @@ impl Project {
         let meta = self.meta_for_moves(Vec::new());
         let slug = slug.to_string();
         self.transaction("delete request", meta, |p| {
+            p.complete_order()?;
             p.fs_trash(&path)?;
             p.open_requests.shift_remove(&slug);
             p.relist();
@@ -1071,6 +1128,8 @@ impl Project {
         count: usize,
     ) -> Result<Vec<String>, Error> {
         let meta = self.meta_for_moves(Vec::new());
+        // Each copy completes the list first (D5), the first before any
+        // file is made.
         self.transaction("duplicate requests", meta, |p| {
             let mut made: Vec<String> = Vec::new();
             for _ in 0..count.max(1) {
@@ -1128,6 +1187,7 @@ impl Project {
         let meta = self.meta_for_moves(Vec::new());
         let anchor = anchor.to_string();
         self.transaction("duplicate request", meta, |p| {
+            p.complete_order()?;
             let path = request_rel(&new_slug)?;
             p.disk.write_new(&path, "")?;
             p.record(Op::Created { path: path.clone() });
@@ -1499,19 +1559,29 @@ mod tests {
         assert_eq!(p.journal_len(), 2);
     }
 
+    /// The copy's file is one `Created` op, its bytes never journaled; the
+    /// rest of the step is `project.toml` (the completion, spec 2026-11-02
+    /// drag into folders D5, and the copy's entry).
     #[test]
     fn duplicate_journals_a_single_created_op_for_the_copy() {
         let (_dir, mut p) = fixture();
         let copy = p.duplicate_request("auth/login").unwrap();
         let e = p.journal.pop_undo().unwrap();
-        assert_eq!(e.ops.len(), 1);
+        let (toml, files): (Vec<&Op>, Vec<&Op>) = e
+            .ops
+            .iter()
+            .partition(|o| matches!(o, Op::Text { path, .. } if path.as_str() == PROJECT_TOML));
+        assert_eq!(files.len(), 1, "{:?}", e.ops);
         assert!(
-            matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml"))
+            matches!(files[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml"))
         );
+        assert_eq!(toml.len(), 2, "{:?}", e.ops);
     }
 
     /// A project whose `main` space holds `slugs` and whose `[space.main]
-    /// order` is `order`; `auth` exists and is empty but listed.
+    /// order` is `order`; `auth` exists and is empty but listed. The lists
+    /// can miss items: every op completes them first (spec 2026-11-02 drag
+    /// into folders D5), writing what they miss in where it drew.
     fn folder_project(order: &[&str], slugs: &[&str]) -> (tempfile::TempDir, Project) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
@@ -1535,7 +1605,8 @@ mod tests {
 
     /// Spec 2026-11-01 reorder folders R9: a folder whose last request
     /// leaves loses its entry, with every ancestor the same op emptied,
-    /// and undo puts the list back byte for byte.
+    /// and undo puts the list back byte for byte. The requests the list
+    /// missed are written in first (2026-11-02 D5).
     #[test]
     fn deleting_a_folders_last_request_drops_its_entry_and_undo_restores_it() {
         let (dir, mut p) = folder_project(
@@ -1544,46 +1615,50 @@ mod tests {
         );
         let before = read(&dir, "project.toml");
         p.delete_request("main/a/c/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "z/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "z/", "b/y", "z/q"]);
         p.undo().unwrap();
         assert_eq!(read(&dir, "project.toml"), before);
     }
 
+    /// D5: the folder keeps its entry, and the list is completed first.
     #[test]
     fn deleting_a_request_whose_folder_keeps_others_leaves_the_entry() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/a/y", "main/b/z"]);
         p.delete_request("main/a/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/z", "a/y"]);
     }
 
     /// Spec 2026-11-02 drag into folders D4: the new folder and the
-    /// request in it land last.
+    /// request in it land last, after the items the completion (D5)
+    /// wrote in.
     #[test]
     fn a_rename_out_of_a_folder_drops_it_and_into_a_new_one_appends_it() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.rename_request("main/a/x", "main/c/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "c/", "c/x"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "b/z", "c/", "c/x"]);
     }
 
     /// A rename that changes level inside a folder leaves that folder where
     /// it was: it never stopped existing, so it is not new. What does
-    /// arrive (the new `sub/`, the request) lands last (D4).
+    /// arrive (the new `sub/`, the request) lands last (D4), after what
+    /// the completion (D5) wrote in.
     #[test]
     fn a_rename_within_a_folder_keeps_the_folders_slot() {
         let (_dir, mut p) = folder_project(&["a/", "b/"], &["main/a/x", "main/b/z"]);
         p.rename_request("main/a/x", "main/a/sub/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "a/sub/", "a/sub/x"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "b/z", "a/sub/", "a/sub/x"]);
         p.rename_request("main/a/sub/x", "main/a/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "a/x"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "b/z", "a/x"]);
     }
 
     /// D4: a create lands last, in a level whatever it lists (replaces
-    /// "a create in an unarranged level writes nothing").
+    /// "a create in an unarranged level writes nothing"); the folder the
+    /// list missed is written in first (D5).
     #[test]
     fn a_create_in_a_new_folder_lands_last() {
         let (_dir, mut p) = folder_project(&["r"], &["main/r", "main/a/x"]);
         p.create_request("main/c/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["r", "c/", "c/new"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["r", "a/", "a/x", "c/", "c/new"]);
     }
 
     /// D4: every new ancestor arrives, outermost first, then the request.
@@ -1591,17 +1666,20 @@ mod tests {
     fn a_create_in_a_new_nested_folder_arrives_every_new_ancestor() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.create_request("main/c/d/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/", "c/d/", "c/d/new"]);
+        assert_eq!(
+            order::space_order(p.meta(), "main"),
+            ["b/", "a/", "b/z", "a/x", "c/", "c/d/", "c/d/new"]
+        );
     }
 
     /// An entry left behind by a folder emptied outside the app never
-    /// hands its slot to a new folder of that name: the arrival removes it
-    /// and appends (D4; `arrive` never lists an entry twice).
+    /// hands its slot to a new folder of that name: the op's completion
+    /// drops it (D5, D7), and the folder arrives last (D4).
     #[test]
     fn a_create_in_a_folder_made_again_drops_its_leftover_entry() {
         let (_dir, mut p) = folder_project(&["c/", "b/", "a/"], &["main/a/x", "main/b/z"]);
         p.create_request("main/c/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/", "c/new"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/z", "a/x", "c/", "c/new"]);
     }
 
     /// D4: the folder keeps its slot; the request lands last in it.
@@ -1609,10 +1687,11 @@ mod tests {
     fn a_create_in_an_existing_folder_keeps_its_slot() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.create_request("main/b/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/new"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/z", "a/x", "b/new"]);
     }
 
-    /// D4: the new folder and the request land last in the other space.
+    /// D4: the new folder and the request land last in the other space,
+    /// after what the completion (D5) wrote in on both sides.
     #[test]
     fn a_move_to_another_space_cascades_folders_on_both_sides() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
@@ -1621,11 +1700,12 @@ mod tests {
             .unwrap();
         p.relist();
         p.move_request("main/a/x", "auth").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/"]);
-        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "a/", "a/x"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "b/z"]);
+        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "x/k", "a/", "a/x"]);
     }
 
-    /// D4, D22: everything arrives last, in the order `main` showed it.
+    /// D4, D22: everything arrives last, in the order `main` showed it,
+    /// after what the completion (D5) wrote in.
     #[test]
     fn move_all_cascades_folders_on_both_sides() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/a/y", "main/b/z"]);
@@ -1635,7 +1715,10 @@ mod tests {
         p.relist();
         p.move_all_requests("main", "auth").unwrap();
         assert!(order::space_order(p.meta(), "main").is_empty());
-        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "b/", "b/z", "a/", "a/x", "a/y"]);
+        assert_eq!(
+            order::space_order(p.meta(), "auth"),
+            ["x/", "x/k", "b/", "b/z", "a/", "a/x", "a/y"]
+        );
     }
 
     /// Spec §5.2: a batch delete is one journal entry, refused whole on a
@@ -2279,27 +2362,252 @@ mod tests {
         assert_eq!(main_order(&p), ["a", "c"]);
     }
 
-    /// D7 drops what the listing doesn't name, so a listing that is not
-    /// whole writes nothing: a walk that failed part way, or a space whose
-    /// directory is missing, would otherwise erase their arrangement.
+    /// D7 (amended 2026-11-03): a walk that failed part way (an unreadable
+    /// folder) still writes in what the list misses, but drops nothing, so
+    /// the unreadable folder and an entry naming nothing keep their places
+    /// (replaces "a listing that is not whole writes nothing"). The next
+    /// whole listing drops the dead entry. A space whose directory is
+    /// missing is left alone.
     #[cfg(unix)]
     #[test]
-    fn complete_order_writes_nothing_from_a_listing_that_is_not_whole() {
+    fn complete_order_from_a_partial_walk_adds_but_drops_nothing() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, mut p) = tree_fixture();
-        let before = read(&dir, "project.toml");
+        let before = main_order(&p);
+        write(&dir, "requests/main/zeta.toml", "method = \"GET\"\nurl = \"u\"\n");
+        std::fs::remove_file(dir.path().join("requests/main/health.toml")).unwrap();
         let users = dir.path().join("requests/main/users");
         std::fs::set_permissions(&users, std::fs::Permissions::from_mode(0o000)).unwrap();
-        p.relist();
         let wrote = p.complete_order();
+        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
         std::fs::set_permissions(&users, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!wrote.unwrap(), "an unreadable folder keeps its entries");
-        assert_eq!(read(&dir, "project.toml"), before);
+        assert!(warned, "the walk failed part way");
+        assert!(wrote.unwrap(), "what is missing is added");
+        let mut added = before.clone();
+        added.push("zeta".to_string());
+        assert_eq!(main_order(&p), added, "every entry is kept");
 
+        assert!(p.complete_order().unwrap(), "a whole listing drops the dead entry");
+        assert!(!main_order(&p).contains(&"health".to_string()));
+        assert!(main_order(&p).contains(&"users/v1/get".to_string()));
+
+        let kept = read(&dir, "project.toml");
         std::fs::rename(dir.path().join("requests/main"), dir.path().join("main-away")).unwrap();
-        p.relist();
         assert!(!p.complete_order().unwrap(), "a missing space keeps its list");
-        assert_eq!(read(&dir, "project.toml"), before);
+        assert_eq!(read(&dir, "project.toml"), kept);
+    }
+
+    /// D5a (amended 2026-11-03): the lists are built from `project.toml` as
+    /// it is on disk, so an outside edit to `order` postui hasn't read yet
+    /// (a `git checkout`) is kept, and the poll that reads the rest of it
+    /// is still due.
+    #[test]
+    fn complete_order_keeps_an_outside_edit_not_yet_read() {
+        let (dir, mut p) = ordered_fixture();
+        write(
+            &dir,
+            "project.toml",
+            "spaces = [\"main\"]\n\n[space.main]\n# reordered\norder = [\"c\", \"a\", \"b\"]\n",
+        );
+        write(&dir, "requests/main/d.toml", "method = \"GET\"\nurl = \"u\"\n");
+        assert!(p.complete_order().unwrap());
+        assert_eq!(main_order(&p), ["c", "a", "b", "d"]);
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains("# reordered"), "{text}");
+        assert!(p.changed_on_disk(), "the poll still re-reads the outside edit");
+    }
+
+    /// Nothing to write and nothing new in the lists: the file is not
+    /// read, so an outside edit elsewhere in it still reaches the poll.
+    #[test]
+    fn complete_order_with_nothing_to_do_leaves_an_outside_edit_to_the_poll() {
+        let (dir, mut p) = ordered_fixture();
+        write(
+            &dir,
+            "project.toml",
+            "spaces = [\"main\"]\n# a comment\n\n[space.main]\norder = [\"a\", \"b\", \"c\"]\n",
+        );
+        assert!(!p.complete_order().unwrap());
+        assert!(p.changed_on_disk());
+    }
+
+    /// Runs `op`, then checks that undo puts `project.toml` back byte for
+    /// byte, completion and all, and that redo writes it again.
+    fn undo_redo_exact(dir: &tempfile::TempDir, p: &mut Project, op: impl FnOnce(&mut Project)) {
+        let before = read(dir, "project.toml");
+        op(p);
+        assert_eq!(p.journal_len(), 1, "one undo step");
+        let after = read(dir, "project.toml");
+        assert_ne!(after, before);
+        p.undo().unwrap().unwrap();
+        assert_eq!(read(dir, "project.toml"), before, "undo restores project.toml");
+        p.redo().unwrap().unwrap();
+        assert_eq!(read(dir, "project.toml"), after, "redo writes it again");
+    }
+
+    /// Spaces `main` (`a`, `b`) and `auth` (`z`), neither with a list.
+    fn two_space_unordered() -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"auth\"]\n").unwrap();
+        for slug in ["main/a", "main/b", "auth/z"] {
+            write(&dir, &format!("requests/{slug}.toml"), "method = \"GET\"\nurl = \"u\"\n");
+        }
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        (dir, p)
+    }
+
+    /// D5: an op on a list naming nothing completes it first, in its own
+    /// undo step, so a create lands last (D4), not first.
+    #[test]
+    fn a_create_on_a_list_naming_nothing_lands_last() {
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.create_request("main/Aaa", req("u")).unwrap();
+        });
+        assert_eq!(main_order(&p), ["a", "b", "c", "aaa"]);
+    }
+
+    /// D5: a file added outside since the last re-list is listed by the
+    /// op's own completion, so a create lands after it.
+    #[test]
+    fn a_create_after_a_file_added_outside_lands_after_it() {
+        let (dir, mut p) = ordered_fixture();
+        write(&dir, "requests/main/zz.toml", "method = \"GET\"\nurl = \"u\"\n");
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.create_request("main/New", req("u")).unwrap();
+        });
+        assert_eq!(main_order(&p), ["a", "b", "c", "zz", "new"]);
+    }
+
+    /// D5a: an op builds on an outside reorder postui hasn't read yet.
+    #[test]
+    fn an_op_keeps_an_outside_reorder_not_yet_read() {
+        let (dir, mut p) = ordered_fixture();
+        write(
+            &dir,
+            "project.toml",
+            "spaces = [\"main\"]\n\n[space.main]\n# reordered\norder = [\"c\", \"a\", \"b\"]\n",
+        );
+        p.create_request("main/New", req("u")).unwrap();
+        assert_eq!(main_order(&p), ["c", "a", "b", "new"]);
+        assert!(p.changed_on_disk(), "the poll still re-reads the outside edit");
+    }
+
+    /// D5: a same-level rename keeps its place on a list naming nothing.
+    #[test]
+    fn a_rename_on_a_list_naming_nothing_keeps_its_place() {
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.rename_request("main/b", "main/Zed").unwrap();
+        });
+        assert_eq!(main_order(&p), ["a", "zed", "c"]);
+    }
+
+    /// D5: a put on a list naming nothing finds its anchor, below or above.
+    #[test]
+    fn a_put_on_a_list_naming_nothing_lands_beside_its_anchor() {
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.duplicate_request_at("main/c", "main/a", false).unwrap();
+        });
+        assert_eq!(main_order(&p), ["a", "c-copy", "b", "c"]);
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.duplicate_request_at("main/c", "main/a", true).unwrap();
+        });
+        assert_eq!(main_order(&p), ["c-copy", "a", "b", "c"]);
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.duplicate_requests_at("main/c", "main/a", false, 2).unwrap();
+        });
+        assert_eq!(main_order(&p), ["a", "c-copy", "c-copy-2", "b", "c"]);
+    }
+
+    /// D5: a delete on a list naming nothing writes the rest complete.
+    #[test]
+    fn a_delete_on_a_list_naming_nothing_completes_it() {
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| p.delete_request("main/b").unwrap());
+        assert_eq!(main_order(&p), ["a", "c"]);
+        let (dir, mut p) = unordered_fixture();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.delete_requests(&["main/a".into(), "main/c".into()]).unwrap()
+        });
+        assert_eq!(main_order(&p), ["b"]);
+    }
+
+    /// D5: a request dropped in a folder on a list naming nothing lands at
+    /// its slot, above the item it was dropped on.
+    #[test]
+    fn a_request_drop_on_a_list_naming_nothing_lands_at_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+        for slug in ["main/users/login", "main/users/x", "main/health"] {
+            write(&dir, &format!("requests/{slug}.toml"), "method = \"GET\"\nurl = \"u\"\n");
+        }
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        // `users`' items before the move: login, x; slot 1 is between.
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.move_to_level(&req_item("main/health"), "users", 1).unwrap();
+        });
+        assert_eq!(main_order(&p), ["users/", "users/login", "users/health", "users/x"]);
+    }
+
+    /// D5: a folder dropped in a folder on a list naming nothing lands at
+    /// its slot too.
+    #[test]
+    fn a_folder_drop_on_a_list_naming_nothing_lands_at_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+        for slug in ["main/users/login", "main/users/x", "main/v1/get"] {
+            write(&dir, &format!("requests/{slug}.toml"), "method = \"GET\"\nurl = \"u\"\n");
+        }
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.move_to_level(&folder_item("main/v1"), "users", 1).unwrap();
+        });
+        assert_eq!(
+            main_order(&p),
+            ["users/", "users/login", "users/v1/", "users/x", "users/v1/get"]
+        );
+    }
+
+    /// D5, D4: Move to space and Move all land last in a list naming
+    /// nothing.
+    #[test]
+    fn moves_to_a_space_naming_nothing_land_last() {
+        let (dir, mut p) = two_space_unordered();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.move_request("main/a", "auth").unwrap();
+        });
+        assert_eq!(order::space_order(p.meta(), "auth"), ["z", "a"]);
+        assert_eq!(main_order(&p), ["b"]);
+        let (dir, mut p) = two_space_unordered();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.move_all_requests("main", "auth").unwrap();
+        });
+        assert_eq!(order::space_order(p.meta(), "auth"), ["z", "a", "b"]);
+        assert!(main_order(&p).is_empty());
+    }
+
+    /// D5: a reorder on a list naming nothing merges into the completed
+    /// list, a drag and a keyboard move alike.
+    #[test]
+    fn a_reorder_on_a_list_naming_nothing_completes_it_in_the_same_step() {
+        let (dir, mut p) = unordered_fixture();
+        write(&dir, "requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n");
+        p.relist();
+        let shown: Vec<String> = ["c", "a", "b", "f/"].iter().map(|s| s.to_string()).collect();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.set_request_order("main", "", &shown).unwrap();
+        });
+        assert_eq!(main_order(&p), ["c", "a", "b", "f/", "f/x"]);
+        let (dir, mut p) = unordered_fixture();
+        let shown: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        undo_redo_exact(&dir, &mut p, |p| {
+            p.move_request_shown("main", "", &shown, "c", -1).unwrap();
+        });
+        assert_eq!(main_order(&p), ["a", "c", "b"]);
     }
 
     /// D5a: the CLI never writes it.
@@ -2346,8 +2654,9 @@ mod tests {
         let (dir, mut p) = tree_fixture();
         let text = read(&dir, "requests/main/health.toml");
         // `users`' items before the move: login, v1/; slot 1 is between.
-        let new = p.move_to_level(&req_item("main/health"), "users", 1).unwrap();
+        let (new, moves) = p.move_to_level(&req_item("main/health"), "users", 1).unwrap();
         assert_eq!(new, "main/users/health");
+        assert_eq!(moves, [("main/health".to_string(), new.clone())], "the move it made");
         assert!(!dir.path().join("requests/main/health.toml").exists());
         assert_eq!(read(&dir, "requests/main/users/health.toml"), text, "the text is untouched");
         assert_eq!(
@@ -2369,10 +2678,10 @@ mod tests {
     #[test]
     fn a_request_moves_to_the_top_level_first_or_last() {
         let (_dir, mut p) = tree_fixture();
-        let new = p.move_to_level(&req_item("main/users/v1/get"), "", 0).unwrap();
+        let (new, _) = p.move_to_level(&req_item("main/users/v1/get"), "", 0).unwrap();
         assert_eq!(new, "main/get");
         // The top level now: get, users/, health, orders/; 4 is the end.
-        let new = p.move_to_level(&req_item("main/users/login"), "", 4).unwrap();
+        let (new, _) = p.move_to_level(&req_item("main/users/login"), "", 4).unwrap();
         assert_eq!(new, "main/login");
         assert_eq!(
             main_order(&p),
@@ -2399,7 +2708,7 @@ mod tests {
         p.complete_order().unwrap();
         // The top level before: users/, health, orders/, zeta; slot 3 is
         // below orders/, above zeta.
-        let new = p.move_to_level(&req_item("main/orders/new"), "", 3).unwrap();
+        let (new, _) = p.move_to_level(&req_item("main/orders/new"), "", 3).unwrap();
         assert_eq!(new, "main/new");
         assert_eq!(
             main_order(&p),
@@ -2428,7 +2737,7 @@ mod tests {
         p.relist();
         p.complete_order().unwrap();
         let text = read(&dir, "requests/main/users/v1/get.toml");
-        let new = p.move_to_level(&req_item("main/users/v1/get"), "users", 0).unwrap();
+        let (new, _) = p.move_to_level(&req_item("main/users/v1/get"), "users", 0).unwrap();
         assert_eq!(new, "main/users/get-2");
         assert_eq!(read(&dir, "requests/main/users/get-2.toml"), text);
         assert_eq!(main_order(&p)[..3], ["users/", "users/get-2", "users/login"]);
@@ -2485,7 +2794,7 @@ mod tests {
         write(&dir, "requests/main/slashy.toml", "name = \"a/b\"\nmethod = \"GET\"\nurl = \"u\"\n");
         p.relist();
         p.complete_order().unwrap();
-        let new = p.move_to_level(&req_item("main/slashy"), "users", 0).unwrap();
+        let (new, _) = p.move_to_level(&req_item("main/slashy"), "users", 0).unwrap();
         assert_eq!(new, "main/users/slashy");
         assert!(dir.path().join("requests/main/users/slashy.toml").is_file());
         assert!(!dir.path().join("requests/main/users/a").exists());
@@ -2519,7 +2828,7 @@ mod tests {
     fn a_folder_moves_into_another_folder_with_its_contents() {
         let (dir, mut p) = tree_fixture();
         let text = read(&dir, "requests/main/orders/new.toml");
-        let new = p.move_to_level(&folder_item("main/orders"), "users", 0).unwrap();
+        let (new, _) = p.move_to_level(&folder_item("main/orders"), "users", 0).unwrap();
         assert_eq!(new, "main/users/orders");
         assert_eq!(read(&dir, "requests/main/users/orders/new.toml"), text);
         assert!(!dir.path().join("requests/main/orders").exists());
@@ -2547,8 +2856,17 @@ mod tests {
         p.open_request("main/users/v1/get").unwrap();
         // The top level before: users/, health, orders/; slot 2 is above
         // orders/.
-        let new = p.move_to_level(&folder_item("main/users/v1"), "", 2).unwrap();
+        let (new, mut moves) = p.move_to_level(&folder_item("main/users/v1"), "", 2).unwrap();
         assert_eq!(new, "main/v1");
+        moves.sort();
+        assert_eq!(
+            moves,
+            [
+                ("main/users/v1/get".to_string(), "main/v1/get".to_string()),
+                ("main/users/v1/list".to_string(), "main/v1/list".to_string()),
+            ],
+            "every request it carried"
+        );
         assert!(dir.path().join("requests/main/v1/get.toml").is_file());
         assert!(!dir.path().join("requests/main/users/v1").exists());
         assert_eq!(
@@ -2621,7 +2939,7 @@ mod tests {
     fn a_folder_move_onto_a_leftover_empty_directory_trashes_it() {
         let (dir, mut p) = tree_fixture();
         std::fs::create_dir_all(dir.path().join("requests/main/v1/sub")).unwrap();
-        let new = p.move_to_level(&folder_item("main/users/v1"), "", 0).unwrap();
+        let (new, _) = p.move_to_level(&folder_item("main/users/v1"), "", 0).unwrap();
         assert_eq!(new, "main/v1");
         assert!(dir.path().join("requests/main/v1/get.toml").is_file());
         p.undo().unwrap().unwrap();

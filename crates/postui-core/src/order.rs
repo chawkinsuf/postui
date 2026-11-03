@@ -6,13 +6,14 @@
 //! means anything, and a level mixes both kinds in list order (spec
 //! 2026-11-02 drag into folders D3).
 //!
-//! Every list names every request and folder of its space (D5): the TUI
-//! writes in what a list misses through [`complete_order`], where it
-//! draws (D6), and drops entries naming nothing (D7). So an op never
-//! seeds a level before changing it: an arrival appends ([`arrive`]), a
-//! departure removes, a rename renames in place. A list read before it
-//! was completed (a project from 0.3.0, a file added outside postui)
-//! still draws by [`order_entries`]' rule.
+//! Every list names every request and folder of its space (D5): every op
+//! that changes a list first writes in what it misses through
+//! [`complete_order`], where it draws (D6), dropping entries naming
+//! nothing when the listing is whole (D7), and the TUI does the same when
+//! it re-lists (D5a). So an op never seeds a level before changing it: an
+//! arrival appends ([`arrive`]), a departure removes, a rename renames in
+//! place. A list read before it was completed (a project from 0.3.0, a
+//! file added outside postui) still draws by [`order_entries`]' rule.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -336,15 +337,27 @@ pub fn displayed_slugs(listing: &[RequestListing], order: &[String], space: &str
     out
 }
 
-/// `space`'s list as it draws (D5, D6): the entries `order` already holds
-/// that name something, in place and once each, then every item it
-/// misses in the order it draws, a tree walk through [`order_entries`].
-/// Entries naming nothing drop out (D7). Only the order within a level
-/// means anything, so the result draws exactly as `order` did, and a
-/// complete list comes back unchanged.
-pub fn complete_order(listing: &[RequestListing], order: &[String], space: &str) -> Vec<String> {
+/// `space`'s list as it draws (D5, D6): the entries `order` already holds,
+/// in place, then every item it misses in the order it draws, a tree walk
+/// through [`order_entries`]. With `drop_dead` (the listing is whole),
+/// entries naming nothing drop out and each entry is kept once (D7);
+/// without it (a walk that failed part way) every entry `order` holds is
+/// kept as it is, so an unreadable folder keeps its arrangement. Only the
+/// order within a level means anything, so the result draws exactly as
+/// `order` did, and a complete list comes back unchanged.
+pub fn complete_order(
+    listing: &[RequestListing],
+    order: &[String],
+    space: &str,
+    drop_dead: bool,
+) -> Vec<String> {
     let mut drawn: Vec<String> = Vec::new();
     walk_space(listing, order, space, &mut |item| drawn.extend(item.entry(space)));
+    if !drop_dead {
+        let held: HashSet<&str> = order.iter().map(String::as_str).collect();
+        let missing = drawn.iter().filter(|e| !held.contains(e.as_str())).cloned();
+        return order.iter().cloned().chain(missing).collect();
+    }
     let named: HashSet<&str> = drawn.iter().map(String::as_str).collect();
     let mut seen: HashSet<&str> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
@@ -670,7 +683,10 @@ mod tests {
             entry("main/y/p", None),
             entry("other/o", None),
         ];
-        assert_eq!(complete_order(&listing, &[], "main"), v(&["a", "b", "y/", "y/p", "z/", "z/q"]));
+        assert_eq!(
+            complete_order(&listing, &[], "main", true),
+            v(&["a", "b", "y/", "y/p", "z/", "z/q"])
+        );
     }
 
     /// D5, D6: what a list misses is written after what it names, where it
@@ -685,7 +701,7 @@ mod tests {
             entry("main/f/y", None),
         ];
         let order = v(&["f/y", "c", "f/"]);
-        let out = complete_order(&listing, &order, "main");
+        let out = complete_order(&listing, &order, "main", true);
         assert_eq!(out, v(&["f/y", "c", "f/", "f/x", "a", "b"]));
         // Drawn from the completed list, every level reads as it did.
         assert_eq!(
@@ -704,7 +720,7 @@ mod tests {
             entry("main/a/x", None),
             entry("main/b/y", None),
         ];
-        let out = complete_order(&listing, &v(&["b/", "a/"]), "main");
+        let out = complete_order(&listing, &v(&["b/", "a/"]), "main", true);
         assert_eq!(out, v(&["b/", "a/", "b/y", "a/x", "r1", "r2"]));
         assert_eq!(
             displayed_slugs(&listing, &out, "main"),
@@ -717,7 +733,20 @@ mod tests {
     fn complete_order_drops_entries_naming_nothing() {
         let listing = vec![entry("main/a/x", None), entry("main/r", None)];
         let order = v(&["gone", "a/", "x/", "a/gone", "a/x", "a/x", "r", "", "a//x"]);
-        assert_eq!(complete_order(&listing, &order, "main"), v(&["a/", "a/x", "r"]));
+        assert_eq!(complete_order(&listing, &order, "main", true), v(&["a/", "a/x", "r"]));
+    }
+
+    /// D7: a listing that is not whole drops nothing. Every entry stays as
+    /// it is (one naming nothing listed may sit in an unreadable folder),
+    /// and what the list misses is still written in where it draws.
+    #[test]
+    fn complete_order_from_a_partial_walk_adds_but_drops_nothing() {
+        let listing = vec![entry("main/a/x", None), entry("main/r", None), entry("main/q", None)];
+        let order = v(&["gone/", "gone/y", "r", "r", "a/x"]);
+        assert_eq!(
+            complete_order(&listing, &order, "main", false),
+            v(&["gone/", "gone/y", "r", "r", "a/x", "q", "a/"])
+        );
     }
 
     /// A complete list comes back as it is, whatever its levels'
@@ -726,7 +755,8 @@ mod tests {
     fn complete_order_leaves_a_complete_list_alone() {
         let listing = vec![entry("main/a/x", None), entry("main/r", None), entry("main/s", None)];
         let order = v(&["a/x", "s", "a/", "r"]);
-        assert_eq!(complete_order(&listing, &order, "main"), order);
+        assert_eq!(complete_order(&listing, &order, "main", true), order);
+        assert_eq!(complete_order(&listing, &order, "main", false), order);
     }
 
     #[test]
