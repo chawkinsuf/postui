@@ -5910,6 +5910,13 @@ fn saved_order(dir: &tempfile::TempDir) -> Vec<String> {
     postui_core::order::space_order(&meta, "main").to_vec()
 }
 
+/// `main`'s saved list narrowed to the entries of one level (`""` for
+/// the top), in list order: the app keeps every list complete (spec
+/// 2026-11-02 drag into folders D5), so a level reads in full.
+fn level_order(dir: &tempfile::TempDir, level: &str) -> Vec<String> {
+    saved_order(dir).into_iter().filter(|e| postui_core::order::entry_level(e) == level).collect()
+}
+
 #[test]
 fn a_dropped_folder_drag_writes_folder_entries_and_undoes_onto_the_folder() {
     let (mut app, dir) = folder_app();
@@ -5919,16 +5926,17 @@ fn a_dropped_folder_drag_writes_folder_entries_and_undoes_onto_the_folder() {
     app.handle_mouse(left_down(c.x + 2, c.y));
     app.handle_mouse(moved(c.x + 2, a.y));
     assert_eq!(folder_rows(&app), ["main/c", "main/a", "main/b"], "the rows follow live");
-    assert!(saved_order(&dir).is_empty(), "nothing written before the release");
+    let start = ["alpha", "beta", "a/", "b/", "c/"];
+    assert_eq!(level_order(&dir, ""), start, "nothing written before the release");
     app.handle_mouse(left_up(c.x + 2, a.y));
-    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "c/", "a/", "b/"]);
     assert_eq!(folder_rows(&app), ["main/c", "main/a", "main/b"]);
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
     assert_eq!(app.history.undo_len(), steps + 1);
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "requests stay above");
 
     app.update(Action::Undo);
-    assert!(saved_order(&dir).is_empty());
+    assert_eq!(level_order(&dir, ""), start);
     assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
     assert!(
         rendered_text(&mut app).contains("Undid reorder of folder c"),
@@ -5950,10 +5958,8 @@ fn an_open_folder_drags_with_its_requests() {
     app.handle_mouse(left_down(b.x + 2, b.y));
     app.handle_mouse(moved(b.x + 2, a.y));
     app.handle_mouse(left_up(b.x + 2, a.y));
-    assert_eq!(saved_order(&dir), ["b/", "a/", "c/"]);
-    // A list naming only the level's folders draws them above its
-    // unlisted requests (spec 2026-11-02 drag into folders D6).
-    assert_eq!(request_rows(&app), ["main/a/x", "main/alpha", "main/beta"]);
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "b/", "a/", "c/"]);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/a/x"]);
     let a_row = folder_row(&app, "main/a");
     assert!(
         matches!(&app.sidebar.rows[a_row + 1], Row::Request { slug, .. } if slug == "main/a/x"),
@@ -5984,8 +5990,9 @@ fn a_folder_drag_released_outside_or_cancelled_writes_nothing() {
     let far = app.term_area.map(|t| t.width - 2).unwrap_or(100);
     app.handle_mouse(moved(far, a.y));
     assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"], "outside previews the cancel");
+    let before = saved_order(&dir);
     app.handle_mouse(left_up(far, a.y));
-    assert!(saved_order(&dir).is_empty());
+    assert_eq!(saved_order(&dir), before);
 
     let c = folder_rect(&mut app, "main/c");
     app.handle_mouse(left_down(c.x + 2, c.y));
@@ -5993,7 +6000,7 @@ fn a_folder_drag_released_outside_or_cancelled_writes_nothing() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.sidebar.drag.is_none());
     assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
-    assert!(saved_order(&dir).is_empty());
+    assert_eq!(saved_order(&dir), before);
 }
 
 #[test]
@@ -6004,13 +6011,14 @@ fn a_folder_drag_over_a_request_row_pins_to_the_first_folder_slot() {
     app.handle_mouse(left_down(c.x + 2, c.y));
     app.handle_mouse(moved(c.x + 2, alpha.y));
     app.handle_mouse(left_up(c.x + 2, alpha.y));
-    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "c/", "a/", "b/"]);
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta"]);
 }
 
 #[test]
 fn a_click_on_a_folder_still_selects_and_a_double_click_toggles() {
     let (mut app, dir) = folder_app();
+    let before = saved_order(&dir);
     let a = folder_rect(&mut app, "main/a");
     app.handle_mouse(left_down(a.x + 2, a.y));
     app.handle_mouse(left_up(a.x + 2, a.y));
@@ -6021,7 +6029,7 @@ fn a_click_on_a_folder_still_selects_and_a_double_click_toggles() {
     app.handle_mouse(left_down(a.x + 2, a.y));
     app.handle_mouse(left_up(a.x + 2, a.y));
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/a/x"], "opened");
-    assert!(saved_order(&dir).is_empty());
+    assert_eq!(saved_order(&dir), before);
 }
 
 #[test]
@@ -6033,16 +6041,17 @@ fn quick_keyboard_folder_moves_roll_up_and_keep_the_cursor() {
     let alt_up = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
     app.handle_key(alt_up);
     app.handle_key(alt_up);
-    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    let moved = ["alpha", "beta", "c/", "a/", "b/"];
+    assert_eq!(level_order(&dir, ""), moved);
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
     assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
     app.handle_key(alt_up);
     assert_eq!(app.history.undo_len(), steps + 1, "a no-op move records nothing");
 
     app.update(Action::Undo);
-    assert!(saved_order(&dir).is_empty());
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "a/", "b/", "c/"]);
     app.update(Action::Redo);
-    assert_eq!(saved_order(&dir), ["c/", "a/", "b/"]);
+    assert_eq!(level_order(&dir, ""), moved);
     assert!(
         rendered_text(&mut app).contains("Redid reorder of folder c"),
         "{}",
@@ -6063,7 +6072,7 @@ fn folder_context_menu_offers_move_up_and_down_disabled_at_the_ends() {
     assert_eq!(down, Some(Action::MoveFolder { path: "main/a".into(), delta: 1 }));
     app.modals.pop();
     app.update(down.unwrap());
-    assert_eq!(saved_order(&dir), ["b/", "a/", "c/"]);
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "b/", "a/", "c/"]);
 }
 
 #[test]
@@ -6099,9 +6108,7 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
 
 #[test]
 fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_request() {
-    let (mut app, dir) = slotted_app(&["gamma", "alpha"]);
-    postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
-    app.reload_project_documents();
+    let (mut app, dir) = slotted_app(&["gamma", "alpha", "beta"]);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
@@ -6115,7 +6122,7 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
         assert!(!dir.path().join(format!("requests/auth/{slug}.toml")).exists(), "{slug} gone");
     }
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(postui_core::order::space_order(&meta, "main"), ["gamma", "alpha"]);
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["gamma", "alpha", "beta"]);
     assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
     assert_eq!(
         app.editor.slug.as_deref(),
@@ -6137,9 +6144,10 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
 #[test]
 fn move_all_requests_cascades_the_order_lists() {
     // The app made every one of the source's entries stale, so it clears
-    // them; the arrivals land last in the destination, in the order the
-    // source showed them (spec 2026-11-02 drag into folders D4, D22;
-    // replaces "an unlisted destination stays unlisted").
+    // them; the arrivals land last in the destination, after the entry
+    // the open wrote for its own request, in the order the source showed
+    // them (spec 2026-11-02 drag into folders D4, D5a, D22; replaces "an
+    // unlisted destination stays unlisted").
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::set_level_order(
         dir.path(),
@@ -6155,11 +6163,14 @@ fn move_all_requests_cascades_the_order_lists() {
         postui_core::order::space_order(&meta, "main").is_empty(),
         "no stale entry left in the emptied space"
     );
-    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["beta", "alpha"]);
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login", "beta", "alpha"]);
 }
 
 // --- undo puts the order list back exactly as the undone op found it ---
 
+/// `spaced_app` plus `main/gamma`, `main`'s list set to `order`: every one
+/// of its requests, as the app keeps every list complete (spec 2026-11-02
+/// drag into folders D5).
 fn slotted_app(order: &[&str]) -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
@@ -6168,6 +6179,7 @@ fn slotted_app(order: &[&str]) -> (App, tempfile::TempDir) {
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
+    assert_eq!(saved_order(&dir), order, "a complete list, as given");
     (app, dir)
 }
 
@@ -6198,24 +6210,24 @@ fn undo_of_a_delete_restores_the_order_slot() {
 
 #[test]
 fn undo_of_a_rename_restores_the_order_slot() {
-    let (mut app, dir) = slotted_app(&["beta", "alpha"]);
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
     app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
-    assert_eq!(slot_order(&dir), ["zeta", "alpha"]);
+    assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma"]);
     app.update(Action::Undo);
-    assert_eq!(slot_order(&dir), ["beta", "alpha"]);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
     app.update(Action::Redo);
-    assert_eq!(slot_order(&dir), ["zeta", "alpha"]);
+    assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma"]);
 }
 
 #[test]
 fn undo_of_a_create_drops_its_arrival() {
-    let (mut app, dir) = slotted_app(&["beta", "alpha"]);
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
     app.update(Action::CreateRequest("newest".into()));
-    assert_eq!(slot_order(&dir), ["beta", "alpha", "newest"]);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "newest"]);
     app.update(Action::Undo);
-    assert_eq!(slot_order(&dir), ["beta", "alpha"]);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
     app.update(Action::Redo);
-    assert_eq!(slot_order(&dir), ["beta", "alpha", "newest"]);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "newest"]);
 }
 
 #[test]
@@ -6230,17 +6242,15 @@ fn undo_of_a_duplicate_drops_the_copys_slot() {
 
 #[test]
 fn undo_of_a_move_to_space_restores_both_lists() {
-    let (mut app, dir) = slotted_app(&["beta", "alpha"]);
-    postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
-    app.reload_project_documents();
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
     app.update(Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta"]);
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "gamma"]);
     assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login", "alpha"]);
 
     app.update(Action::Undo);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha"]);
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha", "gamma"]);
     assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
 }
 
@@ -6406,10 +6416,10 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
 
     app.update(Action::Undo);
     app.update(Action::Undo);
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
-        "the level was never listed before the first drag, and is not after its undo"
+    assert_eq!(
+        saved_order(&dir),
+        ["alpha", "beta", "gamma"],
+        "the list as the app wrote it before the first drag (D5a)"
     );
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
@@ -6586,14 +6596,15 @@ fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
     // user's arrangement is silently re-materialised as alphabetical.
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    // A complete list, as the app keeps it (spec 2026-11-02 drag into
+    // folders D5).
     postui_core::fixtures::set_level_order(
         dir.path(),
         "main",
         "",
-        &["gamma".to_string(), "alpha".to_string()],
+        &["gamma".to_string(), "alpha".to_string(), "beta".to_string()],
     )
     .unwrap();
-    postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
@@ -6601,7 +6612,7 @@ fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
         ["login", "gamma", "alpha", "beta"],
-        "listed entries in list order, then the unlisted one"
+        "in the order the source showed them, after what auth held"
     );
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
 }
@@ -6719,7 +6730,8 @@ fn moving_to_another_space_removes_here_and_arrives_last_there() {
     app.update(Action::ForceMoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
     assert_eq!(main_order(&dir), ["alpha"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["beta"]);
+    // auth's list was written complete when the project opened (D5a).
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login", "beta"]);
 }
 
 #[test]
@@ -28129,6 +28141,11 @@ fn request_rows(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// `three_row_app`'s list as the app wrote it when the rows were first
+/// listed (spec 2026-11-02 drag into folders D5a): what "nothing written"
+/// leaves.
+const THREE_ROWS: [&str; 3] = ["alpha", "beta", "gamma"];
+
 fn three_row_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
@@ -28467,8 +28484,7 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
         }
         assert!(app.sidebar.drag.is_none());
         assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
-        let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-        assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
+        assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
         assert!(!app.should_quit, "esc cancelled the drag, not the app");
     }
 }
@@ -28490,16 +28506,14 @@ fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
     assert!(app.sidebar_press.is_none());
     assert!(app.modals.top().is_none(), "no context menu opened");
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
 
     // The button that started the drag is still physically down; its
     // eventual release inside the sidebar must not resurrect the drag
     // or write anything either.
     app.handle_mouse(left_up(r1.x + 2, r1.y));
     assert!(app.sidebar.drag.is_none());
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "still nothing written");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "still nothing written");
 }
 
 #[test]
@@ -28567,8 +28581,7 @@ fn a_left_press_during_a_live_drag_cancels_it() {
 
     app.handle_mouse(left_up(r0.x + 2, r0.y));
     assert!(app.sidebar.drag.is_none());
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
 }
 
 #[test]
@@ -28615,8 +28628,7 @@ fn a_stale_press_never_promotes_over_a_live_thumb_drag() {
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.drag.is_none(), "the release ends the thumb drag");
     assert!(app.sidebar_press.is_none());
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+    assert_eq!(saved_order(&dir), THREE_ROWS);
 }
 
 #[test]
@@ -28708,8 +28720,7 @@ fn losing_terminal_focus_cancels_a_live_drag() {
     assert!(app.sidebar.drag.is_none());
     assert!(app.sidebar_press.is_none());
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+    assert_eq!(saved_order(&dir), THREE_ROWS);
     assert_ne!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
     assert!(!app.on_focus_lost(), "nothing left to cancel");
 
@@ -28779,8 +28790,9 @@ fn a_reload_that_changes_the_tree_cancels_a_live_drag() {
     app.update(Action::ReloadProjectFiles);
     assert!(app.sidebar.drag.is_none());
     assert_eq!(request_rows(&app), ["main/alpha", "main/gamma"]);
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+    // The drag wrote nothing; the reload's own write dropped the entry
+    // that names nothing any more (spec 2026-11-02 drag into folders D7).
+    assert_eq!(saved_order(&dir), ["alpha", "gamma"]);
 }
 
 fn filetime_of(p: &std::path::Path) -> std::time::SystemTime {
@@ -28830,8 +28842,7 @@ fn a_drag_never_leaves_its_sibling_group() {
         "pinned to the group's end"
     );
     app.handle_mouse(left_up(r0.x + 2, r3.y));
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha"]);
+    assert_eq!(level_order(&dir, ""), ["beta", "alpha", "auth/"]);
 }
 
 #[test]
@@ -28842,8 +28853,7 @@ fn press_without_motion_still_just_opens_the_request() {
     app.handle_mouse(moved(r1.x + 4, r1.y)); // same row
     app.handle_mouse(left_up(r1.x + 4, r1.y));
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+    assert_eq!(saved_order(&dir), THREE_ROWS);
 }
 
 #[test]
@@ -28875,8 +28885,7 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
     assert!(app.sidebar.drag.is_none(), "the cancel stays cancelled");
     app.handle_mouse(left_up(r0.x + 2, r1.y));
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
 }
 
 #[test]
@@ -29002,12 +29011,14 @@ fn switching_space_mid_drag_cancels_it_and_writes_nothing() {
     assert_eq!(request_rows(&app), ["auth/login"]);
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        THREE_ROWS,
         "nothing written to the space the drag started in"
     );
-    assert!(
-        postui_core::order::space_order(&meta, "auth").is_empty(),
+    assert_eq!(
+        postui_core::order::space_order(&meta, "auth"),
+        ["login"],
         "and nothing written to the space it landed in"
     );
     app.update(Action::SwitchSpace("main".into()));
@@ -29213,8 +29224,7 @@ fn leaving_the_sidebar_mid_drag_previews_the_cancel() {
     app.handle_mouse(left_up(110, 30));
     assert!(app.sidebar.drag.is_none());
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
-    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
 }
 
 #[test]
@@ -29283,11 +29293,7 @@ fn every_other_key_is_swallowed_during_a_sidebar_drag() {
         assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{ev:?}");
         assert_eq!(app.sidebar.selected_slug(), selected, "{ev:?}");
         assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
-        let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-        assert!(
-            postui_core::order::space_order(&meta, "main").is_empty(),
-            "{ev:?}: nothing written"
-        );
+        assert_eq!(saved_order(&dir), THREE_ROWS, "{ev:?}: nothing written");
     }
 }
 
@@ -37904,4 +37910,58 @@ fn a_modal_over_an_untouched_auto_indent_keeps_it() {
     assert_eq!(app.editor.body.lines.to_string(), "    a\n    ");
     key_and_capture(&mut app, KeyCode::Char('x'));
     assert_eq!(app.editor.body_text(), "    a\n    x", "still on the line, indent in use");
+}
+
+// --- drag into folders (spec 2026-11-02 drag into folders) ---
+
+/// D5a: opening a project writes every space's list complete, as it
+/// draws, once, and not as an undo step; a refresh after that writes
+/// nothing.
+#[test]
+fn refresh_sidebar_completes_the_order_once_and_not_as_a_step() {
+    let (mut app, dir) = spaced_app();
+    assert_eq!(saved_order(&dir), ["alpha", "beta"], "written on open");
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
+    assert_eq!(app.history.undo_len(), 0, "not an undo step");
+    let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+    app.update(Action::RefreshSidebar);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
+        text,
+        "a complete list is not written again"
+    );
+    assert!(!app.proj_mut().complete_order().unwrap(), "nothing left to write");
+}
+
+/// D4, D5a: a request file that appears from outside lands last in its
+/// level, whatever its name, and the write that lists it is not taken
+/// for another outside change (no reload loop).
+#[test]
+fn a_file_added_outside_lands_last_without_a_reload_loop() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/aaa", &req("https://x/a")).unwrap();
+    // Forced: the stamps are mtime-gated, and a coarse clock may not move.
+    app.resync_project();
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "aaa"]);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/aaa"]);
+    assert!(!app.proj().changed_on_disk(), "the app's own write is no outside change");
+    assert!(!app.update(Action::ReloadProjectFiles), "and the next poll finds nothing");
+    assert_eq!(app.history.undo_len(), 0);
+}
+
+/// D5a: a list that can't be written is toasted, and the rows draw the
+/// same as if it had been.
+#[test]
+fn an_order_that_cannot_be_written_toasts_and_still_draws() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/aaa", &req("https://x/a")).unwrap();
+    std::fs::write(dir.path().join("project.toml"), "spaces = [").unwrap();
+    app.update(Action::RefreshSidebar);
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("could not save the request order")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/aaa"]);
 }

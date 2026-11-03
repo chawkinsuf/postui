@@ -10198,6 +10198,12 @@ impl App {
             return;
         };
         p.relist();
+        // Every list names every item (spec 2026-11-02 drag into folders
+        // D5, D5a): what a list misses is written in where it draws, so
+        // the rows are the same whether or not the write lands. The write
+        // goes through `Disk`, which re-stamps `project.toml`, so the next
+        // poll does not see it as an outside change. Not an undo step.
+        let order_error = p.complete_order().err();
         let listing = p.requests().to_vec();
         let warning = p.listing_warning();
         let spaces_warning = p.spaces_warning().map(str::to_string);
@@ -10212,6 +10218,9 @@ impl App {
         }
         let space = p.local().active_space.clone();
         let order = postui_core::order::space_order(p.meta(), &space).to_vec();
+        if let Some(e) = order_error {
+            self.toasts.push(format!("could not save the request order: {e}"), ToastKind::Error);
+        }
         if let Some(warning) = warning {
             // Two different failures share one warning string: a walk error
             // (transient, worth an error toast every time) and the
