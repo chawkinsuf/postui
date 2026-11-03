@@ -49,7 +49,7 @@ pub enum Error {
     NotFound(String),
     /// The state on disk doesn't allow the change, in words for the user:
     /// an undo or redo whose target no longer looks as expected, a folder
-    /// move onto a directory that holds files that aren't requests, or a
+    /// move onto a name already on disk that shows no folder, or a
     /// reorder in a directory with no `project.toml`.
     #[error("{0}")]
     Conflict(String),

@@ -80,7 +80,7 @@ follow the same rules.
 | # | Behaviour | Who |
 |---|---|---|
 | D17 | A drop in another folder moves what was dragged there unchanged. A request's file keeps its file name (`-2`, `-3`, … when the folder already has that file name) and its text, as Move to space moves one. A folder's directory moves whole, every file inside untouched. Everything inside a moved folder keeps its order: its entries are renamed to the new path. The order gets the block at the place the drop showed. One op, one undo step. | request: mine (approved on the first branch: "Plain move"); folder: mine (approved: "yes") |
-| D18 | A drop is refused when it would clash: for a request, the folder already shows a request with the name it will show there (its name, or, for a request with no `name`, its file name after any `-2`); for a folder, the destination already shows a folder of that name. (An empty directory of that name that shows nothing, left behind when a folder's last request moved out, goes to the trash as part of the move, and undo brings it back; one still holding other files refuses.) The rows snap back and a warning toast names the clash. A display name holding `/` is only a name: the move never reads it as a path. | mine (request: approved on the first branch; folder: approved: "yes") |
+| D18 | A drop is refused when it would clash: for a request, the folder already shows a request with the name it will show there (its name, or, for a request with no `name`, its file name after any `-2`); for a folder, the destination already shows a folder of that name, ignoring case, or anything of that name already exists on disk there (a directory left behind when a folder's requests were moved out one by one, a plain file), with the toast naming the path. *Amended 2026-11-03, review block 1 after the rework (mine (approved): "yes continue"):* this replaces trashing an empty leftover directory, whose check grew a case per review round (nested empty directories, a plain file, case folding, `.DS_Store`). Cost: a leftover directory blocks a same-named folder drop until it is removed outside postui. The rows snap back and a warning toast names the clash. A display name holding `/` is only a name: the move never reads it as a path. | mine (request: approved on the first branch; folder: approved: "yes") |
 | D19 | After a drop the cursor is on what was dragged. An open request that moved, alone or inside a moved folder, stays open, unsaved edits included, as after a Rename. Undo puts the files and the order back, and the toast names where it went: "Undid move of login to users", "Undid move of folder v1 to the top level". | mine; folder: mine (approved: "yes") |
 | D20 | A drop in the block's own folder is a reorder, as today. | mine |
 
@@ -167,7 +167,7 @@ follow the same rules.
   `seed` flag and `level_shown` go: the anchor is always listed, so
   `order_insert_after`/`_before` find it. A copy whose anchor is in
   another space arrives (D4).
-- **`Project::move_to_level(item, level, at) -> Result<String, Error>`**
+- **`Project::move_to_level(item: &TreeItem, level, at) -> Result<(String, Moves), Error>`**
   (D17–D19), `item` a request slug or a folder path: `at` is the index in
   `level`'s items, without the item, as they draw before the move (the
   app's rows show exactly that: a folder the drag emptied still exists
@@ -179,7 +179,10 @@ follow the same rules.
   numbers it. A folder moves the way `rename_space` moves a space's
   directory: one `fs_rename` of the directory, with every request under
   it in the entry's `moves`, so undo and the held requests follow as
-  they do for a space rename. Returns the new slug or path. `level`
+  they do for a space rename. Returns the new slug or path, and the
+  (old, new) slug of every request it moved, which the app follows (the
+  editor, its shadow, the open request) instead of working them out a
+  second time (mine, review round 2 before the rework). `level`
   equal to the item's own is refused as a bug (the app sends D20 as
   `set_request_order`).
 

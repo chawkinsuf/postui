@@ -292,9 +292,11 @@ impl Project {
     }
 
     /// alt+↑/↓: the entry `rel` (a request slug or a folder entry, spec
-    /// 2026-11-01 reorder folders) moves by `delta` among `shown`, entries
-    /// of its kind; a burst merges. With no `project.toml` a move that
-    /// would change the order is refused, as [`Self::set_request_order`].
+    /// 2026-11-01 reorder folders) moves by `delta` among `shown`, the
+    /// level's entries of both kinds as the sidebar draws them (spec
+    /// 2026-11-02 drag into folders D21); a burst merges. With no
+    /// `project.toml` a move that would change the order is refused, as
+    /// [`Self::set_request_order`].
     pub fn move_request_shown(
         &mut self,
         space: &str,

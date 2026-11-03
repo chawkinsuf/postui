@@ -343,10 +343,8 @@ fn arrive_with_folders(
 
 /// Whether `slugs` (a listing's full slugs) shows a folder at full path
 /// `path` spelled in any case: some request sits under it. A folder move
-/// asks this once the disk says its destination directory exists, so on
-/// a case-insensitive filesystem (macOS) a shown folder differing only in
-/// case is the clash it is (spec 2026-11-02 drag into folders D18), not a
-/// directory of files that aren't requests.
+/// refuses a destination this answers for (spec 2026-11-02 drag into
+/// folders D18), whatever the filesystem's case rule.
 fn shows_folder_ignoring_case(slugs: &[String], path: &str) -> bool {
     let under = format!("{path}/").to_lowercase();
     slugs.iter().any(|s| s.to_lowercase().starts_with(&under))
@@ -490,14 +488,7 @@ impl Project {
         anchor: &str,
         rel: &str,
     ) -> Result<Vec<OrderEdit>, Error> {
-        self.order_edit(space, |order| {
-            if order.iter().any(|e| e == rel) {
-                return Vec::new();
-            }
-            let Some(i) = order.iter().position(|e| e == anchor) else { return Vec::new() };
-            order.insert(i + 1, rel.to_string());
-            vec![OrderEdit::Inserted { space: space.to_string(), rel: rel.to_string(), at: i + 1 }]
-        })
+        self.order_insert_beside(space, anchor, rel, 1)
     }
 
     /// `order_insert_after`'s twin for a put *above* the anchor: the new
@@ -508,13 +499,33 @@ impl Project {
         anchor: &str,
         rel: &str,
     ) -> Result<Vec<OrderEdit>, Error> {
+        self.order_insert_beside(space, anchor, rel, 0)
+    }
+
+    /// `rel` put `offset` past `anchor`'s index (0 above it, 1 below). An
+    /// entry already naming `rel` (a stale one a partial walk kept, D7)
+    /// goes first, as in [`order::insert_before`], so the copy lands beside
+    /// its anchor (D4), never in the old entry's slot.
+    fn order_insert_beside(
+        &mut self,
+        space: &str,
+        anchor: &str,
+        rel: &str,
+        offset: usize,
+    ) -> Result<Vec<OrderEdit>, Error> {
         self.order_edit(space, |order| {
-            if order.iter().any(|e| e == rel) {
+            if !order.iter().any(|e| e == anchor) {
                 return Vec::new();
             }
-            let Some(i) = order.iter().position(|e| e == anchor) else { return Vec::new() };
-            order.insert(i, rel.to_string());
-            vec![OrderEdit::Inserted { space: space.to_string(), rel: rel.to_string(), at: i }]
+            let mut edits = order::remove(space, order, rel);
+            let Some(i) = order.iter().position(|e| e == anchor) else { return edits };
+            order.insert(i + offset, rel.to_string());
+            edits.push(OrderEdit::Inserted {
+                space: space.to_string(),
+                rel: rel.to_string(),
+                at: i + offset,
+            });
+            edits
         })
     }
 
@@ -970,30 +981,14 @@ impl Project {
         let new_path = format!("{dest}/{name}");
         let from_dir = folder_rel(path)?;
         let to_dir = folder_rel(&new_path)?;
-        // D18 counts the folders the sidebar shows. A directory there that
-        // shows nothing is a leftover: moving a folder's last request out
-        // leaves its directory behind (empty subdirectories included). One
-        // that holds no file at any depth goes to the trash as part of the
-        // move (undo brings it back). One holding files that aren't
-        // requests is refused, naming the directory, since the sidebar
-        // shows no folder there to clash with. The disk saying it exists
-        // with no folder shown at that exact path can be a shown folder
-        // spelled in another case (a case-insensitive filesystem): that is
-        // the clash, so the shown folders are matched in any case.
-        let mut leftover = false;
+        // D18: a folder the destination shows, in any case, is the clash;
+        // anything else of that name on disk there (a directory left
+        // behind, a plain file) is refused, naming the path.
+        if shows_folder_ignoring_case(&self.listed_slugs(), &new_path) {
+            return Err(Error::AlreadyExists(name.to_string()));
+        }
         if self.disk.exists(&to_dir) {
-            if shows_folder_ignoring_case(&self.listed_slugs(), &new_path) {
-                return Err(Error::AlreadyExists(name.to_string()));
-            }
-            // A plain file of that name (no extension, so no request) is
-            // the same refusal: it isn't a leftover the move can trash, and
-            // listing it as a directory would be a raw I/O error.
-            if !self.disk.is_dir(&to_dir) || self.tree_holds_files(&to_dir)? {
-                return Err(Error::Conflict(format!(
-                    "{to_dir} is already there and holds files that aren't requests"
-                )));
-            }
-            leftover = true;
+            return Err(Error::Conflict(format!("{to_dir} already exists on disk")));
         }
         let new_rel = order::relative(&new_path, space).unwrap_or(&new_path).to_string();
         let inside = format!("{path}/");
@@ -1008,9 +1003,6 @@ impl Project {
         let meta = self.meta_for_moves(moves.clone());
         self.transaction("move folder to folder", meta, |p| {
             p.complete_order_for_op();
-            if leftover {
-                p.fs_trash(&to_dir)?;
-            }
             p.fs_rename(&from_dir, &to_dir)?;
             for (old, new) in &moves {
                 if let Some(held) = p.open_requests.shift_remove(old) {
@@ -1030,17 +1022,6 @@ impl Project {
             Ok(())
         })?;
         Ok((new_path, moves))
-    }
-
-    /// Whether the directory `dir` holds a file at any depth.
-    fn tree_holds_files(&mut self, dir: &RelPath) -> Result<bool, Error> {
-        for e in self.disk.list(dir)? {
-            let path = dir.join(&e.name)?;
-            if !e.is_dir || self.tree_holds_files(&path)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// Every request of `from` into `to`, as one entry. Pre-flights the
@@ -2477,6 +2458,33 @@ mod tests {
         assert_eq!(read(&dir, "project.toml"), kept);
     }
 
+    /// D4 over D7: a put whose copy's name is already listed (a stale entry
+    /// a partial walk kept) still lands beside its anchor, below or above
+    /// it, the stale entry dropping out, never in the old entry's slot.
+    #[cfg(unix)]
+    #[test]
+    fn a_put_beside_its_anchor_replaces_a_stale_entry_of_its_name() {
+        use std::os::unix::fs::PermissionsExt;
+        for above in [false, true] {
+            let (dir, mut p) = tree_fixture();
+            write(
+                &dir,
+                "project.toml",
+                "spaces = [\"main\"]\n\n[space.main]\norder = [\"health-copy\", \"users/\", \"users/login\", \"users/v1/\", \"users/v1/list\", \"users/v1/get\", \"health\", \"orders/\", \"orders/new\"]\n",
+            );
+            let users = dir.path().join("requests/main/users");
+            std::fs::set_permissions(&users, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let copy = p.duplicate_request_at("main/health", "main/health", above);
+            std::fs::set_permissions(&users, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(copy.unwrap(), "main/health-copy");
+            let order = main_order(&p);
+            let beside: &[&str] =
+                if above { &["health-copy", "health"] } else { &["health", "health-copy"] };
+            assert_eq!(order[5..7], *beside, "above: {above}: {order:?}");
+            assert_eq!(order.iter().filter(|e| *e == "health-copy").count(), 1, "{order:?}");
+        }
+    }
+
     /// D5a (amended 2026-11-03): the lists are built from `project.toml` as
     /// it is on disk, so an outside edit to `order` postui hasn't read yet
     /// (a `git checkout`) is kept, and the poll that reads the rest of it
@@ -3052,39 +3060,55 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
-    /// D18 counts folders that show: a directory left behind with no file
-    /// at any depth (its requests moved out, empty subdirectories and all)
-    /// goes to the trash with the move, and undo brings it back. One still
-    /// holding a file that isn't a request refuses, naming the directory.
+    /// D18 (amended 2026-11-03, replacing "a leftover empty directory goes
+    /// to the trash with the move"): anything of the folder's name on disk
+    /// at the destination that shows no folder refuses, naming the path,
+    /// whatever it holds: an empty directory left behind, nested empty
+    /// directories, one holding only a `.DS_Store`, a plain file. Nothing
+    /// moves and nothing is journaled.
     #[test]
-    fn a_folder_move_onto_a_leftover_empty_directory_trashes_it() {
-        let (dir, mut p) = tree_fixture();
-        std::fs::create_dir_all(dir.path().join("requests/main/v1/sub")).unwrap();
-        let (new, _) = p.move_to_level(&folder_item("main/users/v1"), "", 0).unwrap();
-        assert_eq!(new, "main/v1");
-        assert!(dir.path().join("requests/main/v1/get.toml").is_file());
-        p.undo().unwrap().unwrap();
-        assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
-        assert!(dir.path().join("requests/main/v1/sub").is_dir());
-
-        write(&dir, "requests/main/v1/sub/.DS_Store", "x");
-        let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
-        assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/main/v1")), "{r:?}");
-        assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
+    fn a_folder_move_onto_a_leftover_directory_refuses_naming_the_path() {
+        type Leftover = fn(&tempfile::TempDir);
+        let cases: [(&str, Leftover); 4] = [
+            ("an empty directory", |d| {
+                std::fs::create_dir_all(d.path().join("requests/main/v1")).unwrap()
+            }),
+            ("nested empty directories", |d| {
+                std::fs::create_dir_all(d.path().join("requests/main/v1/sub/deeper")).unwrap()
+            }),
+            ("a .DS_Store", |d| write(d, "requests/main/v1/.DS_Store", "x")),
+            ("a plain file", |d| write(d, "requests/main/v1", "notes")),
+        ];
+        for (what, make) in cases {
+            let (dir, mut p) = tree_fixture();
+            make(&dir);
+            let before = read(&dir, "project.toml");
+            let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
+            assert!(
+                matches!(&r, Err(Error::Conflict(m)) if m == "requests/main/v1 already exists on disk"),
+                "{what}: {r:?}"
+            );
+            assert!(dir.path().join("requests/main/users/v1/get.toml").is_file(), "{what}");
+            assert!(dir.path().join("requests/main/v1").exists(), "{what}: left as it was");
+            assert_eq!(read(&dir, "project.toml"), before, "{what}");
+            assert_eq!(p.journal_len(), 0, "{what}");
+        }
     }
 
-    /// D18: a destination that exists as a plain file (`v1`, no
-    /// extension, so no request) is refused as a directory holding files
-    /// that aren't requests is, naming the path, never a raw I/O error.
+    /// D18: a shown folder whose name differs only in case clashes even
+    /// where no directory of the dragged folder's exact spelling exists
+    /// (Linux: `Users` is shown, `users` is not on disk).
     #[test]
-    fn a_folder_move_onto_a_plain_file_of_its_name_is_refused() {
-        let (dir, mut p) = tree_fixture();
-        write(&dir, "requests/main/v1", "notes");
+    fn a_folder_move_onto_a_shown_folder_in_another_case_is_refused() {
+        let (dir, mut p) = fixture();
+        write(&dir, "requests/main/Users/a.toml", "method = \"GET\"\nurl = \"u\"\n");
+        write(&dir, "requests/main/x/users/b.toml", "method = \"GET\"\nurl = \"u\"\n");
+        p.relist();
+        p.complete_order().unwrap();
         let before = read(&dir, "project.toml");
-        let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
-        assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/main/v1")), "{r:?}");
-        assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
-        assert_eq!(read(&dir, "requests/main/v1").as_deref(), Some("notes"));
+        let r = p.move_to_level(&folder_item("main/x/users"), "", 0);
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "users"), "{r:?}");
+        assert!(dir.path().join("requests/main/x/users/b.toml").is_file());
         assert_eq!(read(&dir, "project.toml"), before);
         assert_eq!(p.journal_len(), 0);
     }
@@ -3192,9 +3216,8 @@ mod tests {
         assert!(main_order(&p).is_empty());
     }
 
-    /// D18 on a case-insensitive filesystem (macOS): once the disk says the
-    /// destination directory exists, a shown folder whose path differs
-    /// only in case is the folder it clashes with.
+    /// D18: a shown folder whose path differs only in case is the folder a
+    /// folder move clashes with.
     #[test]
     fn a_shown_folder_matches_its_path_in_any_case() {
         let slugs: Vec<String> =
