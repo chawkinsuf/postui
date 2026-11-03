@@ -37987,13 +37987,16 @@ fn a_file_added_outside_lands_last_without_a_reload_loop() {
     assert_eq!(app.history.undo_len(), 0);
 }
 
-/// D5a: a list that can't be written is toasted, and the rows draw the
-/// same as if it had been.
+/// D5a: a list that can't be written (the project folder is read-only)
+/// is toasted, and the rows draw the same as if it had been.
+#[cfg(unix)]
 #[test]
 fn an_order_that_cannot_be_written_toasts_and_still_draws() {
+    use std::os::unix::fs::PermissionsExt;
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::save_request(dir.path(), "main/aaa", &req("https://x/a")).unwrap();
-    std::fs::write(dir.path().join("project.toml"), "spaces = [").unwrap();
+    let locked = std::fs::Permissions::from_mode(0o555);
+    std::fs::set_permissions(dir.path(), locked).unwrap();
     app.update(Action::RefreshSidebar);
     assert!(
         app.toasts.messages().iter().any(|m| m.starts_with("could not save the request order")),
@@ -38011,6 +38014,7 @@ fn an_order_that_cannot_be_written_toasts_and_still_draws() {
         .iter()
         .filter(|m| m.starts_with("could not save the request order"))
         .count();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(count, 1, "{:?}", app.toasts.messages());
 }
 

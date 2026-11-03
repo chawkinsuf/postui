@@ -537,8 +537,13 @@ impl Project {
             .cloned()
             .collect();
         let text = self.disk.peek(&path)?.unwrap_or_default();
-        let on_disk: ProjectMeta =
-            toml::from_str(&text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+        // A `project.toml` that doesn't parse is never overwritten, and
+        // completing an order is never the reason an op fails: the op goes
+        // on as it would have, and fails at its own order write if it has
+        // one (a name-only rename has none). The reload reports the file.
+        let Ok(on_disk) = toml::from_str::<ProjectMeta>(&text) else {
+            return Ok(false);
+        };
         let unread = spaces
             .iter()
             .any(|s| order::space_order(&on_disk, s) != order::space_order(&self.meta, s));
@@ -2619,6 +2624,20 @@ mod tests {
         assert!(!p.complete_order().unwrap());
         assert_eq!(read(&dir, "project.toml"), before);
         assert!(main_order(&p).is_empty());
+    }
+
+    /// A `project.toml` that doesn't parse is never written over, and
+    /// completing the order never fails an op that writes no order of its
+    /// own: a rename that only changes the display name still goes through.
+    #[test]
+    fn a_broken_project_toml_is_left_alone_and_a_name_only_rename_still_works() {
+        let (dir, mut p) = tree_fixture();
+        write(&dir, "project.toml", "spaces = [");
+        assert!(!p.complete_order().unwrap());
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some("spaces = ["));
+        let (slug, _) = p.rename_request("main/health", "main/HEALTH").unwrap();
+        assert_eq!(slug, "main/health");
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some("spaces = ["));
     }
 
     /// A directory with no `project.toml` never gains one behind the

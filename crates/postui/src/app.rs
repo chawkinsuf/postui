@@ -527,11 +527,13 @@ pub struct App {
     /// The same warn-once channel again, for entries in `project.toml`'s
     /// `environments` that aren't valid environment names.
     last_environments_warning: Option<String>,
-    /// The same warn-once channel for a failed write of the completed
-    /// order lists (spec 2026-11-02 drag into folders D5a): a
-    /// `project.toml` that can't be written stays that way, and every
-    /// refresh retries the write.
-    last_order_error: Option<String>,
+    /// A warn-once flag for a failed write of the completed order lists
+    /// (spec 2026-11-02 drag into folders D5a): a `project.toml` that
+    /// can't be written stays that way, and every refresh retries the
+    /// write. Toasted when the writes start failing, and again only after
+    /// one has succeeded. A flag, not the error text: the text names the
+    /// atomic write's temporary file, which differs every time.
+    order_write_failing: bool,
     /// Set when the project the app was asked to open refused (a file it
     /// would write back is unreadable — see `Project::open`). The
     /// app then runs on an empty root with nothing loaded; the message is
@@ -1904,7 +1906,7 @@ impl App {
         self.last_loose_warning = None;
         self.last_spaces_warning = None;
         self.last_environments_warning = None;
-        self.last_order_error = None;
+        self.order_write_failing = false;
     }
 
     /// Whether `target` is the open project's directory, by any spelling of
@@ -2049,7 +2051,7 @@ impl App {
             last_loose_warning: None,
             last_spaces_warning: None,
             last_environments_warning: None,
-            last_order_error: None,
+            order_write_failing: false,
             open_error,
             config_error: None,
             startup_config_gate: false,
@@ -10228,11 +10230,11 @@ impl App {
         let space = p.local().active_space.clone();
         let order = postui_core::order::space_order(p.meta(), &space).to_vec();
         if let Some(e) = &order_error
-            && order_error != self.last_order_error
+            && !self.order_write_failing
         {
             self.toasts.push(format!("could not save the request order: {e}"), ToastKind::Error);
         }
-        self.last_order_error = order_error;
+        self.order_write_failing = order_error.is_some();
         if let Some(warning) = warning {
             // Two different failures share one warning string: a walk error
             // (transient, worth an error toast every time) and the
