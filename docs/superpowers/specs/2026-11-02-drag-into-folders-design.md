@@ -147,9 +147,18 @@ follow the same rules.
   reorders (`set_request_order`, `move_request_shown`) don't call it:
   they write their whole level as the sidebar drew it, unlisted items
   included, so that level ends complete and nothing arrives; completing
-  there cost a full re-walk per held alt+↓ step (new round 1). No order
-  write creates a `project.toml` (`order_edit` writes nothing without
-  one). A space whose directory is missing is left alone. A
+  there cost a full re-walk per held alt+↓ step (new round 1). In a
+  directory with no `project.toml` (a registered project whose
+  `project.toml` was deleted, which opens as-is with a warning) nothing
+  writes an order: `order_edit` writes nothing there, so no op ever
+  creates a `project.toml`. Creates, renames, moves, puts and drops still
+  do their file part, and the items draw by D6. A drag reorder or alt+↑/↓
+  there is refused with a warning toast saying the order can't be saved
+  without a `project.toml`, rather than snapping back silently. This
+  replaces main's reorders and puts creating one (mine (approved): "1 i
+  think", new round 2). Inside an op the completion is best effort: a
+  write that fails doesn't fail the op, and the op's own order writes
+  report their own failures. A space whose directory is missing is left alone. A
   read-only project writes nothing, and a directory with no
   `project.toml` gains none from it.
 - **The request ops stay as they are on main**, minus what an incomplete

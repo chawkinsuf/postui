@@ -374,13 +374,21 @@ impl Project {
     /// Reads `space`'s list from `meta`, hands it to `f`, and writes it
     /// back through `project.toml` only if `f` changed it. Refuses a
     /// space that does not exist on disk (no orphan tables). Every order
-    /// write goes through here; an arrival goes through
-    /// [`Self::order_arrival_edit`] first.
+    /// write goes through here.
+    ///
+    /// In a directory with no `project.toml` it writes nothing and returns
+    /// no edits, so no op ever creates one: a create, a rename, a move, a
+    /// put or a drop does its file part and the items draw by D6 (spec
+    /// 2026-11-02 drag into folders §3, `Project`). The two reorders, which
+    /// write nothing else, refuse first ([`Self::require_project_toml`]).
     pub(super) fn order_edit(
         &mut self,
         space: &str,
         f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
     ) -> Result<Vec<OrderEdit>, Error> {
+        if !self.has_project_toml() {
+            return Ok(Vec::new());
+        }
         let before = order::space_order(&self.meta, space).to_vec();
         let mut after = before.clone();
         let edits = f(&mut after);
@@ -398,22 +406,21 @@ impl Project {
         Ok(edits)
     }
 
-    /// [`Self::order_edit`] for an edit that only adds arriving entries
-    /// (D4): with no `project.toml` it writes nothing, so a create, a
-    /// rename into a folder or a move never makes one in a bare directory,
-    /// as main's `arrive` wrote nothing in an unlisted level (spec
-    /// 2026-11-02 drag into folders §3, `Project`). Explicit arranging (a
-    /// reorder, a put, a drop) goes straight to `order_edit` and writes
-    /// one, as main's reorders and puts did.
-    fn order_arrival_edit(
-        &mut self,
-        space: &str,
-        f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
-    ) -> Result<Vec<OrderEdit>, Error> {
-        if !self.disk.is_file(&rel(PROJECT_TOML)?) {
-            return Ok(Vec::new());
+    /// Whether the project's directory has a `project.toml`.
+    fn has_project_toml(&self) -> bool {
+        rel(PROJECT_TOML).is_ok_and(|path| self.disk.is_file(&path))
+    }
+
+    /// Refuses an op whose only write is an order (the two reorders) in a
+    /// directory with no `project.toml`, where [`Self::order_edit`] writes
+    /// nothing: the user is told the order can't be saved rather than the
+    /// rows snapping back silently (spec 2026-11-02 drag into folders §3,
+    /// `Project`).
+    pub(super) fn require_project_toml(&self) -> Result<(), Error> {
+        if self.has_project_toml() {
+            return Ok(());
         }
-        self.order_edit(space, f)
+        Err(Error::Conflict("the order can't be saved without a project.toml".to_string()))
     }
 
     /// Every listed request's full slug: what the order cascades test
@@ -436,7 +443,7 @@ impl Project {
         let slugs = self.listed_slugs();
         let arriving = std::collections::HashSet::from([rel]);
         let mut seen = std::collections::HashSet::new();
-        self.order_arrival_edit(space, |order| {
+        self.order_edit(space, |order| {
             arrive_with_folders(space, order, rel, &arriving, departed, &mut seen, &slugs)
         })
     }
@@ -639,7 +646,7 @@ impl Project {
             moves.iter().map(|(_, t)| t.as_str()).collect();
         let mut seen = std::collections::HashSet::new();
         // The destination side only adds arrivals.
-        self.order_arrival_edit(to, |order| {
+        self.order_edit(to, |order| {
             moves
                 .iter()
                 .flat_map(|(_, t)| {
@@ -3137,15 +3144,16 @@ mod tests {
         (dir, p)
     }
 
-    /// An arrival never creates a `project.toml` (spec 2026-11-02 drag
-    /// into folders §3, `Project`, new round 2): in a bare directory (the
-    /// TUI opens one when the registry's last project lost its
-    /// `project.toml`) a create, a rename into a folder and Move to space
-    /// go through and write no list, as main's `arrive` wrote nothing in an
-    /// unlisted level. Explicit arranging writes one, as main's reorders
-    /// and puts did: a reorder, and a drop in another folder.
+    /// No op ever creates a `project.toml` (spec 2026-11-02 drag into
+    /// folders §3, `Project`, new round 2, replacing main's reorders and
+    /// puts creating one): in a bare directory (the TUI opens one when a
+    /// registered project lost its `project.toml`) a create, a rename into
+    /// a folder, Move to space, a put and a drop in another folder do their
+    /// file part and write no order. The two reorders have nothing but an
+    /// order to write, so they are refused, writing nothing and recording
+    /// no step.
     #[test]
-    fn arrivals_never_make_a_project_toml_but_arranging_does() {
+    fn no_op_makes_a_project_toml_and_the_reorders_are_refused() {
         let (dir, mut p) = bare_dir();
         let none = |dir: &tempfile::TempDir| !dir.path().join("project.toml").exists();
         assert!(none(&dir));
@@ -3154,21 +3162,34 @@ mod tests {
         assert!(none(&dir), "a create");
         let (slug, _) = p.rename_request("main/a", "main/g/A").unwrap();
         assert!(p.request_exists(&slug));
+        assert!(!dir.path().join("requests/main/a.toml").exists());
         assert!(none(&dir), "a rename into a folder");
         let slug = p.move_request("main/b", "auth").unwrap();
         assert!(p.request_exists(&slug));
+        assert!(!dir.path().join("requests/main/b.toml").exists());
         assert!(none(&dir), "Move to space");
-        // main's top level draws `new`, `f/`, `g/` (D6).
-        let shown: Vec<String> = ["g/", "new", "f/"].iter().map(|s| s.to_string()).collect();
-        assert!(p.set_request_order("main", "", &shown).unwrap().is_some());
-        assert!(!none(&dir), "a reorder writes one");
-        assert_eq!(main_order(&p), shown);
+        let copy = p.duplicate_request_at("main/new", "main/new", false).unwrap();
+        assert!(dir.path().join(format!("requests/{copy}.toml")).is_file());
+        assert!(none(&dir), "a put");
+        let (slug, _) = p.move_to_level(&req_item(&copy), "f", 0).unwrap();
+        assert!(dir.path().join(format!("requests/{slug}.toml")).is_file());
+        assert!(!dir.path().join(format!("requests/{copy}.toml")).exists());
+        assert!(none(&dir), "a drop in another folder");
+        let (slug, _) = p.move_to_level(&folder_item("main/g"), "f", 0).unwrap();
+        assert_eq!(slug, "main/f/g");
+        assert!(dir.path().join("requests/main/f/g").is_dir());
+        assert!(none(&dir), "a folder's drop");
+        assert!(main_order(&p).is_empty());
 
-        let (dir, mut p) = bare_dir();
-        let (slug, _) = p.move_to_level(&req_item("main/a"), "f", 0).unwrap();
-        assert!(p.request_exists(&slug));
-        assert!(!none(&dir), "a drop writes one");
-        assert_eq!(main_order(&p), ["f/a"]);
+        let steps = p.journal_len();
+        let refused = |r: Result<Option<meta::ListChange>, Error>| matches!(r, Err(Error::Conflict(m)) if m.contains("without a project.toml"));
+        // main's top level draws `f/`, `new` (D6).
+        let shown: Vec<String> = ["new", "f/"].iter().map(|s| s.to_string()).collect();
+        assert!(refused(p.set_request_order("main", "", &shown)), "a drag reorder");
+        assert!(refused(p.move_request_shown("main", "", &shown, "new", 1)), "alt+↓");
+        assert!(none(&dir), "a refused reorder writes nothing");
+        assert_eq!(p.journal_len(), steps, "and records no step");
+        assert!(main_order(&p).is_empty());
     }
 
     /// D18 on a case-insensitive filesystem (macOS): once the disk says the

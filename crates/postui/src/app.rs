@@ -10473,19 +10473,17 @@ impl App {
         {
             let space = drag.space.clone();
             let t = self.begin_op();
-            let written = match self.project.as_mut() {
-                Some(p) => p.set_request_order(&space, &drag.origin.0, &shown),
-                None => {
-                    self.op_in_flight = false;
-                    return true;
-                }
-            };
+            let written =
+                self.project.as_mut().map(|p| p.set_request_order(&space, &drag.origin.0, &shown));
             match written {
-                Ok(_) => reordered = Some(t),
-                Err(e) => {
+                Some(Ok(_)) => reordered = Some(t),
+                Some(Err(e)) => {
                     self.op_in_flight = false;
                     self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning);
                 }
+                // No project: nothing to write; the landing below still
+                // snaps the rows back.
+                None => self.op_in_flight = false,
             }
         }
         // The drag is already taken, so the landing's own drag cancel (it

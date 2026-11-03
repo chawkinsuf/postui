@@ -258,6 +258,8 @@ impl Project {
     /// `shown` is the whole level as the sidebar drew it, unlisted items
     /// included, so the level it writes ends complete and nothing arrives.
     /// A merge that changes nothing writes nothing and records no step.
+    /// With no `project.toml` it is refused, writing nothing: there is
+    /// nowhere to save the order (same section).
     pub fn set_request_order(
         &mut self,
         space: &str,
@@ -267,6 +269,7 @@ impl Project {
         let Some(change) = self.level_change(space, level, shown) else {
             return Ok(None);
         };
+        self.require_project_toml()?;
         self.transaction("reorder", EntryMeta::default(), |p| p.write_change(space, &change))?;
         Ok(Some(change))
     }
@@ -290,7 +293,8 @@ impl Project {
 
     /// alt+↑/↓: the entry `rel` (a request slug or a folder entry, spec
     /// 2026-11-01 reorder folders) moves by `delta` among `shown`, entries
-    /// of its kind; a burst merges.
+    /// of its kind; a burst merges. With no `project.toml` a move that
+    /// would change the order is refused, as [`Self::set_request_order`].
     pub fn move_request_shown(
         &mut self,
         space: &str,
@@ -316,6 +320,7 @@ impl Project {
         let Some(change) = self.level_change(space, level, &shown) else {
             return Ok(None);
         };
+        self.require_project_toml()?;
         // A folder's key is its path with the slash (`main/auth/`), which
         // no request slug is, so the two kinds' bursts never merge.
         let key =

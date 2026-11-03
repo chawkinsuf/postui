@@ -6413,6 +6413,54 @@ fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
     assert!(!app.op_in_flight);
 }
 
+/// In a directory with no `project.toml` (a registered project that lost
+/// it opens as-is) nothing writes an order, so a drag reorder and alt+↓
+/// are refused with a toast saying why, and the rows snap back: no
+/// `project.toml` is made, no step recorded, no op left in flight (spec
+/// 2026-11-02 drag into folders §3, `Project`).
+#[test]
+fn a_reorder_with_no_project_toml_toasts_and_snaps_back() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+    for name in ["alpha", "beta", "gamma"] {
+        let path = dir.path().join(format!("requests/main/{name}.toml"));
+        std::fs::write(path, "method = \"GET\"\nurl = \"https://x/1\"\n").unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    render_once(&mut app);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    let steps = app.history.undo_len();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"cannot reorder: the order can't be saved without a project.toml"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"], "snapped back");
+    assert!(app.sidebar.drag.is_none());
+    assert!(!app.op_in_flight);
+
+    app.move_sidebar_row(RowKey::Request("main/alpha".into()), 1);
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"cannot move request: the order can't be saved without a project.toml"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    assert!(!app.op_in_flight);
+    assert_eq!(app.history.undo_len(), steps);
+    assert!(!dir.path().join("project.toml").exists());
+}
+
 /// alt+↓ whose write fails, and one with no project, clear the op-in-flight
 /// mark themselves, as the drop does, rather than leaning on `dispatch`'s
 /// safety net.
