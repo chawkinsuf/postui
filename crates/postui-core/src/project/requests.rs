@@ -848,8 +848,18 @@ impl Project {
         let new_path = format!("{dest}/{name}");
         let from_dir = folder_rel(path)?;
         let to_dir = folder_rel(&new_path)?;
+        // D18 counts the folders the sidebar shows. A directory there that
+        // shows nothing is a leftover: moving a folder's last request out
+        // leaves its directory behind. An empty one goes to the trash as
+        // part of the move (undo brings it back); one holding other files
+        // refuses, as the rename itself would.
+        let mut leftover = false;
         if self.disk.exists(&to_dir) {
-            return Err(Error::AlreadyExists(name.to_string()));
+            let shows = order::exists_in(&self.listed_slugs(), &format!("{new_path}/"));
+            if shows || !self.disk.list(&to_dir)?.is_empty() {
+                return Err(Error::AlreadyExists(name.to_string()));
+            }
+            leftover = true;
         }
         let new_rel = order::relative(&new_path, space).unwrap_or(&new_path).to_string();
         let inside = format!("{path}/");
@@ -863,6 +873,9 @@ impl Project {
             .collect();
         let meta = self.meta_for_moves(moves.clone());
         self.transaction("move folder to folder", meta, |p| {
+            if leftover {
+                p.fs_trash(&to_dir)?;
+            }
             p.fs_rename(&from_dir, &to_dir)?;
             for (old, new) in &moves {
                 if let Some(held) = p.open_requests.shift_remove(old) {
@@ -2548,6 +2561,25 @@ mod tests {
         assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
         assert_eq!(read(&dir, "project.toml"), before);
         assert_eq!(p.journal_len(), 0);
+    }
+
+    /// D18 counts folders that show: an empty directory left behind (its
+    /// last request moved out) goes to the trash with the move, and undo
+    /// brings it back. One still holding a file refuses.
+    #[test]
+    fn a_folder_move_onto_a_leftover_empty_directory_trashes_it() {
+        let (dir, mut p) = tree_fixture();
+        std::fs::create_dir_all(dir.path().join("requests/main/v1")).unwrap();
+        let new = p.move_to_level(&folder_item("main/users/v1"), "", 0).unwrap();
+        assert_eq!(new, "main/v1");
+        assert!(dir.path().join("requests/main/v1/get.toml").is_file());
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
+        assert!(dir.path().join("requests/main/v1").is_dir());
+
+        write(&dir, "requests/main/v1/notes.txt", "keep");
+        let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "v1"), "{r:?}");
     }
 
     /// D2: a folder can't go inside itself or one of its own folders.
