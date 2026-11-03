@@ -16,7 +16,7 @@ mod varedit_ops;
 mod variables;
 pub use edit_flag::{EditFlag, ProjectLock, ago, rfc3339};
 pub use meta::*;
-pub use requests::{HeldDrift, ListingWarning};
+pub use requests::{HeldDrift, ListingWarning, TreeItem};
 pub use undo::Undone;
 pub use varedit_ops::{VarEdit, pasted_option_name};
 

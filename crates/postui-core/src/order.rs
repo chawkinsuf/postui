@@ -218,9 +218,22 @@ impl OrderEdit {
 /// leftover, emptied where no cascade saw it) goes first, so the list
 /// never holds it twice.
 pub(crate) fn arrive(space: &str, order: &mut Vec<String>, entry: &str) -> Vec<OrderEdit> {
+    insert_before(space, order, entry, None)
+}
+
+/// `entry` placed right above `anchor` (an entry of its level), or last
+/// when there is no anchor or the list doesn't name it: the slot a move
+/// to another level takes (D17). An entry already naming it goes first,
+/// as in [`arrive`].
+pub(crate) fn insert_before(
+    space: &str,
+    order: &mut Vec<String>,
+    entry: &str,
+    anchor: Option<&str>,
+) -> Vec<OrderEdit> {
     let mut edits = remove(space, order, entry);
-    let at = order.len();
-    order.push(entry.to_string());
+    let at = anchor.and_then(|a| order.iter().position(|e| e == a)).unwrap_or(order.len());
+    order.insert(at, entry.to_string());
     edits.push(OrderEdit::Inserted { space: space.to_string(), rel: entry.to_string(), at });
     edits
 }
@@ -228,7 +241,7 @@ pub(crate) fn arrive(space: &str, order: &mut Vec<String>, entry: &str) -> Vec<O
 /// Every entry under the folder at relative path `from` (its own entry
 /// and everything inside it, at any depth) renamed to sit under `to`
 /// instead, in place: a folder move (D17) keeps its contents' order.
-pub fn rename_prefix(order: &mut [String], from: &str, to: &str) {
+pub(crate) fn rename_prefix(order: &mut [String], from: &str, to: &str) {
     let from = folder_entry(from);
     let to = folder_entry(to);
     for e in order.iter_mut() {

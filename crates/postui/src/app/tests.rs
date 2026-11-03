@@ -24087,38 +24087,47 @@ mod undo_tests {
         );
     }
 
+    /// `spaced_app` with `main`'s list complete, as the TUI keeps every
+    /// list (spec 2026-11-02 drag into folders D5a): a put's anchor is
+    /// listed, so nothing is seeded.
+    fn completed_spaced_app() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = spaced_app();
+        app.proj_mut().complete_order().unwrap();
+        assert_eq!(main_order(&app), ["alpha", "beta"]);
+        (app, dir)
+    }
+
     /// `p`: the copy lands under the anchor and opens; one undo takes the
     /// file and its order slot back.
     #[test]
     fn a_put_duplicates_the_yanked_request_below_the_anchor() {
-        let (mut app, dir) = spaced_app();
+        let (mut app, dir) = completed_spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
         app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: false, count: 1 });
         assert_eq!(main_order(&app), ["alpha", "beta", "alpha-copy"]);
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha-copy"));
         app.update(Action::Undo);
         assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"));
-        assert!(main_order(&app).is_empty(), "the seeded order goes with it");
+        assert_eq!(main_order(&app), ["alpha", "beta"], "the copy's slot goes with it");
     }
 
     /// `P`: the copy takes the anchor's slot.
     #[test]
     fn a_put_above_takes_the_anchors_slot() {
-        let (mut app, _dir) = spaced_app();
+        let (mut app, _dir) = completed_spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
         app.update(Action::PutRequest { anchor: Some("main/beta".into()), above: true, count: 1 });
         assert_eq!(main_order(&app), ["alpha", "alpha-copy", "beta"]);
     }
 
     /// `yyP` / `yyp` on the yanked row itself (anchor == source) is still a
-    /// put: it seeds the order and the copy lands above / below.
+    /// put: the copy lands above / below.
     #[test]
     fn a_put_on_the_yanked_row_itself_lands_above_or_below_it() {
         for (above, want) in
             [(true, ["alpha-copy", "alpha", "beta"]), (false, ["alpha", "alpha-copy", "beta"])]
         {
-            let (mut app, _dir) = spaced_app();
-            assert!(main_order(&app).is_empty());
+            let (mut app, _dir) = completed_spaced_app();
             app.update(Action::YankRequest("main/alpha".into()));
             app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above, count: 1 });
             assert_eq!(main_order(&app), want, "above = {above}");
@@ -24207,7 +24216,7 @@ mod undo_tests {
     /// three back.
     #[test]
     fn a_counted_put_over_unsaved_edits_asks_once_and_makes_every_copy() {
-        let (mut app, dir) = spaced_app();
+        let (mut app, dir) = completed_spaced_app();
         app.use_profile(crate::config::KeyProfile::Vim);
         app.update(Action::ForceOpenRequest("main/alpha".into()));
         type_z_into_the_url(&mut app);
