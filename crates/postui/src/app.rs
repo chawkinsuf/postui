@@ -10465,10 +10465,10 @@ impl App {
             return true;
         }
         let mut reordered = None;
-        // A drop in the block's own level is a reorder (D20).
+        // A drop in the block's own level is a reorder (D20); a commit in
+        // another level has gone to `drop_in_level` above.
         if commit
             && drag.target != drag.origin
-            && drag.target.0 == drag.origin.0
             && let Some(shown) = shown
         {
             let space = drag.space.clone();
@@ -10533,6 +10533,9 @@ impl App {
         let t = self.begin_op();
         let Some(p) = self.project.as_mut() else {
             self.op_in_flight = false;
+            // Landed as a refusal is: the rows are rebuilt, so the block
+            // isn't left drawn at its target.
+            self.land(Landing { cursor: Some(CursorAim::On(drag.key)), ..Landing::default() });
             return;
         };
         match p.move_to_level(&item, &level, at) {

@@ -38280,6 +38280,25 @@ fn a_request_clash_toasts_and_snaps_back() {
     assert!(!app.op_in_flight);
 }
 
+/// A drop in another folder with no project to move it in lands as a
+/// refusal does: the rows are rebuilt, so the block isn't left drawn at
+/// its target, and no op stays in flight.
+#[test]
+fn a_drop_in_a_folder_with_no_project_rebuilds_the_rows() {
+    let (mut app, _dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    let r0 = row_rect(&mut app, 0);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), r3.y));
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
+    app.project = None;
+    assert!(app.finish_sidebar_drag(true));
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.sidebar.rows.is_empty(), "rebuilt from no project");
+    assert!(!app.op_in_flight);
+}
+
 /// D18: a folder dropped where a folder of its name shows is refused.
 #[test]
 fn a_folder_clash_toasts_and_snaps_back() {
