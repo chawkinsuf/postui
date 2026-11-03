@@ -38276,6 +38276,27 @@ fn a_folder_clash_toasts_and_snaps_back() {
     assert!(!app.op_in_flight);
 }
 
+/// D13: a press on the last row promotes when the pointer goes straight
+/// into the empty area below, so the last row can be dragged out of its
+/// folder without first crossing another row.
+#[test]
+fn a_press_on_the_last_row_drags_straight_down_and_out_of_its_folder() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::save_request(dir.path(), "main/box/x", &req("https://x/f")).unwrap();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/box".into());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    let last = app.sidebar.rows.len() - 1;
+    let r = row_rect(&mut app, last);
+    assert_eq!(app.sidebar.rows[last].key(), RowKey::Request("main/box/x".into()));
+    app.handle_mouse(left_down(names_x(r), r.y));
+    app.handle_mouse(moved(r.x, r.y + 2));
+    assert!(app.sidebar.drag.is_some(), "the empty area below promotes the press");
+    app.handle_mouse(left_up(r.x, r.y + 2));
+    assert!(dir.path().join("requests/main/x.toml").is_file(), "out to the top level");
+}
+
 /// D13, D14: below the last row the block goes last; above the first row
 /// with the list at its top it goes first. Both drop as reorders (D20).
 #[test]
