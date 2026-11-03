@@ -527,12 +527,14 @@ pub struct App {
     /// The same warn-once channel again, for entries in `project.toml`'s
     /// `environments` that aren't valid environment names.
     last_environments_warning: Option<String>,
-    /// A warn-once flag for a failed write of the completed order lists
-    /// (spec 2026-11-02 drag into folders D5a): a `project.toml` that
-    /// can't be written stays that way, and every refresh retries the
-    /// write. Toasted when the writes start failing, and again only after
-    /// one has succeeded. A flag, not the error text: the text names the
-    /// atomic write's temporary file, which differs every time.
+    /// A warn-once flag for a failed update of the completed order lists
+    /// (spec 2026-11-02 drag into folders D5a), a write or the read of
+    /// `project.toml` before it: a file that can't be written stays that
+    /// way, and every refresh retries. Toasted when the updates start
+    /// failing, and again only after a write has succeeded (a refresh with
+    /// nothing to write leaves it set). A flag, not the error text: the
+    /// text names the atomic write's temporary file, which differs every
+    /// time.
     order_write_failing: bool,
     /// Set when the project the app was asked to open refused (a file it
     /// would write back is unreadable — see `Project::open`). The
@@ -10214,7 +10216,7 @@ impl App {
         // whether or not the write lands. The write goes through `Disk`,
         // which re-stamps `project.toml`, so the next poll does not see it
         // as an outside change. Not an undo step.
-        let order_error = p.complete_order().err().map(|e| e.to_string());
+        let order_result = p.complete_order().map_err(|e| e.to_string());
         let listing = p.requests().to_vec();
         let warning = p.listing_warning();
         let spaces_warning = p.spaces_warning().map(str::to_string);
@@ -10229,12 +10231,19 @@ impl App {
         }
         let space = p.local().active_space.clone();
         let order = postui_core::order::space_order(p.meta(), &space).to_vec();
-        if let Some(e) = &order_error
-            && !self.order_write_failing
-        {
-            self.toasts.push(format!("could not save the request order: {e}"), ToastKind::Error);
+        match order_result {
+            Err(e) => {
+                if !self.order_write_failing {
+                    self.toasts
+                        .push(format!("could not update the request order: {e}"), ToastKind::Error);
+                }
+                self.order_write_failing = true;
+            }
+            // Only a write that lands re-arms the toast: a refresh with
+            // nothing to write says nothing about whether one would.
+            Ok(true) => self.order_write_failing = false,
+            Ok(false) => {}
         }
-        self.order_write_failing = order_error.is_some();
         if let Some(warning) = warning {
             // Two different failures share one warning string: a walk error
             // (transient, worth an error toast every time) and the

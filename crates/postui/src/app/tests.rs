@@ -38064,7 +38064,7 @@ fn an_order_that_cannot_be_written_toasts_and_still_draws() {
     std::fs::set_permissions(dir.path(), locked).unwrap();
     app.update(Action::RefreshSidebar);
     assert!(
-        app.toasts.messages().iter().any(|m| m.starts_with("could not save the request order")),
+        app.toasts.messages().iter().any(|m| m.starts_with("could not update the request order")),
         "{:?}",
         app.toasts.messages()
     );
@@ -38077,7 +38077,36 @@ fn an_order_that_cannot_be_written_toasts_and_still_draws() {
         .toasts
         .messages()
         .iter()
-        .filter(|m| m.starts_with("could not save the request order"))
+        .filter(|m| m.starts_with("could not update the request order"))
+        .count();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(count, 1, "{:?}", app.toasts.messages());
+}
+
+/// D5a: a write that keeps failing toasts once, even when a refresh in
+/// between has nothing to write: only a write that lands re-arms the
+/// toast, as `order_write_failing`'s doc says.
+#[cfg(unix)]
+#[test]
+fn a_failing_order_write_toasts_once_across_a_refresh_with_nothing_to_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut app, dir) = spaced_app();
+    let aaa = dir.path().join("requests/main/aaa.toml");
+    postui_core::fixtures::save_request(dir.path(), "main/aaa", &req("https://x/a")).unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    app.update(Action::RefreshSidebar);
+    // The list is complete again: this refresh writes nothing.
+    std::fs::remove_file(&aaa).unwrap();
+    app.update(Action::RefreshSidebar);
+    assert!(!app.proj_mut().complete_order().unwrap(), "nothing to write");
+    // And the write fails again.
+    postui_core::fixtures::save_request(dir.path(), "main/aaa", &req("https://x/a")).unwrap();
+    app.update(Action::RefreshSidebar);
+    let count = app
+        .toasts
+        .messages()
+        .iter()
+        .filter(|m| m.starts_with("could not update the request order"))
         .count();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(count, 1, "{:?}", app.toasts.messages());

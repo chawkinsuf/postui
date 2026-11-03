@@ -543,7 +543,7 @@ impl Project {
     /// `edit_project_toml`. Returns whether it wrote.
     ///
     /// Every op that changes an order calls it first inside its own
-    /// transaction ([`Self::complete_order_for_op`], best effort), so the
+    /// transaction ([`Self::order_transaction`], best effort), so the
     /// write is part of the op's undo step (D5), and the op then works on
     /// a complete list; the TUI also calls it
     /// whenever it re-lists, outside any transaction (D5a).
@@ -626,15 +626,33 @@ impl Project {
     /// is. The op's own order writes, if any, report their failures, and
     /// the refresh after it toasts this one (spec 2026-11-02 drag into
     /// folders §3, `Project`).
-    ///
-    /// Each op calls it at the top of its own transaction, not from
-    /// [`Self::order_edit`] or `transaction` (D5): it must run before the
-    /// op's file change, since a same-level rename needs the old name
-    /// still listed to complete the list where it drew, and `order_edit`
-    /// runs after that change; `transaction` is shared by ops that never
-    /// touch an order (variables, environments).
     fn complete_order_for_op(&mut self) {
         let _ = self.complete_order();
+    }
+
+    /// `transaction` for an op that changes an order: it completes the
+    /// list first ([`Self::complete_order_for_op`]), then runs `f`, so the
+    /// completion is part of the op's undo step (D5) and `f` works on a
+    /// complete list. A batch opens one, so it completes once; the bodies
+    /// its items share don't open their own.
+    ///
+    /// The completion lives here, not in [`Self::order_edit`] or
+    /// `transaction` (D5): it must run before the op's file change, since
+    /// a same-level rename needs the old name still listed to complete the
+    /// list where it drew, and `order_edit` runs after that change;
+    /// `transaction` is shared by ops that never touch an order
+    /// (variables, environments). The two reorders stay on `transaction`
+    /// (see [`Self::set_request_order`]).
+    fn order_transaction<T>(
+        &mut self,
+        label: &str,
+        meta: EntryMeta,
+        f: impl FnOnce(&mut Project) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.transaction(label, meta, |p| {
+            p.complete_order_for_op();
+            f(p)
+        })
     }
 
     /// One read-modify-write per space, however many requests moved.
@@ -698,8 +716,7 @@ impl Project {
         let slug = self.unique_slug(&folder, &leaf, None);
         req.name = Some(leaf.clone());
         let meta = self.meta_for_moves(Vec::new());
-        self.transaction("create request", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("create request", meta, |p| {
             p.fs_create_file(&request_rel(&slug)?, &req.to_toml_string())?;
             p.relist();
             if let Some((space, rel)) = Self::split_space(&slug) {
@@ -778,8 +795,7 @@ impl Project {
         let clean_before = self.held_clean_before();
         let meta = self.meta_for_moves(vec![(from_slug.to_string(), to_slug.clone())]);
         let from_slug = from_slug.to_string();
-        self.transaction("rename request", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("rename request", meta, |p| {
             if to_slug != from_slug {
                 p.fs_rename(&from_path, &to_path)?;
             }
@@ -839,8 +855,7 @@ impl Project {
         let to_path = request_rel(&new_slug)?;
         let meta = self.meta_for_moves(vec![(slug.to_string(), new_slug.clone())]);
         let slug = slug.to_string();
-        self.transaction("move request", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("move request", meta, |p| {
             p.fs_rename(&from_path, &to_path)?;
             if let Some(req) = p.open_requests.shift_remove(&slug) {
                 p.open_requests.insert(new_slug.clone(), req);
@@ -958,8 +973,7 @@ impl Project {
         let new_rel = order::relative(&new_slug, space).unwrap_or(&new_slug).to_string();
         let moves = vec![(slug.to_string(), new_slug.clone())];
         let meta = self.meta_for_moves(moves.clone());
-        self.transaction("move request to folder", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("move request to folder", meta, |p| {
             p.fs_rename(&from_path, &to_path)?;
             if let Some(held) = p.open_requests.shift_remove(slug) {
                 p.open_requests.insert(new_slug.clone(), held);
@@ -1013,8 +1027,7 @@ impl Project {
             })
             .collect();
         let meta = self.meta_for_moves(moves.clone());
-        self.transaction("move folder to folder", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("move folder to folder", meta, |p| {
             p.fs_rename(&from_dir, &to_dir)?;
             for (old, new) in &moves {
                 if let Some(held) = p.open_requests.shift_remove(old) {
@@ -1089,8 +1102,7 @@ impl Project {
                 )
             })
             .collect();
-        self.transaction("move all requests", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("move all requests", meta, |p| {
             for (f, t) in &pairs {
                 p.fs_rename(&request_rel(f)?, &request_rel(t)?)?;
                 if let Some(req) = p.open_requests.shift_remove(f) {
@@ -1125,8 +1137,7 @@ impl Project {
         }
         let meta = self.meta_for_moves(Vec::new());
         // The list is completed once, before any file moves (D5).
-        self.transaction("delete requests", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("delete requests", meta, |p| {
             for s in &batch {
                 p.delete_one(s)?;
             }
@@ -1140,10 +1151,7 @@ impl Project {
             return Err(Error::NotFound(slug.to_string()));
         }
         let meta = self.meta_for_moves(Vec::new());
-        self.transaction("delete request", meta, |p| {
-            p.complete_order_for_op();
-            p.delete_one(slug)
-        })
+        self.order_transaction("delete request", meta, |p| p.delete_one(slug))
     }
 
     /// One delete inside its caller's transaction, the list already
@@ -1182,10 +1190,7 @@ impl Project {
     ) -> Result<String, Error> {
         self.duplicate_source(slug)?;
         let meta = self.meta_for_moves(Vec::new());
-        self.transaction("duplicate request", meta, |p| {
-            p.complete_order_for_op();
-            p.duplicate_one(slug, anchor, above)
-        })
+        self.order_transaction("duplicate request", meta, |p| p.duplicate_one(slug, anchor, above))
     }
 
     /// A counted put (`{N}p`): `count` copies as one undo entry, the way
@@ -1203,8 +1208,7 @@ impl Project {
         self.duplicate_source(slug)?;
         let meta = self.meta_for_moves(Vec::new());
         // The list is completed once, before any file is made (D5).
-        self.transaction("duplicate requests", meta, |p| {
-            p.complete_order_for_op();
+        self.order_transaction("duplicate requests", meta, |p| {
             let mut made: Vec<String> = Vec::new();
             for _ in 0..count.max(1) {
                 let at = match made.last() {
