@@ -635,6 +635,15 @@ pub(super) fn build(f: Fixture) -> App {
                 )
                 .unwrap();
             }
+            // Every list names every item, as the TUI keeps a project's
+            // (spec 2026-11-02 drag into folders D5a), so a put lands
+            // beside its anchor. Written through the fixtures first: the
+            // test root has no `project.toml`, and completing never makes
+            // one.
+            let top: Vec<String> = ["alpha", "beta", "gamma"].map(String::from).to_vec();
+            postui_core::fixtures::set_level_order(app.proj().root(), "main", "", &top).unwrap();
+            app.reload_project_documents();
+            app.proj_mut().complete_order().unwrap();
             app.update(Action::RefreshSidebar);
             if matches!(f, SidebarThreeBetaOpen) {
                 app.update(Action::ForceOpenRequest("main/beta".into()));

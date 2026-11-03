@@ -247,35 +247,56 @@ impl Project {
         Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
     }
 
-    /// Rewrites one level of `space`'s order to `shown`, entries of one
-    /// kind: request slugs, or folder entries (`order::merge_level`'s
-    /// rule). A drag: never merges.
+    /// Rewrites one level of `space`'s order to `shown`, entries of both
+    /// kinds (`order::merge_level`'s rule; a level mixes them, spec
+    /// 2026-11-02 D3). A drag: never merges. The journal label is a plain
+    /// "reorder": a mixed level's first entry says nothing about what
+    /// moved, and the app's undo toast names that itself.
+    ///
+    /// Unlike the other ops that change an order, it doesn't complete the
+    /// list first (spec 2026-11-02 drag into folders §3, `Project`):
+    /// `shown` is the whole level as the sidebar drew it, unlisted items
+    /// included, so the level it writes ends complete and nothing arrives.
+    /// A merge that changes nothing writes nothing and records no step.
+    /// With no `project.toml` it is refused, writing nothing: there is
+    /// nowhere to save the order (same section).
     pub fn set_request_order(
         &mut self,
         space: &str,
         level: &str,
         shown: &[String],
     ) -> Result<Option<ListChange>, Error> {
+        let Some(change) = self.level_change(space, level, shown) else {
+            return Ok(None);
+        };
+        self.require_project_toml()?;
+        self.transaction("reorder", EntryMeta::default(), |p| p.write_change(space, &change))?;
+        Ok(Some(change))
+    }
+
+    /// `space`'s list with `level` rewritten to `shown`
+    /// (`order::merge_level`), or `None` when that changes nothing.
+    fn level_change(&self, space: &str, level: &str, shown: &[String]) -> Option<ListChange> {
         let before = crate::order::space_order(&self.meta, space).to_vec();
         let after = crate::order::merge_level(&before, level, shown);
-        if before == after {
-            return Ok(None);
-        }
-        let folders = shown.first().is_some_and(|e| crate::order::is_folder_entry(e));
-        let label = if folders { "reorder folders" } else { "reorder requests" };
-        self.transaction(label, EntryMeta::default(), |p| {
-            p.order_edit(space, |order| {
-                *order = after.clone();
-                Vec::new()
-            })
-            .map(|_| ())
-        })?;
-        Ok(Some(ListChange { before, after }))
+        (before != after).then_some(ListChange { before, after })
+    }
+
+    /// Writes a [`Self::level_change`]'s list.
+    fn write_change(&mut self, space: &str, change: &ListChange) -> Result<(), Error> {
+        self.order_edit(space, |order| {
+            *order = change.after.clone();
+            Vec::new()
+        })
+        .map(|_| ())
     }
 
     /// alt+↑/↓: the entry `rel` (a request slug or a folder entry, spec
-    /// 2026-11-01 reorder folders) moves by `delta` among `shown`, entries
-    /// of its kind; a burst merges.
+    /// 2026-11-01 reorder folders) moves by `delta` among `shown`, the
+    /// level's entries of both kinds as the sidebar draws them (spec
+    /// 2026-11-02 drag into folders D21); a burst merges. With no
+    /// `project.toml` a move that would change the order is refused, as
+    /// [`Self::set_request_order`].
     pub fn move_request_shown(
         &mut self,
         space: &str,
@@ -294,24 +315,21 @@ impl Project {
         let mut shown = shown.to_vec();
         let moved = shown.remove(pos);
         shown.insert(target, moved);
-        let before = crate::order::space_order(&self.meta, space).to_vec();
-        let after = crate::order::merge_level(&before, level, &shown);
-        if before == after {
+        // Not completed first, as `set_request_order`: `shown` is the
+        // level as drawn, and completing would re-walk the request tree
+        // on every step of a held alt+↓, which the app's
+        // `move_sidebar_row` relies on not doing.
+        let Some(change) = self.level_change(space, level, &shown) else {
             return Ok(None);
-        }
+        };
+        self.require_project_toml()?;
         // A folder's key is its path with the slash (`main/auth/`), which
         // no request slug is, so the two kinds' bursts never merge.
         let key =
             MergeKey::RequestOrder { space: space.to_string(), slug: format!("{space}/{rel}") };
         let label = if crate::order::is_folder_entry(rel) { "move folder" } else { "move request" };
-        self.transaction_merging(label, key, |p| {
-            p.order_edit(space, |order| {
-                *order = after.clone();
-                Vec::new()
-            })
-            .map(|_| ())
-        })?;
-        Ok(Some(ListChange { before, after }))
+        self.transaction_merging(label, key, |p| p.write_change(space, &change))?;
+        Ok(Some(change))
     }
 }
 
@@ -487,6 +505,60 @@ mod tests {
             .unwrap();
         assert_eq!(c.after, ["ping", "c", "a", "b"]);
         assert_eq!(p.journal_len(), 2, "a drag never merges");
+    }
+
+    /// The reorders don't complete the list (spec 2026-11-02 drag into
+    /// folders §3, `Project`): they write their level as the sidebar drew
+    /// it, so a held alt+↓ never re-walks the request tree, and its burst
+    /// stays one undo step. A request added outside (here in another
+    /// space) is left to the refresh write.
+    #[test]
+    fn a_held_keyboard_move_stays_one_step_and_completes_nothing() {
+        let (dir, mut p) = fixture();
+        for n in ["a", "b"] {
+            std::fs::write(
+                dir.path().join(format!("requests/main/{n}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+        }
+        p.relist();
+        std::fs::write(
+            dir.path().join("requests/auth/new.toml"),
+            "method = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
+        let shown: Vec<String> = ["a", "b", "ping"].iter().map(|s| s.to_string()).collect();
+        p.move_request_shown("main", "", &shown, "ping", -1).unwrap();
+        let shown: Vec<String> = ["a", "ping", "b"].iter().map(|s| s.to_string()).collect();
+        p.move_request_shown("main", "", &shown, "ping", -1).unwrap();
+        assert_eq!(crate::order::space_order(p.meta(), "main"), ["ping", "a", "b"]);
+        assert_eq!(p.journal_len(), 1, "one undo step");
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(!text.contains("\"new\""), "nothing completed: {text}");
+    }
+
+    /// A reorder whose merge changes nothing writes nothing and records
+    /// nothing, even with an item the list misses (spec 2026-11-02 drag
+    /// into folders §3, `Project`).
+    #[test]
+    fn a_reorder_that_changes_nothing_writes_and_records_nothing() {
+        let (dir, mut p) = fixture();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [\"ping\"]\n",
+        )
+        .unwrap();
+        p.reload_all();
+        std::fs::write(
+            dir.path().join("requests/main/new.toml"),
+            "method = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
+        let before = read(&dir, "project.toml");
+        assert!(p.set_request_order("main", "", &["ping".into()]).unwrap().is_none());
+        assert_eq!(read(&dir, "project.toml"), before);
+        assert_eq!(p.journal_len(), 0);
     }
 
     #[test]

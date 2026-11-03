@@ -228,11 +228,19 @@ impl App {
                 // A live thumb drag or text sweep owns the button as well
                 // (a live pane resize returned above): a press left armed
                 // by a lost release never promotes over one of those.
+                // The list's empty area below its rows is a drop zone too
+                // (spec 2026-11-02 D13), so reaching it promotes like a row
+                // does: a press on the last row can be dragged straight
+                // down and out of its folder.
                 let other_drag = self.drag.is_some() || self.text_drag.is_some();
+                let on_row = matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)));
+                let below = !on_row
+                    && self.sidebar_drag_inside(m.column, m.row)
+                    && self.sidebar.below_rows(m.row);
                 if let Some((_, pressed)) = self.sidebar_press.clone()
                     && self.modals.is_empty()
                     && !other_drag
-                    && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)))
+                    && (on_row || below)
                 {
                     match self.sidebar.row_of_key(&pressed) {
                         None => self.sidebar_press = None,
@@ -240,7 +248,11 @@ impl App {
                         // request, a folder's row and its open subtree,
                         // where no motion can move anything.
                         Some(i)
-                            if !self.sidebar.span_of(i).contains(&self.sidebar.row_at_y(m.row)) =>
+                            if below
+                                || !self
+                                    .sidebar
+                                    .span_of(i)
+                                    .contains(&self.sidebar.row_at_y(m.row)) =>
                         {
                             let space = self.active_space();
                             if self.sidebar.begin_drag(i, &space) {

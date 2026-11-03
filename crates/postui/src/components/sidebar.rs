@@ -10,6 +10,7 @@ use crate::paint::{
 use crate::theme::Theme;
 use crate::ui::clip;
 use postui_core::model::Method;
+use postui_core::order::LevelItem;
 use postui_core::storage::RequestListing;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -19,6 +20,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 /// One visible row of the sidebar tree: either a collapsible folder (derived
 /// from a slug prefix, selectable but never "open") or a request leaf
@@ -115,12 +117,16 @@ pub struct Sidebar {
     /// easing — once the anim settles the band paints solely on the open
     /// row and this goes stale harmlessly.
     pub band_fade_from: Option<usize>,
-    /// A live row drag (spec §Sidebar): while `Some`, `rebuild` shows
-    /// `working` for that one level instead of the order list.
+    /// A live row drag (spec 2026-11-02 drag into folders §3 Sidebar):
+    /// while `Some`, `rebuild` draws the dragged block at its `target`.
     pub drag: Option<RowDrag>,
     /// Screen row of the first list line as of the last draw — with
     /// `scroll`, maps a pointer row back to a row index (`row_at_y`).
     last_list_top: u16,
+    /// Screen column of the list's left edge as of the last draw: a row
+    /// at depth `d` draws its glyph at `last_list_x + 1 + 2 * d`, the
+    /// fixed indent a drag's pointer column is read against (D12).
+    last_list_x: u16,
     /// The row the cursor is really on while a closed folder hides it, and
     /// the folder row it shows on (plan M5b Deviation 10): Vim's cursor
     /// keeps its line inside a closed fold, so `zc` then `zo` comes back.
@@ -129,27 +135,65 @@ pub struct Sidebar {
     fold_row: Option<(RowKey, RowKey)>,
 }
 
-/// A live drag of one sidebar row, a request or a folder (spec 2026-11-01
-/// reorder folders): the working order the pointer has arranged so far,
-/// for the dragged row's sibling group. The entries are the order list's
-/// own: relative request slugs, or folder entries (`"auth/"`).
+/// A live drag of one sidebar row, a request or a folder with its open
+/// contents (spec 2026-11-02 drag into folders §3 Sidebar). It records a
+/// place, never a made-up slug: the dragged row keeps its real key
+/// wherever it is drawn, so everything keyed by slug (the cursor, the open
+/// request's band, the unsaved and in-flight marks) keeps finding it.
+///
+/// A place is a level of the drag's space (relative, `""` for the top,
+/// `"users/v1"` for a folder) and an index among that level's items
+/// without the dragged one, as they draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowDrag {
-    pub key: RowKey,           // the dragged row
-    pub space: String,         // the space the drag started in
-    pub level: String,         // level within the space ("" root, "auth", …)
-    pub original: Vec<String>, // sibling order at drag start (entries)
-    pub working: Vec<String>,  // current on-screen order (entries)
+    /// The dragged row's real key.
+    pub key: RowKey,
+    /// The space the drag started in.
+    pub space: String,
+    /// Where the block started: a cancel shows it there again.
+    pub origin: (String, usize),
+    /// Where the block shows now, and where a drop puts it.
+    pub target: (String, usize),
+    /// The closed folder the pointer rests on (D9), by full path, and
+    /// since when: it springs open after [`SPRING_DWELL`].
+    pub dwell: Option<(String, Instant)>,
+}
+
+/// How long the pointer rests on a closed folder's row before the folder
+/// springs open and the block goes in first (spec 2026-11-02 drag into
+/// folders D9).
+pub const SPRING_DWELL: Duration = Duration::from_millis(800);
+
+/// The dragged block as `build_rows` draws it: its item, the requests
+/// under it (a folder's contents; empty for a request), and the place it
+/// shows at.
+struct DragDraw<'a> {
+    item: LevelItem<'a>,
+    inside: Vec<&'a RequestListing>,
+    /// The full prefix of the level it shows in (`"main/"`, `"main/users/"`).
+    prefix: String,
+    at: usize,
+}
+
+impl DragDraw<'_> {
+    fn is(&self, item: &LevelItem<'_>) -> bool {
+        match (&self.item, item) {
+            (LevelItem::Request(a), LevelItem::Request(b)) => a.slug == b.slug,
+            (LevelItem::Folder(a), LevelItem::Folder(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// The parts of a row rebuild that are the same at every folder level:
-/// which folders are open, the space being drawn, and the order list it
-/// is drawn with (a live drag's working order already merged in).
+/// which folders are open, the space being drawn, the order list it is
+/// drawn with (indexed once per rebuild), and a live drag's block.
 #[derive(Clone, Copy)]
 struct LevelCtx<'a> {
     expanded: &'a BTreeSet<String>,
     space: &'a str,
-    order: &'a [String],
+    order: &'a postui_core::order::OrderIndex<'a>,
+    drag: Option<&'a DragDraw<'a>>,
 }
 
 impl Row {
@@ -169,11 +213,10 @@ impl Row {
 }
 
 impl Sidebar {
-    /// Rebuilds `rows` as a tree from a fresh listing: at each level, this
-    /// level's requests come first — the ones in `order` in list order,
-    /// then the rest by display name — then its subfolders (sorted by
-    /// name); a folder's children are emitted only when `expanded`
-    /// contains its path. Preserves the current selection by row identity
+    /// Rebuilds `rows` as a tree from a fresh listing: each level's
+    /// requests and folders mixed in `order` (`order::order_entries`); a
+    /// folder's children are emitted only when `expanded` contains its
+    /// path. Preserves the current selection by row identity
     /// (folder path or request slug) across the rebuild; a selection whose
     /// row vanished lands on the neighbouring row instead, and while any
     /// rows exist the cursor is never left empty (G5).
@@ -200,34 +243,29 @@ impl Sidebar {
         let prev = self.selected_key();
         let prev_index = self.selected;
         let prefix = format!("{space}/");
-        let mut sorted: Vec<RequestListing> =
-            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
-        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
+        let entries: Vec<&RequestListing> =
+            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
 
-        // A live drag's working order is merged into the saved list for its
-        // one level and kind, so the rows show it while the level's other
-        // kind (a request drag's folders, a folder drag's requests) keeps
-        // its saved order. The entries are relative to the space the drag
-        // started in; if the space changed under a live drag (a space
-        // switch with the button still held) they mean nothing here, so
-        // the rows fall back to the new space's saved order.
-        let merged;
-        let order = match self.drag.as_ref().filter(|d| d.space == space) {
-            Some(d) => {
-                merged = postui_core::order::merge_level(order, &d.level, &d.working);
-                merged.as_slice()
-            }
-            None => order,
-        };
+        // A live drag's block is left out of its own level and drawn at
+        // its target, with its real keys. A drag belongs to the space it
+        // started in: in any other (a space switch with the button still
+        // held) the rows are the saved ones.
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|d| d.space == space)
+            .and_then(|d| Self::drag_draw(&entries, d));
         let mut rows = Vec::new();
-        let ctx = LevelCtx { expanded, space, order };
-        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
+        let order = postui_core::order::OrderIndex::new(order);
+        let ctx = LevelCtx { expanded, space, order: &order, drag: drag.as_ref() };
+        Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
-        // The row a closed folder hid is remembered only while it is still
-        // listed: once an outside delete takes it, the folder row's keys
-        // (`h`, `l`, `zo`) act on the folder again.
+        // The row a closed folder hid is remembered only while the space
+        // drawn still lists it: once an outside delete takes it, the folder
+        // row's keys (`h`, `l`, `zo`) act on the folder again, and another
+        // space's rows forget it.
         if let Some((real, _)) = &self.fold_row
-            && !Self::listed(&sorted, real)
+            && !Self::listed(&entries, real)
         {
             self.fold_row = None;
         }
@@ -294,12 +332,12 @@ impl Sidebar {
         expanded: &BTreeSet<String>,
     ) -> Option<String> {
         let prefix = format!("{space}/");
-        let mut sorted: Vec<RequestListing> =
-            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
-        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
-        let ctx = LevelCtx { expanded, space, order };
+        let entries: Vec<&RequestListing> =
+            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
+        let order = postui_core::order::OrderIndex::new(order);
+        let ctx = LevelCtx { expanded, space, order: &order, drag: None };
         let mut rows = Vec::new();
-        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
+        Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
             Row::Request { slug, .. } => Some(slug),
             Row::Folder { .. } => None,
@@ -328,55 +366,108 @@ impl Sidebar {
         self.first_visible_request_in_space(space, order, &self.folders_in(space))
     }
 
-    /// Builds the rows for one folder level (`prefix`, possibly empty for
-    /// the root): direct requests first — the ones in `order` in list
-    /// order, then the rest by display name — then subfolders, likewise
-    /// the listed ones first and the rest by name, recursing into each
-    /// expanded one. `entries` must already be sorted by slug (the folder
-    /// grouping walks slug paths) and every entry must start with
-    /// `prefix`.
+    /// Builds the rows for one folder level (`prefix`, `"space/"` for the
+    /// root): its requests and folders mixed, in the order
+    /// `order::order_entries` draws them (spec 2026-11-02 drag into
+    /// folders D3), recursing into each expanded folder at its place.
+    /// Every entry must start with `prefix`.
+    ///
+    /// A live drag's block is left out wherever it is listed and drawn at
+    /// its target. Everything else draws as it would without the drag: a
+    /// folder the block leaves empty still has the block's requests under
+    /// it in the listing, so it stays drawn, open and empty (D15).
     fn build_rows(
-        entries: &[RequestListing],
+        entries: &[&RequestListing],
         prefix: &str,
         depth: usize,
         ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
     ) {
-        let LevelCtx { expanded, space, order } = *ctx;
-        let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
-            std::collections::BTreeMap::new();
-        let mut requests: Vec<&RequestListing> = Vec::new();
-        for e in entries {
-            let rest = &e.slug[prefix.len()..];
-            if let Some((seg, _)) = rest.split_once('/') {
-                let path =
-                    if prefix.is_empty() { seg.to_string() } else { format!("{prefix}{seg}") };
-                folder_children.entry(path).or_default().push(e.clone());
-            } else {
-                requests.push(e);
+        let LevelCtx { space, order, drag, .. } = *ctx;
+        let level = postui_core::order::split_level(entries, prefix);
+        let paths = level.folder_paths();
+        let mut items = postui_core::order::order_entries(&level.requests, &paths, order, space);
+        if let Some(d) = drag {
+            items.retain(|item| !d.is(item));
+        }
+        let block_at = drag.filter(|d| d.prefix == prefix).map(|d| d.at.min(items.len()));
+        for n in 0..=items.len() {
+            if block_at == Some(n)
+                && let Some(d) = drag
+            {
+                // The block's own contents draw as they are: nothing in
+                // them is the block, and no target is inside it (D2).
+                let inner = LevelCtx { drag: None, ..*ctx };
+                Self::push_item(d.item, &d.inside, depth, &inner, rows);
+            }
+            if let Some(&item) = items.get(n) {
+                let inside = match item {
+                    LevelItem::Folder(path) => level.folders[path].as_slice(),
+                    LevelItem::Request(_) => &[],
+                };
+                Self::push_item(item, inside, depth, ctx, rows);
             }
         }
-        let requests = postui_core::order::order_level(&requests, order, space);
-        for e in requests {
-            let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
-            rows.push(Row::Request {
-                name: e.name.clone().unwrap_or_else(|| leaf.to_string()),
-                slug: e.slug.clone(),
-                depth,
-                broken: e.broken.clone(),
-                method: e.method,
-            });
-        }
-        let paths: Vec<String> = folder_children.keys().cloned().collect();
-        for path in postui_core::order::order_folders(&paths, order, space) {
-            let name = Self::folder_name(&path).to_string();
-            let is_expanded = expanded.contains(&path);
-            rows.push(Row::Folder { path: path.clone(), name, depth, expanded: is_expanded });
-            if is_expanded {
-                let child_prefix = format!("{path}/");
-                Self::build_rows(&folder_children[&path], &child_prefix, depth + 1, ctx, rows);
+    }
+
+    /// One item's row at `depth`, then, for an open folder, its contents
+    /// (`inside`: every request under it) one level deeper.
+    fn push_item(
+        item: LevelItem<'_>,
+        inside: &[&RequestListing],
+        depth: usize,
+        ctx: &LevelCtx<'_>,
+        rows: &mut Vec<Row>,
+    ) {
+        match item {
+            LevelItem::Request(e) => {
+                let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
+                rows.push(Row::Request {
+                    name: e.name.clone().unwrap_or_else(|| leaf.to_string()),
+                    slug: e.slug.clone(),
+                    depth,
+                    broken: e.broken.clone(),
+                    method: e.method,
+                });
+            }
+            LevelItem::Folder(path) => {
+                let name = Self::folder_name(path).to_string();
+                let is_expanded = ctx.expanded.contains(path);
+                rows.push(Row::Folder {
+                    path: path.to_string(),
+                    name,
+                    depth,
+                    expanded: is_expanded,
+                });
+                if is_expanded {
+                    Self::build_rows(inside, &format!("{path}/"), depth + 1, ctx, rows);
+                }
             }
         }
+    }
+
+    /// `build_rows`' view of a live drag over `entries` (the space's
+    /// listing): `None` when its row is no longer listed.
+    fn drag_draw<'a>(entries: &[&'a RequestListing], d: &RowDrag) -> Option<DragDraw<'a>> {
+        let (item, inside) = match &d.key {
+            RowKey::Request(slug) => {
+                (LevelItem::Request(entries.iter().copied().find(|l| l.slug == *slug)?), Vec::new())
+            }
+            RowKey::Folder(path) => {
+                let under = format!("{path}/");
+                let inside: Vec<&RequestListing> =
+                    entries.iter().copied().filter(|l| l.slug.starts_with(&under)).collect();
+                let first = inside.first()?;
+                (LevelItem::Folder(&first.slug[..path.len()]), inside)
+            }
+        };
+        let (level, at) = &d.target;
+        let prefix = if level.is_empty() {
+            format!("{}/", d.space)
+        } else {
+            format!("{}/{level}/", d.space)
+        };
+        Some(DragDraw { item, inside, prefix, at: *at })
     }
 
     /// The currently selected row's identity (a folder path or a request
@@ -460,7 +551,7 @@ impl Sidebar {
 
     /// Whether `key` names a request in `listing`, or a folder holding one
     /// (a folder exists only through the requests under it).
-    fn listed(listing: &[RequestListing], key: &RowKey) -> bool {
+    fn listed(listing: &[&RequestListing], key: &RowKey) -> bool {
         match key {
             RowKey::Request(slug) => listing.iter().any(|l| l.slug == *slug),
             RowKey::Folder(path) => listing.iter().any(|l| {
@@ -779,35 +870,25 @@ impl Sidebar {
         }
     }
 
-    /// Row `i`'s sibling group, the drag/move group, in row order: each
-    /// sibling's identity and the rows it covers.
-    ///
-    /// - A request row's siblings are the contiguous run of request rows
-    ///   at its depth, one row each. Requests of one level are always
-    ///   contiguous (they precede that level's folders, and a folder row
-    ///   separates them from the next level).
-    /// - A folder row's siblings are the folder rows at its depth under
-    ///   the same parent, each covering its own row and its open subtree
-    ///   (spec 2026-11-01 reorder folders R3). They follow the level's
-    ///   requests and run until a shallower row or the end.
+    /// Row `i`'s sibling group, the move group of alt+↑/↓, in row order:
+    /// every row at its depth under the same parent, of either kind (spec
+    /// 2026-11-02 drag into folders D21), each with the rows it covers: a
+    /// request its own row, a folder its row and its open subtree (spec
+    /// 2026-11-01 reorder folders R3). The group runs between the
+    /// parent's row (a shallower row) and the next shallower row.
     pub fn siblings(&self, i: usize) -> Option<Vec<(RowKey, std::ops::Range<usize>)>> {
-        let row = self.rows.get(i)?;
-        let depth = row.depth();
-        let folder = matches!(row, Row::Folder { .. });
-        let sibling = |r: &Row| r.depth() == depth && matches!(r, Row::Folder { .. }) == folder;
-        // A folder's run also takes in the rows of its siblings' subtrees.
-        let member = |r: &Row| sibling(r) || (folder && r.depth() > depth);
+        let depth = self.rows.get(i)?.depth();
         let mut first = i;
-        while first > 0 && member(&self.rows[first - 1]) {
+        while first > 0 && self.rows[first - 1].depth() >= depth {
             first -= 1;
         }
         let mut end = i + 1;
-        while end < self.rows.len() && member(&self.rows[end]) {
+        while end < self.rows.len() && self.rows[end].depth() >= depth {
             end += 1;
         }
         let mut out: Vec<(RowKey, std::ops::Range<usize>)> = Vec::new();
         for j in first..end {
-            if sibling(&self.rows[j]) {
+            if self.rows[j].depth() == depth {
                 if let Some((_, prev)) = out.last_mut() {
                     prev.end = j;
                 }
@@ -863,6 +944,18 @@ impl Sidebar {
         self.last_list_height
     }
 
+    /// Whether screen row `y` is below the last row drawn (D13).
+    pub fn below_rows(&self, y: u16) -> bool {
+        let shown = self.rows.len().saturating_sub(self.scroll);
+        y as usize >= self.last_list_top as usize + shown
+    }
+
+    /// Whether screen row `y` is above the first row with the list at its
+    /// top (D14); scrolled down, that area scrolls the list instead.
+    pub fn above_rows(&self, y: u16) -> bool {
+        y < self.last_list_top && self.scroll == 0
+    }
+
     /// While dragging, a pointer resting on the list's first or last
     /// screen row asks for a one-row scroll in that direction (the tick
     /// handler applies it), so a long list can be dragged through.
@@ -902,102 +995,243 @@ impl Sidebar {
         self.rows.iter().position(|r| Self::row_matches(r, key))
     }
 
-    /// The listing the rows were last built from: every space, not just
-    /// the visible one.
-    pub fn listing(&self) -> &[RequestListing] {
-        &self.listing
-    }
-
-    /// Starts a drag of row `i`, a request or a folder: records its
-    /// sibling group's order as both `original` and the starting
-    /// `working` order.
+    /// Starts a drag of row `i`, a request or a folder of `space`: its
+    /// place now is both where it started and where it shows.
     pub fn begin_drag(&mut self, i: usize, space: &str) -> bool {
-        let Some((level, group)) = self.level_group(i, space) else {
+        let Some(key) = self.rows.get(i).map(Row::key) else {
             return false;
         };
+        let Some(level) = Self::level_of_key(&key, space) else {
+            return false;
+        };
+        let at = (0..i).filter(|&j| self.level_of_row(j, space) == level).count();
+        let place = (level, at);
         self.drag = Some(RowDrag {
-            key: self.rows[i].key(),
+            key,
             space: space.to_string(),
-            level,
-            original: group.clone(),
-            working: group,
+            origin: place.clone(),
+            target: place,
+            dwell: None,
         });
         true
     }
 
-    /// Moves the dragged row toward the pointer's row `i` within its
-    /// sibling group (clamped to the group). Returns whether the working
-    /// order changed; the caller then `rebuild`s.
+    /// The level `key` belongs to in `space` (relative, `""` for the
+    /// top), by its own path; `None` outside `space`.
+    fn level_of_key(key: &RowKey, space: &str) -> Option<String> {
+        let (RowKey::Request(full) | RowKey::Folder(full)) = key;
+        let rel = postui_core::order::relative(full, space)?;
+        Some(postui_core::order::level_of(rel).to_string())
+    }
+
+    /// Row `j`'s level in `space` by its key. Right for every row but the
+    /// dragged block's, which draws at its target, away from its key.
+    fn level_of_row(&self, j: usize, space: &str) -> String {
+        Self::level_of_key(&self.rows[j].key(), space).unwrap_or_default()
+    }
+
+    /// The rows the dragged block covers: its row, and a folder's open
+    /// contents.
+    fn drag_block(&self) -> Option<std::ops::Range<usize>> {
+        let key = &self.drag.as_ref()?.key;
+        self.row_of_key(key).map(|i| self.span_of(i))
+    }
+
+    /// Every row outside `block`, in row order: the rows as they show
+    /// wherever the block goes, since only the block moves.
+    fn rest_rows(&self, block: &std::ops::Range<usize>) -> Vec<usize> {
+        (0..self.rows.len()).filter(|j| !block.contains(j)).collect()
+    }
+
+    /// Where among `rest` (an index into it) the block sits at `target`:
+    /// before the level's item at that index, else after the level's last
+    /// item and its open contents, else (a level with nothing else shown)
+    /// right under its open folder's row, or first for the top level.
+    /// `None` when the level shows nowhere.
+    fn rest_pos(&self, rest: &[usize], target: &(String, usize), space: &str) -> Option<usize> {
+        let (level, at) = target;
+        let items: Vec<usize> =
+            (0..rest.len()).filter(|&m| self.level_of_row(rest[m], space) == *level).collect();
+        if let Some(&m) = items.get(*at) {
+            return Some(m);
+        }
+        if let Some(&last) = items.last() {
+            let depth = self.rows[rest[last]].depth();
+            let mut m = last + 1;
+            while m < rest.len() && self.rows[rest[m]].depth() > depth {
+                m += 1;
+            }
+            return Some(m);
+        }
+        if level.is_empty() {
+            return Some(0);
+        }
+        let path = format!("{space}/{level}");
+        rest.iter()
+            .position(|&j| matches!(&self.rows[j], Row::Folder { path: p, expanded: true, .. } if *p == path))
+            .map(|m| m + 1)
+    }
+
+    /// D12: the place the block takes at `pos` among `rest`, with the
+    /// pointer at screen column `column`. Between row P (above, the block
+    /// left out) and row N (below) several levels can share the screen
+    /// row: from the innermost (P's level, or P's inside when P is an open
+    /// folder) out to N's level (the top level with no N), each inner one
+    /// a folder whose last row is P. The column picks one by the rows'
+    /// fixed two-column indent, clamped to that range, so anything right
+    /// of the innermost indent picks the innermost. It is read against
+    /// the fixed indent columns, never where the block's name is drawn, so
+    /// moving in or out never changes the pick. The index is the number of
+    /// the picked level's items above `pos`: an inner level's end, or N's
+    /// own index in N's level.
+    fn place_at(&self, rest: &[usize], pos: usize, column: u16, space: &str) -> (String, usize) {
+        let above = pos.checked_sub(1).map(|m| rest[m]);
+        let (inner, inner_depth) = match above.map(|j| (j, &self.rows[j])) {
+            Some((_, Row::Folder { path, expanded: true, depth, .. })) => (
+                postui_core::order::relative(path, space).unwrap_or_default().to_string(),
+                depth + 1,
+            ),
+            Some((j, row)) => (self.level_of_row(j, space), row.depth()),
+            None => (String::new(), 0),
+        };
+        let outer_depth = rest.get(pos).map_or(0, |&j| self.rows[j].depth()).min(inner_depth);
+        let text_x = self.last_list_x + 1;
+        let picked = (column.saturating_sub(text_x) / 2) as usize;
+        let depth = picked.clamp(outer_depth, inner_depth);
+        let level = inner.split('/').take(depth).collect::<Vec<_>>().join("/");
+        let at = rest[..pos].iter().filter(|&&j| self.level_of_row(j, space) == level).count();
+        (level, at)
+    }
+
+    /// Sets the drag's target and dwell; `true` when either changed.
+    fn set_drag(&mut self, target: (String, usize), dwell: Option<(String, Instant)>) -> bool {
+        let Some(d) = self.drag.as_mut() else {
+            return false;
+        };
+        let changed = d.target != target || d.dwell != dwell;
+        d.target = target;
+        d.dwell = dwell;
+        changed
+    }
+
+    /// The pointer on row `i` at screen column `column` during a drag
+    /// (spec 2026-11-02 drag into folders D8–D12), decided from the rows
+    /// as they show now. `true` when the place or the dwell changed; the
+    /// caller then `rebuild`s.
     ///
-    /// The rule (spec 2026-11-01 reorder folders R4): the dragged row
-    /// passes the sibling above once `i` is on or above that sibling's
-    /// first row, and the one below once `i` is on or below its last row,
-    /// repeating while that holds. A folder can be many rows tall, and a
-    /// rule that took "the sibling under the pointer" as the target would
-    /// swap a short row past a tall one and straight back on the next
-    /// motion event; this one is stable, because a pass leaves the
-    /// pointer short of the passed sibling's far edge. For one-row
-    /// siblings (every request) it puts the row at the pointer's slot.
+    /// - On the dragged block (D8): only D12's column.
+    /// - On a closed folder (D9): the block waits beside it in its level,
+    ///   on the side it came from (above it when the block is above, below
+    ///   it when below), and the dwell starts or keeps on it.
+    /// - On an open folder (D10): the block is its first item.
+    /// - On any other row X (D11): the block takes X's place in X's level
+    ///   (before X coming from below, after it coming from above), so it
+    ///   lands under the pointer; then D12's column.
     ///
-    /// The dragged row is found among the rows by its key, never by
-    /// offset, so a listing that changed under the drag can never make it
-    /// move the wrong sibling; `working` becomes the order now on screen.
-    pub fn drag_to_row(&mut self, i: usize) -> bool {
-        let Some((key, space)) = self.drag.as_ref().map(|d| (d.key.clone(), d.space.clone()))
+    /// Any row but the dwelt folder clears the dwell. The block's own rows
+    /// are D8, so a folder never targets inside itself (D2).
+    pub fn drag_to(&mut self, i: usize, column: u16) -> bool {
+        let Some((space, target, dwell)) =
+            self.drag.as_ref().map(|d| (d.space.clone(), d.target.clone(), d.dwell.clone()))
         else {
             return false;
         };
-        let Some(sibs) = self.row_of_key(&key).and_then(|row| self.siblings(row)) else {
+        let (Some(block), Some(row)) = (self.drag_block(), self.rows.get(i)) else {
             return false;
         };
-        let first = sibs[0].1.start;
-        let mut shown: Vec<(String, usize)> =
-            sibs.iter().map(|(k, r)| (Self::entry_of(k, &space), r.len())).collect();
-        let Some(start_at) = sibs.iter().position(|(k, _)| *k == key) else {
+        let rest = self.rest_rows(&block);
+        if block.contains(&i) {
+            let Some(pos) = self.rest_pos(&rest, &target, &space) else {
+                return false;
+            };
+            let place = self.place_at(&rest, pos, column, &space);
+            return self.set_drag(place, None);
+        }
+        let Some(x) = rest.iter().position(|&j| j == i) else {
             return false;
         };
-        let top = |shown: &[(String, usize)], j: usize| -> usize {
-            first + shown[..j].iter().map(|(_, h)| h).sum::<usize>()
-        };
-        let mut at = start_at;
-        loop {
-            if at > 0 && i <= top(&shown, at - 1) {
-                shown.swap(at - 1, at);
-                at -= 1;
-            } else if at + 1 < shown.len() && i + 1 >= top(&shown, at + 1) + shown[at + 1].1 {
-                shown.swap(at, at + 1);
-                at += 1;
-            } else {
-                break;
+        let from_above = block.start < i;
+        match row {
+            Row::Folder { path, expanded: false, .. } => {
+                let level = self.level_of_row(i, &space);
+                let at =
+                    rest[..x].iter().filter(|&&j| self.level_of_row(j, &space) == level).count();
+                let at = if from_above { at } else { at + 1 };
+                let since = match dwell {
+                    Some((p, since)) if p == *path => since,
+                    _ => Instant::now(),
+                };
+                let dwell = Some((path.clone(), since));
+                self.set_drag((level, at), dwell)
+            }
+            Row::Folder { path, expanded: true, .. } => {
+                let level = postui_core::order::relative(path, &space).unwrap_or_default();
+                self.set_drag((level.to_string(), 0), None)
+            }
+            Row::Request { .. } => {
+                let pos = if from_above { x + 1 } else { x };
+                let place = self.place_at(&rest, pos, column, &space);
+                self.set_drag(place, None)
             }
         }
-        if at == start_at {
-            return false;
-        }
-        // The working order is the siblings as they now show. In the app
-        // the listing never changes under a live drag (a reload that
-        // changes the tree, and every landing, cancel it first), so this
-        // is `working` permuted; given a changed listing it still names
-        // exactly the rows on screen, and an entry no longer shown keeps
-        // its slot in the saved list, which `merge_level` leaves alone.
-        let drag = self.drag.as_mut().expect("checked above");
-        drag.working = shown.into_iter().map(|(e, _)| e).collect();
-        true
     }
 
-    /// Puts the working order back to the order the drag started from,
-    /// without ending the drag: the preview of a cancel, shown while the
-    /// pointer is outside the pane (where a release would cancel).
-    /// Returns whether anything changed; the caller then `rebuild`s.
-    pub fn drag_reset(&mut self) -> bool {
-        let Some(drag) = self.drag.as_mut() else {
+    /// D13: the pointer below the last row. The block goes last, after
+    /// the last row, and D12's column picks the level, up to the top.
+    pub fn drag_below(&mut self, column: u16) -> bool {
+        let Some(space) = self.drag.as_ref().map(|d| d.space.clone()) else {
             return false;
         };
-        if drag.working == drag.original {
+        let Some(block) = self.drag_block() else {
             return false;
+        };
+        let rest = self.rest_rows(&block);
+        let place = self.place_at(&rest, rest.len(), column, &space);
+        self.set_drag(place, None)
+    }
+
+    /// D14: the pointer above the first row, the list at its top: the
+    /// first place in the top level.
+    pub fn drag_above(&mut self) -> bool {
+        self.set_drag((String::new(), 0), None)
+    }
+
+    /// The preview of a cancel, shown while the pointer is outside the
+    /// pane (where a release would cancel): the block back where it
+    /// started.
+    pub fn drag_home(&mut self) -> bool {
+        let Some(origin) = self.drag.as_ref().map(|d| d.origin.clone()) else {
+            return false;
+        };
+        self.set_drag(origin, None)
+    }
+
+    /// The dwelt folder sprang open (D9): the block goes in as its first
+    /// item, and the dwell ends.
+    pub fn drag_into(&mut self, path: &str) -> bool {
+        let Some(space) = self.drag.as_ref().map(|d| d.space.clone()) else {
+            return false;
+        };
+        let level = postui_core::order::relative(path, &space).unwrap_or_default().to_string();
+        self.set_drag((level, 0), None)
+    }
+
+    /// The entries of the level a drop lands in, in the order the rows
+    /// show them with the block at its target: the order a drop in the
+    /// block's own level writes (D20). `None` with no drag.
+    pub fn drop_entries(&self) -> Option<Vec<String>> {
+        let d = self.drag.as_ref()?;
+        let block = self.drag_block()?;
+        let (level, _) = &d.target;
+        let mut out = Vec::new();
+        for j in 0..self.rows.len() {
+            if j == block.start {
+                out.push(Self::entry_of(&d.key, &d.space));
+            } else if !block.contains(&j) && self.level_of_row(j, &d.space) == *level {
+                out.push(Self::entry_of(&self.rows[j].key(), &d.space));
+            }
         }
-        drag.working = drag.original.clone();
-        true
+        Some(out)
     }
 }
 
@@ -1179,6 +1413,7 @@ impl Component for Sidebar {
         };
         self.last_list_height = list_area.height as usize;
         self.last_list_top = list_area.y;
+        self.last_list_x = list_area.x;
 
         if self.rows.is_empty() {
             let empty = match &self.notice {
@@ -1295,6 +1530,12 @@ impl Component for Sidebar {
             let is_cursor =
                 ctx.focused && self.selected == Some(i) && !is_band_row && band_alpha.is_none();
             let is_dragged = self.drag.as_ref().is_some_and(|d| Self::row_matches(row, &d.key));
+            // The closed folder a drag rests on (D9) lights as a hover
+            // does, at full strength: it is where the block is about to go.
+            let is_dwelt = matches!(
+                (row, self.drag.as_ref().and_then(|d| d.dwell.as_ref())),
+                (Row::Folder { path, .. }, Some((dwelt, _))) if path == dwelt
+            );
 
             // The dragged row keeps the selected fill while it travels, so
             // it reads the same as the settled selection band.
@@ -1302,11 +1543,12 @@ impl Component for Sidebar {
                 RowHighlight::Selected
             } else if is_cursor {
                 RowHighlight::Cursor
-            } else if is_hovered && band_alpha.is_none() {
+            } else if is_dwelt || (is_hovered && band_alpha.is_none()) {
                 RowHighlight::Hover
             } else {
                 RowHighlight::None
             };
+            let hover_t = if is_dwelt { 1.0 } else { hover_t };
 
             // The list's own inset keeps column `area.x` free for the pane
             // focus bar, so every row — selected or hover — spans the full
@@ -1336,7 +1578,8 @@ impl Component for Sidebar {
                 ListRow::resolve_fill(theme, highlight, theme.panel, hover_t)
             };
 
-            self.paint_row(buf, row, text_row, list_area, row_fill, is_open, is_dragged, theme);
+            let mark = RowMark { open: is_open, dragged: is_dragged, dwelt: is_dwelt };
+            self.paint_row(buf, row, text_row, list_area, row_fill, mark, theme);
 
             // Hit math is a direct `y - list_top` on the 1-line pitch now —
             // no half-pad rows to fold in.
@@ -1372,6 +1615,15 @@ fn split_button_row(row: Rect) -> Option<(Rect, Rect, &'static str)> {
 /// Column width of the request row's method tag field (text right-padded
 /// to this many columns before the display name starts).
 const TAG_WIDTH: u16 = 5;
+
+/// What marks a row beyond its fill: the open request (bold name), the
+/// dragged row (grip glyph), the folder a drag rests on (accent).
+#[derive(Clone, Copy)]
+struct RowMark {
+    open: bool,
+    dragged: bool,
+    dwelt: bool,
+}
 
 impl Sidebar {
     /// Number of rows that fit in a list area `list_height` lines tall, on
@@ -1416,7 +1668,7 @@ impl Sidebar {
     /// Paints one row's text-row content (method tag/disclosure + name) at
     /// `text_row`, on top of the fill already painted there (by `ListRow`
     /// or the travel band). `row_fill` is that fill — the surface the tag
-    /// text and name sit on. `open` marks the OPEN request (bolds its
+    /// text and name sit on. `mark.open` marks the OPEN request (bolds its
     /// name); the selection band is that row's real marker, so the name
     /// itself keeps the normal text color.
     #[allow(clippy::too_many_arguments)]
@@ -1427,10 +1679,10 @@ impl Sidebar {
         text_row: u16,
         list_area: Rect,
         row_fill: Color,
-        open: bool,
-        dragged: bool,
+        mark: RowMark,
         theme: &Theme,
     ) {
+        let RowMark { open, dragged, dwelt } = mark;
         let right = list_area.x + list_area.width;
         // Column 0 is reserved for the selection's accent bar (painted by
         // `ListRow` or the travel band), whether or not this row is
@@ -1450,19 +1702,14 @@ impl Sidebar {
                     return;
                 }
                 let glyph = if *expanded { "\u{2304}" } else { "\u{203a}" };
-                text(buf, x, text_row, glyph, theme.text_muted, row_fill, false);
+                // A folder a drag rests on (D9) shows its glyph and name in
+                // the accent.
+                let fg = if dwelt { theme.accent } else { theme.text_muted };
+                text(buf, x, text_row, glyph, fg, row_fill, false);
                 let name_x = x + 2;
                 if name_x < right {
                     let label = format!("{name}/");
-                    text(
-                        buf,
-                        name_x,
-                        text_row,
-                        clip(&label, right - name_x),
-                        theme.text_muted,
-                        row_fill,
-                        false,
-                    );
+                    text(buf, name_x, text_row, clip(&label, right - name_x), fg, row_fill, false);
                 }
             }
             Row::Request { slug, name, depth, broken, method } => {
@@ -2552,8 +2799,11 @@ mod tests {
         s.siblings(i).expect("a row").into_iter().map(|(_, r)| (r.start, r.end)).collect()
     }
 
+    /// Spec 2026-11-02 drag into folders D21: a row's siblings are its
+    /// level's items of both kinds, a folder covering its open subtree
+    /// (replaces "one level's requests or its folders").
     #[test]
-    fn siblings_cover_one_levels_requests_or_folders_with_their_open_subtrees() {
+    fn siblings_span_both_kinds_with_their_open_subtrees() {
         let mut s = Sidebar::default();
         s.refresh(
             listing(&["a", "b", "auth/x", "auth/y", "auth/deep/z", "billing/q"]),
@@ -2562,17 +2812,22 @@ mod tests {
             &[],
         );
         // rows: 0 a, 1 b, 2 auth/, 3 x, 4 y, 5 deep/, 6 z, 7 billing/
-        assert_eq!(spans(&s, 0), [(0, 1), (1, 2)]);
-        assert_eq!(spans(&s, 1), [(0, 1), (1, 2)]);
-        assert_eq!(spans(&s, 2), [(2, 7), (7, 8)], "auth/ carries its open subtree");
-        assert_eq!(spans(&s, 7), [(2, 7), (7, 8)]);
-        assert_eq!(spans(&s, 3), [(3, 4), (4, 5)]);
-        assert_eq!(spans(&s, 5), [(5, 7)], "deep/ is auth's only folder");
+        let top = [(0, 1), (1, 2), (2, 7), (7, 8)];
+        for i in [0, 1, 2, 7] {
+            assert_eq!(spans(&s, i), top, "row {i}: auth/ carries its open subtree");
+        }
+        let auth = [(3, 4), (4, 5), (5, 7)];
+        for i in [3, 4, 5] {
+            assert_eq!(spans(&s, i), auth, "row {i}");
+        }
         assert_eq!(spans(&s, 6), [(6, 7)]);
     }
 
+    /// Spec 2026-11-02 drag into folders D3: a level draws its folders and
+    /// requests mixed, in list order, the unlisted folder last (D6;
+    /// replaces 2026-11-01 R1's requests-first rows).
     #[test]
-    fn folders_follow_the_order_list_below_their_levels_requests() {
+    fn a_level_mixes_folders_and_requests_in_list_order() {
         let mut s = Sidebar::default();
         s.refresh(
             listing(&["r", "a/x", "b/y", "c/z"]),
@@ -2580,89 +2835,486 @@ mod tests {
             &expanded(&[]),
             &order(&["c/", "r", "a/"]),
         );
-        assert_eq!(row_slugs(&s), ["main/r", "main/c/", "main/a/", "main/b/"]);
+        assert_eq!(row_slugs(&s), ["main/c/", "main/r", "main/a/", "main/b/"]);
     }
 
-    #[test]
-    fn a_folder_drag_moves_its_open_subtree_with_it() {
-        let mut s = Sidebar::default();
-        let open = expanded(&["a"]);
-        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &[]);
-        // rows: 0 r, 1 a/, 2 x, 3 y, 4 b/
-        assert!(s.begin_drag(4, "main"));
-        let d = s.drag.as_ref().unwrap();
-        assert_eq!(d.key, RowKey::Folder("main/b".into()));
-        assert_eq!(d.original, ["a/", "b/"]);
-        assert_eq!(d.level, "");
-        assert!(s.drag_to_row(1), "the pointer on a/'s first row");
-        s.rebuild("main", &open, &[]);
-        assert_eq!(row_slugs(&s), ["main/r", "main/b/", "main/a/", "main/a/x", "main/a/y"]);
+    // --- drag into folders (spec 2026-11-02 drag into folders D8–D15) ---
+
+    /// A pointer column over the names, right of every indent.
+    const NAMES: u16 = 40;
+
+    /// The pointer column on depth `d`'s indent. Before any draw the list's
+    /// left edge is column 0, so depth `d` draws its glyph at `1 + 2d`.
+    fn col(d: u16) -> u16 {
+        1 + 2 * d
     }
 
-    /// Spec 2026-11-01 reorder folders R4: a short folder passes a tall
-    /// one and stays passed while the pointer rests inside it.
-    #[test]
-    fn a_folder_drag_past_a_tall_neighbour_never_flips_back() {
-        let mut s = Sidebar::default();
-        let open = expanded(&["a"]);
-        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &[]);
-        assert!(s.begin_drag(4, "main"));
-        assert!(s.drag_to_row(1));
-        s.rebuild("main", &open, &[]);
-        // rows: 0 r, 1 b/, 2 a/, 3 x, 4 y — the pointer over a/'s block.
-        for i in [1, 2, 3] {
-            assert!(!s.drag_to_row(i), "row {i} keeps b/ above a/");
+    /// A sidebar over `main` for the drag tests, with its open folders and
+    /// complete list (as the app keeps every list, D5), driven the way the
+    /// app drives it: every change is followed by a rebuild.
+    struct Tree {
+        s: Sidebar,
+        open: BTreeSet<String>,
+        saved: Vec<String>,
+    }
+
+    impl Tree {
+        fn new(slugs: &[&str], saved: &[&str], open: &[&str]) -> Self {
+            let mut s = Sidebar::default();
+            let (open, saved) = (expanded(open), order(saved));
+            s.refresh(listing(slugs), "main", &open, &saved);
+            Tree { s, open, saved }
         }
-        assert!(s.drag_to_row(4), "a/'s last row passes it");
-        s.rebuild("main", &open, &[]);
-        assert_eq!(row_slugs(&s), ["main/r", "main/a/", "main/a/x", "main/a/y", "main/b/"]);
-        // rows: 0 r, 1 a/, 2 x, 3 y, 4 b/ — back to the start, and stable.
-        for i in [2, 3, 4] {
-            assert!(!s.drag_to_row(i), "row {i} keeps b/ below a/");
+
+        fn rebuilt(&mut self, changed: bool) -> bool {
+            if changed {
+                self.s.rebuild("main", &self.open, &self.saved);
+            }
+            changed
+        }
+
+        fn begin(&mut self, i: usize) {
+            assert!(self.s.begin_drag(i, "main"), "row {i} drags");
+        }
+
+        fn to(&mut self, i: usize, column: u16) -> bool {
+            let changed = self.s.drag_to(i, column);
+            self.rebuilt(changed)
+        }
+
+        fn below(&mut self, column: u16) -> bool {
+            let changed = self.s.drag_below(column);
+            self.rebuilt(changed)
+        }
+
+        fn above(&mut self) -> bool {
+            let changed = self.s.drag_above();
+            self.rebuilt(changed)
+        }
+
+        fn target(&self) -> (String, usize) {
+            self.s.drag.as_ref().expect("a live drag").target.clone()
+        }
+
+        fn dwell(&self) -> Option<(String, Instant)> {
+            self.s.drag.as_ref().expect("a live drag").dwell.clone()
+        }
+
+        /// The rows as drawn: two spaces per depth, then the key's path in
+        /// the space (a folder's with its slash). The dragged block keeps
+        /// its own path wherever it draws.
+        fn drawn(&self) -> Vec<String> {
+            self.s
+                .rows
+                .iter()
+                .map(|r| {
+                    let path = match r {
+                        Row::Request { slug, .. } => slug["main/".len()..].to_string(),
+                        Row::Folder { path, .. } => format!("{}/", &path["main/".len()..]),
+                    };
+                    format!("{}{path}", "  ".repeat(r.depth()))
+                })
+                .collect()
         }
     }
 
-    #[test]
-    fn a_sibling_that_appears_under_a_live_drag_can_still_be_passed() {
-        let mut s = Sidebar::default();
-        s.refresh(listing(&["a/x", "c/z"]), "main", &expanded(&[]), &[]);
-        assert!(s.begin_drag(0, "main")); // a/
-        // A reload lists a new folder under the drag.
-        s.refresh(listing(&["a/x", "c/z", "d/q"]), "main", &expanded(&[]), &[]);
-        assert_eq!(row_slugs(&s), ["main/a/", "main/c/", "main/d/"]);
-        assert!(s.drag_to_row(2), "passes the new folder to the end");
-        s.rebuild("main", &expanded(&[]), &[]);
-        assert_eq!(row_slugs(&s), ["main/c/", "main/d/", "main/a/"]);
+    fn place(level: &str, at: usize) -> (String, usize) {
+        (level.to_string(), at)
     }
 
-    #[test]
-    fn a_folder_drag_clamps_to_its_own_group() {
-        let mut s = Sidebar::default();
-        s.refresh(listing(&["r", "a/x", "b/z"]), "main", &expanded(&[]), &[]);
-        // rows: 0 r, 1 a/, 2 b/
-        assert!(s.begin_drag(2, "main"));
-        assert!(s.drag_to_row(0), "a request row pins to the first folder slot");
-        s.rebuild("main", &expanded(&[]), &[]);
-        assert_eq!(row_slugs(&s), ["main/r", "main/b/", "main/a/"]);
+    /// Spec D12's own example: `users/ { login, v1/ { list, get } }` then
+    /// `health`, with `top` above and a closed `zed/` below.
+    /// Rows: 0 top, 1 users/, 2 login, 3 v1/, 4 list, 5 get, 6 health,
+    /// 7 zed/.
+    fn double_end() -> Tree {
+        Tree::new(
+            &["top", "users/login", "users/v1/list", "users/v1/get", "health", "zed/q"],
+            &[
+                "top",
+                "users/",
+                "users/login",
+                "users/v1/",
+                "users/v1/list",
+                "users/v1/get",
+                "health",
+                "zed/",
+                "zed/q",
+            ],
+            &["users", "users/v1"],
+        )
     }
 
+    /// One folder ending above `health`: rows 0 top, 1 users/, 2 login,
+    /// 3 logout, 4 health, 5 zed/.
+    fn single_end() -> Tree {
+        Tree::new(
+            &["top", "users/login", "users/logout", "health", "zed/q"],
+            &["top", "users/", "users/login", "users/logout", "health", "zed/", "zed/q"],
+            &["users"],
+        )
+    }
+
+    /// D11: the pointer on another level's request takes the block to
+    /// that row's level, under the pointer; within one level it is a
+    /// reorder (2026-11-01 R4). A still pointer moves nothing.
     #[test]
-    fn a_request_drag_keeps_its_levels_folder_order_and_back() {
-        let mut s = Sidebar::default();
-        let saved = order(&["g/", "f/"]);
-        s.refresh(listing(&["a", "b", "f/x", "g/y"]), "main", &expanded(&[]), &saved);
-        // rows: 0 a, 1 b, 2 g/, 3 f/
-        assert!(s.begin_drag(1, "main"));
-        assert!(s.drag_to_row(0));
-        s.rebuild("main", &expanded(&[]), &saved);
-        assert_eq!(row_slugs(&s), ["main/b", "main/a", "main/g/", "main/f/"]);
-        s.drag = None;
-        let saved = order(&["b", "a"]);
-        s.rebuild("main", &expanded(&[]), &saved);
-        assert!(s.begin_drag(3, "main"));
-        assert!(s.drag_to_row(2));
-        s.rebuild("main", &expanded(&[]), &saved);
-        assert_eq!(row_slugs(&s), ["main/b", "main/a", "main/g/", "main/f/"]);
+    fn d11_a_request_lands_under_the_pointer_in_that_rows_level() {
+        let mut t = double_end();
+        t.begin(0); // top, coming down onto health
+        assert!(t.to(6, NAMES));
+        assert_eq!(t.target(), place("", 2));
+        assert_eq!(t.drawn()[5..], ["health", "top", "zed/"]);
+        assert!(!t.to(6, NAMES), "a still pointer is fixed (the block is under it, D8)");
+
+        let mut t = double_end();
+        t.begin(0); // top, coming down onto login: after it
+        assert!(t.to(2, NAMES));
+        assert_eq!(t.target(), place("users", 1));
+        assert_eq!(t.drawn()[..4], ["users/", "  users/login", "  top", "  users/v1/"]);
+        assert!(!t.to(2, NAMES));
+
+        let mut t = double_end();
+        t.begin(6); // health, coming up onto login: before it
+        assert!(t.to(2, NAMES));
+        assert_eq!(t.target(), place("users", 0));
+        assert_eq!(t.drawn()[1..4], ["users/", "  health", "  users/login"]);
+        assert!(!t.to(2, NAMES));
+    }
+
+    /// D11 for folders: a closed folder and an open one with its contents
+    /// land under the pointer, contents one level deeper than the block.
+    #[test]
+    fn d11_a_folder_lands_under_the_pointer_with_its_contents() {
+        let mut t = double_end();
+        t.begin(7); // zed/, closed, coming up onto login
+        assert!(t.to(2, NAMES));
+        assert_eq!(t.target(), place("users", 0));
+        assert_eq!(t.drawn()[2], "  zed/");
+        assert!(!t.to(2, NAMES));
+
+        let mut t = double_end();
+        t.begin(3); // v1/, open, coming up onto top
+        assert!(t.to(0, NAMES));
+        assert_eq!(t.target(), place("", 0));
+        assert_eq!(
+            t.drawn()[..5],
+            ["users/v1/", "  users/v1/list", "  users/v1/get", "top", "users/"]
+        );
+        assert!(!t.to(0, NAMES));
+    }
+
+    /// D12 at a double folder end, coming down: the column picks v1/'s
+    /// end, users/' end or the top level, all on the same screen row.
+    #[test]
+    fn d12_a_double_folder_end_from_above_by_column() {
+        let mut t = double_end();
+        t.begin(0); // top onto get
+        assert!(t.to(5, NAMES));
+        assert_eq!(t.target(), place("users/v1", 2), "over the names: the inner folder");
+        assert_eq!(t.drawn()[5], "    top");
+        for (column, want, row) in [
+            (col(1), place("users", 2), "  top"),
+            (col(0), place("", 1), "top"),
+            (0, place("", 1), "top"),
+            (col(2), place("users/v1", 2), "    top"),
+            (NAMES, place("users/v1", 2), "    top"),
+        ] {
+            t.to(5, column);
+            assert_eq!(t.target(), want, "column {column}");
+            assert_eq!(t.drawn()[5], row, "the block stays on the pointer's row");
+            assert_eq!(t.drawn()[6], "health");
+            assert!(!t.to(5, column), "column {column}: a still pointer is fixed");
+        }
+    }
+
+    /// D12 at a double folder end, coming up: the direction doesn't
+    /// matter. A closed folder block.
+    #[test]
+    fn d12_a_double_folder_end_from_below_by_column() {
+        let mut t = double_end();
+        t.begin(7); // zed/ onto health
+        assert!(t.to(6, NAMES));
+        assert_eq!(t.target(), place("users/v1", 2));
+        assert_eq!(t.drawn()[6..], ["    zed/", "health"]);
+        for (column, want) in
+            [(col(0), place("", 2)), (col(1), place("users", 2)), (NAMES, place("users/v1", 2))]
+        {
+            t.to(6, column);
+            assert_eq!(t.target(), want, "column {column}");
+            assert!(!t.to(6, column));
+        }
+    }
+
+    /// D12 at a single folder end, from above and from below.
+    #[test]
+    fn d12_a_single_folder_end_by_column() {
+        let mut t = single_end();
+        t.begin(0); // top onto logout
+        assert!(t.to(3, NAMES));
+        assert_eq!(t.target(), place("users", 2));
+        assert_eq!(t.drawn()[3], "  top");
+        assert!(t.to(3, col(0)));
+        assert_eq!(t.target(), place("", 1));
+        assert_eq!(t.drawn()[3..], ["top", "health", "zed/"]);
+        assert!(!t.to(3, col(0)));
+
+        let mut t = single_end();
+        t.begin(5); // zed/ onto health
+        assert!(t.to(4, NAMES));
+        assert_eq!(t.target(), place("users", 2));
+        assert_eq!(t.drawn()[4..], ["  zed/", "health"]);
+        assert!(t.to(4, col(0)));
+        assert_eq!(t.target(), place("", 2));
+        assert_eq!(t.drawn()[4..], ["zed/", "health"]);
+    }
+
+    /// D13: below the last row the block goes last, and the column picks
+    /// the level, up to the top. A folder block too.
+    #[test]
+    fn d13_below_the_last_row_by_column() {
+        let mut t = Tree::new(
+            &["top", "users/login", "users/v1/list"],
+            &["top", "users/", "users/login", "users/v1/", "users/v1/list"],
+            &["users", "users/v1"],
+        );
+        t.begin(0);
+        assert!(t.below(NAMES));
+        assert_eq!(t.target(), place("users/v1", 1));
+        assert_eq!(t.drawn()[4], "    top");
+        assert!(!t.below(NAMES), "a still pointer is fixed");
+        assert!(t.below(col(1)));
+        assert_eq!(t.target(), place("users", 2));
+        assert!(t.below(col(0)));
+        assert_eq!(t.target(), place("", 1));
+        assert_eq!(t.drawn()[4], "top");
+        assert!(!t.below(col(0)));
+
+        let mut t = double_end();
+        t.begin(3); // v1/, open
+        assert!(t.below(col(0)));
+        assert_eq!(t.target(), place("", 4));
+        assert_eq!(t.drawn()[5..], ["users/v1/", "  users/v1/list", "  users/v1/get"]);
+    }
+
+    /// D14: above the first row, the first place in the top level.
+    #[test]
+    fn d14_above_the_first_row_is_the_top_levels_first_place() {
+        let mut t = double_end();
+        t.begin(6); // health
+        assert!(t.above());
+        assert_eq!(t.target(), place("", 0));
+        assert_eq!(t.drawn()[..2], ["health", "top"]);
+        assert!(!t.above(), "a still pointer is fixed");
+
+        let mut t = double_end();
+        t.begin(3); // v1/, open
+        assert!(t.above());
+        assert_eq!(t.drawn()[..4], ["users/v1/", "  users/v1/list", "  users/v1/get", "top"]);
+    }
+
+    /// D9: on a closed folder the block waits beside it, on the side it
+    /// came from, and the dwell starts there and keeps its time. Any other
+    /// row ends the dwell.
+    #[test]
+    fn d9_a_closed_folder_holds_the_block_beside_it_and_dwells() {
+        let mut t = double_end();
+        t.begin(0); // top, coming down onto zed/
+        assert!(t.to(7, NAMES));
+        assert_eq!(t.target(), place("", 2), "above zed/: it doesn't pass it");
+        assert_eq!(t.drawn()[6..], ["top", "zed/"], "zed/ stays under the pointer");
+        let (dwelt, since) = t.dwell().expect("the dwell starts");
+        assert_eq!(dwelt, "main/zed");
+        assert!(!t.to(7, NAMES), "a still pointer is fixed");
+        assert_eq!(t.dwell().map(|(_, t)| t), Some(since), "and keeps its time");
+        assert!(t.to(6, NAMES), "onto the block: the dwell ends");
+        assert_eq!(t.dwell(), None);
+        assert_eq!(t.target(), place("", 2));
+
+        // Coming up, a request and a closed folder wait below the folder.
+        for drag in [2, 3] {
+            let mut t = double_end();
+            t.open = expanded(&[]);
+            t.rebuilt(true);
+            // rows: 0 top, 1 users/, 2 health, 3 zed/
+            t.begin(drag);
+            assert!(t.to(1, NAMES));
+            assert_eq!(t.target(), place("", 2), "row {drag}: below users/");
+            assert_eq!(t.drawn()[1], "users/");
+            assert_eq!(t.dwell().map(|(p, _)| p).as_deref(), Some("main/users"));
+            assert!(!t.to(1, NAMES));
+        }
+
+        // An open folder's block, coming down onto a closed folder.
+        let mut t = double_end();
+        t.begin(3); // v1/
+        assert!(t.to(7, NAMES));
+        assert_eq!(t.target(), place("", 3));
+        assert_eq!(t.drawn()[4..], ["users/v1/", "  users/v1/list", "  users/v1/get", "zed/"]);
+        assert!(!t.to(7, NAMES));
+    }
+
+    /// D10: on an open folder's row the block is its first item: a
+    /// request, a closed folder, an open folder.
+    #[test]
+    fn d10_an_open_folder_takes_the_block_first() {
+        let mut t = double_end();
+        t.begin(6); // health onto users/
+        assert!(t.to(1, NAMES));
+        assert_eq!(t.target(), place("users", 0));
+        assert_eq!(t.drawn()[1..3], ["users/", "  health"]);
+        assert!(!t.to(1, NAMES));
+
+        let mut t = double_end();
+        t.begin(7); // zed/ onto v1/
+        assert!(t.to(3, NAMES));
+        assert_eq!(t.target(), place("users/v1", 0));
+        assert_eq!(t.drawn()[3..5], ["  users/v1/", "    zed/"]);
+        assert!(!t.to(3, NAMES));
+
+        let mut t = double_end();
+        t.begin(3); // v1/ onto users/
+        assert!(t.to(1, NAMES));
+        assert_eq!(t.target(), place("users", 0));
+        assert_eq!(
+            t.drawn()[1..6],
+            ["users/", "  users/v1/", "    users/v1/list", "    users/v1/get", "  users/login"]
+        );
+        assert!(!t.to(1, NAMES));
+    }
+
+    /// D8, D2: the pointer on the block's own rows only re-reads the
+    /// column, so a folder never goes inside itself.
+    #[test]
+    fn d8_the_block_under_the_pointer_takes_only_the_column() {
+        let mut t = double_end();
+        t.begin(3); // v1/, rows 3–5
+        for i in [3, 4, 5] {
+            assert!(!t.to(i, NAMES), "row {i}: its own place");
+            assert_eq!(t.target(), place("users", 1));
+        }
+        assert!(t.to(4, col(0)), "the column takes it out of users/");
+        assert_eq!(t.target(), place("", 2));
+        assert_eq!(t.drawn()[3..6], ["users/v1/", "  users/v1/list", "  users/v1/get"]);
+        assert!(!t.to(4, col(0)));
+        assert!(t.to(5, NAMES), "and back in");
+        assert_eq!(t.target(), place("users", 1));
+
+        // The whole of users/ dragged over its own contents: never inside.
+        let mut t = double_end();
+        t.begin(1);
+        for i in 1..6 {
+            t.to(i, NAMES);
+            assert!(!t.target().0.starts_with("users"), "row {i}: {:?}", t.target());
+        }
+    }
+
+    /// D15: a folder the drag empties stays drawn, open and empty, and
+    /// its row takes the block back in (D10). A request and a folder.
+    #[test]
+    fn d15_an_emptied_folder_stays_open_and_takes_the_block_back() {
+        let mut t =
+            Tree::new(&["solo/only", "health"], &["solo/", "solo/only", "health"], &["solo"]);
+        t.begin(1);
+        assert!(t.to(2, NAMES));
+        assert_eq!(t.drawn(), ["solo/", "health", "solo/only"]);
+        assert!(matches!(t.s.rows[0], Row::Folder { expanded: true, .. }), "open, empty");
+        assert!(t.to(0, NAMES));
+        assert_eq!(t.target(), place("solo", 0));
+        assert_eq!(t.drawn(), ["solo/", "  solo/only", "health"]);
+
+        let mut t = Tree::new(
+            &["solo/sub/x", "health"],
+            &["solo/", "solo/sub/", "solo/sub/x", "health"],
+            &["solo"],
+        );
+        t.begin(1); // sub/, closed
+        assert!(t.to(2, NAMES));
+        assert_eq!(t.drawn(), ["solo/", "health", "solo/sub/"]);
+        assert!(t.to(0, NAMES));
+        assert_eq!(t.drawn(), ["solo/", "  solo/sub/", "health"]);
+    }
+
+    /// The dragged row keeps its real key wherever it draws: the cursor,
+    /// the open request's band and its unsaved and in-flight marks all
+    /// find it inside the folder it is shown in.
+    #[test]
+    fn the_dragged_row_keeps_its_real_key() {
+        let mut t = double_end();
+        t.s.selected = Some(0);
+        t.s.open_slug = Some("main/top".into());
+        t.s.open_dirty = true;
+        t.s.in_flight.insert("main/top".into());
+        t.begin(0);
+        assert!(t.to(5, NAMES));
+        assert_eq!(t.drawn()[5], "    top");
+        assert_eq!(t.s.selected_key(), Some(RowKey::Request("main/top".into())));
+        assert_eq!(t.s.selected, Some(5), "the cursor is on it");
+        assert_eq!(t.s.open_row(), Some(5), "so is the band");
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 12)).unwrap();
+        let mut hits = HitMap::default();
+        terminal.draw(|f| t.s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let r = hits.rect_of(&Hit::SidebarRow(5)).expect("row 5");
+        let buf = terminal.backend().buffer();
+        let line: String = (0..30).map(|x| buf[(x, r.y)].symbol()).collect();
+        assert_eq!(buf[(r.x, r.y)].symbol(), "\u{22ee}", "the grip: {line:?}");
+        assert!(line.contains('\u{25cf}'), "the unsaved mark: {line:?}");
+        assert!(line.contains('\u{21bb}'), "the in-flight mark: {line:?}");
+        assert!(line.contains("top"), "{line:?}");
+    }
+
+    /// The folder a drag rests on (D9) takes the hover fill, its glyph and
+    /// name the accent; the dwell's end puts it back.
+    #[test]
+    fn the_dwelt_folder_paints_the_hover_fill_and_the_accent() {
+        let mut t = double_end();
+        t.begin(0);
+        assert!(t.to(7, NAMES)); // zed/, closed
+        let theme = Theme::dark();
+        let paint = |s: &mut Sidebar| {
+            let ctx = draw_ctx(&theme, None);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 12)).unwrap();
+            let mut hits = HitMap::default();
+            terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+            let r = hits.rect_of(&Hit::SidebarRow(7)).expect("zed/'s row");
+            let buf = terminal.backend().buffer();
+            // The glyph at depth 0, then the name two columns on.
+            let (glyph, name) = (&buf[(r.x + 1, r.y)], &buf[(r.x + 3, r.y)]);
+            (glyph.fg, name.fg, glyph.bg)
+        };
+        let hover = ListRow::resolve_fill(&theme, RowHighlight::Hover, theme.panel, 1.0);
+        assert_eq!(paint(&mut t.s), (theme.accent, theme.accent, hover));
+        assert!(t.to(6, NAMES), "onto the block: the dwell ends");
+        assert_eq!(paint(&mut t.s), (theme.text_muted, theme.text_muted, theme.panel));
+    }
+
+    /// A drop in the block's own level writes the level as the rows show
+    /// it (D20); the other levels are untouched.
+    #[test]
+    fn drop_entries_are_the_target_level_as_shown() {
+        let mut t = Tree::new(
+            &["a", "b", "c", "auth/x", "auth/y"],
+            &["a", "b", "c", "auth/", "auth/x", "auth/y"],
+            &["auth"],
+        );
+        t.begin(2); // c onto a
+        assert!(t.to(0, NAMES));
+        assert_eq!(t.drawn(), ["c", "a", "b", "auth/", "  auth/x", "  auth/y"]);
+        assert_eq!(t.s.drop_entries().unwrap(), ["c", "a", "b", "auth/"]);
+    }
+
+    /// A listing that changes under a drag (a reload rebuilt the rows with
+    /// one row gone): the dragged request is found by its key.
+    #[test]
+    fn a_drag_finds_its_row_by_key_after_a_relist() {
+        let mut t = Tree::new(&["a", "b", "c", "d"], &["a", "b", "c", "d"], &[]);
+        t.begin(3);
+        t.s.refresh(listing(&["a", "c", "d"]), "main", &t.open, &t.saved);
+        assert!(t.to(0, NAMES));
+        assert_eq!(t.drawn(), ["d", "a", "c"]);
     }
 
     #[test]
@@ -2694,41 +3346,31 @@ mod tests {
         assert_eq!(spans(&s, 4), [(4, 5)], "billing's one request is its own group, not auth's");
     }
 
+    /// A drag starts at its own place, and only its block moves: every
+    /// other level draws as saved, and ending the drag draws the saved
+    /// order again (spec 2026-11-02 drag into folders §3 Sidebar; replaces
+    /// "a working order overrides exactly one level").
     #[test]
-    fn a_working_drag_order_overrides_exactly_one_level() {
-        let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c", "auth/x", "auth/y"]), "main", &expanded(&["auth"]), &[]);
-        assert!(s.begin_drag(2, "main")); // main/c
-        let d = s.drag.as_ref().unwrap();
-        assert_eq!(d.original, ["a", "b", "c"]);
-        assert_eq!(d.level, "");
-        assert!(s.drag_to_row(0));
-        s.rebuild("main", &expanded(&["auth"]), &[]);
-        assert_eq!(
-            row_slugs(&s),
-            ["main/c", "main/a", "main/b", "main/auth/", "main/auth/x", "main/auth/y"]
+    fn a_drag_starts_at_its_own_place_and_moves_only_its_block() {
+        let mut t = Tree::new(
+            &["a", "b", "c", "auth/x", "auth/y"],
+            &["a", "b", "c", "auth/", "auth/x", "auth/y"],
+            &["auth"],
         );
-        // Pointer past the group's end pins to the last slot.
-        assert!(s.drag_to_row(10));
-        s.rebuild("main", &expanded(&["auth"]), &[]);
-        assert_eq!(row_slugs(&s)[..3], ["main/a", "main/b", "main/c"]);
-        assert!(!s.drag_to_row(10), "no change reports false");
-        s.drag = None;
-        s.rebuild("main", &expanded(&["auth"]), &[]);
-        assert_eq!(row_slugs(&s)[..3], ["main/a", "main/b", "main/c"]);
-    }
-
-    #[test]
-    fn drag_to_row_finds_the_dragged_request_by_slug_not_row_offset() {
-        // The listing changes under a live drag (a reload rebuilt the rows
-        // with one sibling gone): the dragged request is still the one
-        // that moves, and the working order is the rows now on screen.
-        let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c", "d"]), "main", &expanded(&[]), &[]);
-        assert!(s.begin_drag(3, "main"));
-        s.refresh(listing(&["a", "c", "d"]), "main", &expanded(&[]), &[]);
-        assert!(s.drag_to_row(0));
-        assert_eq!(s.drag.as_ref().unwrap().working, order(&["d", "a", "c"]));
+        t.begin(2); // c
+        let d = t.s.drag.clone().unwrap();
+        assert_eq!(d.key, RowKey::Request("main/c".into()));
+        assert_eq!((d.origin.clone(), d.target.clone()), (place("", 2), place("", 2)));
+        assert_eq!(d.dwell, None);
+        assert!(t.to(0, NAMES));
+        assert_eq!(t.drawn(), ["c", "a", "b", "auth/", "  auth/x", "  auth/y"]);
+        assert!(t.s.drag_home(), "the cancel's preview");
+        t.rebuilt(true);
+        assert_eq!(t.drawn(), ["a", "b", "c", "auth/", "  auth/x", "  auth/y"]);
+        assert!(!t.s.drag_home());
+        t.s.drag = None;
+        t.rebuilt(true);
+        assert_eq!(t.drawn(), ["a", "b", "c", "auth/", "  auth/x", "  auth/y"]);
     }
 
     #[test]
@@ -2895,6 +3537,21 @@ mod tests {
         assert_eq!(s.fold_cursor(), Some(auth), "still listed through its request: kept");
         s.refresh(listing(&["top", "api/ping", "zeta/z1"]), "main", &open, &[]);
         assert_eq!(s.fold_cursor(), Some(api), "its last request gone: forgotten");
+    }
+
+    /// The hidden row counts only while the space being drawn lists it: a
+    /// switch to another space forgets it, though the listing still holds
+    /// it for `space_counts`. An empty space is the case to check: one with
+    /// rows moves the cursor, which forgets it anyway.
+    #[test]
+    fn a_space_switch_forgets_the_hidden_row() {
+        let pong = RowKey::Request("main/api/pong".into());
+        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &pong);
+        press(&mut s, &mut open, FoldKey::Z(crate::action::FoldOp::Close, 1));
+        assert_eq!(s.fold_cursor(), Some(pong), "remembered in its own space");
+        let main = listing(&["top", "api/ping", "api/pong", "api/auth/login", "zeta/z1"]);
+        s.refresh(main, "empty", &open, &[]);
+        assert_eq!(s.fold_row, None, "another space's rows: forgotten");
     }
 
     /// One fold probe: the folders open before, the cursor, the keys, the

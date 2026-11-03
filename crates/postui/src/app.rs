@@ -527,6 +527,15 @@ pub struct App {
     /// The same warn-once channel again, for entries in `project.toml`'s
     /// `environments` that aren't valid environment names.
     last_environments_warning: Option<String>,
+    /// A warn-once flag for a failed update of the completed order lists
+    /// (spec 2026-11-02 drag into folders D5a), a write or the read of
+    /// `project.toml` before it: a file that can't be written stays that
+    /// way, and every refresh retries. Toasted when the updates start
+    /// failing, and again only after a write has succeeded (a refresh with
+    /// nothing to write leaves it set). A flag, not the error text: the
+    /// text names the atomic write's temporary file, which differs every
+    /// time.
+    order_write_failing: bool,
     /// Set when the project the app was asked to open refused (a file it
     /// would write back is unreadable — see `Project::open`). The
     /// app then runs on an empty root with nothing loaded; the message is
@@ -1899,6 +1908,7 @@ impl App {
         self.last_loose_warning = None;
         self.last_spaces_warning = None;
         self.last_environments_warning = None;
+        self.order_write_failing = false;
     }
 
     /// Whether `target` is the open project's directory, by any spelling of
@@ -2043,6 +2053,7 @@ impl App {
             last_loose_warning: None,
             last_spaces_warning: None,
             last_environments_warning: None,
+            order_write_failing: false,
             open_error,
             config_error: None,
             startup_config_gate: false,
@@ -3984,6 +3995,8 @@ impl App {
                     None => false,
                 };
                 let now = Instant::now();
+                // A drag resting on a closed folder springs it open (D9).
+                let sprung = self.spring_sidebar_drag(now);
                 let flag_changed = self.poll_edit_flag(now, false);
                 let tip_changed = self.track_tip_dwells(now);
                 // The testbed's looping motion demos self-drive from here,
@@ -4018,6 +4031,7 @@ impl App {
                     || now_animating
                     || was_animating
                     || edge_scrolled
+                    || sprung
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
@@ -10197,7 +10211,12 @@ impl App {
             self.snap_sidebar_travel();
             return;
         };
-        p.relist();
+        // Re-lists, then writes in what a list misses where it draws (spec
+        // 2026-11-02 drag into folders D5a), so the rows are the same
+        // whether or not the write lands. The write goes through `Disk`,
+        // which re-stamps `project.toml`, so the next poll does not see it
+        // as an outside change. Not an undo step.
+        let order_result = p.complete_order().map_err(|e| e.to_string());
         let listing = p.requests().to_vec();
         let warning = p.listing_warning();
         let spaces_warning = p.spaces_warning().map(str::to_string);
@@ -10212,6 +10231,19 @@ impl App {
         }
         let space = p.local().active_space.clone();
         let order = postui_core::order::space_order(p.meta(), &space).to_vec();
+        match order_result {
+            Err(e) => {
+                if !self.order_write_failing {
+                    self.toasts
+                        .push(format!("could not update the request order: {e}"), ToastKind::Error);
+                }
+                self.order_write_failing = true;
+            }
+            // Only a write that lands re-arms the toast: a refresh with
+            // nothing to write says nothing about whether one would.
+            Ok(true) => self.order_write_failing = false,
+            Ok(false) => {}
+        }
         if let Some(warning) = warning {
             // Two different failures share one warning string: a walk error
             // (transient, worth an error toast every time) and the
@@ -10289,30 +10321,62 @@ impl App {
         self.snap_sidebar_travel();
     }
 
-    /// Pointer motion during a row drag: maps the pointer's screen row to
-    /// a row index (pinned to the dragged row's sibling group) and shows
-    /// the resulting order live.
+    /// Pointer motion during a row drag (spec 2026-11-02 drag into folders
+    /// D8–D14): maps the pointer to a place for the dragged block and
+    /// shows it live.
     ///
     /// A pointer *outside* the sidebar pane previews the cancel a release
-    /// there would be: the working order snaps back to the order the drag
-    /// started from, so the rows always show what letting go right now
-    /// would leave behind. The test is the one `Up(Left)` commits on. The
-    /// list's own edge rows are inside the pane, so edge auto-scroll is
-    /// untouched. Motion back onto a row maps it again as usual.
+    /// there would be: the block shows back where it started, so the rows
+    /// always show what letting go right now would leave behind. The test
+    /// is the one `Up(Left)` commits on. The list's own edge rows are
+    /// inside the pane, so edge auto-scroll is untouched. Motion back onto
+    /// a row maps it again as usual.
+    ///
+    /// Below the last row is D13, above the first row with the list at its
+    /// top D14. Every motion also checks the spring (D9): the tick's sleep
+    /// restarts with every event, so a pointer moving along a folder's row
+    /// must not hold it off.
     pub fn sidebar_drag_to(&mut self, x: u16, y: u16) -> bool {
-        if !self.sidebar_drag_inside(x, y) {
-            if self.sidebar.drag_reset() {
-                self.rebuild_sidebar();
-                return true;
-            }
+        let changed = if !self.sidebar_drag_inside(x, y) {
+            self.sidebar.drag_home()
+        } else if self.sidebar.below_rows(y) {
+            self.sidebar.drag_below(x)
+        } else if self.sidebar.above_rows(y) {
+            self.sidebar.drag_above()
+        } else {
+            let i = self.sidebar.row_at_y(y);
+            self.sidebar.drag_to(i, x)
+        };
+        if changed {
+            self.rebuild_sidebar();
+        }
+        self.spring_sidebar_drag(Instant::now()) || changed
+    }
+
+    /// D9's spring: a closed folder the drag has rested on for
+    /// `SPRING_DWELL` opens, as a user open is (persisted, and left open
+    /// after the drop or a cancel, D16), and the block goes in as its first
+    /// item. Only in the space the drag started in. `true` when it sprang.
+    fn spring_sidebar_drag(&mut self, now: Instant) -> bool {
+        use crate::components::sidebar::SPRING_DWELL;
+        let Some(drag) = self.sidebar.drag.as_ref() else {
+            return false;
+        };
+        let Some((path, since)) = drag.dwell.clone() else {
+            return false;
+        };
+        if drag.space != self.active_space() || now.saturating_duration_since(since) < SPRING_DWELL
+        {
             return false;
         }
-        let i = self.sidebar.row_at_y(y);
-        if self.sidebar.drag_to_row(i) {
-            self.rebuild_sidebar();
-            return true;
+        if let Some(p) = self.project.as_mut() {
+            let mut expanded = p.local().expanded.clone();
+            expanded.insert(path.clone());
+            p.set_expanded(expanded);
         }
-        false
+        self.sidebar.drag_into(&path);
+        self.rebuild_sidebar();
+        true
     }
 
     /// Whether `(x, y)` is over the sidebar pane: where a row drag may be
@@ -10352,6 +10416,7 @@ impl App {
         let label = self.reorder_label(&key);
         let t = self.begin_op();
         let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
             return;
         };
         match p.move_request_shown(&space, &level, &shown, &own, delta) {
@@ -10367,6 +10432,7 @@ impl App {
                 self.record_project_step(t, crate::undo::StepLabel::reorder(label));
             }
             Err(e) => {
+                self.op_in_flight = false;
                 self.toasts.push(format!("cannot move {noun}: {e}"), ToastKind::Warning);
             }
         }
@@ -10383,33 +10449,50 @@ impl App {
         }
     }
 
-    /// Ends a row drag. `commit` writes the working order when it differs
-    /// from the original; otherwise (release outside, Escape) the rows
-    /// snap back. Either way the sidebar is rebuilt from disk truth and
-    /// the armed press is disarmed — Escape ends the drag with the button
-    /// still held, and a press left armed would let the next motion event
-    /// promote straight back into a drag the user just cancelled.
+    /// Ends a row drag. `commit` drops the block where it shows; otherwise
+    /// (release outside, Escape) the rows snap back. Either way the
+    /// sidebar is rebuilt from disk truth and the armed press is disarmed
+    /// — Escape ends the drag with the button still held, and a press left
+    /// armed would let the next motion event promote straight back into a
+    /// drag the user just cancelled.
     pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
         self.sidebar_press = None;
+        // The level's entries as the rows show them, read before the drag
+        // ends and the rows are rebuilt without it.
+        let shown = self.sidebar.drop_entries();
         let Some(drag) = self.sidebar.drag.take() else {
             return false;
         };
         // A drag belongs to the space it started in. If the active space
-        // moved on underneath it, there is nothing sane to write — the
-        // working order names the *old* space's siblings — so this is a
-        // cancel however the drag ended.
+        // moved on underneath it, there is nothing sane to write — its
+        // place names the *old* space's levels — so this is a cancel
+        // however the drag ended.
         let commit = commit && drag.space == self.active_space();
+        // A drop in another level moves the block there (D17).
+        if commit && drag.target.0 != drag.origin.0 {
+            self.drop_in_level(drag);
+            return true;
+        }
         let mut reordered = None;
-        if commit && drag.working != drag.original {
+        // A drop in the block's own level is a reorder (D20); a commit in
+        // another level has gone to `drop_in_level` above.
+        if commit
+            && drag.target != drag.origin
+            && let Some(shown) = shown
+        {
             let space = drag.space.clone();
             let t = self.begin_op();
-            let written = match self.project.as_mut() {
-                Some(p) => p.set_request_order(&space, &drag.level, &drag.working),
-                None => return true,
-            };
+            let written =
+                self.project.as_mut().map(|p| p.set_request_order(&space, &drag.origin.0, &shown));
             match written {
-                Ok(_) => reordered = Some(t),
-                Err(e) => self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning),
+                Some(Ok(_)) => reordered = Some(t),
+                Some(Err(e)) => {
+                    self.op_in_flight = false;
+                    self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning);
+                }
+                // No project: nothing to write; the landing below still
+                // snaps the rows back.
+                None => self.op_in_flight = false,
             }
         }
         // The drag is already taken, so the landing's own drag cancel (it
@@ -10423,6 +10506,101 @@ impl App {
             );
         }
         true
+    }
+
+    /// A drop in another level than the block's own (spec 2026-11-02 drag
+    /// into folders D17–D19): `Project::move_to_level` moves the request
+    /// or the folder's directory there as one undo step, at the place the
+    /// rows showed. Everything that names a moved request follows it, as
+    /// after a rename; the cursor lands on what was dragged, and a moved
+    /// folder stays open with whatever was open inside it. A refusal (a
+    /// clash, D18) toasts and the rows snap back.
+    fn drop_in_level(&mut self, drag: crate::components::sidebar::RowDrag) {
+        use crate::components::sidebar::Sidebar;
+        use postui_core::project::{Error, TreeItem};
+        let (level, at) = drag.target.clone();
+        let dest = if level.is_empty() {
+            "the top level".to_string()
+        } else {
+            Sidebar::folder_name(&level).to_string()
+        };
+        let what = self.reorder_label(&drag.key);
+        let (item, from, open_inside) = match &drag.key {
+            RowKey::Request(slug) => (TreeItem::Request(slug.clone()), slug.clone(), Vec::new()),
+            RowKey::Folder(path) => {
+                let under = format!("{path}/");
+                let open_inside: Vec<String> = self
+                    .expanded()
+                    .into_iter()
+                    .filter(|e| e == path || e.starts_with(&under))
+                    .collect();
+                (TreeItem::Folder(path.clone()), path.clone(), open_inside)
+            }
+        };
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
+            // Landed as a refusal is: the rows are rebuilt, so the block
+            // isn't left drawn at its target.
+            self.land(Landing { cursor: Some(CursorAim::On(drag.key)), ..Landing::default() });
+            return;
+        };
+        match p.move_to_level(&item, &level, at) {
+            Ok((to, moves)) => {
+                // Every request the move carried, the dragged one or the
+                // folder's.
+                for (old, new) in &moves {
+                    self.follow_move(old, new);
+                }
+                // The new paths open; the old ones stay in the open set on
+                // purpose. Undo moves the folder back to its old path, and
+                // that entry is what reopens it there as it was (undo
+                // restores exactly). The cost is an entry naming nothing
+                // until then, which opens nothing.
+                for open in &open_inside {
+                    self.sidebar.pending_expand.insert(format!("{to}{}", &open[from.len()..]));
+                }
+                let key = match drag.key {
+                    RowKey::Request(_) => RowKey::Request(to),
+                    RowKey::Folder(_) => RowKey::Folder(to),
+                };
+                self.land(Landing { cursor: Some(CursorAim::On(key)), ..Landing::default() });
+                self.record_project_step(t, crate::undo::StepLabel::moved(what, dest));
+            }
+            Err(e) => {
+                self.op_in_flight = false;
+                let noun = match item {
+                    TreeItem::Request(_) => "request",
+                    TreeItem::Folder(_) => "folder",
+                };
+                let msg = match e {
+                    Error::AlreadyExists(name) => {
+                        format!("{dest} already has a {noun} named {name:?}")
+                    }
+                    e => format!("cannot move {what}: {e}"),
+                };
+                self.toasts.push(msg, ToastKind::Warning);
+                self.land(Landing { cursor: Some(CursorAim::On(drag.key)), ..Landing::default() });
+            }
+        }
+    }
+
+    /// The request at `from` now lives at `to` after an op of this app
+    /// (a rename, a drop in another folder): `follow_slug`'s followers,
+    /// and the editor and its shadow when they hold it, re-keyed in place
+    /// without reloading, so unsaved edits stay.
+    fn follow_move(&mut self, from: &str, to: &str) {
+        self.follow_slug(from, to);
+        if self.editor.slug.as_deref() == Some(from) {
+            self.editor.slug = Some(to.to_string());
+            // The body's engine state follows too (amendment C2).
+            self.vim_body_moved(Some(from));
+            if let Some(shadow) = self.shadow.as_mut()
+                && shadow.slug.as_deref() == Some(from)
+            {
+                shadow.slug = Some(to.to_string());
+            }
+        }
     }
 
     /// Pointer motion during a Manage screen list-row drag (Environments or
@@ -11081,13 +11259,19 @@ impl App {
         match p.rename_request(from, to) {
             Ok((slug, leaf)) => {
                 let label = crate::undo::StepLabel::rename(leaf.clone());
-                self.follow_slug(from, &slug);
-                // The editor follows the new slug in place, never
-                // reloading.
-                if self.editor.slug.as_deref() == Some(from) {
-                    self.editor.slug = Some(slug.clone());
-                    // The body's engine state follows too (amendment C2).
-                    self.vim_body_moved(Some(from));
+                let was_open = self.editor.slug.as_deref() == Some(from);
+                let shadowed =
+                    self.shadow.as_ref().is_some_and(|s| s.slug.as_deref() == Some(from));
+                // The editor and its shadow follow the new slug in place,
+                // never reloading. The shadow is re-keyed as the rename's
+                // undo and redo re-key it (`after_replay`): the rename is
+                // the project step, so the next capture must not see the
+                // slug change (it would only re-seed, dropping an edit made
+                // in the same event, as a replace with curl makes). Only the
+                // key moves; what the shadow holds otherwise is untouched,
+                // so no pending edit is swallowed.
+                self.follow_move(from, &slug);
+                if was_open {
                     // The rename wrote the new display name to
                     // disk; mirror it in both the live fields and
                     // the saved snapshot so a rename alone never
@@ -11096,20 +11280,11 @@ impl App {
                     if let Some(saved) = self.editor.saved.as_mut() {
                         saved.name = Some(leaf);
                     }
-                    // The shadow is re-keyed too, name included, as the
-                    // rename's undo and redo re-key it (`after_replay`):
-                    // the rename is the project step, so the next capture
-                    // must see neither the slug change (it would only
-                    // re-seed, dropping an edit made in the same event, as
-                    // a replace with curl makes) nor the name (a rename that
-                    // keeps the slug would record it as an editor edit, and
-                    // undoing that put the old name back over the file's).
-                    // Only the key moves; what the shadow holds otherwise is
-                    // untouched, so no pending edit is swallowed.
-                    if let Some(shadow) = self.shadow.as_mut()
-                        && shadow.slug.as_deref() == Some(from)
-                    {
-                        shadow.slug = Some(slug.clone());
+                    // The shadow takes the name too: a rename that keeps
+                    // the slug would otherwise record it as an editor edit,
+                    // and undoing that put the old name back over the
+                    // file's.
+                    if shadowed && let Some(shadow) = self.shadow.as_mut() {
                         shadow.req.name = self.editor.name.clone();
                     }
                 }

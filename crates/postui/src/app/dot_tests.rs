@@ -134,6 +134,9 @@ fn a_change_elsewhere_makes_dot_stale() {
         .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/alpha"));
     draw(&mut app);
     feed(&mut app, "dd");
+    // The test root has no `project.toml`, and no order write makes one
+    // (spec 2026-11-02 drag into folders §3, `Project`), so nothing is
+    // listed and the level draws by name (D6).
     assert_eq!(requests(&app), ["main/beta", "main/matrix"]);
     feed(&mut app, "<C-w>l");
     assert_eq!(app.surface(), crate::keyroute::Surface::Body, "back in the body");

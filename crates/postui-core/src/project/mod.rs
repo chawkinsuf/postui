@@ -16,7 +16,7 @@ mod varedit_ops;
 mod variables;
 pub use edit_flag::{EditFlag, ProjectLock, ago, rfc3339};
 pub use meta::*;
-pub use requests::{HeldDrift, ListingWarning};
+pub use requests::{HeldDrift, ListingWarning, TreeItem};
 pub use undo::Undone;
 pub use varedit_ops::{VarEdit, pasted_option_name};
 
@@ -47,7 +47,10 @@ pub enum Error {
     AlreadyExists(String),
     #[error("not found: {0}")]
     NotFound(String),
-    /// An undo or redo whose target no longer looks as expected.
+    /// The state on disk doesn't allow the change, in words for the user:
+    /// an undo or redo whose target no longer looks as expected, a folder
+    /// move onto a name already on disk that shows no folder, or a
+    /// reorder in a directory with no `project.toml`.
     #[error("{0}")]
     Conflict(String),
     /// A variable edit refused by `varedit` or validation (never carries

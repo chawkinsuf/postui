@@ -7,6 +7,16 @@ Status: approved 2026-11-01 (the user went through it part by part:
 "Good", "Good", "Go"). The `mine (approved)` rows are proposals of mine
 the user approved; only the quoted rows are the user's own words.
 
+*Amended 2026-11-03 (#232, spec 2026-11-02 drag into folders):* folders
+and requests now mix in one order per level (its D3, replacing R1);
+something new lands last whether or not its level was arranged (D4,
+replacing R10's "sorts by name" half); every list names every item, the
+TUI writing in missing ones as they draw (D5); entries naming nothing are
+dropped on that write (D7, replacing R7's "preserved on write" and making
+R10a's leftover handling unnecessary); and folders drag into and out of
+folders (D1). R4's passing rule now applies to one-row items only: a
+dragged block entering an open folder goes in through its rows.
+
 ## 1. Problem
 
 The sidebar draws each level of a space (its root, or one folder) as
