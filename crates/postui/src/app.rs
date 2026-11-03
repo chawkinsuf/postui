@@ -10298,30 +10298,27 @@ impl App {
         self.snap_sidebar_travel();
     }
 
-    /// Pointer motion during a row drag: maps the pointer's screen row to
-    /// a row index (pinned to the dragged row's sibling group) and shows
-    /// the resulting order live.
+    /// Pointer motion during a row drag (spec 2026-11-02 drag into folders
+    /// D8–D14): maps the pointer to a place for the dragged block and
+    /// shows it live.
     ///
     /// A pointer *outside* the sidebar pane previews the cancel a release
-    /// there would be: the working order snaps back to the order the drag
-    /// started from, so the rows always show what letting go right now
-    /// would leave behind. The test is the one `Up(Left)` commits on. The
-    /// list's own edge rows are inside the pane, so edge auto-scroll is
-    /// untouched. Motion back onto a row maps it again as usual.
+    /// there would be: the block shows back where it started, so the rows
+    /// always show what letting go right now would leave behind. The test
+    /// is the one `Up(Left)` commits on. The list's own edge rows are
+    /// inside the pane, so edge auto-scroll is untouched. Motion back onto
+    /// a row maps it again as usual.
     pub fn sidebar_drag_to(&mut self, x: u16, y: u16) -> bool {
-        if !self.sidebar_drag_inside(x, y) {
-            if self.sidebar.drag_reset() {
-                self.rebuild_sidebar();
-                return true;
-            }
-            return false;
-        }
-        let i = self.sidebar.row_at_y(y);
-        if self.sidebar.drag_to_row(i) {
+        let changed = if !self.sidebar_drag_inside(x, y) {
+            self.sidebar.drag_home()
+        } else {
+            let i = self.sidebar.row_at_y(y);
+            self.sidebar.drag_to(i, x)
+        };
+        if changed {
             self.rebuild_sidebar();
-            return true;
         }
-        false
+        changed
     }
 
     /// Whether `(x, y)` is over the sidebar pane: where a row drag may be
@@ -10392,33 +10389,44 @@ impl App {
         }
     }
 
-    /// Ends a row drag. `commit` writes the working order when it differs
-    /// from the original; otherwise (release outside, Escape) the rows
-    /// snap back. Either way the sidebar is rebuilt from disk truth and
-    /// the armed press is disarmed — Escape ends the drag with the button
-    /// still held, and a press left armed would let the next motion event
-    /// promote straight back into a drag the user just cancelled.
+    /// Ends a row drag. `commit` drops the block where it shows; otherwise
+    /// (release outside, Escape) the rows snap back. Either way the
+    /// sidebar is rebuilt from disk truth and the armed press is disarmed
+    /// — Escape ends the drag with the button still held, and a press left
+    /// armed would let the next motion event promote straight back into a
+    /// drag the user just cancelled.
     pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
         self.sidebar_press = None;
+        // The level's entries as the rows show them, read before the drag
+        // ends and the rows are rebuilt without it.
+        let shown = self.sidebar.drop_entries();
         let Some(drag) = self.sidebar.drag.take() else {
             return false;
         };
         // A drag belongs to the space it started in. If the active space
-        // moved on underneath it, there is nothing sane to write — the
-        // working order names the *old* space's siblings — so this is a
-        // cancel however the drag ended.
+        // moved on underneath it, there is nothing sane to write — its
+        // place names the *old* space's levels — so this is a cancel
+        // however the drag ended.
         let commit = commit && drag.space == self.active_space();
         let mut reordered = None;
-        if commit && drag.working != drag.original {
+        // A drop in the block's own level is a reorder (D20).
+        if commit
+            && drag.target != drag.origin
+            && drag.target.0 == drag.origin.0
+            && let Some(shown) = shown
+        {
             let space = drag.space.clone();
             let t = self.begin_op();
             let written = match self.project.as_mut() {
-                Some(p) => p.set_request_order(&space, &drag.level, &drag.working),
+                Some(p) => p.set_request_order(&space, &drag.origin.0, &shown),
                 None => return true,
             };
             match written {
                 Ok(_) => reordered = Some(t),
-                Err(e) => self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning),
+                Err(e) => {
+                    self.op_in_flight = false;
+                    self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning);
+                }
             }
         }
         // The drag is already taken, so the landing's own drag cancel (it

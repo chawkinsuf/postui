@@ -5917,6 +5917,9 @@ fn level_order(dir: &tempfile::TempDir, level: &str) -> Vec<String> {
     saved_order(dir).into_iter().filter(|e| postui_core::order::entry_level(e) == level).collect()
 }
 
+/// A folder dragged up onto a closed folder waits below it, where a drop
+/// before the spring lands it (spec 2026-11-02 drag into folders D9;
+/// replaces "passes it").
 #[test]
 fn a_dropped_folder_drag_writes_folder_entries_and_undoes_onto_the_folder() {
     let (mut app, dir) = folder_app();
@@ -5925,12 +5928,12 @@ fn a_dropped_folder_drag_writes_folder_entries_and_undoes_onto_the_folder() {
     let steps = app.history.undo_len();
     app.handle_mouse(left_down(c.x + 2, c.y));
     app.handle_mouse(moved(c.x + 2, a.y));
-    assert_eq!(folder_rows(&app), ["main/c", "main/a", "main/b"], "the rows follow live");
+    assert_eq!(folder_rows(&app), ["main/a", "main/c", "main/b"], "the rows follow live");
     let start = ["alpha", "beta", "a/", "b/", "c/"];
     assert_eq!(level_order(&dir, ""), start, "nothing written before the release");
     app.handle_mouse(left_up(c.x + 2, a.y));
-    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "c/", "a/", "b/"]);
-    assert_eq!(folder_rows(&app), ["main/c", "main/a", "main/b"]);
+    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "a/", "c/", "b/"]);
+    assert_eq!(folder_rows(&app), ["main/a", "main/c", "main/b"]);
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
     assert_eq!(app.history.undo_len(), steps + 1);
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "requests stay above");
@@ -5946,6 +5949,9 @@ fn a_dropped_folder_drag_writes_folder_entries_and_undoes_onto_the_folder() {
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
 }
 
+/// An open folder drags as one block with its contents, here down onto a
+/// closed folder, which it waits above (spec 2026-11-02 drag into folders
+/// D9; 2026-11-01 R3).
 #[test]
 fn an_open_folder_drags_with_its_requests() {
     let (mut app, dir) = folder_app();
@@ -5953,11 +5959,12 @@ fn an_open_folder_drags_with_its_requests() {
     app.update(Action::ToggleSelectedFolder);
     render_once(&mut app);
     // rows: alpha, beta, a/, x, b/, c/
-    let b = folder_rect(&mut app, "main/b");
     let a = folder_rect(&mut app, "main/a");
-    app.handle_mouse(left_down(b.x + 2, b.y));
-    app.handle_mouse(moved(b.x + 2, a.y));
-    app.handle_mouse(left_up(b.x + 2, a.y));
+    let c = folder_rect(&mut app, "main/c");
+    app.handle_mouse(left_down(a.x + 2, a.y));
+    app.handle_mouse(moved(a.x + 2, c.y));
+    assert_eq!(folder_rows(&app), ["main/b", "main/a", "main/c"], "c/ stays under the pointer");
+    app.handle_mouse(left_up(a.x + 2, c.y));
     assert_eq!(level_order(&dir, ""), ["alpha", "beta", "b/", "a/", "c/"]);
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/a/x"]);
     let a_row = folder_row(&app, "main/a");
@@ -6003,16 +6010,19 @@ fn a_folder_drag_released_outside_or_cancelled_writes_nothing() {
     assert_eq!(saved_order(&dir), before);
 }
 
+/// A folder dragged over a request row lands there, among the requests:
+/// a level mixes both kinds (spec 2026-11-02 drag into folders D3, D11;
+/// replaces "pins to the first folder slot").
 #[test]
-fn a_folder_drag_over_a_request_row_pins_to_the_first_folder_slot() {
+fn a_folder_drag_over_a_request_row_lands_there() {
     let (mut app, dir) = folder_app();
     let c = folder_rect(&mut app, "main/c");
     let alpha = row_rect(&mut app, 0);
     app.handle_mouse(left_down(c.x + 2, c.y));
     app.handle_mouse(moved(c.x + 2, alpha.y));
     app.handle_mouse(left_up(c.x + 2, alpha.y));
-    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "c/", "a/", "b/"]);
-    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"]);
+    assert_eq!(level_order(&dir, ""), ["c/", "alpha", "beta", "a/", "b/"]);
+    assert_eq!(app.sidebar.rows[0].key(), RowKey::Folder("main/c".into()));
 }
 
 #[test]
@@ -6032,6 +6042,8 @@ fn a_click_on_a_folder_still_selects_and_a_double_click_toggles() {
     assert_eq!(saved_order(&dir), before);
 }
 
+/// alt+↑ steps a folder past its siblings of either kind, up to the top
+/// of its level (spec 2026-11-02 drag into folders D21).
 #[test]
 fn quick_keyboard_folder_moves_roll_up_and_keep_the_cursor() {
     let (mut app, dir) = folder_app();
@@ -6039,10 +6051,11 @@ fn quick_keyboard_folder_moves_roll_up_and_keep_the_cursor() {
     app.update(Action::FocusPane(PaneId::Sidebar));
     let steps = app.history.undo_len();
     let alt_up = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
-    app.handle_key(alt_up);
-    app.handle_key(alt_up);
-    let moved = ["alpha", "beta", "c/", "a/", "b/"];
-    assert_eq!(level_order(&dir, ""), moved);
+    for _ in 0..4 {
+        app.handle_key(alt_up);
+    }
+    let moved = ["c/", "alpha", "beta", "a/", "b/"];
+    assert_eq!(level_order(&dir, ""), moved, "past the requests too");
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
     assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
     app.handle_key(alt_up);
@@ -6059,20 +6072,30 @@ fn quick_keyboard_folder_moves_roll_up_and_keep_the_cursor() {
     );
 }
 
+/// The row menu's Move up/down step past siblings of either kind, and are
+/// disabled only at the ends of the level (spec 2026-11-02 drag into
+/// folders D21; replaces "the first folder can't move up").
 #[test]
 fn folder_context_menu_offers_move_up_and_down_disabled_at_the_ends() {
     let (mut app, dir) = folder_app();
-    let a = folder_rect(&mut app, "main/a");
-    app.handle_mouse(right_down(a.x + 1, a.y));
-    let Some(Modal::Dropdown(menu)) = app.modals.top() else { panic!("context menu") };
-    let up = menu.items.iter().find(|i| i.label == "Move up").expect("Move up");
-    let down = menu.items.iter().find(|i| i.label == "Move down").expect("Move down");
-    assert!(up.action.is_none(), "first folder: Move up is disabled");
-    let down = down.action.clone();
+    let menu_moves = |app: &mut App, path: &str| {
+        let r = folder_rect(app, path);
+        app.handle_mouse(right_down(r.x + 1, r.y));
+        let Some(Modal::Dropdown(menu)) = app.modals.top() else { panic!("context menu") };
+        let action =
+            |label: &str| menu.items.iter().find(|i| i.label == label).expect(label).action.clone();
+        let moves = (action("Move up"), action("Move down"));
+        app.modals.pop();
+        moves
+    };
+    let (up, down) = menu_moves(&mut app, "main/c");
+    assert!(down.is_none(), "last in its level: Move down is disabled");
+    assert_eq!(up, Some(Action::MoveFolder { path: "main/c".into(), delta: -1 }));
+    let (up, down) = menu_moves(&mut app, "main/a");
     assert_eq!(down, Some(Action::MoveFolder { path: "main/a".into(), delta: 1 }));
-    app.modals.pop();
-    app.update(down.unwrap());
-    assert_eq!(level_order(&dir, ""), ["alpha", "beta", "b/", "a/", "c/"]);
+    assert_eq!(up, Some(Action::MoveFolder { path: "main/a".into(), delta: -1 }), "past beta");
+    app.update(up.unwrap());
+    assert_eq!(level_order(&dir, ""), ["alpha", "a/", "beta", "b/", "c/"]);
 }
 
 #[test]
@@ -28822,8 +28845,9 @@ fn a_right_click_on_an_armed_press_disarms_it() {
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
 }
 
-#[test]
-fn a_drag_never_leaves_its_sibling_group() {
+/// `spaced_app` with `main/auth/x` in an open `auth/`: rows alpha, beta,
+/// auth/, x.
+fn auth_folder_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::save_request(dir.path(), "main/auth/x", &req("https://x/3")).unwrap();
     let mut expanded = app.proj().local().expanded.clone();
@@ -28831,18 +28855,31 @@ fn a_drag_never_leaves_its_sibling_group() {
     app.proj_mut().set_expanded(expanded);
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
+    (app, dir)
+}
+
+/// A drag leaves its level: over a folder's last row the pointer's
+/// column picks that folder or the level around it, on the same screen
+/// row (spec 2026-11-02 drag into folders D11, D12; replaces "a drag never
+/// leaves its sibling group").
+#[test]
+fn a_drag_over_a_folders_last_row_picks_the_level_by_column() {
+    let (mut app, dir) = auth_folder_app();
     // rows: alpha, beta, auth/, auth/x
     let r0 = row_rect(&mut app, 0);
     let r3 = row_rect(&mut app, 3);
-    app.handle_mouse(left_down(r0.x + 2, r0.y));
-    app.handle_mouse(moved(r0.x + 2, r3.y)); // over the folder's child
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/alpha", "main/auth/x"],
-        "pinned to the group's end"
-    );
-    app.handle_mouse(left_up(r0.x + 2, r3.y));
-    assert_eq!(level_order(&dir, ""), ["beta", "alpha", "auth/"]);
+    let names = r0.x + 12;
+    app.handle_mouse(left_down(names, r0.y));
+    app.handle_mouse(moved(names, r3.y)); // over the folder's child, the names
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
+    assert_eq!(request_rows(&app), ["main/beta", "main/auth/x", "main/alpha"]);
+    assert!(matches!(app.sidebar.rows[3], Row::Request { depth: 1, .. }), "inside auth/");
+    // The top level's indent, the same row: out of auth/, last.
+    app.handle_mouse(moved(r0.x + 1, r3.y));
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, (String::new(), 2));
+    assert!(matches!(app.sidebar.rows[3], Row::Request { depth: 0, .. }));
+    app.handle_mouse(left_up(r0.x + 1, r3.y));
+    assert_eq!(level_order(&dir, ""), ["beta", "auth/", "alpha"]);
 }
 
 #[test]
