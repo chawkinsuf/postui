@@ -48,9 +48,10 @@ pub struct ItemSettings {
     /// request's own `insecure` flag. Absent = per request.
     #[serde(default)]
     pub tls: Option<TlsPolicy>,
-    /// Spaces only: request order, slugs relative to the space
-    /// (`"login"`, `"auth/refresh"`). Only the relative order among
-    /// siblings of one level carries meaning — see `order::order_level`.
+    /// Spaces only: request and folder order, relative to the space
+    /// (`"login"`, `"auth/refresh"`, `"auth/"`). Only the relative order
+    /// among the items of one level carries meaning — see
+    /// `order::order_entries`.
     #[serde(default)]
     pub order: Vec<String>,
 }

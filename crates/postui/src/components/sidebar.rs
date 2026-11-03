@@ -169,11 +169,10 @@ impl Row {
 }
 
 impl Sidebar {
-    /// Rebuilds `rows` as a tree from a fresh listing: at each level, this
-    /// level's requests come first — the ones in `order` in list order,
-    /// then the rest by display name — then its subfolders (sorted by
-    /// name); a folder's children are emitted only when `expanded`
-    /// contains its path. Preserves the current selection by row identity
+    /// Rebuilds `rows` as a tree from a fresh listing: each level's
+    /// requests and folders mixed in `order` (`order::order_entries`); a
+    /// folder's children are emitted only when `expanded` contains its
+    /// path. Preserves the current selection by row identity
     /// (folder path or request slug) across the rebuild; a selection whose
     /// row vanished lands on the neighbouring row instead, and while any
     /// rows exist the cursor is never left empty (G5).
@@ -221,7 +220,8 @@ impl Sidebar {
         };
         let mut rows = Vec::new();
         let ctx = LevelCtx { expanded, space, order };
-        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
+        let entries: Vec<&RequestListing> = sorted.iter().collect();
+        Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
         // The row a closed folder hid is remembered only while it is still
         // listed: once an outside delete takes it, the folder row's keys
@@ -299,7 +299,8 @@ impl Sidebar {
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
         let ctx = LevelCtx { expanded, space, order };
         let mut rows = Vec::new();
-        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
+        let entries: Vec<&RequestListing> = sorted.iter().collect();
+        Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
             Row::Request { slug, .. } => Some(slug),
             Row::Folder { .. } => None,
@@ -328,53 +329,48 @@ impl Sidebar {
         self.first_visible_request_in_space(space, order, &self.folders_in(space))
     }
 
-    /// Builds the rows for one folder level (`prefix`, possibly empty for
-    /// the root): direct requests first — the ones in `order` in list
-    /// order, then the rest by display name — then subfolders, likewise
-    /// the listed ones first and the rest by name, recursing into each
-    /// expanded one. `entries` must already be sorted by slug (the folder
-    /// grouping walks slug paths) and every entry must start with
-    /// `prefix`.
+    /// Builds the rows for one folder level (`prefix`, `"space/"` for the
+    /// root): its requests and folders mixed, in the order
+    /// `order::order_entries` draws them (spec 2026-11-02 drag into
+    /// folders D3), recursing into each expanded folder at its place.
+    /// Every entry must start with `prefix`.
     fn build_rows(
-        entries: &[RequestListing],
+        entries: &[&RequestListing],
         prefix: &str,
         depth: usize,
         ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
     ) {
+        use postui_core::order::LevelItem;
         let LevelCtx { expanded, space, order } = *ctx;
-        let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
-            std::collections::BTreeMap::new();
-        let mut requests: Vec<&RequestListing> = Vec::new();
-        for e in entries {
-            let rest = &e.slug[prefix.len()..];
-            if let Some((seg, _)) = rest.split_once('/') {
-                let path =
-                    if prefix.is_empty() { seg.to_string() } else { format!("{prefix}{seg}") };
-                folder_children.entry(path).or_default().push(e.clone());
-            } else {
-                requests.push(e);
-            }
-        }
-        let requests = postui_core::order::order_level(&requests, order, space);
-        for e in requests {
-            let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
-            rows.push(Row::Request {
-                name: e.name.clone().unwrap_or_else(|| leaf.to_string()),
-                slug: e.slug.clone(),
-                depth,
-                broken: e.broken.clone(),
-                method: e.method,
-            });
-        }
-        let paths: Vec<String> = folder_children.keys().cloned().collect();
-        for path in postui_core::order::order_folders(&paths, order, space) {
-            let name = Self::folder_name(&path).to_string();
-            let is_expanded = expanded.contains(&path);
-            rows.push(Row::Folder { path: path.clone(), name, depth, expanded: is_expanded });
-            if is_expanded {
-                let child_prefix = format!("{path}/");
-                Self::build_rows(&folder_children[&path], &child_prefix, depth + 1, ctx, rows);
+        let level = postui_core::order::split_level(entries, prefix);
+        let paths = level.folder_paths();
+        for item in postui_core::order::order_entries(&level.requests, &paths, order, space) {
+            match item {
+                LevelItem::Request(e) => {
+                    let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
+                    rows.push(Row::Request {
+                        name: e.name.clone().unwrap_or_else(|| leaf.to_string()),
+                        slug: e.slug.clone(),
+                        depth,
+                        broken: e.broken.clone(),
+                        method: e.method,
+                    });
+                }
+                LevelItem::Folder(path) => {
+                    let name = Self::folder_name(path).to_string();
+                    let is_expanded = expanded.contains(path);
+                    rows.push(Row::Folder {
+                        path: path.to_string(),
+                        name,
+                        depth,
+                        expanded: is_expanded,
+                    });
+                    if is_expanded {
+                        let child_prefix = format!("{path}/");
+                        Self::build_rows(&level.folders[path], &child_prefix, depth + 1, ctx, rows);
+                    }
+                }
             }
         }
     }
@@ -2571,8 +2567,11 @@ mod tests {
         assert_eq!(spans(&s, 6), [(6, 7)]);
     }
 
+    /// Spec 2026-11-02 drag into folders D3: a level draws its folders and
+    /// requests mixed, in list order, the unlisted folder last (D6;
+    /// replaces 2026-11-01 R1's requests-first rows).
     #[test]
-    fn folders_follow_the_order_list_below_their_levels_requests() {
+    fn a_level_mixes_folders_and_requests_in_list_order() {
         let mut s = Sidebar::default();
         s.refresh(
             listing(&["r", "a/x", "b/y", "c/z"]),
@@ -2580,14 +2579,21 @@ mod tests {
             &expanded(&[]),
             &order(&["c/", "r", "a/"]),
         );
-        assert_eq!(row_slugs(&s), ["main/r", "main/c/", "main/a/", "main/b/"]);
+        assert_eq!(row_slugs(&s), ["main/c/", "main/r", "main/a/", "main/b/"]);
+    }
+
+    /// The list every drag test starts from: complete, as the app keeps
+    /// every list (spec 2026-11-02 drag into folders D5).
+    fn r_a_b_order() -> Vec<String> {
+        order(&["r", "a/", "a/x", "a/y", "b/", "b/z"])
     }
 
     #[test]
     fn a_folder_drag_moves_its_open_subtree_with_it() {
         let mut s = Sidebar::default();
         let open = expanded(&["a"]);
-        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &[]);
+        let saved = r_a_b_order();
+        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &saved);
         // rows: 0 r, 1 a/, 2 x, 3 y, 4 b/
         assert!(s.begin_drag(4, "main"));
         let d = s.drag.as_ref().unwrap();
@@ -2595,7 +2601,7 @@ mod tests {
         assert_eq!(d.original, ["a/", "b/"]);
         assert_eq!(d.level, "");
         assert!(s.drag_to_row(1), "the pointer on a/'s first row");
-        s.rebuild("main", &open, &[]);
+        s.rebuild("main", &open, &saved);
         assert_eq!(row_slugs(&s), ["main/r", "main/b/", "main/a/", "main/a/x", "main/a/y"]);
     }
 
@@ -2605,16 +2611,17 @@ mod tests {
     fn a_folder_drag_past_a_tall_neighbour_never_flips_back() {
         let mut s = Sidebar::default();
         let open = expanded(&["a"]);
-        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &[]);
+        let saved = r_a_b_order();
+        s.refresh(listing(&["r", "a/x", "a/y", "b/z"]), "main", &open, &saved);
         assert!(s.begin_drag(4, "main"));
         assert!(s.drag_to_row(1));
-        s.rebuild("main", &open, &[]);
+        s.rebuild("main", &open, &saved);
         // rows: 0 r, 1 b/, 2 a/, 3 x, 4 y — the pointer over a/'s block.
         for i in [1, 2, 3] {
             assert!(!s.drag_to_row(i), "row {i} keeps b/ above a/");
         }
         assert!(s.drag_to_row(4), "a/'s last row passes it");
-        s.rebuild("main", &open, &[]);
+        s.rebuild("main", &open, &saved);
         assert_eq!(row_slugs(&s), ["main/r", "main/a/", "main/a/x", "main/a/y", "main/b/"]);
         // rows: 0 r, 1 a/, 2 x, 3 y, 4 b/ — back to the start, and stable.
         for i in [2, 3, 4] {
@@ -2638,18 +2645,21 @@ mod tests {
     #[test]
     fn a_folder_drag_clamps_to_its_own_group() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["r", "a/x", "b/z"]), "main", &expanded(&[]), &[]);
+        let saved = order(&["r", "a/", "a/x", "b/", "b/z"]);
+        s.refresh(listing(&["r", "a/x", "b/z"]), "main", &expanded(&[]), &saved);
         // rows: 0 r, 1 a/, 2 b/
         assert!(s.begin_drag(2, "main"));
         assert!(s.drag_to_row(0), "a request row pins to the first folder slot");
-        s.rebuild("main", &expanded(&[]), &[]);
+        s.rebuild("main", &expanded(&[]), &saved);
         assert_eq!(row_slugs(&s), ["main/r", "main/b/", "main/a/"]);
     }
 
     #[test]
     fn a_request_drag_keeps_its_levels_folder_order_and_back() {
         let mut s = Sidebar::default();
-        let saved = order(&["g/", "f/"]);
+        // Complete lists, as the app keeps them (spec 2026-11-02 drag into
+        // folders D5).
+        let saved = order(&["a", "b", "g/", "f/", "f/x", "g/y"]);
         s.refresh(listing(&["a", "b", "f/x", "g/y"]), "main", &expanded(&[]), &saved);
         // rows: 0 a, 1 b, 2 g/, 3 f/
         assert!(s.begin_drag(1, "main"));
@@ -2657,7 +2667,7 @@ mod tests {
         s.rebuild("main", &expanded(&[]), &saved);
         assert_eq!(row_slugs(&s), ["main/b", "main/a", "main/g/", "main/f/"]);
         s.drag = None;
-        let saved = order(&["b", "a"]);
+        let saved = order(&["b", "a", "f/", "g/", "f/x", "g/y"]);
         s.rebuild("main", &expanded(&[]), &saved);
         assert!(s.begin_drag(3, "main"));
         assert!(s.drag_to_row(2));

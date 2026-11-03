@@ -292,9 +292,11 @@ impl Project {
 ///
 /// A folder is new when nothing was under it before the op: every listed
 /// request under it is arriving, and none of the departed ones sat in
-/// it. A rename from `a/x` to `a/sub/x` leaves `a/` where it was. `seen`
-/// holds the folders this op already handled, so a folder several
-/// arrivals share is placed once.
+/// it. A new folder arrives (lands last in its level, spec 2026-11-02
+/// drag into folders D4); one already there keeps its place. A rename
+/// from `a/x` to `a/sub/x` leaves `a/` where it was. `seen` holds the
+/// folders this op already handled, so a folder several arrivals share
+/// is placed once.
 fn arrive_with_folders(
     space: &str,
     order: &mut Vec<String>,
@@ -304,7 +306,6 @@ fn arrive_with_folders(
     seen: &mut std::collections::HashSet<String>,
     slugs: &[String],
 ) -> Vec<OrderEdit> {
-    let exists = |s: &str| order::exists_in(slugs, s);
     let mut edits = Vec::new();
     for folder in order::ancestors(rel) {
         if !seen.insert(folder.to_string()) {
@@ -317,9 +318,11 @@ fn arrive_with_folders(
                 .iter()
                 .filter_map(|s| s.strip_prefix(&under).map(|_| &s[space.len() + 1..]))
                 .all(|r| arriving.contains(r));
-        edits.extend(order::arrive_folder(space, order, folder, new, &exists));
+        if new {
+            edits.extend(order::arrive(space, order, &order::folder_entry(folder)));
+        }
     }
-    edits.extend(order::arrive(space, order, rel, &exists));
+    edits.extend(order::arrive(space, order, rel));
     edits
 }
 
@@ -358,7 +361,7 @@ impl Project {
     /// The request at `rel` (relative to `space`) has just appeared, with
     /// the listing already relisted: each folder it sits in that is new,
     /// outermost first, then the request itself takes the arrival rule
-    /// (spec 2026-11-01 reorder folders R10, R10a). `departed` names what
+    /// (spec 2026-11-02 drag into folders D4). `departed` names what
     /// the same op took out of `space` (see [`arrive_with_folders`]).
     pub(super) fn order_arrive(
         &mut self,
@@ -446,7 +449,7 @@ impl Project {
 
     /// One level of `space`'s requests as relative slugs, in the order the
     /// sidebar draws them right now: the listed ones first, then the rest
-    /// alphabetically ([`order::order_level`]'s display rule). It seeds an
+    /// alphabetically ([`order::order_entries`]' display rule). It seeds an
     /// order array that does not exist yet, so a put and a first drag agree
     /// on what "the order" was before the edit.
     pub(super) fn level_shown(&self, space: &str, level: &str) -> Vec<String> {
@@ -1061,15 +1064,13 @@ mod tests {
         );
     }
 
+    /// Spec 2026-11-02 drag into folders D4, D22: everything arrives last,
+    /// folders included, in the mixed order the sidebar showed.
     #[test]
     fn move_all_arrives_in_the_order_the_sidebar_showed_not_alphabetically() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("requests/main/sub")).unwrap();
         std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
-        // `auth` is listed too: `order::arrive` deliberately appends
-        // nothing to a level that has no displayed entry (such a level
-        // sorts alphabetically), so an unlisted destination would record
-        // no order whatever the arrival order was.
         std::fs::write(
             dir.path().join("project.toml"),
             "spaces = [\"main\", \"auth\"]\n\n[space.main]\norder = [\"b\", \"a\"]\n\n[space.auth]\norder = [\"login\"]\n",
@@ -1089,7 +1090,7 @@ mod tests {
             ["main/b", "main/a", "main/sub/c"],
             "the displayed order, not the listing's alphabetical one"
         );
-        assert_eq!(order::space_order(p.meta(), "auth"), ["login", "b", "a"]);
+        assert_eq!(order::space_order(p.meta(), "auth"), ["login", "b", "a", "sub/", "sub/c"]);
         assert!(dir.path().join("requests/auth/sub/c.toml").is_file());
     }
 
@@ -1321,56 +1322,63 @@ mod tests {
         assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/"]);
     }
 
+    /// Spec 2026-11-02 drag into folders D4: the new folder and the
+    /// request in it land last.
     #[test]
     fn a_rename_out_of_a_folder_drops_it_and_into_a_new_one_appends_it() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.rename_request("main/a/x", "main/c/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "c/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "c/", "c/x"]);
     }
 
     /// A rename that changes level inside a folder leaves that folder where
-    /// it was: it never stopped existing, so it is not new (R10).
+    /// it was: it never stopped existing, so it is not new. What does
+    /// arrive (the new `sub/`, the request) lands last (D4).
     #[test]
     fn a_rename_within_a_folder_keeps_the_folders_slot() {
         let (_dir, mut p) = folder_project(&["a/", "b/"], &["main/a/x", "main/b/z"]);
         p.rename_request("main/a/x", "main/a/sub/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "a/sub/", "a/sub/x"]);
         p.rename_request("main/a/sub/x", "main/a/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "a/x"]);
     }
 
+    /// D4: a create lands last, in a level whatever it lists (replaces
+    /// "a create in an unarranged level writes nothing").
     #[test]
-    fn a_create_in_a_new_folder_of_an_unarranged_level_writes_nothing() {
+    fn a_create_in_a_new_folder_lands_last() {
         let (_dir, mut p) = folder_project(&["r"], &["main/r", "main/a/x"]);
         p.create_request("main/c/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["r"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["r", "c/", "c/new"]);
     }
 
+    /// D4: every new ancestor arrives, outermost first, then the request.
     #[test]
     fn a_create_in_a_new_nested_folder_arrives_every_new_ancestor() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.create_request("main/c/d/New", req("u")).unwrap();
-        // `c/` arrives at an arranged level; `c/d/` at one with no folder
-        // entries, so it is left to sort by name.
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/", "c/d/", "c/d/new"]);
     }
 
-    /// R10a: an entry left behind by a folder emptied outside the app
-    /// never hands its slot to a new folder of that name.
+    /// An entry left behind by a folder emptied outside the app never
+    /// hands its slot to a new folder of that name: the arrival removes it
+    /// and appends (D4; `arrive` never lists an entry twice).
     #[test]
     fn a_create_in_a_folder_made_again_drops_its_leftover_entry() {
         let (_dir, mut p) = folder_project(&["c/", "b/", "a/"], &["main/a/x", "main/b/z"]);
         p.create_request("main/c/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "c/", "c/new"]);
     }
 
+    /// D4: the folder keeps its slot; the request lands last in it.
     #[test]
     fn a_create_in_an_existing_folder_keeps_its_slot() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
         p.create_request("main/b/New", req("u")).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/new"]);
     }
 
+    /// D4: the new folder and the request land last in the other space.
     #[test]
     fn a_move_to_another_space_cascades_folders_on_both_sides() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
@@ -1380,9 +1388,10 @@ mod tests {
         p.relist();
         p.move_request("main/a/x", "auth").unwrap();
         assert_eq!(order::space_order(p.meta(), "main"), ["b/"]);
-        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "a/"]);
+        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "a/", "a/x"]);
     }
 
+    /// D4, D22: everything arrives last, in the order `main` showed it.
     #[test]
     fn move_all_cascades_folders_on_both_sides() {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/a/y", "main/b/z"]);
@@ -1392,8 +1401,7 @@ mod tests {
         p.relist();
         p.move_all_requests("main", "auth").unwrap();
         assert!(order::space_order(p.meta(), "main").is_empty());
-        // Both arrive new, in the order `main` showed them.
-        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "b/", "a/"]);
+        assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "b/", "b/z", "a/", "a/x", "a/y"]);
     }
 
     /// Spec §5.2: a batch delete is one journal entry, refused whole on a

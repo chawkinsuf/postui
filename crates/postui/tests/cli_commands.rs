@@ -178,7 +178,9 @@ fn requests_follow_the_folder_order() {
     let v = json(&out);
     let slugs: Vec<&str> =
         v["requests"].as_array().unwrap().iter().map(|r| r["slug"].as_str().unwrap()).collect();
-    assert_eq!(slugs, ["main/list", "main/zz/q", "main/users/get-user", "admin/x"]);
+    // The listed folder draws above the level's unlisted request (spec
+    // 2026-11-02 drag into folders D6, D22).
+    assert_eq!(slugs, ["main/zz/q", "main/list", "main/users/get-user", "admin/x"]);
 }
 
 /// Review Focus 1: a request that doesn't parse is listed with what is

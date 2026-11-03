@@ -5951,7 +5951,9 @@ fn an_open_folder_drags_with_its_requests() {
     app.handle_mouse(moved(b.x + 2, a.y));
     app.handle_mouse(left_up(b.x + 2, a.y));
     assert_eq!(saved_order(&dir), ["b/", "a/", "c/"]);
-    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/a/x"]);
+    // A list naming only the level's folders draws them above its
+    // unlisted requests (spec 2026-11-02 drag into folders D6).
+    assert_eq!(request_rows(&app), ["main/a/x", "main/alpha", "main/beta"]);
     let a_row = folder_row(&app, "main/a");
     assert!(
         matches!(&app.sidebar.rows[a_row + 1], Row::Request { slug, .. } if slug == "main/a/x"),
@@ -6135,8 +6137,9 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
 #[test]
 fn move_all_requests_cascades_the_order_lists() {
     // The app made every one of the source's entries stale, so it clears
-    // them; the destination is unlisted, so the arrivals sort
-    // alphabetically there rather than materialising a list.
+    // them; the arrivals land last in the destination, in the order the
+    // source showed them (spec 2026-11-02 drag into folders D4, D22;
+    // replaces "an unlisted destination stays unlisted").
     let (mut app, dir) = spaced_app();
     postui_core::fixtures::set_level_order(
         dir.path(),
@@ -6152,10 +6155,7 @@ fn move_all_requests_cascades_the_order_lists() {
         postui_core::order::space_order(&meta, "main").is_empty(),
         "no stale entry left in the emptied space"
     );
-    assert!(
-        postui_core::order::space_order(&meta, "auth").is_empty(),
-        "an unlisted destination stays unlisted"
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["beta", "alpha"]);
 }
 
 // --- undo puts the order list back exactly as the undone op found it ---
@@ -6710,13 +6710,16 @@ fn renaming_keeps_the_slot_and_deleting_removes_the_entry() {
     assert_eq!(main_order(&dir), ["alpha"]);
 }
 
+/// Spec 2026-11-02 drag into folders D4: the arrival lands last in the
+/// other space, whatever its list held (replaces "arrives there only if
+/// listed").
 #[test]
-fn moving_to_another_space_removes_here_and_arrives_there_only_if_listed() {
+fn moving_to_another_space_removes_here_and_arrives_last_there() {
     let (mut app, dir) = ordered_app();
     app.update(Action::ForceMoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
     assert_eq!(main_order(&dir), ["alpha"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(postui_core::order::space_order(&meta, "auth").is_empty(), "auth has no list yet");
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["beta"]);
 }
 
 #[test]
@@ -23892,7 +23895,11 @@ mod undo_tests {
             ("switch back", Action::ForceSwitchSpace("main".into())),
             ("move all", Action::ForceMoveAllRequests { from: "auth".into(), to: "main".into() }),
             ("undo move all", Action::Undo),
-            ("reorder", Action::MoveRequest { slug: "main/beta".into(), delta: 1 }),
+            // `alpha`, not `beta`: `fresh` arrived at the end of `main`'s
+            // list (spec 2026-11-02 drag into folders D4), and while the
+            // rest of that list is unwritten it draws first (D6), leaving
+            // `beta` the last request, where a step down is no op.
+            ("reorder", Action::MoveRequest { slug: "main/alpha".into(), delta: 1 }),
             ("undo reorder", Action::Undo),
             ("create space", Action::CreateSpace("billing".into())),
             ("delete inactive space", Action::ForceDeleteSpace("billing".into())),

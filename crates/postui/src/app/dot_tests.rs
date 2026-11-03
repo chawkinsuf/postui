@@ -134,7 +134,9 @@ fn a_change_elsewhere_makes_dot_stale() {
         .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/alpha"));
     draw(&mut app);
     feed(&mut app, "dd");
-    assert_eq!(requests(&app), ["main/beta", "main/matrix"]);
+    // `matrix` was made first and listed; the two written outside follow
+    // it (spec 2026-11-02 drag into folders D4, D6).
+    assert_eq!(requests(&app), ["main/matrix", "main/beta"]);
     feed(&mut app, "<C-w>l");
     assert_eq!(app.surface(), crate::keyroute::Surface::Body, "back in the body");
     feed(&mut app, "ix<Esc>");
@@ -147,7 +149,7 @@ fn a_change_elsewhere_makes_dot_stale() {
         app.toasts.messages()
     );
     feed(&mut app, ".");
-    assert_eq!(requests(&app), ["main/beta", "main/matrix"], "the body's edit was the last change");
+    assert_eq!(requests(&app), ["main/matrix", "main/beta"], "the body's edit was the last change");
 }
 
 /// Probe D0: nothing to repeat, nothing said.
