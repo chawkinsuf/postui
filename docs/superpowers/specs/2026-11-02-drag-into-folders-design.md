@@ -139,12 +139,17 @@ follow the same rules.
   (`drop_dead` when the walk had no error about no one file), through
   `edit_project_toml`, building each list from the order in the
   `project.toml` text it re-reads, not from `self.meta` (D5a). It is
-  called as the first step inside the transaction of every op that
-  changes an order (create, rename, Move to space, Move all, delete,
-  duplicate and put, `set_request_order`, `move_request_shown`,
-  `move_to_level`), before the op's file change, so it is journaled with
-  the op (D5); and by the app's `refresh_sidebar`, outside any
-  transaction (D5a). A space whose directory is missing is left alone. A
+  called as the first step inside the transaction of every op that adds,
+  moves or removes an item (create, rename, Move to space, Move all,
+  delete, duplicate and put, `move_to_level`; a batch once at its top),
+  before the op's file change, so it is journaled with the op (D5); and
+  by the app's `refresh_sidebar`, outside any transaction (D5a). The two
+  reorders (`set_request_order`, `move_request_shown`) don't call it:
+  they write their whole level as the sidebar drew it, unlisted items
+  included, so that level ends complete and nothing arrives; completing
+  there cost a full re-walk per held alt+↓ step (new round 1). No order
+  write creates a `project.toml` (`order_edit` writes nothing without
+  one). A space whose directory is missing is left alone. A
   read-only project writes nothing, and a directory with no
   `project.toml` gains none from it.
 - **The request ops stay as they are on main**, minus what an incomplete
