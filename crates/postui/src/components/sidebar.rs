@@ -243,9 +243,8 @@ impl Sidebar {
         let prev = self.selected_key();
         let prev_index = self.selected;
         let prefix = format!("{space}/");
-        let mut sorted: Vec<RequestListing> =
-            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
-        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
+        let entries: Vec<&RequestListing> =
+            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
 
         // A live drag's block is left out of its own level and drawn at
         // its target, with its real keys. A drag belongs to the space it
@@ -255,17 +254,16 @@ impl Sidebar {
             .drag
             .as_ref()
             .filter(|d| d.space == space)
-            .and_then(|d| Self::drag_draw(&sorted, d));
+            .and_then(|d| Self::drag_draw(&entries, d));
         let mut rows = Vec::new();
         let ctx = LevelCtx { expanded, space, order, drag: drag.as_ref() };
-        let entries: Vec<&RequestListing> = sorted.iter().collect();
         Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
         // The row a closed folder hid is remembered only while it is still
         // listed: once an outside delete takes it, the folder row's keys
         // (`h`, `l`, `zo`) act on the folder again.
         if let Some((real, _)) = &self.fold_row
-            && !Self::listed(&sorted, real)
+            && !Self::listed(&self.listing, real)
         {
             self.fold_row = None;
         }
@@ -332,12 +330,10 @@ impl Sidebar {
         expanded: &BTreeSet<String>,
     ) -> Option<String> {
         let prefix = format!("{space}/");
-        let mut sorted: Vec<RequestListing> =
-            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
-        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
+        let entries: Vec<&RequestListing> =
+            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
         let ctx = LevelCtx { expanded, space, order, drag: None };
         let mut rows = Vec::new();
-        let entries: Vec<&RequestListing> = sorted.iter().collect();
         Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
             Row::Request { slug, .. } => Some(slug),
@@ -447,17 +443,17 @@ impl Sidebar {
         }
     }
 
-    /// `build_rows`' view of a live drag over `sorted` (the space's
+    /// `build_rows`' view of a live drag over `entries` (the space's
     /// listing): `None` when its row is no longer listed.
-    fn drag_draw<'a>(sorted: &'a [RequestListing], d: &RowDrag) -> Option<DragDraw<'a>> {
+    fn drag_draw<'a>(entries: &[&'a RequestListing], d: &RowDrag) -> Option<DragDraw<'a>> {
         let (item, inside) = match &d.key {
             RowKey::Request(slug) => {
-                (LevelItem::Request(sorted.iter().find(|l| l.slug == *slug)?), Vec::new())
+                (LevelItem::Request(entries.iter().copied().find(|l| l.slug == *slug)?), Vec::new())
             }
             RowKey::Folder(path) => {
                 let under = format!("{path}/");
                 let inside: Vec<&RequestListing> =
-                    sorted.iter().filter(|l| l.slug.starts_with(&under)).collect();
+                    entries.iter().copied().filter(|l| l.slug.starts_with(&under)).collect();
                 let first = inside.first()?;
                 (LevelItem::Folder(&first.slug[..path.len()]), inside)
             }
@@ -994,12 +990,6 @@ impl Sidebar {
     /// The row `key` names, if it is visible.
     pub fn row_of_key(&self, key: &RowKey) -> Option<usize> {
         self.rows.iter().position(|r| Self::row_matches(r, key))
-    }
-
-    /// The listing the rows were last built from: every space, not just
-    /// the visible one.
-    pub fn listing(&self) -> &[RequestListing] {
-        &self.listing
     }
 
     /// Starts a drag of row `i`, a request or a folder of `space`: its
