@@ -527,6 +527,11 @@ pub struct App {
     /// The same warn-once channel again, for entries in `project.toml`'s
     /// `environments` that aren't valid environment names.
     last_environments_warning: Option<String>,
+    /// The same warn-once channel for a failed write of the completed
+    /// order lists (spec 2026-11-02 drag into folders D5a): a
+    /// `project.toml` that can't be written stays that way, and every
+    /// refresh retries the write.
+    last_order_error: Option<String>,
     /// Set when the project the app was asked to open refused (a file it
     /// would write back is unreadable — see `Project::open`). The
     /// app then runs on an empty root with nothing loaded; the message is
@@ -1899,6 +1904,7 @@ impl App {
         self.last_loose_warning = None;
         self.last_spaces_warning = None;
         self.last_environments_warning = None;
+        self.last_order_error = None;
     }
 
     /// Whether `target` is the open project's directory, by any spelling of
@@ -2043,6 +2049,7 @@ impl App {
             last_loose_warning: None,
             last_spaces_warning: None,
             last_environments_warning: None,
+            last_order_error: None,
             open_error,
             config_error: None,
             startup_config_gate: false,
@@ -10206,7 +10213,7 @@ impl App {
         // the rows are the same whether or not the write lands. The write
         // goes through `Disk`, which re-stamps `project.toml`, so the next
         // poll does not see it as an outside change. Not an undo step.
-        let order_error = p.complete_order().err();
+        let order_error = p.complete_order().err().map(|e| e.to_string());
         let listing = p.requests().to_vec();
         let warning = p.listing_warning();
         let spaces_warning = p.spaces_warning().map(str::to_string);
@@ -10221,9 +10228,12 @@ impl App {
         }
         let space = p.local().active_space.clone();
         let order = postui_core::order::space_order(p.meta(), &space).to_vec();
-        if let Some(e) = order_error {
+        if let Some(e) = &order_error
+            && order_error != self.last_order_error
+        {
             self.toasts.push(format!("could not save the request order: {e}"), ToastKind::Error);
         }
+        self.last_order_error = order_error;
         if let Some(warning) = warning {
             // Two different failures share one warning string: a walk error
             // (transient, worth an error toast every time) and the
@@ -10462,7 +10472,10 @@ impl App {
             let t = self.begin_op();
             let written = match self.project.as_mut() {
                 Some(p) => p.set_request_order(&space, &drag.origin.0, &shown),
-                None => return true,
+                None => {
+                    self.op_in_flight = false;
+                    return true;
+                }
             };
             match written {
                 Ok(_) => reordered = Some(t),
@@ -10535,6 +10548,11 @@ impl App {
                 for slug in &carried {
                     self.follow_move(slug, &format!("{to}{}", &slug[from.len()..]));
                 }
+                // The new paths open; the old ones stay in the open set on
+                // purpose. Undo moves the folder back to its old path, and
+                // that entry is what reopens it there as it was (undo
+                // restores exactly). The cost is an entry naming nothing
+                // until then, which opens nothing.
                 for open in &open_inside {
                     self.sidebar.pending_expand.insert(format!("{to}{}", &open[from.len()..]));
                 }

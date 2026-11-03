@@ -247,9 +247,11 @@ impl Project {
         Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
     }
 
-    /// Rewrites one level of `space`'s order to `shown`, entries of one
-    /// kind: request slugs, or folder entries (`order::merge_level`'s
-    /// rule). A drag: never merges.
+    /// Rewrites one level of `space`'s order to `shown`, entries of both
+    /// kinds (`order::merge_level`'s rule; a level mixes them, spec
+    /// 2026-11-02 D3). A drag: never merges. The journal label is a plain
+    /// "reorder": a mixed level's first entry says nothing about what
+    /// moved, and the app's undo toast names that itself.
     pub fn set_request_order(
         &mut self,
         space: &str,
@@ -261,9 +263,7 @@ impl Project {
         if before == after {
             return Ok(None);
         }
-        let folders = shown.first().is_some_and(|e| crate::order::is_folder_entry(e));
-        let label = if folders { "reorder folders" } else { "reorder requests" };
-        self.transaction(label, EntryMeta::default(), |p| {
+        self.transaction("reorder", EntryMeta::default(), |p| {
             p.order_edit(space, |order| {
                 *order = after.clone();
                 Vec::new()

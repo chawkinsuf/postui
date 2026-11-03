@@ -38001,6 +38001,17 @@ fn an_order_that_cannot_be_written_toasts_and_still_draws() {
         app.toasts.messages()
     );
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/aaa"]);
+    // A write that keeps failing the same way toasts once, not on every
+    // refresh.
+    app.update(Action::RefreshSidebar);
+    app.update(Action::RefreshSidebar);
+    let count = app
+        .toasts
+        .messages()
+        .iter()
+        .filter(|m| m.starts_with("could not save the request order"))
+        .count();
+    assert_eq!(count, 1, "{:?}", app.toasts.messages());
 }
 
 /// The column over the names of the row at `r`, right of every indent.

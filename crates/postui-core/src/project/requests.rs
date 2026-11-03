@@ -486,13 +486,23 @@ impl Project {
     /// writes nothing, and neither does a directory with no
     /// `project.toml`, which never gains one behind the user's back (see
     /// [`Self::ensure_spaces`]).
+    ///
+    /// Only a listing that is whole is written from: D7 drops the entries
+    /// the listing doesn't name, so a walk that failed part way (an
+    /// unreadable directory, reported as a warning about no one file) or
+    /// a space whose directory is missing would erase their arrangement.
+    /// Those write nothing; the next whole listing completes them.
     pub fn complete_order(&mut self) -> Result<bool, Error> {
         if self.disk.is_read_only() || !self.disk.is_file(&rel(PROJECT_TOML)?) {
+            return Ok(false);
+        }
+        if self.listing_warnings.iter().any(|w| w.file.is_none()) {
             return Ok(false);
         }
         let changed: Vec<(String, Vec<String>)> = self
             .spaces
             .iter()
+            .filter(|space| space_rel(space).is_ok_and(|dir| self.disk.is_dir(&dir)))
             .filter_map(|space| {
                 let before = order::space_order(&self.meta, space);
                 let after = order::complete_order(&self.listing, before, space);
@@ -850,14 +860,20 @@ impl Project {
         let to_dir = folder_rel(&new_path)?;
         // D18 counts the folders the sidebar shows. A directory there that
         // shows nothing is a leftover: moving a folder's last request out
-        // leaves its directory behind. An empty one goes to the trash as
-        // part of the move (undo brings it back); one holding other files
-        // refuses, as the rename itself would.
+        // leaves its directory behind (empty subdirectories included). One
+        // that holds no file at any depth goes to the trash as part of the
+        // move (undo brings it back). One holding files that aren't
+        // requests is refused, naming the directory, since the sidebar
+        // shows no folder there to clash with.
         let mut leftover = false;
         if self.disk.exists(&to_dir) {
-            let shows = order::exists_in(&self.listed_slugs(), &format!("{new_path}/"));
-            if shows || !self.disk.list(&to_dir)?.is_empty() {
+            if order::exists_in(&self.listed_slugs(), &format!("{new_path}/")) {
                 return Err(Error::AlreadyExists(name.to_string()));
+            }
+            if self.tree_holds_files(&to_dir)? {
+                return Err(Error::Conflict(format!(
+                    "{to_dir} is already there and holds files that aren't requests"
+                )));
             }
             leftover = true;
         }
@@ -901,6 +917,17 @@ impl Project {
             Ok(())
         })?;
         Ok(new_path)
+    }
+
+    /// Whether the directory `dir` holds a file at any depth.
+    fn tree_holds_files(&mut self, dir: &RelPath) -> Result<bool, Error> {
+        for e in self.disk.list(dir)? {
+            let path = dir.join(&e.name)?;
+            if !e.is_dir || self.tree_holds_files(&path)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Every request of `from` into `to`, as one entry. Pre-flights the
@@ -2252,6 +2279,29 @@ mod tests {
         assert_eq!(main_order(&p), ["a", "c"]);
     }
 
+    /// D7 drops what the listing doesn't name, so a listing that is not
+    /// whole writes nothing: a walk that failed part way, or a space whose
+    /// directory is missing, would otherwise erase their arrangement.
+    #[cfg(unix)]
+    #[test]
+    fn complete_order_writes_nothing_from_a_listing_that_is_not_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = tree_fixture();
+        let before = read(&dir, "project.toml");
+        let users = dir.path().join("requests/main/users");
+        std::fs::set_permissions(&users, std::fs::Permissions::from_mode(0o000)).unwrap();
+        p.relist();
+        let wrote = p.complete_order();
+        std::fs::set_permissions(&users, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!wrote.unwrap(), "an unreadable folder keeps its entries");
+        assert_eq!(read(&dir, "project.toml"), before);
+
+        std::fs::rename(dir.path().join("requests/main"), dir.path().join("main-away")).unwrap();
+        p.relist();
+        assert!(!p.complete_order().unwrap(), "a missing space keeps its list");
+        assert_eq!(read(&dir, "project.toml"), before);
+    }
+
     /// D5a: the CLI never writes it.
     #[test]
     fn complete_order_on_a_read_only_project_writes_nothing() {
@@ -2563,23 +2613,25 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
-    /// D18 counts folders that show: an empty directory left behind (its
-    /// last request moved out) goes to the trash with the move, and undo
-    /// brings it back. One still holding a file refuses.
+    /// D18 counts folders that show: a directory left behind with no file
+    /// at any depth (its requests moved out, empty subdirectories and all)
+    /// goes to the trash with the move, and undo brings it back. One still
+    /// holding a file that isn't a request refuses, naming the directory.
     #[test]
     fn a_folder_move_onto_a_leftover_empty_directory_trashes_it() {
         let (dir, mut p) = tree_fixture();
-        std::fs::create_dir_all(dir.path().join("requests/main/v1")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main/v1/sub")).unwrap();
         let new = p.move_to_level(&folder_item("main/users/v1"), "", 0).unwrap();
         assert_eq!(new, "main/v1");
         assert!(dir.path().join("requests/main/v1/get.toml").is_file());
         p.undo().unwrap().unwrap();
         assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
-        assert!(dir.path().join("requests/main/v1").is_dir());
+        assert!(dir.path().join("requests/main/v1/sub").is_dir());
 
-        write(&dir, "requests/main/v1/notes.txt", "keep");
+        write(&dir, "requests/main/v1/sub/.DS_Store", "x");
         let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
-        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "v1"), "{r:?}");
+        assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/main/v1")), "{r:?}");
+        assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
     }
 
     /// D2: a folder can't go inside itself or one of its own folders.
