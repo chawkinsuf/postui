@@ -51,10 +51,10 @@ round instead of being backed out. This design avoids both:
 | D2 | A folder can't go inside itself or inside one of its own folders. | mine (approved: "yes") |
 | D3 | Folders and requests mix freely within a level. The order list already holds both kinds; a level draws in list order, whatever the kind. Replaces 2026-11-01 R1. | you ("maybe its better to just let the folders and requests be put in any order, mixed together") |
 | D4 | Something new lands at the end of its level: a create, a curl import, a rename or move into a folder, Move to space, Move all requests, and a folder that appears through any of these. Replaces the "sorts by name" half of the 2026-09-04 arrival rule and of 2026-11-01 R10. Duplicate and paste keep their place beside the original. | you ("they expect a new request to be at the end of the list"; "for new spaces they are just in the order they are created by default"); duplicate and paste is mine |
-| D5 | Every space's order list names every request and folder in it. When postui sees a list that is missing items, it writes them in where they draw (D6), so nothing on screen moves. With every list complete, an arrival is a plain append (D4). | you ("if we encounter a set without an order we can just write them in alpha order when we see it") |
-| D5a | The TUI writes the missing items when it opens a project and whenever it re-lists the requests (after its own ops, after an outside change, after undo or redo). This is the exception to "opening a project never writes `project.toml`": once for a project from 0.3.0 or earlier, and again whenever a request file appears from outside postui (an agent, a `git pull`, a hand edit). The write is not an undo step. CLI commands never write it: `postui requests` and `postui suite` draw the same order without saving it. | you ("its a one time exception for the upgrade"); files from outside and the CLI are mine (approved: "good") |
+| D5 | Every op that changes a space's order starts from a complete list: before it changes anything, it re-lists the requests and writes every item its list misses in where it draws (D6), so nothing on screen moves. The op then works on a complete list: an arrival is a plain append (D4), a rename renames in place, a put finds its anchor, a drop finds its slot. | you ("if we encounter a set without an order we can just write them in alpha order when we see it") |
+| D5a | The same write also happens when the TUI sees missing items: when it opens a project and whenever it re-lists (after its own ops, an outside change, undo or redo). So a request or folder added from outside (by hand, by an agent, by a `git pull`) lands at the end of its folder in the order it appeared, not by name; only items that appear at the same moment sort by name among themselves. That write is not an undo step; the op's write (D5) is part of the op's transaction and undo step. Both writes build from `project.toml` as it is on disk at that moment, never from postui's last read of it, so an outside edit not yet read (a `git checkout`) is kept. Opening a project can therefore write `project.toml`. CLI commands never write it: `postui requests` and `postui suite` draw the same order without saving it. *Amended 2026-11-03, review round 2:* the op's own write is added, because an op could not count on the refresh write having happened (a file could appear between refreshes, the write could fail, a partial walk skipped it), and ops on an incomplete list misplaced arrivals, puts and drops; and the write reads the file on disk, because building from the remembered copy overwrote outside edits. | write when seen: you ("its a one time exception for the upgrade"; "they'll show up in alphabetical order and stay in alphabetical order if people keep adding folders to the disk, which seems odd"; "Yes" to doing both); the op's write and reading the file on disk are mine (approved: "Yes") |
 | D6 | How a list missing items draws, and so where D5 writes them: the listed items in list order, then the unlisted requests by display name (slug as the tiebreak), then the unlisted folders by path. No special case for 0.3.0: a 0.3.0 level whose list names only its folders shows those folders above its requests after the upgrade, and D5 writes it that way. | mine (today's rule, kept); no 0.3.0 case is you ("for 0.3.0 just do whatever is simpliest") |
-| D7 | D5's write drops entries naming nothing (a request or folder removed outside postui). This replaces "stale entries are preserved on write" (2026-09-04, 2026-11-01 R7) and makes 2026-11-01 R10a's leftover handling unnecessary. | you ("drop them") |
+| D7 | D5's write drops entries naming nothing (a request or folder removed outside postui). This replaces "stale entries are preserved on write" (2026-09-04, 2026-11-01 R7) and makes 2026-11-01 R10a's leftover handling unnecessary. Only a whole listing drops anything: when the walk failed part way (an unreadable folder), the write still adds what is missing but keeps every entry, so an unreadable folder keeps its arrangement. | you ("drop them"); the partial-walk rule is mine |
 
 ### Dragging
 
@@ -98,13 +98,14 @@ follow the same rules.
   opens the request, and the Unsaved changes dialog comes up instead of a
   drag. This is on main for a plain reorder too, filed as #236. D19's
   "unsaved edits included" holds for the code path.
-- When an undo puts back a `project.toml` from before a D5a write, the
-  items that write added are unlisted again, and the TUI's next re-list
-  writes them back, at the end of their levels by name (D6). Only items
-  that arrived from outside postui are affected, and only their places.
-- Switching git branches while the TUI runs can remove request files for
-  a while; D7 drops their entries, and when they come back they land at
-  the end of their levels.
+- An op or refresh made while request files are missing (a git branch
+  switch in progress) drops their entries (D7); when they come back they
+  land at the end of their levels.
+- When an undo puts back a `project.toml` from before a refresh write,
+  the items that write added are unlisted again, and the next re-list
+  writes them back at the end of their levels.
+- Items appear only as fast as postui re-reads the folders (its file
+  watcher), which this task doesn't change.
 
 ## 3. Design
 
@@ -113,11 +114,11 @@ follow the same rules.
 - **`order_entries(requests, folders, order, space)`** replaces
   `order_level` and `order_folders`: one level's items of both kinds in
   D6's order. On a complete list it is plain list order.
-- **`complete_order(listing, order, space) -> Vec<String>`**: the space's
-  list as it draws, every level walked through `order_entries`, with
-  nothing else in it: missing items are written in and entries naming
-  nothing drop out (D7). Drawing and D5 both use `order_entries`, so what
-  is written is what was drawn.
+- **`complete_order(listing, order, space, drop_dead) -> Vec<String>`**:
+  the space's list as it draws, every level walked through
+  `order_entries`: missing items are written in, and with `drop_dead`
+  (a whole listing, D7) entries naming nothing drop out. Drawing and D5
+  both use `order_entries`, so what is written is what was drawn.
 - **`split_level`**: the one partition of a level into its requests and
   its folders, read by the sidebar's rows, the tree walk and
   `complete_order`.
@@ -133,12 +134,19 @@ follow the same rules.
 
 ### Core: `Project`
 
-- **`Project::complete_order(&mut self) -> Result<bool, Error>`** writes
-  `complete_order` for each space whose list it changes, through
-  `edit_project_toml`, outside any transaction (not journaled). Returns
-  whether it wrote. A read-only project writes nothing, and neither does
-  a directory with no `project.toml` (one waiting on the "create a
-  project here?" consent), which never gains one behind the user's back.
+- **`Project::complete_order(&mut self) -> Result<bool, Error>`** relists,
+  then writes `complete_order` for each space whose list it changes
+  (`drop_dead` when the walk had no error about no one file), through
+  `edit_project_toml`, building each list from the order in the
+  `project.toml` text it re-reads, not from `self.meta` (D5a). It is
+  called as the first step inside the transaction of every op that
+  changes an order (create, rename, Move to space, Move all, delete,
+  duplicate and put, `set_request_order`, `move_request_shown`,
+  `move_to_level`), before the op's file change, so it is journaled with
+  the op (D5); and by the app's `refresh_sidebar`, outside any
+  transaction (D5a). A space whose directory is missing is left alone. A
+  read-only project writes nothing, and a directory with no
+  `project.toml` gains none from it.
 - **The request ops stay as they are on main**, minus what an incomplete
   list needed: `arrive` appends, `order_rename` renames in place within a
   level, `order_remove` prunes emptied folders. The duplicate/paste
@@ -193,8 +201,8 @@ follow the same rules.
 ### App
 
 - **`refresh_sidebar`** calls `Project::complete_order` after `relist`
-  (D5a) and before reading the order. An error is toasted; the rows draw
-  the same either way.
+  (D5a) and before reading the order. A failed write toasts once per
+  distinct error; the rows draw the same either way.
 - **`sidebar_drag_to`** maps the pointer: below the last row,
   `drag_below`; above the first row at scroll 0, `drag_above`; else
   `drag_to`. It then checks the spring too, because the tick's sleep
@@ -226,8 +234,13 @@ follow the same rules.
   `displayed_slugs` recursing at a mixed place. `arrive` appending, and
   never listing an entry twice. `rename_prefix` on a nested folder.
 - **Core `Project`**:
-  - `complete_order` writes nothing for a complete list, and nothing at
-    all for a read-only project; it isn't journaled.
+  - Each order-changing op completes the list first, inside its undo
+    step: on an incomplete list (a 0.3.0 list, a file added outside) a
+    create lands last, a same-level rename keeps its place, a put lands
+    beside its anchor, and a drop lands at its slot; undo restores
+    `project.toml` byte for byte. A partial walk adds but drops nothing.
+  - The refresh write is not journaled, and keeps an outside edit to
+    `order` that postui hasn't read yet.
   - Create, rename into a folder, Move to space, Move all and curl import
     land last; a same-level rename keeps its place; duplicate and paste
     land beside the original.
@@ -251,8 +264,8 @@ follow the same rules.
   after 800 ms of ticks and of motion events. A clash toasts and snaps
   back. Undo and redo toasts. Cancels leave sprung folders open. A drag
   across a space switch cancels. `refresh_sidebar` writes the missing
-  items once, and a file added outside lands at the end without a reload
-  loop.
+  items once (toasting a failure once), and files added outside land at
+  the end in the order they appeared, without a reload loop.
 - **CLI**: `postui requests` lists a mixed level in mixed order and never
   writes `project.toml`.
 - **Manual (tmux)**: every D8–D15 case by mouse for a request and a
