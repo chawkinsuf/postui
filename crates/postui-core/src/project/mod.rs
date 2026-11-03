@@ -47,7 +47,10 @@ pub enum Error {
     AlreadyExists(String),
     #[error("not found: {0}")]
     NotFound(String),
-    /// An undo or redo whose target no longer looks as expected.
+    /// The state on disk doesn't allow the change, in words for the user:
+    /// an undo or redo whose target no longer looks as expected, a folder
+    /// move onto a directory that holds files that aren't requests, or a
+    /// reorder in a directory with no `project.toml`.
     #[error("{0}")]
     Conflict(String),
     /// A variable edit refused by `varedit` or validation (never carries
