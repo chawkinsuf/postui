@@ -3,6 +3,13 @@
 Date: 2026-09-04
 Status: approved, not yet implemented
 
+*Amended 2026-11-03 (#232, spec 2026-11-02 drag into folders):* a level
+no longer draws its requests before its folders (D3); something new lands
+last in its level even when the level was never arranged (D4, replacing
+the arrival rule's "sorts by name" half); every list names every item,
+the TUI writing in missing ones where they draw (D5); and entries naming
+nothing are dropped on that write instead of preserved (D7).
+
 ## Goal
 
 Let the user put the requests in a space in any order, not just

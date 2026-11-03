@@ -50,12 +50,12 @@ name = "Staging"
   same header. The value can use `{{variables}}`.
 - `[space.<name>]`: `name` (display name), and `order`, the sidebar order of
   the space's requests and folders: request slugs relative to the space,
-  and folder paths ending in `/` (`["login", "orders/list-orders",
-  "orders/", "users/"]`). postui writes `order` when the user reorders;
-  leave it alone unless asked. Within each level (the space's root or one
-  folder) the requests come first, then the folders. Each kind lists the
-  ones `order` names first, in its order, then the rest: requests by
-  display name, folders by name.
+  and folder paths ending in `/` (`["login", "orders/", "orders/list-orders",
+  "users/"]`). Each level (the space's root or one folder) shows its
+  requests and folders mixed, in `order`'s order. postui keeps every
+  request and folder listed: something new goes last in its level, and a
+  request file added by hand is written in at the end of its level the
+  next time postui's TUI sees it. Leave `order` alone unless asked.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
 
