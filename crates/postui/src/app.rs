@@ -5155,7 +5155,10 @@ impl App {
                     Action::CreateRequestIn { folder, name } => {
                         Action::ForceCreateRequestAt { level: folder, after: None, name }
                     }
-                    Action::CreateRequest(name) => self.create_at_cursor(name),
+                    Action::CreateRequest(name) => {
+                        let (level, after) = self.cursor_place();
+                        Action::ForceCreateRequestAt { level, after, name }
+                    }
                     _ => unreachable!("matched above"),
                 };
                 if self.leaving_unsaved() {
@@ -11603,15 +11606,6 @@ impl App {
             Some(Row::Folder { path, .. }) => (parent(path), Some(RowKey::Folder(path.clone()))),
             None => (space.clone(), None),
         }
-    }
-
-    /// What `CreateRequest(name)` applies past the dirty gate: a create at
-    /// the cursor's place, read now (spec 2026-11-03 create folders F30).
-    /// Tests that stand past the gate (a dirty editor) send this, so they
-    /// build the same action the arm does rather than a copy of it.
-    fn create_at_cursor(&self, name: String) -> Action {
-        let (level, after) = self.cursor_place();
-        Action::ForceCreateRequestAt { level, after, name }
     }
 
     /// Writes a new request built by `build` under `name`, placed by `at`,

@@ -23990,9 +23990,8 @@ mod undo_tests {
         let clean_url = "https://x/1".to_string();
         assert_ne!(dirty_url, clean_url);
         app.update(Action::DeleteRequest("main/beta".into()));
-        // Past the dirty gate: alpha's z edit is still unsaved.
-        let create = app.create_at_cursor("fresh".into());
-        app.update(create);
+        app.update(Action::CreateRequest("fresh".into()));
+        app.handle_key(plain('d')); // Discard changes: alpha's z edit is unsaved
         assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
         app.update(Action::Undo);
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));

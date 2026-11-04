@@ -1260,15 +1260,16 @@ fn ctrl_d_pages_by_the_drawn_body() {
 /// request. (The create's `begin_op` also flushes the session; the glue's
 /// own test `the_body_state_follows_the_open_request` pins the slug rule
 /// alone, and Task 8's `a_request_switch_clears_the_search_highlight` pins
-/// it in the app.) The create is the one past the dirty gate: the typed
-/// `x` would raise the unsaved changes confirm.
+/// it in the app.) The typed `x` raises the unsaved changes confirm, so
+/// the create goes on through its Discard.
 #[test]
 fn a_request_switch_drops_the_bodys_history() {
     let mut app = vim(Fixture::Body);
     feed(&mut app, "x");
     assert!(app.vim.glue.can_undo(EngineKind::Body));
-    let create = app.create_at_cursor("other".into());
-    app.update(create);
+    app.update(Action::CreateRequest("other".into()));
+    feed(&mut app, "d"); // Discard changes
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
     feed(&mut app, "<Esc>");
     assert!(!app.vim.glue.can_undo(EngineKind::Body));
 }
@@ -2356,15 +2357,17 @@ fn search_matches_paint_and_the_landing_one_is_bold() {
 }
 
 /// Spec §3.14: a request switch clears the highlight (plan M3a Deviation 19).
-/// The create past the dirty gate: the dirty Body fixture would raise the
-/// unsaved changes confirm for `CreateRequest` (amendment A8-1).
+/// The dirty Body fixture raises the unsaved changes confirm for
+/// `CreateRequest` (amendment A8-1), so the create goes on through its
+/// Discard.
 #[test]
 fn a_request_switch_clears_the_search_highlight() {
     let mut app = vim(Fixture::Body);
     app.editor.set_body_text("x foo");
     feed(&mut app, "/foo<CR>");
-    let create = app.create_at_cursor("other".into());
-    app.update(create);
+    app.update(Action::CreateRequest("other".into()));
+    feed(&mut app, "d"); // Discard changes
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
     app.editor.method = postui_core::model::Method::Post;
     app.editor.set_body_text("x foo");
     app.editor.active_tab = EditorTab::Body;
