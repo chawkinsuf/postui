@@ -500,9 +500,10 @@ pub enum Action {
         folder: String,
         name: String,
     },
-    /// Actually create the request named `name`, bypassing the dirty check
-    /// (applied directly, or as the tail action of a dirty-prompt choice),
-    /// at a place fixed before the dirty gate: in `level` (a full path),
+    /// Actually create the request named `name`, past the dirty check:
+    /// built only by `CreateRequest` / `CreateRequestIn`, which apply it
+    /// when the editor is clean or as the tail of a dirty-prompt choice. It
+    /// goes at a place fixed before the dirty gate: in `level` (a full path),
     /// right after `after`, or last. `CreateRequest` reads the cursor's
     /// place when it runs, so a Save at the gate (which lands the cursor on
     /// the saved row) can't move the new request.

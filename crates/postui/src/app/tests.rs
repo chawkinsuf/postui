@@ -24383,6 +24383,9 @@ mod undo_tests {
         ];
         for (name, action) in steps {
             app.update(action);
+            // A step stopped at a dialog (an unsaved-changes gate on the
+            // create, say) would leave the rows after it testing nothing.
+            assert!(app.modals.is_empty(), "a dialog opened at: {name}");
             check(&app, name);
         }
 

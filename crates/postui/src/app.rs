@@ -11607,6 +11607,8 @@ impl App {
 
     /// What `CreateRequest(name)` applies past the dirty gate: a create at
     /// the cursor's place, read now (spec 2026-11-03 create folders F30).
+    /// Tests that stand past the gate (a dirty editor) send this, so they
+    /// build the same action the arm does rather than a copy of it.
     fn create_at_cursor(&self, name: String) -> Action {
         let (level, after) = self.cursor_place();
         Action::ForceCreateRequestAt { level, after, name }
