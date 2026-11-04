@@ -104,7 +104,9 @@ pub static VERBS: &[ExVerb] = &[
     verb(&["split"], Run::Act(split), "Cycle split"),
     verb(&["splitback"], Run::Act(split_back), "Cycle split back"),
     verb(&["nohlsearch", "noh"], Run::Act(nohl), "Clear the search highlight"),
-    verb(&["group"], Run::Verb(Verb::AddAlt), "New selector…"),
+    // `AddAlt`: a selector on the variables list, a folder on the sidebar
+    // (spec 2026-11-03 create folders F12).
+    verb(&["group"], Run::Verb(Verb::AddAlt), "New selector or folder…"),
     verb(&["value"], Run::Verb(Verb::EditValue), "Edit option…"),
     verb(&["fields"], Run::Verb(Verb::Fields), "Group fields…"),
     verb(&["promote"], Run::Verb(Verb::Promote), "Promote variable…"),

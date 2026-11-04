@@ -43,6 +43,40 @@ impl RequestListing {
     }
 }
 
+/// The file inside a request folder that holds its display name (spec
+/// 2026-11-03 create folders F15). Its name starts with `.`, so the
+/// request walk skips it (F16) and no request slug can clash with it.
+pub const FOLDER_FILE: &str = ".folder.toml";
+
+/// A request folder: a directory under a space (spec 2026-11-03 create
+/// folders F1), listed whether or not anything is in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderListing {
+    /// The full path, `"main/users/v1"`, no trailing slash.
+    pub path: String,
+    /// The `name` in its [`FOLDER_FILE`]; `None` without one (or when it
+    /// doesn't parse).
+    pub name: Option<String>,
+    /// Why its [`FOLDER_FILE`] couldn't be read or parsed (F24).
+    pub broken: Option<String>,
+}
+
+impl FolderListing {
+    /// What the folder is called on screen: its `name`, else its
+    /// directory name.
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path))
+    }
+
+    /// Whether its own directory name (the path's last segment) is a valid
+    /// slug. A folder whose own name isn't is the one `check` and Move all
+    /// name (spec 2026-11-03 create folders F33); one under it is invalid
+    /// only through it, and goes unnamed.
+    pub fn own_name_is_valid(&self) -> bool {
+        validate_slug(self.path.rsplit('/').next().unwrap_or(&self.path)).is_ok()
+    }
+}
+
 /// The default project directory: `<config dir>/default`.
 pub fn default_project_dir() -> Option<PathBuf> {
     crate::config_dir().map(|dir| dir.join("default"))
@@ -123,54 +157,19 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
     if out.is_empty() || validate_slug(&out).is_err() { fallback.to_string() } else { out }
 }
 
-/// Splits a typed display path into `(folder_slug_prefix, leaf_display)`:
-/// `/` still means folders, and the last segment — trimmed — is the
-/// free-form display name. `None` when the leaf is empty.
+/// The space segment of a typed path (the first one: the app builds it
+/// from the active space or a request's own) as the directory it names:
+/// trimmed and lowercased, kept when that is a valid slug, so a hand-made
+/// space `old-` stays `old-` (`slugify` trims a trailing `-`, #206), and
+/// slugified otherwise.
 ///
-/// A folder segment is trimmed and lowercased, and used as it stands when
-/// that is already a valid slug segment; only the rest are slugified.
-/// The prompts prefill a folder by its on-disk name, and `slugify` is not
-/// the identity on every valid name (it trims a leading or trailing `-`),
-/// so slugifying every segment moved a request out of a hand-made `old-`
-/// into `old` (#206).
-///
-/// The cost, chosen on #206 over the alternative and re-confirmed after
-/// two review rounds raised it: a typed *new* folder is created exactly as
-/// typed when it is a valid name, so a stray dash no longer folds into
-/// the folder beside it. `api-/List` makes `api-/` next to `api/`,
-/// `-rf/X` makes a `-rf` folder (a name shell tools read as a flag),
-/// `-/X` makes `-/`, and `old -/X` (not a valid name, so slugified) lands
-/// in `old` while `old-/X` lands in `old-`. The alternative was to keep a
-/// typed segment only when a folder by that name already exists on disk
-/// and slugify the rest as before; that needs the project's disk at every
-/// caller and makes the same text land differently depending on what
-/// exists, and the stateless rule was preferred.
-///
-/// The first segment of a path the app builds here is the space's
-/// directory name (the active space, or the request's own), and it follows
-/// the same rule, so a hand-made space `old-` stays `old-`. Creating or
-/// renaming a space or environment is different: that names its directory
-/// or file with `slugify`, since they carry a display name in
-/// `project.toml` and their slug is never what the user types. A request
-/// folder has no display name; the typed segment is its on-disk name,
-/// which is why a valid one is kept.
-pub fn split_display_path(input: &str) -> Option<(String, String)> {
-    let (folders, leaf) = match input.rsplit_once('/') {
-        Some((f, l)) => (f, l),
-        None => ("", input),
-    };
-    let leaf = leaf.trim();
-    if leaf.is_empty() {
-        return None;
-    }
-    let folder = folders
-        .split('/')
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .map(|s| if validate_slug(&s).is_ok() { s } else { slugify(&s) })
-        .collect::<Vec<_>>()
-        .join("/");
-    Some((folder, leaf.to_string()))
+/// The folder segments after it are names, not directories (spec
+/// 2026-11-03 create folders F18a, replacing #206's "a typed folder is
+/// used as it stands"): `Project::resolve_display_path` matches them by
+/// shown name and gives a new one its directory by the folder naming rule.
+pub fn segment_slug(segment: &str) -> String {
+    let s = segment.trim().to_ascii_lowercase();
+    if validate_slug(&s).is_ok() { s } else { slugify(&s) }
 }
 
 #[cfg(test)]
@@ -194,46 +193,16 @@ mod tests {
         }
     }
 
+    /// #206: a space segment that is already a valid on-disk name, once
+    /// lowercased, is used as typed; any other is slugified.
     #[test]
-    fn split_display_path_slugifies_non_slug_folders_and_keeps_the_leaf_verbatim() {
-        assert_eq!(
-            split_display_path("API Auth/Get User"),
-            Some(("api-auth".into(), "Get User".into()))
-        );
-        assert_eq!(split_display_path("Get User"), Some(("".into(), "Get User".into())));
-        assert_eq!(
-            split_display_path("a/b/  Leaf Name  "),
-            Some(("a/b".into(), "Leaf Name".into()))
-        );
-        assert_eq!(split_display_path("folder/   "), None, "empty leaf");
-        assert_eq!(split_display_path(""), None);
-    }
-
-    /// #206: a folder segment that is already a valid on-disk name, once
-    /// lowercased, is used as typed; only the rest are slugified.
-    #[test]
-    fn split_display_path_keeps_a_folder_that_is_already_a_slug() {
-        assert_eq!(split_display_path("old-/Ping"), Some(("old-".into(), "Ping".into())));
-        assert_eq!(split_display_path("-wip/Ping"), Some(("-wip".into(), "Ping".into())));
-        assert_eq!(split_display_path("Old-/Ping"), Some(("old-".into(), "Ping".into())));
-        assert_eq!(
-            split_display_path("main/old-/x-/Ping"),
-            Some(("main/old-/x-".into(), "Ping".into()))
-        );
-        assert_eq!(split_display_path("-/Ping"), Some(("-".into(), "Ping".into())));
-        assert_eq!(
-            split_display_path(" old- /Ping"),
-            Some(("old-".into(), "Ping".into())),
-            "surrounding spaces are not part of the name"
-        );
-        assert_eq!(
-            split_display_path("Old Stuff-/Ping"),
-            Some(("old-stuff".into(), "Ping".into())),
-            "a segment that is not a slug is slugified as before"
-        );
+    fn segment_slug_keeps_a_valid_space_name_and_slugifies_the_rest() {
+        assert_eq!(segment_slug("old-"), "old-");
+        assert_eq!(segment_slug("Old-"), "old-");
+        assert_eq!(segment_slug(" old- "), "old-", "surrounding spaces are not part of it");
+        assert_eq!(segment_slug("Old Stuff-"), "old-stuff");
         for dots in ["..", "."] {
-            let (folder, _) = split_display_path(&format!("{dots}/Ping")).unwrap();
-            assert!(validate_slug(&folder).is_ok(), "{dots:?} is never kept as typed: {folder:?}");
+            assert!(validate_slug(&segment_slug(dots)).is_ok(), "{dots:?} is never kept");
         }
     }
 

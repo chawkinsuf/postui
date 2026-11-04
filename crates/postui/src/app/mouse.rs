@@ -1858,6 +1858,7 @@ impl App {
                 self.update(action)
             }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
+            Hit::SidebarNewFolder => self.update(Action::PromptNewFolder),
             Hit::SidebarImportCurl => {
                 self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
             }

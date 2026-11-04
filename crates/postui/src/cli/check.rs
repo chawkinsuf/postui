@@ -93,6 +93,18 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
             warnings.push(Finding { file, message: w.message.clone() });
         }
     }
+    // A folder whose directory name is invalid is shown but never changed,
+    // as a request file of such a name is (spec 2026-11-03 create folders);
+    // an empty one would otherwise go unsaid. Each is named once, where
+    // its own name is invalid.
+    for f in project.folders() {
+        if !f.own_name_is_valid() {
+            errors.push(Finding::at(
+                storage::requests_dir(&root).join(&f.path),
+                "not a valid folder name (a-z 0-9 - _); postui can't change this folder",
+            ));
+        }
+    }
 
     // D2: a value is used as written, so one holding a `{{name}}` is warned
     // of on the file it is written in (spec 2026-10-30, amended after review

@@ -71,6 +71,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptNewRequest,
         },
         Command {
+            id: "folder-new",
+            name: "Folder: new",
+            description: "Create a folder where the cursor is",
+            action: Action::PromptNewFolder,
+        },
+        Command {
             id: "request-import-curl",
             name: "Request: import curl from clipboard",
             description: "Create requests from the curl commands on the clipboard",

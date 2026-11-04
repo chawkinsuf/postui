@@ -171,16 +171,25 @@ pub(crate) fn footer_chips(
             // The keycaps spell the router's verb rows (`a`, `dd`/`d`, …);
             // each action is what `Sidebar::verb_action` resolves on a
             // request row (plan M2 Deviation 3).
+            // `A` (New folder, spec 2026-11-03 create folders F12) has no
+            // chip: the row has no room to spare without pushing the hover
+            // hints out at common widths, and the `+ Folder` button's hint
+            // names its key.
             (Key::Of(Action::OnSelection(Verb::Add)), "new", Some(Action::PromptNewRequest)),
+            // Rename and delete run their key's verb, so `verb_action`
+            // picks the request's op or the folder's by the cursor's row
+            // (spec 2026-11-03 create folders F12). The request actions
+            // themselves stay request-only: the palette's "Request: delete"
+            // never takes a folder.
             (
                 Key::Of(Action::OnSelection(Verb::Rename)),
                 "rename",
-                Some(Action::PromptRenameRequest),
+                Some(Action::OnSelection(Verb::Rename)),
             ),
             (
                 Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
                 "delete",
-                Some(Action::DeleteSelectedRequest),
+                Some(Action::OnSelection(Verb::Delete { count: 1 })),
             ),
             // Space *switching* is the header's job (its space pill and
             // cycle pill); the sidebar's own space action is moving the
@@ -1849,7 +1858,8 @@ mod tests {
         let palette =
             hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).expect("palette chip registered");
         let quit = hits.rect_of(&Hit::FooterChip(Action::Quit)).unwrap();
-        let delete = hits.rect_of(&Hit::FooterChip(Action::DeleteSelectedRequest)).unwrap();
+        let delete =
+            hits.rect_of(&Hit::FooterChip(Action::OnSelection(Verb::Delete { count: 1 }))).unwrap();
         assert_eq!(palette.x + palette.width + 1, quit.x);
         assert!(
             delete.x + delete.width < palette.x,

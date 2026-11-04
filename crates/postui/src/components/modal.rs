@@ -18,7 +18,23 @@ use ratatui::widgets::{Paragraph, Wrap};
 /// to, and (for rename) which slug is prefilled/being renamed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
+    /// "New request": the text is the new request's name, made where the
+    /// cursor is (spec 2026-11-03 create folders F28, F30).
     NewRequest,
+    /// "New request here…": the text is the new request's name, made last
+    /// inside the folder at this full path.
+    NewRequestIn(String),
+    /// "New folder" (spec 2026-11-03 create folders F14, F18): the text
+    /// is the new folder's display name, made in `level` (a full path)
+    /// right after `after`, or last.
+    NewFolder {
+        level: String,
+        after: Option<crate::components::sidebar::RowKey>,
+    },
+    /// "Rename folder" (F23): the text is the folder's new display name.
+    RenameFolder {
+        from: String,
+    },
     /// One command of a curl import (spec curl §4.2): confirming creates
     /// it under the typed name, cancelling skips it; either way the run
     /// moves to its next command.
@@ -1570,6 +1586,18 @@ impl ModalStack {
         }
         let actions: Option<Vec<Action>> = match kind {
             PromptKind::NewRequest => Some(vec![Action::CreateRequest(text.to_string())]),
+            PromptKind::NewRequestIn(folder) => Some(vec![Action::CreateRequestIn {
+                folder: folder.clone(),
+                name: text.to_string(),
+            }]),
+            PromptKind::NewFolder { level, after } => Some(vec![Action::CreateFolder {
+                level: level.clone(),
+                after: after.clone(),
+                name: text.to_string(),
+            }]),
+            PromptKind::RenameFolder { from } => {
+                Some(vec![Action::RenameFolder { from: from.clone(), to: text.to_string() }])
+            }
             PromptKind::ImportCurl(run) => {
                 Some(vec![Action::ImportCurlCreate { run: run.clone(), name: text.to_string() }])
             }

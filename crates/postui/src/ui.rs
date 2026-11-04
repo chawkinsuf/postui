@@ -1549,7 +1549,9 @@ mod tests {
         let mut app = App::new_for_test();
         let content = render(&mut app);
         assert!(!content.contains("REQUESTS")); // no sidebar header; the button is the identity
-        assert!(content.contains("New request")); // sidebar's + New request button
+        // The sidebar's request button: `+ Request` beside `+ Folder`, or
+        // `+ New request` alone when the row is narrow.
+        assert!(content.contains("+ Request") || content.contains("New request"));
         assert!(!content.contains("postui")); // no wordmark: the window title carries the name
         assert!(content.contains("Project:")); // header project chip
         assert!(content.contains("no env")); // header env chip: a bare dir has no envs

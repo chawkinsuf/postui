@@ -17,6 +17,14 @@ R10a's leftover handling unnecessary); and folders drag into and out of
 folders (D1). R4's passing rule now applies to one-row items only: a
 dragged block entering an open folder goes in through its rows.
 
+*Amended 2026-11-03 (#172, spec 2026-11-03 create folders):* a folder is
+its directory and shows even when empty (its F1), so R9 is replaced:
+when a folder's last request leaves, the folder stays with its entry
+(F2, the user: "it should stay where it is. it should basically act like
+a folder on the file system"). A folder's entry goes only when the
+folder is deleted, moved, or removed outside postui; one made again
+later is still a new folder (F4, keeping R9's ruling for deletes).
+
 ## 1. Problem
 
 The sidebar draws each level of a space (its root, or one folder) as

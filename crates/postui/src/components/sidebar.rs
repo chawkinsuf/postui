@@ -10,8 +10,9 @@ use crate::paint::{
 use crate::theme::Theme;
 use crate::ui::clip;
 use postui_core::model::Method;
+use postui_core::order::Contents;
 use postui_core::order::LevelItem;
-use postui_core::storage::RequestListing;
+use postui_core::storage::{FolderListing, RequestListing};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -54,6 +55,16 @@ pub enum RowKey {
     Request(String),
 }
 
+/// A row as the item core's tree ops take (a drop, a create's anchor).
+impl From<RowKey> for postui_core::project::TreeItem {
+    fn from(key: RowKey) -> Self {
+        match key {
+            RowKey::Request(slug) => Self::Request(slug),
+            RowKey::Folder(path) => Self::Folder(path),
+        }
+    }
+}
+
 /// What a fold key does to the sidebar's folders (plan M5b Deviation 9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FoldChange {
@@ -87,6 +98,9 @@ pub struct Sidebar {
     /// The full flat listing behind the current tree, kept so future
     /// rebuilds don't need a caller-supplied copy.
     listing: Vec<RequestListing>,
+    /// Every folder behind the tree, empty ones included (spec 2026-11-03
+    /// create folders F1), with its display name (F15).
+    folders: Vec<FolderListing>,
     /// Ancestor folder paths queued open to make a target row visible:
     /// by `expand_to` (a landing's cursor row, `App::land` step 4) and by
     /// `select_slug`, which calls it. The caller (`App::refresh_sidebar`)
@@ -164,12 +178,11 @@ pub struct RowDrag {
 /// folders D9).
 pub const SPRING_DWELL: Duration = Duration::from_millis(800);
 
-/// The dragged block as `build_rows` draws it: its item, the requests
-/// under it (a folder's contents; empty for a request), and the place it
-/// shows at.
+/// The dragged block as `build_rows` draws it: its item, what is under it
+/// (a folder's contents; empty for a request), and the place it shows at.
 struct DragDraw<'a> {
     item: LevelItem<'a>,
-    inside: Vec<&'a RequestListing>,
+    inside: Contents<'a>,
     /// The full prefix of the level it shows in (`"main/"`, `"main/users/"`).
     prefix: String,
     at: usize,
@@ -194,6 +207,8 @@ struct LevelCtx<'a> {
     space: &'a str,
     order: &'a postui_core::order::OrderIndex<'a>,
     drag: Option<&'a DragDraw<'a>>,
+    /// Every listed folder, for the names folder rows show.
+    folders: &'a [FolderListing],
 }
 
 impl Row {
@@ -213,18 +228,9 @@ impl Row {
 }
 
 impl Sidebar {
-    /// Rebuilds `rows` as a tree from a fresh listing: each level's
-    /// requests and folders mixed in `order` (`order::order_entries`); a
-    /// folder's children are emitted only when `expanded` contains its
-    /// path. Preserves the current selection by row identity
-    /// (folder path or request slug) across the rebuild; a selection whose
-    /// row vanished lands on the neighbouring row instead, and while any
-    /// rows exist the cursor is never left empty (G5).
-    ///
-    /// Only `space`'s entries become rows: everything outside it is dropped
-    /// (but kept in `listing` for `space_counts`), and the tree is rooted at
-    /// `space/` so the space itself is never a row and its own top level is
-    /// depth 0.
+    /// [`Self::refresh_tree`] for tests, the folder listing derived from
+    /// the requests' folders, as the walk would list them.
+    #[cfg(test)]
     pub fn refresh(
         &mut self,
         listing: Vec<RequestListing>,
@@ -232,8 +238,53 @@ impl Sidebar {
         expanded: &BTreeSet<String>,
         order: &[String],
     ) {
+        let folders = postui_core::fixtures::folders_holding(&listing);
+        self.refresh_tree(listing, folders, space, expanded, order);
+    }
+
+    /// Rebuilds `rows` as a tree from a fresh listing: each level's
+    /// requests and folders mixed in `order` (`order::order_entries`); a
+    /// folder's children are emitted only when `expanded` contains its
+    /// path. Every listed folder draws, empty ones included, under its
+    /// display name (spec 2026-11-03 create folders F1, F15). Preserves
+    /// the current selection by row identity (folder path or request slug)
+    /// across the rebuild; a selection whose row vanished lands on the
+    /// neighbouring row instead, and while any rows exist the cursor is
+    /// never left empty (G5).
+    ///
+    /// Only `space`'s entries become rows: everything outside it is dropped
+    /// (but kept in `listing` for `space_counts`), and the tree is rooted at
+    /// `space/` so the space itself is never a row and its own top level is
+    /// depth 0.
+    pub fn refresh_tree(
+        &mut self,
+        listing: Vec<RequestListing>,
+        folders: Vec<FolderListing>,
+        space: &str,
+        expanded: &BTreeSet<String>,
+        order: &[String],
+    ) {
         self.listing = listing;
+        self.folders = folders;
         self.rebuild(space, expanded, order);
+    }
+
+    /// The folders of `space` (under `prefix`, `"space/"`).
+    fn folders_under(&self, prefix: &str) -> Vec<&FolderListing> {
+        self.folders.iter().filter(|f| f.path.starts_with(prefix)).collect()
+    }
+
+    /// The name a folder's row shows: its display name (spec 2026-11-03
+    /// create folders F15), else its directory name.
+    pub fn folder_display<'a>(&'a self, path: &'a str) -> &'a str {
+        Self::listed_name(&self.folders, path)
+    }
+
+    fn listed_name<'a>(folders: &'a [FolderListing], path: &'a str) -> &'a str {
+        folders
+            .iter()
+            .find(|f| f.path == path)
+            .map_or_else(|| Self::folder_name(path), FolderListing::display_name)
     }
 
     /// Rebuilds the rows from the listing already held — the cheap path
@@ -245,6 +296,10 @@ impl Sidebar {
         let prefix = format!("{space}/");
         let entries: Vec<&RequestListing> =
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
+        // The field, not `folders_under`: a method's borrow of `self` would
+        // outlive the `self.rows` write below.
+        let folders: Vec<&FolderListing> =
+            self.folders.iter().filter(|f| f.path.starts_with(&prefix)).collect();
 
         // A live drag's block is left out of its own level and drawn at
         // its target, with its real keys. A drag belongs to the space it
@@ -254,18 +309,24 @@ impl Sidebar {
             .drag
             .as_ref()
             .filter(|d| d.space == space)
-            .and_then(|d| Self::drag_draw(&entries, d));
+            .and_then(|d| Self::drag_draw(&entries, &folders, d));
         let mut rows = Vec::new();
         let order = postui_core::order::OrderIndex::new(order);
-        let ctx = LevelCtx { expanded, space, order: &order, drag: drag.as_ref() };
-        Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
+        let ctx = LevelCtx {
+            expanded,
+            space,
+            order: &order,
+            drag: drag.as_ref(),
+            folders: &self.folders,
+        };
+        Self::build_rows(&entries, &folders, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
         // The row a closed folder hid is remembered only while the space
         // drawn still lists it: once an outside delete takes it, the folder
         // row's keys (`h`, `l`, `zo`) act on the folder again, and another
         // space's rows forget it.
         if let Some((real, _)) = &self.fold_row
-            && !Self::listed(&entries, real)
+            && !Self::listed(&entries, &folders, real)
         {
             self.fold_row = None;
         }
@@ -334,30 +395,22 @@ impl Sidebar {
         let prefix = format!("{space}/");
         let entries: Vec<&RequestListing> =
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
+        let folders = self.folders_under(&prefix);
         let order = postui_core::order::OrderIndex::new(order);
-        let ctx = LevelCtx { expanded, space, order: &order, drag: None };
+        let ctx = LevelCtx { expanded, space, order: &order, drag: None, folders: &self.folders };
         let mut rows = Vec::new();
-        Self::build_rows(&entries, &prefix, 0, &ctx, &mut rows);
+        Self::build_rows(&entries, &folders, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
             Row::Request { slug, .. } => Some(slug),
             Row::Folder { .. } => None,
         })
     }
 
-    /// Every folder of `space`, open or not: the paths `zR` opens.
+    /// Every folder of `space`, open or not, empty ones included: the paths
+    /// `zR` opens, from the folder listing (spec 2026-11-03 create folders
+    /// F1).
     fn folders_in(&self, space: &str) -> BTreeSet<String> {
-        let prefix = format!("{space}/");
-        let mut all = BTreeSet::new();
-        for l in self.listing.iter().filter(|l| l.slug.starts_with(&prefix)) {
-            let mut segs: Vec<&str> = l.slug[prefix.len()..].split('/').collect();
-            segs.pop();
-            let mut path = space.to_string();
-            for seg in segs {
-                path = format!("{path}/{seg}");
-                all.insert(path.clone());
-            }
-        }
-        all
+        self.folders_under(&format!("{space}/")).into_iter().map(|f| f.path.clone()).collect()
     }
 
     /// The first request of `space` as if every folder were expanded: the
@@ -378,13 +431,14 @@ impl Sidebar {
     /// it in the listing, so it stays drawn, open and empty (D15).
     fn build_rows(
         entries: &[&RequestListing],
+        folders: &[&FolderListing],
         prefix: &str,
         depth: usize,
         ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
     ) {
         let LevelCtx { space, order, drag, .. } = *ctx;
-        let level = postui_core::order::split_level(entries, prefix);
+        let level = postui_core::order::split_level(entries, folders, prefix);
         let paths = level.folder_paths();
         let mut items = postui_core::order::order_entries(&level.requests, &paths, order, space);
         if let Some(d) = drag {
@@ -401,9 +455,10 @@ impl Sidebar {
                 Self::push_item(d.item, &d.inside, depth, &inner, rows);
             }
             if let Some(&item) = items.get(n) {
+                let none = Contents::default();
                 let inside = match item {
-                    LevelItem::Folder(path) => level.folders[path].as_slice(),
-                    LevelItem::Request(_) => &[],
+                    LevelItem::Folder(path) => &level.folders[path],
+                    LevelItem::Request(_) => &none,
                 };
                 Self::push_item(item, inside, depth, ctx, rows);
             }
@@ -411,10 +466,10 @@ impl Sidebar {
     }
 
     /// One item's row at `depth`, then, for an open folder, its contents
-    /// (`inside`: every request under it) one level deeper.
+    /// (`inside`: everything under it) one level deeper.
     fn push_item(
         item: LevelItem<'_>,
-        inside: &[&RequestListing],
+        inside: &Contents<'_>,
         depth: usize,
         ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
@@ -431,7 +486,7 @@ impl Sidebar {
                 });
             }
             LevelItem::Folder(path) => {
-                let name = Self::folder_name(path).to_string();
+                let name = Self::listed_name(ctx.folders, path).to_string();
                 let is_expanded = ctx.expanded.contains(path);
                 rows.push(Row::Folder {
                     path: path.to_string(),
@@ -440,25 +495,49 @@ impl Sidebar {
                     expanded: is_expanded,
                 });
                 if is_expanded {
-                    Self::build_rows(inside, &format!("{path}/"), depth + 1, ctx, rows);
+                    let prefix = format!("{path}/");
+                    Self::build_rows(
+                        &inside.requests,
+                        &inside.folders,
+                        &prefix,
+                        depth + 1,
+                        ctx,
+                        rows,
+                    );
                 }
             }
         }
     }
 
-    /// `build_rows`' view of a live drag over `entries` (the space's
-    /// listing): `None` when its row is no longer listed.
-    fn drag_draw<'a>(entries: &[&'a RequestListing], d: &RowDrag) -> Option<DragDraw<'a>> {
+    /// `build_rows`' view of a live drag over `entries` and `folders` (the
+    /// space's listing): `None` when its row is no longer listed. An empty
+    /// folder drags as its one row (spec 2026-11-03 create folders F1).
+    fn drag_draw<'a>(
+        entries: &[&'a RequestListing],
+        folders: &[&'a FolderListing],
+        d: &RowDrag,
+    ) -> Option<DragDraw<'a>> {
         let (item, inside) = match &d.key {
-            RowKey::Request(slug) => {
-                (LevelItem::Request(entries.iter().copied().find(|l| l.slug == *slug)?), Vec::new())
-            }
+            RowKey::Request(slug) => (
+                LevelItem::Request(entries.iter().copied().find(|l| l.slug == *slug)?),
+                Contents::default(),
+            ),
             RowKey::Folder(path) => {
                 let under = format!("{path}/");
-                let inside: Vec<&RequestListing> =
-                    entries.iter().copied().filter(|l| l.slug.starts_with(&under)).collect();
-                let first = inside.first()?;
-                (LevelItem::Folder(&first.slug[..path.len()]), inside)
+                let inside = Contents {
+                    requests: entries
+                        .iter()
+                        .copied()
+                        .filter(|l| l.slug.starts_with(&under))
+                        .collect(),
+                    folders: folders
+                        .iter()
+                        .copied()
+                        .filter(|f| f.path.starts_with(&under))
+                        .collect(),
+                };
+                let path: &'a str = &folders.iter().find(|f| f.path == *path)?.path;
+                (LevelItem::Folder(path), inside)
             }
         };
         let (level, at) = &d.target;
@@ -549,14 +628,13 @@ impl Sidebar {
         }
     }
 
-    /// Whether `key` names a request in `listing`, or a folder holding one
-    /// (a folder exists only through the requests under it).
-    fn listed(listing: &[&RequestListing], key: &RowKey) -> bool {
+    /// Whether `key` names a request in `listing`, or a folder in `folders`
+    /// (the one source of which folders exist, spec 2026-11-03 create
+    /// folders F1).
+    fn listed(listing: &[&RequestListing], folders: &[&FolderListing], key: &RowKey) -> bool {
         match key {
             RowKey::Request(slug) => listing.iter().any(|l| l.slug == *slug),
-            RowKey::Folder(path) => listing.iter().any(|l| {
-                l.slug.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))
-            }),
+            RowKey::Folder(path) => folders.iter().any(|f| f.path == *path),
         }
     }
 
@@ -655,10 +733,20 @@ impl Sidebar {
     /// row takes add and put only.
     pub fn verb_action(&self, verb: Verb) -> Option<Action> {
         let on_request = matches!(self.selected_row(), Some(Row::Request { .. }));
+        let on_folder = matches!(self.selected_row(), Some(Row::Folder { .. }));
         match verb {
             Verb::Add => Some(Action::PromptNewRequest),
+            // Spec 2026-11-03 create folders F12: `A` makes a folder, and
+            // `r`, `d` / `dd` on a folder row act on the folder.
+            Verb::AddAlt => Some(Action::PromptNewFolder),
+            Verb::Rename if on_folder => Some(Action::PromptRenameFolder),
             Verb::Rename => on_request.then_some(Action::PromptRenameRequest),
             Verb::Move => on_request.then_some(Action::PromptMoveSelectedRequestToSpace),
+            Verb::Delete { count: 0 | 1 } if on_folder => Some(Action::DeleteSelectedFolder),
+            Verb::Delete { .. } if on_folder => Some(Action::ShowToast(
+                crate::keyroute::table::NO_COUNTED_DELETE.to_string(),
+                crate::components::toast::ToastKind::Info,
+            )),
             Verb::Delete { count: 0 | 1 } => on_request.then_some(Action::DeleteSelectedRequest),
             Verb::Delete { count } => {
                 let mut slugs = self.request_slugs_from(self.selected?, count);
@@ -687,8 +775,16 @@ impl Sidebar {
         matches!(self.selected_row(), Some(Row::Folder { expanded: false, .. }))
     }
 
-    fn selected_row(&self) -> Option<&Row> {
+    pub fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected?)
+    }
+
+    /// The full path of the folder row under the cursor, if it is one.
+    pub fn selected_folder(&self) -> Option<String> {
+        match self.selected_row()? {
+            Row::Folder { path, .. } => Some(path.clone()),
+            Row::Request { .. } => None,
+        }
     }
 
     /// The row index of the OPEN request (the one loaded in the editor), or
@@ -1378,25 +1474,15 @@ impl Component for Sidebar {
             let state = |hit: &Hit| {
                 if ctx.hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
             };
-            let split = if self.offers_import() { split_button_row(button_area) } else { None };
-            let (new_area, new_label) = match split {
-                Some((new_area, import_area, import_label)) => {
-                    let hit = Hit::SidebarImportCurl;
-                    let button = Button {
-                        label: import_label,
-                        kind: ButtonKind::Secondary,
-                        state: state(&hit),
-                    };
-                    button.paint(buf, import_area, theme);
-                    hits.register(import_area, hit);
-                    (new_area, "+ New")
-                }
-                None => (button_area, "+ New request"),
-            };
-            let hit = Hit::SidebarNewRequest;
-            Button { label: new_label, kind: ButtonKind::Primary, state: state(&hit) }
-                .paint(buf, new_area, theme);
-            hits.register(new_area, hit);
+            for (area, label, hit) in button_row_layout(button_area, self.offers_import()) {
+                let kind = if hit == Hit::SidebarNewRequest {
+                    ButtonKind::Primary
+                } else {
+                    ButtonKind::Secondary
+                };
+                Button { label, kind, state: state(&hit) }.paint(buf, area, theme);
+                hits.register(area, hit);
+            }
         }
 
         // One blank spacer row below the button; the list starts after it.
@@ -1597,19 +1683,42 @@ impl Component for Sidebar {
     }
 }
 
-/// The top row split into "+ New" and the import button, a column apart:
-/// each gets its label's width and half the spare columns. The import's
-/// label shortens to "curl" when "Import curl" will not fit, and `None`
-/// means not even that does (spec 2026-10-15 curl import visibility V8).
-fn split_button_row(row: Rect) -> Option<(Rect, Rect, &'static str)> {
-    let new_w = button_min_width("+ New");
-    ["Import curl", "curl"].into_iter().find_map(|label| {
-        let spare = row.width.checked_sub(new_w + 1 + button_min_width(label))?;
-        let left = Rect { width: new_w + spare / 2, ..row };
-        let right_x = left.x + left.width + 1;
-        let right = Rect { x: right_x, width: row.x + row.width - right_x, ..row };
-        Some((left, right, label))
-    })
+/// The top row's buttons, a column apart, each its label's width plus its
+/// share of the spare columns, the last running to the row's end (spec
+/// 2026-11-03 create folders F10, F11). The first layout that fits wins:
+/// with the curl import on, its labels shorten first ("curl", then
+/// "+ Req"), then it drops (spec 2026-10-15 curl import visibility V8);
+/// then `+ Folder` drops, leaving `+ New request` across the whole row
+/// (it stays reachable by key, as the Variable Manager's `+ Selector`).
+fn button_row_layout(row: Rect, curl: bool) -> Vec<(Rect, &'static str, Hit)> {
+    const REQUEST: Hit = Hit::SidebarNewRequest;
+    const FOLDER: Hit = Hit::SidebarNewFolder;
+    const CURL: Hit = Hit::SidebarImportCurl;
+    let with_curl: &[&[(&str, Hit)]] = &[
+        &[("+ Request", REQUEST), ("+ Folder", FOLDER), ("Import curl", CURL)],
+        &[("+ Request", REQUEST), ("+ Folder", FOLDER), ("curl", CURL)],
+        &[("+ Req", REQUEST), ("+ Folder", FOLDER), ("curl", CURL)],
+    ];
+    let plain: &[&[(&str, Hit)]] = &[&[("+ Request", REQUEST), ("+ Folder", FOLDER)]];
+    let candidates = if curl { with_curl.iter().chain(plain) } else { [].iter().chain(plain) };
+    for buttons in candidates {
+        let n = buttons.len() as u16;
+        let need: u16 = buttons.iter().map(|(l, _)| button_min_width(l)).sum::<u16>() + n - 1;
+        let Some(spare) = row.width.checked_sub(need) else { continue };
+        let mut out = Vec::new();
+        let mut x = row.x;
+        for (i, (label, hit)) in buttons.iter().enumerate() {
+            let width = if i + 1 == buttons.len() {
+                row.x + row.width - x
+            } else {
+                button_min_width(label) + spare / n
+            };
+            out.push((Rect { x, width, ..row }, *label, hit.clone()));
+            x += width + 1;
+        }
+        return out;
+    }
+    vec![(row, "+ New request", REQUEST)]
 }
 
 /// Column width of the request row's method tag field (text right-padded
@@ -2297,7 +2406,9 @@ mod tests {
         let label_row: String = (button_rect.x..button_rect.x + button_rect.width)
             .map(|x| terminal.backend().buffer()[(x, button_rect.y + 1)].symbol().to_string())
             .collect();
-        assert!(label_row.contains("+ New request"));
+        // Beside `+ Folder` it reads `+ Request` (spec 2026-11-03 create
+        // folders F10).
+        assert!(label_row.contains("+ Request"), "{label_row}");
         // No `[`/`]` anywhere in the whole pane: scan every cell's symbol
         // directly (not a `Debug`-formatted dump, whose own `Vec` brackets
         // would give a false positive).
@@ -2390,38 +2501,59 @@ mod tests {
         (label, hits.rect_of(&Hit::SidebarNewRequest), hits.rect_of(&Hit::SidebarImportCurl))
     }
 
-    #[test]
-    fn a_curl_on_the_clipboard_splits_the_button_row() {
-        let mut s = Sidebar::default();
-        s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
-        let (label, new, import) = button_row(&mut s, 34);
-        assert!(label.contains("+ New request"), "{label}");
-        assert_eq!(new.unwrap().width, 32);
-        assert_eq!(import, None);
-
-        s.curl_ready = true;
-        let (label, new, import) = button_row(&mut s, 34);
-        let (new, import) = (new.unwrap(), import.expect("the import button"));
-        assert!(label.contains("+ New") && !label.contains("request"), "{label}");
-        assert!(label.contains("Import curl"), "{label}");
-        // Each gets its label's width and half the spare columns, a
-        // column apart, across the whole row the one button had.
-        assert_eq!((new.x, new.width, import.x, import.width), (1, 12, 14, 19));
-        assert_eq!((new.y, new.height), (import.y, import.height));
+    fn folder_button(s: &mut Sidebar, width: u16) -> Option<Rect> {
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(width, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        hits.rect_of(&Hit::SidebarNewFolder)
     }
 
+    /// Spec 2026-11-03 create folders F10: `+ Folder` sits beside the
+    /// request button, which reads `+ Request` then; too narrow for both,
+    /// the request button is alone and reads `+ New request`.
     #[test]
-    fn a_narrow_sidebar_shortens_then_drops_the_import_button() {
+    fn a_folder_button_sits_beside_the_request_button() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
+        let (label, new, import) = button_row(&mut s, 34);
+        let folder = folder_button(&mut s, 34).expect("the folder button");
+        let new = new.unwrap();
+        assert!(label.contains("+ Request") && label.contains("+ Folder"), "{label}");
+        assert_eq!(import, None);
+        // Each gets its label's width and its share of the spare columns,
+        // a column apart, across the whole row the one button had.
+        assert_eq!((new.x, new.width, folder.x, folder.width), (1, 16, 18, 15));
+        assert_eq!((new.y, new.height), (folder.y, folder.height));
+        let (label, new, _) = button_row(&mut s, 26);
+        assert!(label.contains("+ New request"), "{label}");
+        assert_eq!(new.unwrap().width, 24);
+        assert_eq!(folder_button(&mut s, 26), None);
+    }
+
+    /// F11: with the curl button on, the row shortens its labels, then
+    /// drops the curl button, then the folder button.
+    #[test]
+    fn a_curl_on_the_clipboard_joins_the_row_and_drops_first() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
         s.curl_ready = true;
-        let (label, _, import) = button_row(&mut s, 22);
-        assert!(import.is_some());
-        assert!(label.contains("curl") && !label.contains("Import"), "{label}");
-        let (label, new, import) = button_row(&mut s, 19);
-        assert_eq!(import, None);
-        assert!(label.contains("+ New request"), "{label}");
-        assert_eq!(new.unwrap().width, 17);
+        for (width, want, curl, folder) in [
+            (46, ["+ Request", "+ Folder", "Import curl"], true, true),
+            (39, ["+ Request", "+ Folder", "curl"], true, true),
+            (34, ["+ Req", "+ Folder", "curl"], true, true),
+            (30, ["+ Request", "+ Folder", ""], false, true),
+            (26, ["+ New request", "", ""], false, false),
+        ] {
+            let (label, _, import) = button_row(&mut s, width);
+            for w in want.iter().filter(|w| !w.is_empty()) {
+                assert!(label.contains(w), "{width}: {w} in {label:?}");
+            }
+            assert_eq!(import.is_some(), curl, "{width}: {label:?}");
+            assert_eq!(folder_button(&mut s, width).is_some(), folder, "{width}: {label:?}");
+        }
     }
 
     #[test]
@@ -4054,5 +4186,76 @@ mod tests {
         press(&mut s, &mut open, FoldKey::Z(Open, usize::MAX));
         assert!(open.contains("main/api") && open.contains("main/api/auth"), "{open:?}");
         assert_eq!(s.selected_key(), Some(login));
+    }
+
+    // --- spec 2026-11-03 create folders ---
+
+    fn folders(paths: &[(&str, Option<&str>)]) -> Vec<postui_core::storage::FolderListing> {
+        paths
+            .iter()
+            .map(|(p, n)| postui_core::storage::FolderListing {
+                path: format!("main/{p}"),
+                name: n.map(str::to_string),
+                broken: None,
+            })
+            .collect()
+    }
+
+    fn row_labels(s: &Sidebar) -> Vec<String> {
+        s.rows
+            .iter()
+            .map(|r| match r {
+                Row::Folder { name, depth, .. } => format!("{depth} {name}/"),
+                Row::Request { name, depth, .. } => format!("{depth} {name}"),
+            })
+            .collect()
+    }
+
+    /// F1: an empty folder draws a row; an open one draws its empty
+    /// subfolder under it.
+    #[test]
+    fn an_empty_folder_draws_a_row() {
+        let mut s = Sidebar::default();
+        let f = folders(&[("e", None), ("e/inner", None)]);
+        s.refresh_tree(listing(&["a"]), f, "main", &expanded(&["e"]), &[]);
+        assert_eq!(row_labels(&s), ["0 a", "0 e/", "1 inner/"]);
+    }
+
+    /// F15: a folder row shows its display name.
+    #[test]
+    fn a_folder_row_shows_its_display_name() {
+        let mut s = Sidebar::default();
+        let f = folders(&[("users", Some("User Accounts"))]);
+        s.refresh_tree(listing(&["users/login"]), f, "main", &expanded(&[]), &[]);
+        assert_eq!(row_labels(&s), ["0 User Accounts/"]);
+        assert_eq!(s.folder_display("main/users"), "User Accounts");
+        assert_eq!(s.folder_display("main/other"), "other", "unlisted: its directory name");
+    }
+
+    /// `zR` opens empty folders too.
+    #[test]
+    fn z_r_opens_empty_folders_too() {
+        let mut s = Sidebar::default();
+        let f = folders(&[("e", None), ("e/inner", None)]);
+        s.refresh_tree(listing(&["a"]), f, "main", &expanded(&[]), &[]);
+        let FoldChange::Expanded(open) =
+            s.fold_change(FoldOp::OpenAll, 1, None, &expanded(&[]), "main")
+        else {
+            panic!("zR opens something")
+        };
+        assert_eq!(open, expanded(&["e", "e/inner"]));
+    }
+
+    /// F1: an empty folder drags as a one-row block.
+    #[test]
+    fn an_empty_folder_drags() {
+        let mut s = Sidebar::default();
+        let f = folders(&[("e", None)]);
+        s.refresh_tree(listing(&["a", "b"]), f, "main", &expanded(&[]), &[]);
+        assert_eq!(row_labels(&s), ["0 a", "0 b", "0 e/"]);
+        assert!(s.begin_drag(2, "main"), "an empty folder's row drags");
+        assert!(s.drag_to(0, 4));
+        s.rebuild("main", &expanded(&[]), &[]);
+        assert_eq!(row_labels(&s), ["0 e/", "0 a", "0 b"]);
     }
 }

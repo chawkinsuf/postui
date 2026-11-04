@@ -116,6 +116,25 @@ fn a_name_comment_names_the_import_and_its_folder_is_a_folder() {
     assert_eq!(prompt(&app).1, "API// ping 2");
 }
 
+/// Spec 2026-11-03 create folders F18a (review round 2): a name comment
+/// naming a folder by its shown name is checked in that folder, as the
+/// create files it there: taken, its leaf is numbered.
+#[test]
+fn a_name_comment_naming_a_folder_by_its_shown_name_numbers_in_that_folder() {
+    let mut app = app_with_clip("# @name Accounts/List\ncurl https://x/users");
+    let mut list = req("https://x/u");
+    list.name = Some("List".into());
+    postui_core::fixtures::save_request(app.proj().root(), "main/users/list", &list).unwrap();
+    std::fs::write(
+        app.proj().root().join("requests/main/users/.folder.toml"),
+        "name = \"Accounts\"\n",
+    )
+    .unwrap();
+    app.update(Action::RefreshSidebar);
+    import(&mut app);
+    assert_eq!(prompt(&app).1, "Accounts/List 2");
+}
+
 #[test]
 fn one_undo_removes_the_import() {
     let mut app = app_with_clip("curl https://x/users");
@@ -1277,18 +1296,20 @@ fn a_name_comment_renames_a_row_that_was_not_open() {
     assert!(!app.editor_holds_unsaved());
 }
 
-/// N3 (amended): a name with a `/` reads from the space's top, as the
-/// Rename prompt and a top-level import read it, so replaying the paste
-/// that imported a request lands where the import put it.
+/// Spec 2026-11-03 create folders F29 (replacing N3's "a name with a `/`
+/// reads from the space's top"): the name is the part after the last
+/// `/`, and the request stays in its folder. Only an import reads the
+/// folders, so replaying the paste that imported a request renames
+/// nothing.
 #[test]
-fn a_folder_in_the_name_comment_reads_from_the_space_top() {
+fn a_name_comment_takes_the_part_after_its_last_slash() {
     let mut app = app_with_clip("# @name api/List users\ncurl https://x/new");
     replace(&mut app, Some("main/api/ping"));
-    assert_eq!(app.editor.slug.as_deref(), Some("main/api/list-users"), "not api/api");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/list-users"));
     assert_eq!(app.editor.name.as_deref(), Some("List users"));
     assert_eq!(app.editor.url.text(), "https://x/new");
-    // The paste that names it where it already is renames nothing.
-    let mut app = app_with_clip("# @name api/ping\ncurl https://x/new");
+    // The paste that names it as it is renames nothing, folders and all.
+    let mut app = app_with_clip("# @name other/ping\ncurl https://x/new");
     replace(&mut app, Some("main/api/ping"));
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
     assert!(app.toasts.last_message().unwrap().starts_with("Replaced ping from curl \u{2014}"));
@@ -1321,7 +1342,7 @@ fn a_name_comment_keeps_a_hand_made_folder() {
     }
 }
 
-/// N3 (amended): a bare name keeps the request in its folder.
+/// A name keeps the request in its folder.
 #[test]
 fn a_bare_name_comment_keeps_the_request_folder() {
     let mut app = app_with_clip("# @name Pong\ncurl https://x/new");
@@ -1330,39 +1351,51 @@ fn a_bare_name_comment_keeps_the_request_folder() {
     assert_eq!(app.editor.name.as_deref(), Some("Pong"));
 }
 
-/// N2: the rename's refusals come before the dirty gate and change
+/// N2: a `# @name` whose part after its last `/` is empty refuses before
+/// the dirty gate, as an empty name does, and changes nothing.
+#[test]
+fn an_empty_name_refuses_before_the_dirty_gate() {
+    let mut app = kept_app("# @name sub/\ncurl https://x/new");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    let edited = app.editor.current_request();
+    replace(&mut app, Some("main/api/ping"));
+    assert!(app.modals.is_empty(), "no gate");
+    assert_eq!(app.editor.current_request(), edited);
+    assert_eq!(on_disk(&app, "main/api/ping").unwrap().url, "https://x/ping");
+    assert_eq!(app.toasts.last_message(), Some("cannot replace: request name cannot be empty"));
+}
+
+/// N2: the rename's refusal comes before the dirty gate and changes
 /// nothing.
 #[test]
-fn a_taken_or_empty_name_refuses_before_the_dirty_gate() {
-    for (clip, toast) in [
-        (
-            "# @name PONG\ncurl https://x/new",
-            "cannot replace: a request named \"PONG\" already exists here",
-        ),
-        ("# @name sub/\ncurl https://x/new", "cannot replace: request name cannot be empty"),
-    ] {
-        let mut app = kept_app(clip);
-        let pong = req("https://x/pong");
-        postui_core::fixtures::save_request(app.proj().root(), "main/api/pong", &pong).unwrap();
-        app.update(Action::RefreshSidebar);
-        app.editor.url = LineInput::new("https://x/edited");
-        app.capture_undo();
-        let edited = app.editor.current_request();
-        replace(&mut app, Some("main/api/ping"));
-        assert!(app.modals.is_empty(), "{clip}: no gate");
-        assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
-        assert_eq!(app.editor.current_request(), edited);
-        assert_eq!(on_disk(&app, "main/api/ping").unwrap().url, "https://x/ping");
-        assert_eq!(app.toasts.last_message(), Some(toast), "{clip}");
-        // The open request refuses the same way.
-        let clip = clip.replace("PONG", "TOP");
-        let mut app = kept_app(&clip);
-        let before = app.editor.current_request();
-        replace(&mut app, None);
-        assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
-        assert_eq!(app.editor.current_request(), before, "{clip}");
-        assert_eq!(app.toasts.last_message(), Some(toast.replace("PONG", "TOP").as_str()));
-    }
+fn a_taken_name_refuses_before_the_dirty_gate() {
+    let mut app = kept_app("# @name PONG\ncurl https://x/new");
+    let pong = req("https://x/pong");
+    postui_core::fixtures::save_request(app.proj().root(), "main/api/pong", &pong).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    let edited = app.editor.current_request();
+    replace(&mut app, Some("main/api/ping"));
+    assert!(app.modals.is_empty(), "no gate");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.editor.current_request(), edited);
+    assert_eq!(on_disk(&app, "main/api/ping").unwrap().url, "https://x/ping");
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("cannot replace: a request named \"PONG\" already exists here")
+    );
+    // The open request refuses the same way.
+    let mut app = kept_app("# @name TOP\ncurl https://x/new");
+    let before = app.editor.current_request();
+    replace(&mut app, None);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.editor.current_request(), before);
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("cannot replace: a request named \"TOP\" already exists here")
+    );
 }
 
 /// A name taken while the dirty gate was up: the rename toasts why and the
@@ -1393,13 +1426,28 @@ fn a_rename_refused_after_the_gate_still_replaces_under_the_old_name() {
     assert_eq!(app.editor.url.text(), "https://x/top");
 }
 
-/// A leading `/` is a `/`: the name reads from the space's top, as the
-/// Rename prompt reads `/Pong`.
+/// A request whose own name holds a `/` (F28) keeps it when the paste
+/// names it whole, as it is.
 #[test]
-fn a_leading_slash_in_the_name_comment_reads_from_the_space_top() {
+fn a_name_comment_naming_a_slash_name_as_it_is_renames_nothing() {
+    let mut app = app_with_clip("# @name v1/users\ncurl https://x/new");
+    let mut named = req("https://x/old");
+    named.name = Some("v1/users".into());
+    postui_core::fixtures::save_request(app.proj().root(), "main/v1-users", &named).unwrap();
+    app.update(Action::RefreshSidebar);
+    replace(&mut app, Some("main/v1-users"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/v1-users"));
+    assert_eq!(app.editor.name.as_deref(), Some("v1/users"));
+}
+
+/// A leading `/` goes with the rest of the folder part: the request stays
+/// in its folder, named `Pong` (F29).
+#[test]
+fn a_leading_slash_in_the_name_comment_stays_in_the_folder() {
     let mut app = app_with_clip("# @name /Pong\ncurl https://x/new");
     replace(&mut app, Some("main/api/ping"));
-    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/pong"));
+    assert_eq!(app.editor.name.as_deref(), Some("Pong"));
 }
 
 /// N5: the name the request already has renames nothing; another case is

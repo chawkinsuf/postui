@@ -839,7 +839,7 @@ pub static TABLE: &[Binding] = &[
     // Manage and Variables screens are M4's ex rows (plan M2 Deviation 1).
     both("a", Surfaces::ROWS, Intent::Verb(Verb::Add)),
     arrows("a", Surfaces::MANAGE_DETAIL, Intent::Verb(Verb::Add)),
-    both("A", Surfaces::VAR_LIST, Intent::Verb(Verb::AddAlt)),
+    both("A", Surfaces::VAR_LIST.or(Surfaces::SIDEBAR), Intent::Verb(Verb::AddAlt)),
     both("r", Surfaces::SIDEBAR.or(Surfaces::MANAGE_LIST).or(Surfaces::VAR_LIST), Intent::Verb(Verb::Rename)),
     arrows("r", Surfaces::MANAGE_DETAIL.or(Surfaces::VAR_GRID), Intent::Verb(Verb::Rename)),
     arrows("r", Surfaces::VAR_FORM, Intent::Verb(Verb::Reveal)),

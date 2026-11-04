@@ -153,13 +153,19 @@ async fn stage3_acceptance_flow() {
     app.registry.register(alpha_dir.path().to_path_buf());
     app.registry.register(beta_dir.path().to_path_buf());
 
-    // --- create "users/list" via the `a` prompt flow -----------------
+    // --- create "list" in a "users" folder ---------------------------
     app.handle_key(plain('a'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         "'a' opens the new-request prompt"
     );
-    for c in "users/list".chars() {
+    // The name is only a name (spec 2026-11-03 create folders F28): the
+    // folder's "New request here…" puts it inside.
+    app.update(Action::Close);
+    std::fs::create_dir_all(alpha_dir.path().join("requests/main/users")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::PromptNewRequestIn("main/users".into()));
+    for c in "list".chars() {
         app.handle_key(plain(c));
     }
     submit_prompt(&mut app);

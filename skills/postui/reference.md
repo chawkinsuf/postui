@@ -8,6 +8,7 @@ project.toml                      name, spaces and environments in order, defaul
 variables.toml                    every variable and selector, declared once
 environments/<env>.toml           one environment's values and selector options
 requests/<space>/<path>.toml      one request per file
+requests/<space>/<folder>/.folder.toml   a folder's display name: name = "..."
 .postui/                          the user's own state and secrets: never touch it
 ```
 
@@ -15,8 +16,12 @@ requests/<space>/<path>.toml      one request per file
 path, are `a-z 0-9 - _` (lowercase). A request's slug is its path under
 `requests/` without `.toml`: `requests/main/orders/list-orders.toml` is
 `main/orders/list-orders`, in space `main`, folder `orders`. Display names
-(`name = "..."`) are free text. A file or folder whose name starts with `.`
-is ignored; any other invalid name is an error in `check`.
+(`name = "..."`) are free text. A folder is its directory, shown even when
+empty; its `.folder.toml` holds its display name, and a folder without one
+is named by its directory. When you make a folder, write its
+`.folder.toml` too, as postui does: git keeps no empty directory, so it
+keeps an empty folder. A file or folder whose name starts with `.` is
+ignored; any other invalid name is an error in `check`.
 
 Run `postui check` after every change.
 
@@ -54,8 +59,9 @@ name = "Staging"
   "users/"]`). Each level (the space's root or one folder) shows its
   requests and folders mixed, in `order`'s order. postui keeps every
   request and folder listed: something new goes last in its level, and a
-  request file added by hand is written in at the end of its level the
-  next time postui's TUI sees it. Leave `order` alone unless asked.
+  request file or folder added by hand is written in at the end of its
+  level the next time postui's TUI sees it. Leave `order` alone unless
+  asked.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
 

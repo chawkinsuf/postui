@@ -420,10 +420,36 @@ pub enum Action {
     RefreshSidebar,
     /// Open the "New request" name prompt.
     PromptNewRequest,
-    /// Open the "New request" name prompt prefilled with `folder` + `/` —
-    /// the folder context menu's "New request here…", so the typed name
-    /// lands inside the folder that was right-clicked.
+    /// Open the "New request" name prompt for a request inside the folder
+    /// at this full path, last in it — the folder context menu's "New
+    /// request here…".
     PromptNewRequestIn(String),
+    /// Open the "New folder" name prompt for a folder where the cursor is
+    /// (spec 2026-11-03 create folders F14): beside the cursor's row, in
+    /// its level; at the top level with no cursor.
+    PromptNewFolder,
+    /// Open the "New folder" prompt for a folder inside the folder at this
+    /// full path, landing last in it (the folder menu's "New folder
+    /// here…").
+    PromptNewFolderIn(String),
+    /// Make a folder named `name` in `level` (a full path), its entry
+    /// right after `after` (a request slug or folder path), or last.
+    CreateFolder {
+        level: String,
+        after: Option<crate::components::sidebar::RowKey>,
+        name: String,
+    },
+    /// Open the "Rename folder" prompt for the folder row under the
+    /// cursor, prefilled with its display name (F23).
+    PromptRenameFolder,
+    /// Rename the folder at full path `from` to show `to`.
+    RenameFolder {
+        from: String,
+        to: String,
+    },
+    /// Delete the folder row under the cursor and everything in it. No
+    /// confirm: undo is the safety net (F21).
+    DeleteSelectedFolder,
     /// The palette's "Request: import curl from clipboard" (`folder:
     /// None`, the space root) and a folder's "Import curl here…" (spec
     /// curl §4.1): reads and parses the clipboard, then runs the dirty
@@ -464,13 +490,28 @@ pub enum Action {
         slug: String,
         replace: Box<crate::curl_import::CurlReplace>,
     },
-    /// Create a fresh request at `name` (a slug), then open it. If the
-    /// editor is dirty this is intercepted into a `Modal::Confirm` rather
-    /// than applied directly; see `App::update`.
+    /// Create a fresh request named `name` where the cursor is (spec
+    /// 2026-11-03 create folders F28, F30), then open it. If the editor is
+    /// dirty this is intercepted into a `Modal::Confirm` rather than
+    /// applied directly; see `App::update`.
     CreateRequest(String),
-    /// Actually create the request at `name`, bypassing the dirty check
+    /// Actually create the request named `name`, bypassing the dirty check
     /// (used directly, or as the tail action of a dirty-prompt choice).
     ForceCreateRequest(String),
+    /// `CreateRequest` last inside the folder at full path `folder`.
+    CreateRequestIn {
+        folder: String,
+        name: String,
+    },
+    /// `ForceCreateRequest` at a place fixed before the dirty gate: in
+    /// `level` (a full path), right after `after`, or last. `CreateRequest`
+    /// reads the cursor's place when it runs, so a Save at the gate (which
+    /// lands the cursor on the saved row) can't move the new request.
+    ForceCreateRequestAt {
+        level: String,
+        after: Option<crate::components::sidebar::RowKey>,
+        name: String,
+    },
     /// Open the rename prompt, prefilled with the selected sidebar slug.
     PromptRenameRequest,
     /// Rename the request at `from` to `to` on disk.
@@ -561,7 +602,8 @@ pub enum Action {
     /// `{N}dd` on the sidebar: these requests as one undo step (piece 4
     /// spec §5.2). Built by `Sidebar::request_slugs_from`.
     DeleteRequests(Vec<String>),
-    /// Save the request currently open in the editor as `name` (a slug).
+    /// Save the request currently open in the editor as `name`, where the
+    /// cursor is (spec 2026-11-03 create folders F28, F30).
     SaveRequestAs(String),
     /// User asked to send the current request. Validates first: an empty
     /// URL toasts and stops; a non-empty body that fails JSON validation

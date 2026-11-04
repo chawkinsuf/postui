@@ -27,6 +27,8 @@
   engine is tested against Vim 9.1.
 - **Requests are files.** One TOML file per request, in folders, grouped into
   spaces. Review them in a diff and commit them next to the code they test.
+  A folder keeps its name in a small `.folder.toml`, so even an empty one
+  stays in git.
 - **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
   headers (and the body, once you switch that on) take their values from the
   active environment. Secrets stay in the project's `.postui/` folder, which

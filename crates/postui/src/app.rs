@@ -635,6 +635,40 @@ enum StartupDisposition {
     OpenAsIs { register: bool },
 }
 
+/// A fresh request with nothing in it: what New request makes.
+fn blank_request() -> postui_core::model::HttpRequest {
+    postui_core::model::HttpRequest {
+        name: None,
+        method: postui_core::model::Method::Get,
+        url: String::new(),
+        substitute_body: false,
+        insecure: false,
+        jq: None,
+        jq_enabled: true,
+        jq_views: Vec::new(),
+        jq_current: None,
+        params: Default::default(),
+        headers: Default::default(),
+        variables: Default::default(),
+        body: None,
+    }
+}
+
+/// Where `App::create_request_from` puts a new request, and how it reads
+/// the name it is given.
+enum NewAt<'a> {
+    /// The curl import (spec 2026-11-03 create folders F29): the name is a
+    /// path inside the active space whose folders are used or made, and
+    /// `secrets` are declared with it. It lands last in its level.
+    Import(&'a [(String, Option<String>)]),
+    /// Where the cursor is (F30): right after the cursor's row, in that
+    /// row's level; last at the top level with no cursor.
+    Cursor,
+    /// In `level` (a full path), right after `after`, or last: a place
+    /// read before the dirty gate, or "New request here…" (last inside).
+    At { level: String, after: Option<RowKey> },
+}
+
 /// What `App::create_request_from` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CreateOutcome {
@@ -4622,17 +4656,57 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                // The prompt speaks folders *inside* the space, so the
-                // space segment never shows up in the prefill.
-                let folder =
-                    folder.strip_prefix(&format!("{}/", self.active_space())).unwrap_or("");
-                let prefill = if folder.is_empty() { String::new() } else { format!("{folder}/") };
+                // A name only: the request goes inside `folder` (spec
+                // 2026-11-03 create folders F28).
                 self.push_modal(Modal::Prompt {
                     title: "New request".into(),
-                    input: crate::components::line_input::LineInput::new(&prefill),
-                    kind: PromptKind::NewRequest,
+                    input: crate::components::line_input::LineInput::new(""),
+                    kind: PromptKind::NewRequestIn(folder),
                     revealed: false,
                 });
+                true
+            }
+            Action::PromptNewFolder => {
+                if self.refuse_without_project() {
+                    return true;
+                }
+                // Spec 2026-11-03 create folders F14: beside the cursor's
+                // row, in its level; at the top level with no cursor.
+                let (level, after) = self.cursor_place();
+                self.push_folder_prompt(level, after);
+                true
+            }
+            Action::PromptNewFolderIn(path) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
+                self.push_folder_prompt(path, None);
+                true
+            }
+            Action::CreateFolder { level, after, name } => {
+                self.create_folder(&level, after, &name);
+                true
+            }
+            Action::PromptRenameFolder => {
+                if let Some(path) = self.sidebar.selected_folder() {
+                    let name = self.sidebar.folder_display(&path).to_string();
+                    self.push_modal(Modal::Prompt {
+                        title: "Rename folder".into(),
+                        input: crate::components::line_input::LineInput::new(&name),
+                        kind: PromptKind::RenameFolder { from: path },
+                        revealed: false,
+                    });
+                }
+                true
+            }
+            Action::RenameFolder { from, to } => {
+                self.rename_folder(&from, &to);
+                true
+            }
+            Action::DeleteSelectedFolder => {
+                if let Some(path) = self.sidebar.selected_folder() {
+                    self.delete_folder(&path);
+                }
                 true
             }
             Action::DuplicateRequest => {
@@ -4705,19 +4779,10 @@ impl App {
             }
             Action::PromptRenameRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
-                    // Prefill what the user reads: the display name, under
-                    // its folder's slug path (never the leaf slug), with
-                    // the space segment stripped — the name the user edits
-                    // is relative to the space they're in.
-                    let folder = match slug.rsplit_once('/') {
-                        Some((folder, _)) => {
-                            folder.strip_prefix(&format!("{}/", self.active_space())).unwrap_or("")
-                        }
-                        None => "",
-                    };
-                    let display = self.request_display(&slug);
-                    let prefill =
-                        if folder.is_empty() { display } else { format!("{folder}/{display}") };
+                    // Prefill what the user reads: the display name, and
+                    // nothing of its folder (spec 2026-11-03 create folders
+                    // F28).
+                    let prefill = self.request_display(&slug);
                     self.push_modal(Modal::Prompt {
                         title: "Rename request".into(),
                         input: crate::components::line_input::LineInput::new(&prefill),
@@ -5079,42 +5144,47 @@ impl App {
                 }
                 true
             }
-            Action::CreateRequest(name) => {
+            Action::CreateRequest(_) | Action::CreateRequestIn { .. } => {
                 if self.refuse_without_project() {
                     return true;
                 }
+                // The place is read now, before the dirty gate: its Save
+                // lands the cursor on the saved row (spec 2026-11-03 create
+                // folders F30, review round 8).
+                let force = match action {
+                    Action::CreateRequestIn { folder, name } => {
+                        Action::ForceCreateRequestAt { level: folder, after: None, name }
+                    }
+                    Action::CreateRequest(name) => {
+                        let (level, after) = self.cursor_place();
+                        Action::ForceCreateRequestAt { level, after, name }
+                    }
+                    _ => unreachable!("matched above"),
+                };
                 if self.leaving_unsaved() {
-                    self.dirty_gate("create", Action::ForceCreateRequest(name));
+                    self.dirty_gate("create", force);
                     true
                 } else {
-                    self.apply(Action::ForceCreateRequest(name))
+                    self.apply(force)
                 }
             }
             Action::ForceCreateRequest(name) => {
                 if self.refuse_without_project() {
                     return true;
                 }
-                self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
-                    name: None,
-                    method: postui_core::model::Method::Get,
-                    url: String::new(),
-                    substitute_body: false,
-                    insecure: false,
-                    jq: None,
-                    jq_enabled: true,
-                    jq_views: Vec::new(),
-                    jq_current: None,
-                    params: Default::default(),
-                    headers: Default::default(),
-                    variables: Default::default(),
-                    body: None,
-                });
+                self.create_or_save_as(&name, NewAt::Cursor, blank_request);
+                true
+            }
+            Action::ForceCreateRequestAt { level, after, name } => {
+                if self.refuse_without_project() {
+                    return true;
+                }
+                self.create_or_save_as(&name, NewAt::At { level, after }, blank_request);
                 true
             }
             Action::RenameRequest { from, to } => {
-                // The typed name is relative to the active space, same as
-                // a create.
-                let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
+                // A name only: the request stays in its folder (spec
+                // 2026-11-03 create folders F28).
                 if self.names_request_as_is(&from, &to) {
                     return true;
                 }
@@ -5200,7 +5270,7 @@ impl App {
                 self.commit_table_edit();
                 let req = self.editor.current_request();
                 let before = self.editor.slug.clone();
-                if self.create_or_save_as(&name, move |_| req.clone()) {
+                if self.create_or_save_as(&name, NewAt::Cursor, move || req) {
                     // The editor holds the same text under its new slug: the
                     // body's engine state follows it (amendment C2).
                     self.vim_body_moved(before.as_deref());
@@ -5227,7 +5297,7 @@ impl App {
                 // project) runs only when the save lands — a bad name or a
                 // write failure toasts and stays put, content intact.
                 let before = self.editor.slug.clone();
-                if self.create_or_save_as(&name, move |_| req.clone()) {
+                if self.create_or_save_as(&name, NewAt::Cursor, move || req) {
                     self.vim_body_moved(before.as_deref());
                     self.apply(*then);
                 }
@@ -10207,7 +10277,13 @@ impl App {
     fn refresh_sidebar(&mut self) {
         let Some(p) = self.project.as_mut() else {
             // No project: nothing to list, and nothing to warn about.
-            self.sidebar.refresh(Vec::new(), "", &std::collections::BTreeSet::new(), &[]);
+            self.sidebar.refresh_tree(
+                Vec::new(),
+                Vec::new(),
+                "",
+                &std::collections::BTreeSet::new(),
+                &[],
+            );
             self.snap_sidebar_travel();
             return;
         };
@@ -10218,7 +10294,8 @@ impl App {
         // as an outside change. Not an undo step.
         let order_result = p.complete_order().map_err(|e| e.to_string());
         let listing = p.requests().to_vec();
-        let warning = p.listing_warning();
+        let folders = p.folders().to_vec();
+        let warnings = p.listing_warnings().to_vec();
         let spaces_warning = p.spaces_warning().map(str::to_string);
         let environments_warning = p.environments_warning().map(str::to_string);
         let mut expanded = p.local().expanded.clone();
@@ -10244,28 +10321,32 @@ impl App {
             Ok(true) => self.order_write_failing = false,
             Ok(false) => {}
         }
-        if let Some(warning) = warning {
-            // Two different failures share one warning string: a walk error
-            // (transient, worth an error toast every time) and the
-            // loose-file lines (chronic by design — never migrated — so
-            // they get a warning toast, and only when the set changes).
-            let (loose, walk): (Vec<&str>, Vec<&str>) = warning.split("; ").partition(|line| {
-                line.contains(" is not in a space ") || line.contains(" is not in a valid space ")
-            });
-            if !walk.is_empty() {
-                self.toasts.push(
-                    format!("could not fully list requests: {}", walk.join("; ")),
-                    ToastKind::Error,
-                );
-            }
-            let loose = (!loose.is_empty()).then(|| loose.join("; "));
-            if loose.is_some() && loose != self.last_loose_warning {
-                self.toasts.push(loose.clone().unwrap(), ToastKind::Warning);
-            }
-            self.last_loose_warning = loose;
-        } else {
-            self.last_loose_warning = None;
+        // Two kinds of walk warning: a walk error, about no one file
+        // (transient, worth an error toast every time), and those about a
+        // file: a loose file (chronic by design — never migrated) or a
+        // folder file that doesn't parse (spec 2026-11-03 create folders
+        // F24), each staying until it is fixed, so they get a warning toast
+        // only when the set changes. Told apart by the warning's own `file`,
+        // as core tells a walk error, never by its text.
+        let of = |about_a_file: bool| -> Vec<&str> {
+            warnings
+                .iter()
+                .filter(|w| w.file.is_some() == about_a_file)
+                .map(|w| w.message.as_str())
+                .collect()
+        };
+        let (loose, walk) = (of(true), of(false));
+        if !walk.is_empty() {
+            self.toasts.push(
+                format!("could not fully list requests: {}", walk.join("; ")),
+                ToastKind::Error,
+            );
         }
+        let loose = (!loose.is_empty()).then(|| loose.join("; "));
+        if loose.is_some() && loose != self.last_loose_warning {
+            self.toasts.push(loose.clone().unwrap(), ToastKind::Warning);
+        }
+        self.last_loose_warning = loose;
         // An invalid name hand-written into `project.toml`'s `spaces` is
         // the same shape of problem: chronic (never rewritten for the
         // user — see `project::write_list`), so it warns once per change
@@ -10280,7 +10361,7 @@ impl App {
             self.toasts.push(environments_warning.clone().unwrap(), ToastKind::Warning);
         }
         self.last_environments_warning = environments_warning;
-        self.sidebar.refresh(listing, &space, &expanded, &order);
+        self.sidebar.refresh_tree(listing, folders, &space, &expanded, &order);
         // `refresh` can re-map the open request's row to a different index
         // (rows added/removed/reordered above it) without the open request
         // itself changing -- snap `ListTravel`'s value to match, or it
@@ -10443,9 +10524,7 @@ impl App {
     fn reorder_label(&self, key: &RowKey) -> String {
         match key {
             RowKey::Request(slug) => self.request_display(slug),
-            RowKey::Folder(path) => {
-                format!("folder {}", crate::components::sidebar::Sidebar::folder_name(path))
-            }
+            RowKey::Folder(path) => format!("folder {}", self.sidebar.folder_display(path)),
         }
     }
 
@@ -10516,13 +10595,12 @@ impl App {
     /// folder stays open with whatever was open inside it. A refusal (a
     /// clash, D18) toasts and the rows snap back.
     fn drop_in_level(&mut self, drag: crate::components::sidebar::RowDrag) {
-        use crate::components::sidebar::Sidebar;
         use postui_core::project::{Error, TreeItem};
         let (level, at) = drag.target.clone();
         let dest = if level.is_empty() {
             "the top level".to_string()
         } else {
-            Sidebar::folder_name(&level).to_string()
+            self.sidebar.folder_display(&format!("{}/{level}", drag.space)).to_string()
         };
         let what = self.reorder_label(&drag.key);
         let (item, from, open_inside) = match &drag.key {
@@ -10581,6 +10659,146 @@ impl App {
                 };
                 self.toasts.push(msg, ToastKind::Warning);
                 self.land(Landing { cursor: Some(CursorAim::On(drag.key)), ..Landing::default() });
+            }
+        }
+    }
+
+    /// The "New folder" prompt for a folder in `level` (a full path) right
+    /// after `after`, or last (spec 2026-11-03 create folders F14).
+    fn push_folder_prompt(&mut self, level: String, after: Option<RowKey>) {
+        self.push_modal(Modal::Prompt {
+            title: "New folder".into(),
+            input: crate::components::line_input::LineInput::new(""),
+            kind: PromptKind::NewFolder { level, after },
+            revealed: false,
+        });
+    }
+
+    /// What a folder op's toast says went wrong: a shown name is said
+    /// plainly (F19), anything else as the error reads.
+    fn folder_refusal(verb: &str, e: postui_core::project::Error) -> String {
+        match e {
+            postui_core::project::Error::AlreadyExists(name) => {
+                format!("A folder named {name:?} is already there")
+            }
+            e => format!("could not {verb} the folder: {e}"),
+        }
+    }
+
+    /// Makes a folder named `name` in `level` after `after` (F14, F18,
+    /// F19): the cursor lands on it, its level opens, and it is one undo
+    /// step. A refusal brings the prompt back with what was typed.
+    fn create_folder(&mut self, level: &str, after: Option<RowKey>, name: &str) {
+        let after: Option<postui_core::project::TreeItem> = after.map(Into::into);
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
+            return;
+        };
+        match p.create_folder(level, name, after.as_ref()) {
+            Ok(path) => {
+                let display = name.trim().to_string();
+                if level.contains('/') {
+                    self.sidebar.pending_expand.insert(level.to_string());
+                }
+                self.land(Landing {
+                    cursor: Some(CursorAim::On(RowKey::Folder(path))),
+                    ..Landing::default()
+                });
+                self.toasts.push(format!("Created folder {display}"), ToastKind::Success);
+                self.record_project_step(
+                    t,
+                    crate::undo::StepLabel::create(format!("folder {display}")),
+                );
+            }
+            Err(e) => {
+                self.op_in_flight = false;
+                self.toasts.push(Self::folder_refusal("create", e), ToastKind::Warning);
+                self.last_action_failed = true;
+            }
+        }
+    }
+
+    /// Renames the folder at `from` to show `to` (F21, F23): what it holds
+    /// follows, as after a drop; folders that were open stay open; the
+    /// cursor stays on it. A refusal brings the prompt back.
+    fn rename_folder(&mut self, from: &str, to: &str) {
+        // Nothing to do for a name it already shows, unless its folder file
+        // doesn't parse: the name shown is then its directory's, and the
+        // rename's refusal is what says why the file can't be written
+        // (spec 2026-11-03 create folders F24).
+        let broken = self
+            .project()
+            .and_then(|p| p.folders().iter().find(|f| f.path == from))
+            .is_some_and(|f| f.broken.is_some());
+        if !broken && self.sidebar.folder_display(from) == to.trim() {
+            return;
+        }
+        let under = format!("{from}/");
+        let open_inside: Vec<String> =
+            self.expanded().into_iter().filter(|e| e == from || e.starts_with(&under)).collect();
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
+            return;
+        };
+        match p.rename_folder(from, to) {
+            Ok((path, moves)) => {
+                for (old, new) in &moves {
+                    self.follow_move(old, new);
+                }
+                for open in &open_inside {
+                    self.sidebar.pending_expand.insert(format!("{path}{}", &open[from.len()..]));
+                }
+                let display = to.trim().to_string();
+                self.land(Landing {
+                    cursor: Some(CursorAim::On(RowKey::Folder(path))),
+                    ..Landing::default()
+                });
+                self.toasts.push(format!("Renamed folder to {display}"), ToastKind::Success);
+                self.record_project_step(
+                    t,
+                    crate::undo::StepLabel::rename(format!("folder {display}")),
+                );
+            }
+            Err(e) => {
+                self.op_in_flight = false;
+                self.toasts.push(Self::folder_refusal("rename", e), ToastKind::Warning);
+                self.last_action_failed = true;
+            }
+        }
+    }
+
+    /// Deletes the folder at `path` and everything in it, with no confirm
+    /// (F21): an open request in it goes as a request delete takes it
+    /// (F25), and the cursor lands where a request delete puts it.
+    fn delete_folder(&mut self, path: &str) {
+        let display = self.sidebar.folder_display(path).to_string();
+        let from_row = self.sidebar.selected;
+        let under = format!("{path}/");
+        let was_open = self.editor.slug.as_ref().is_some_and(|s| s.starts_with(&under));
+        if was_open {
+            // As a request delete (spec 2026-10-19 R5).
+            self.commit_table_edit();
+        }
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
+            return;
+        };
+        match p.delete_folder(path) {
+            Ok(_) => {
+                self.toasts
+                    .push(format!("Deleted folder {display}{}", self.undo_hint()), ToastKind::Info);
+                self.land_after_removal(from_row, was_open, true);
+                self.record_project_step(
+                    t,
+                    crate::undo::StepLabel::delete(format!("folder {display}")),
+                );
+            }
+            Err(e) => {
+                self.op_in_flight = false;
+                self.toasts.push(Self::folder_refusal("delete", e), ToastKind::Error);
             }
         }
     }
@@ -11060,18 +11278,24 @@ impl App {
                 items.push(MenuItem::new("Delete", Action::DeleteSelectedRequest));
                 items
             }
+            // Spec 2026-11-03 create folders F13: New folder here, Rename
+            // and Delete join the folder's own items, as a request row's
+            // menu ends in Rename… and Delete.
             Row::Folder { path, expanded, .. } => vec![
                 MenuItem::new("New request here…", Action::PromptNewRequestIn(path.clone())),
                 MenuItem::new(
                     "Import curl here\u{2026}",
                     Action::ImportCurl { folder: Some(path.clone()) },
                 ),
+                MenuItem::new("New folder here\u{2026}", Action::PromptNewFolderIn(path.clone())),
                 move_item("Move up", first, Action::MoveFolder { path: path.clone(), delta: -1 }),
                 move_item("Move down", last, Action::MoveFolder { path: path.clone(), delta: 1 }),
                 MenuItem::new(
                     if *expanded { "Collapse" } else { "Expand" },
                     Action::ToggleSelectedFolder,
                 ),
+                MenuItem::new("Rename\u{2026}", Action::PromptRenameFolder),
+                MenuItem::new("Delete", Action::DeleteSelectedFolder),
             ],
         })
     }
@@ -11218,9 +11442,28 @@ impl App {
             .to_string()
     }
 
-    /// Whether the display path `to` (space included) names the request at
-    /// `slug` as it already is: its folder, and the name it shows spelled
-    /// the same (case included, as a case-only change is a rename). A
+    /// `folder` (a full path, `"main/accounts"`) spelled as the prompts show
+    /// it and `Project::resolve_display_path` reads it: the space, then
+    /// each folder's shown name (spec 2026-11-03 create folders F18a: the
+    /// TUI uses the display name). The curl import's prompt, the one input
+    /// that reads a folder path (F29), is prefilled through here.
+    pub(super) fn display_folder_path(&self, folder: &str) -> String {
+        self.project().map_or_else(|| folder.to_string(), |p| p.shown_folder_path(folder))
+    }
+
+    /// [`Self::display_folder_path`] inside the active space, as the
+    /// prompts prefill it: `""` for the space itself, else `"A/B/"`.
+    pub(super) fn prompt_folder_prefix(&self, folder: &str) -> String {
+        let shown = self.display_folder_path(folder);
+        match shown.split_once('/') {
+            Some((space, rest)) if space == self.active_space() => format!("{rest}/"),
+            _ => String::new(),
+        }
+    }
+
+    /// Whether the name `to` is the one the request at `slug` already
+    /// shows, spelled the same (case included, as a case-only change is a
+    /// rename). A
     /// rename to it changes nothing, so the Rename prompt submitted as it
     /// opened (#210) and a paste's `# @name` (replace spec N5) both skip
     /// it before anything else, as an unchanged environment or space
@@ -11236,14 +11479,12 @@ impl App {
     /// different question, which slug a rename that does go through lands
     /// at, so it trims.
     fn names_request_as_is(&self, slug: &str, to: &str) -> bool {
-        let folder = slug.rsplit_once('/').map(|(f, _)| f);
-        postui_core::storage::split_display_path(to).is_some_and(|(f, leaf)| {
-            Some(f.as_str()) == folder && leaf == self.request_display(slug)
-        })
+        to.trim() == self.request_display(slug)
     }
 
-    /// Renames the request at `from` to the display path `to` (space
-    /// included) as one journaled step: `Action::RenameRequest`, and a
+    /// Renames the request at `from` to the name `to`, in its own folder (a
+    /// `/` in it is part of the name, spec 2026-11-03 create folders F28),
+    /// as one journaled step: `Action::RenameRequest`, and a
     /// replace with curl whose paste carries a `# @name` (replace spec §6).
     /// The editor follows in place, never reloading. A refusal toasts
     /// (`rename_refusal`); whether the action failed is the caller's to
@@ -11312,7 +11553,9 @@ impl App {
         use postui_core::project::Error;
         match e {
             Error::AlreadyExists(taken) => format!("a request named {taken:?} already exists here"),
-            Error::BadName(_) => "request name cannot be empty".to_string(),
+            Error::BadName(name) if name.trim().is_empty() => {
+                "request name cannot be empty".to_string()
+            }
             e => format!("could not rename {}: {e}", self.request_display(from)),
         }
     }
@@ -11352,41 +11595,70 @@ impl App {
     fn create_or_save_as(
         &mut self,
         name: &str,
-        build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
+        at: NewAt<'_>,
+        build: impl FnOnce() -> postui_core::model::HttpRequest,
     ) -> bool {
-        self.create_request_from(name, build, &[]) == CreateOutcome::Opened
+        self.create_request_from(name, at, build) == CreateOutcome::Opened
     }
 
-    /// Writes a new request built by `build` under `name` (relative to the
-    /// active space) and opens it. Every outcome but `Opened` toasts why
-    /// and sets `last_action_failed` — except no project at all, which is
-    /// refused silently: every caller refuses that up front, with its toast.
-    /// `secrets` are declared as secret variables with their values, if
-    /// any, in the active environment, in the same undo step (a curl
-    /// import's `export` lines); the caller leaves out names the project
-    /// has.
+    /// The level a new item goes in and the item it goes right after, by
+    /// the cursor (spec 2026-11-03 create folders F14, F30): beside the
+    /// cursor's row in its level (beside a folder row, not in it); last at
+    /// the top level with no cursor.
+    fn cursor_place(&self) -> (String, Option<RowKey>) {
+        let space = self.active_space().to_string();
+        let parent = |p: &str| p.rsplit_once('/').map_or(space.clone(), |(d, _)| d.into());
+        match self.sidebar.selected_row() {
+            Some(Row::Request { slug, .. }) => (parent(slug), Some(RowKey::Request(slug.clone()))),
+            Some(Row::Folder { path, .. }) => (parent(path), Some(RowKey::Folder(path.clone()))),
+            None => (space.clone(), None),
+        }
+    }
+
+    /// Writes a new request built by `build` under `name`, placed by `at`,
+    /// and opens it. Every outcome but `Opened` toasts why and sets
+    /// `last_action_failed` — except no project at all, which is refused
+    /// silently: every caller refuses that up front, with its toast. A curl
+    /// import's secrets are declared as secret variables with their values,
+    /// if any, in the active environment, in the same undo step (its
+    /// `export` lines); the caller leaves out names the project has.
     fn create_request_from(
         &mut self,
         name: &str,
-        build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
-        secrets: &[(String, Option<String>)],
+        at: NewAt<'_>,
+        build: impl FnOnce() -> postui_core::model::HttpRequest,
     ) -> CreateOutcome {
-        use postui_core::project::Error;
-        // Every new request lands inside the active space — the name the
-        // user typed is relative to it.
-        let name = format!("{}/{}", self.active_space(), name.trim_start_matches('/'));
-        let name = name.as_str();
-        let req = build(name);
+        use postui_core::project::{Error, TreeItem};
+        let req = build();
         if self.project.is_none() {
             return CreateOutcome::Refused;
         }
+        let (level, after) = match &at {
+            NewAt::Import(_) => (String::new(), None),
+            NewAt::Cursor => self.cursor_place(),
+            NewAt::At { level, after } => (level.clone(), after.clone()),
+        };
+        let after: Option<TreeItem> = after.map(Into::into);
+        // An import's path lands inside the active space: the name typed
+        // is relative to it.
+        let path = format!("{}/{}", self.active_space(), name.trim_start_matches('/'));
+        let empty = match at {
+            NewAt::Import(_) => path.rsplit('/').next().unwrap_or_default().trim().is_empty(),
+            _ => name.trim().is_empty(),
+        };
         // Flushes the outgoing request's open field as its own step before
         // the create, and captures the view an undo returns to.
         let t = self.begin_op();
         let p = self.project.as_mut().expect("checked above");
+        let created = match at {
+            NewAt::Import(secrets) => p.create_request_with_secrets(&path, req, secrets),
+            NewAt::Cursor | NewAt::At { .. } => {
+                p.create_request_in(&level, name, after.as_ref(), req)
+            }
+        };
         // A read-back failure below must not leave the journal entry
         // without a marker to undo it: the file landed either way.
-        match p.create_request_with_secrets(name, req, secrets) {
+        match created {
             Ok((slug, leaf)) => {
                 let label = crate::undo::StepLabel::create(leaf.clone());
                 // The editor holds exactly what was written (display name
@@ -11417,13 +11689,15 @@ impl App {
                 self.last_action_failed = true;
                 CreateOutcome::Refused
             }
-            Err(Error::BadName(_)) => {
+            Err(Error::BadName(_)) if empty => {
                 self.toasts.push("request name cannot be empty", ToastKind::Error);
                 self.last_action_failed = true;
                 CreateOutcome::Refused
             }
             Err(e) => {
-                self.toasts.push(format!("could not save {name}: {e}"), ToastKind::Error);
+                // An import names its path, as it was typed in its space.
+                let what = if level.is_empty() { path.as_str() } else { name.trim() };
+                self.toasts.push(format!("could not save {what}: {e}"), ToastKind::Error);
                 self.last_action_failed = true;
                 CreateOutcome::Refused
             }

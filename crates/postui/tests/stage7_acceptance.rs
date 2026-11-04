@@ -262,15 +262,26 @@ fn right_click_folder_row_offers_new_request_here_and_expand() {
     press(&mut app, Hit::SidebarRow(folder), right_down);
     assert_eq!(
         menu_labels(&app),
-        vec!["New request here…", "Import curl here…", "Move up", "Move down", "Expand"]
+        vec![
+            "New request here…",
+            "Import curl here…",
+            "New folder here…",
+            "Move up",
+            "Move down",
+            "Expand",
+            "Rename…",
+            "Delete"
+        ]
     );
 
     press(&mut app, Hit::DropdownRow(0), left_down);
     let Some(Modal::Prompt { kind, input, .. }) = app.modals.top() else {
         panic!("expected the new-request prompt");
     };
-    assert_eq!(*kind, PromptKind::NewRequest);
-    assert_eq!(input.text(), "users/", "prefilled with the folder path");
+    // A name only, made inside the folder (spec 2026-11-03 create folders
+    // F28).
+    assert_eq!(*kind, PromptKind::NewRequestIn("main/users".into()));
+    assert_eq!(input.text(), "", "no folder path to edit");
 }
 
 #[test]
@@ -283,9 +294,18 @@ fn expanded_folder_row_offers_collapse() {
     press(&mut app, Hit::SidebarRow(folder), right_down);
     assert_eq!(
         menu_labels(&app),
-        vec!["New request here…", "Import curl here…", "Move up", "Move down", "Collapse"]
+        vec![
+            "New request here…",
+            "Import curl here…",
+            "New folder here…",
+            "Move up",
+            "Move down",
+            "Collapse",
+            "Rename…",
+            "Delete"
+        ]
     );
-    press(&mut app, Hit::DropdownRow(4), left_down);
+    press(&mut app, Hit::DropdownRow(5), left_down);
     assert!(
         app.sidebar.rows.iter().all(|r| !matches!(r, Row::Request { .. })),
         "the folder collapsed, hiding its request"

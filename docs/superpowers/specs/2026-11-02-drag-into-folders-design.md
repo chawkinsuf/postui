@@ -9,6 +9,14 @@ was set aside. `you` rows quote the user's own words. `mine (approved)`
 rows are proposals of mine the user agreed to. `mine` rows are mine,
 open to veto.
 
+*Amended 2026-11-03 (#172, spec 2026-11-03 create folders):* a folder is
+its directory and shows even when empty (its F1, F2). So D15's "A drop
+elsewhere removes the folder and its order entry" is replaced: the
+emptied folder stays, with its entry. D18 is unchanged, but a directory
+left behind is now a folder the user can see, so a drop onto one clashes
+as a shown folder; only a plain file of that name is refused naming the
+path. D21's "#172 owns making folders friendlier" points to that spec.
+
 ## 1. Problem
 
 A request's folder is the directory its file sits in:

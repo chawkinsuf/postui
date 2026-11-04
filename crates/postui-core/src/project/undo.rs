@@ -35,7 +35,16 @@ impl Project {
     /// the next op, so a later check sees what an earlier op in this same
     /// replay will have done. Refuses the whole entry at the first op
     /// whose precondition fails, naming that path.
-    fn preflight(&self, ops: &[Op]) -> Result<(), Error> {
+    ///
+    /// A created directory is taken back whole (`fs_trash`), so its
+    /// inverse also needs it to hold nothing postui shows but what this
+    /// replay has already taken out of it: a request or folder written into
+    /// it since (an editor, an agent) refuses the entry rather than going
+    /// to the trash unsaid. What postui doesn't show (a `.DS_Store`, an
+    /// editor's swap file, a `README`) goes to the trash with the
+    /// directory, and redo brings it back (spec 2026-11-03 create folders,
+    /// review rounds 5 and 6; mine (approved: "A")).
+    fn preflight(&mut self, ops: &[Op]) -> Result<(), Error> {
         // The user never sees the machinery, only the cause: something
         // changed the file after the op that is being replayed.
         let conflict = |path: &RelPath, what: &str| {
@@ -43,42 +52,85 @@ impl Project {
         };
         let mut overlay: std::collections::HashMap<RelPath, bool> =
             std::collections::HashMap::new();
-        let exists = |overlay: &std::collections::HashMap<RelPath, bool>, p: &RelPath| {
-            overlay.get(p).copied().unwrap_or_else(|| self.disk.exists(p))
-        };
+        fn exists(
+            disk: &crate::disk::Disk,
+            overlay: &std::collections::HashMap<RelPath, bool>,
+            p: &RelPath,
+        ) -> bool {
+            overlay.get(p).copied().unwrap_or_else(|| disk.exists(p))
+        }
         for op in ops.iter().rev() {
             match op {
                 Op::Renamed { from, to } => {
-                    if !exists(&overlay, to) {
+                    if !exists(&self.disk, &overlay, to) {
                         return Err(conflict(to, "no longer exists"));
                     }
-                    if exists(&overlay, from) {
+                    if exists(&self.disk, &overlay, from) {
                         return Err(conflict(from, "already exists"));
                     }
                     overlay.insert(to.clone(), false);
                     overlay.insert(from.clone(), true);
                 }
                 Op::Created { path } => {
-                    if !exists(&overlay, path) {
+                    if !exists(&self.disk, &overlay, path) {
                         return Err(conflict(path, "no longer exists"));
+                    }
+                    if self.disk.is_dir(path) {
+                        // What it holds that postui shows (a folder, a
+                        // request file, neither hidden), once this replay
+                        // has taken out what the entry put in it: on disk
+                        // and not marked gone, or put back by an earlier
+                        // inverse.
+                        let shown = |name: &str, is_dir: bool| {
+                            !super::is_hidden(name) && (is_dir || name.ends_with(".toml"))
+                        };
+                        let mut held = false;
+                        for e in self.disk.list(path)? {
+                            let Ok(child) = path.join(&e.name) else { continue };
+                            held |=
+                                shown(&e.name, e.is_dir) && exists(&self.disk, &overlay, &child);
+                        }
+                        let inside = format!("{path}/");
+                        held |= overlay.iter().any(|(p, &present)| {
+                            present
+                                && p.as_str()
+                                    .strip_prefix(&inside)
+                                    // The overlay knows no kind: a name with
+                                    // no extension reads as a folder.
+                                    .is_some_and(|r| !r.contains('/') && shown(r, !r.contains('.')))
+                        });
+                        if held {
+                            return Err(conflict(path, "holds something added since"));
+                        }
                     }
                     overlay.insert(path.clone(), false);
                 }
                 Op::Trashed { ticket } => {
-                    if !exists(&overlay, &ticket.slot) {
+                    if !exists(&self.disk, &overlay, &ticket.slot) {
                         return Err(conflict(&ticket.slot, "is gone from the trash"));
                     }
-                    if exists(&overlay, &ticket.original) {
+                    if exists(&self.disk, &overlay, &ticket.original) {
                         return Err(conflict(&ticket.original, "already exists"));
                     }
                     overlay.insert(ticket.slot.clone(), false);
                     overlay.insert(ticket.original.clone(), true);
                 }
                 Op::Restored { ticket } => {
-                    if !exists(&overlay, &ticket.original) {
+                    // Known gap, left for #243: a restored directory (a
+                    // folder or a space put back by undo) goes back to the
+                    // trash whole, with no "holds something added since"
+                    // check as `Op::Created` has. The journal records the
+                    // path, not what the directory held, so it can't tell
+                    // what came later. What goes is still in the trash
+                    // until the project is next opened, and one more undo
+                    // brings it back. #243 replaces whole-directory undo
+                    // for spaces and folders alike (main has the space
+                    // case); patching it here would change the journal's
+                    // format (#172, option A: mine (approved)).
+                    if !exists(&self.disk, &overlay, &ticket.original) {
                         return Err(conflict(&ticket.original, "no longer exists"));
                     }
-                    if exists(&overlay, &ticket.slot) {
+                    if exists(&self.disk, &overlay, &ticket.slot) {
                         return Err(conflict(&ticket.slot, "is occupied in the trash"));
                     }
                     overlay.insert(ticket.original.clone(), false);
@@ -86,7 +138,7 @@ impl Project {
                 }
                 Op::Text { path, before, after } => {
                     let expect_present = after.is_some();
-                    if expect_present != exists(&overlay, path) {
+                    if expect_present != exists(&self.disk, &overlay, path) {
                         return Err(conflict(
                             path,
                             if expect_present { "no longer exists" } else { "already exists" },
@@ -269,7 +321,7 @@ mod tests {
     #[test]
     fn undo_and_redo_of_a_rename_move_the_file_back_and_forth() {
         let (dir, mut p) = fixture();
-        p.rename_request("main/ping", "main/Pong").unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
         let u = p.undo().unwrap().unwrap();
         assert_eq!(u.label, "rename request");
         assert_eq!(u.meta.moves, vec![("main/ping".to_string(), "main/pong".to_string())]);
@@ -367,7 +419,7 @@ mod tests {
     #[test]
     fn a_conflict_refuses_the_whole_entry_and_drops_it() {
         let (dir, mut p) = fixture();
-        p.rename_request("main/ping", "main/Pong").unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
         std::fs::write(
             dir.path().join("requests/main/ping.toml"),
             "method = \"GET\"\nurl = \"hand made\"\n",
@@ -381,6 +433,38 @@ mod tests {
         assert!(dir.path().join("requests/main/pong.toml").is_file(), "nothing moved");
         assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("hand made"));
         assert!(p.undo().unwrap().is_none(), "the entry was dropped");
+    }
+
+    /// A directory an op made is taken back whole, so a file written into
+    /// it since refuses the undo: it never goes to the trash unsaid.
+    #[test]
+    fn undo_of_a_made_directory_holding_a_file_added_since_is_refused() {
+        let (dir, mut p) = fixture();
+        p.create_folder("main", "Users", None).unwrap();
+        std::fs::write(dir.path().join("requests/main/users/y.toml"), "url = \"u\"\n").unwrap();
+        let err = p.undo().unwrap_err();
+        assert!(
+            matches!(err, Error::Conflict(ref m) if m.contains("requests/main/users")),
+            "{err}"
+        );
+        assert!(dir.path().join("requests/main/users/y.toml").is_file(), "nothing went");
+        assert!(dir.path().join("requests/main/users/.folder.toml").is_file());
+    }
+
+    /// What postui doesn't show (a `.DS_Store`, a swap file) never blocks
+    /// the undo of a directory an op made: it goes to the trash with the
+    /// directory, and redo brings it back.
+    #[test]
+    fn undo_of_a_made_directory_takes_unshown_files_with_it() {
+        let (dir, mut p) = fixture();
+        p.create_folder("main", "Users", None).unwrap();
+        let users = dir.path().join("requests/main/users");
+        std::fs::write(users.join(".DS_Store"), "junk").unwrap();
+        std::fs::write(users.join("notes.txt"), "hi").unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(!users.exists());
+        p.redo().unwrap().unwrap();
+        assert_eq!(read(&dir, "requests/main/users/.DS_Store").as_deref(), Some("junk"));
     }
 
     #[test]

@@ -528,11 +528,17 @@ impl Disk {
         Ok(out)
     }
 
-    /// Every file under `dir` (recursively) whose extension is `ext`,
-    /// sorted by path. The first directory that fails to list is reported
-    /// as the warning and skipped; everything else is still returned.
-    pub fn walk_files(&mut self, dir: &RelPath, ext: &str) -> (Vec<RelPath>, Option<String>) {
+    /// Every file under `dir` (recursively) whose extension is `ext`, and
+    /// every directory below `dir` (not `dir` itself), each sorted by path.
+    /// The first directory that fails to list is reported as the warning
+    /// and skipped; everything else is still returned.
+    pub fn walk(
+        &mut self,
+        dir: &RelPath,
+        ext: &str,
+    ) -> (Vec<RelPath>, Vec<RelPath>, Option<String>) {
         let mut files = Vec::new();
+        let mut dirs = Vec::new();
         let mut warning = None;
         let mut stack = vec![dir.clone()];
         while let Some(d) = stack.pop() {
@@ -546,6 +552,7 @@ impl Disk {
             for e in entries {
                 let Ok(p) = d.join(&e.name) else { continue };
                 if e.is_dir {
+                    dirs.push(p.clone());
                     stack.push(p);
                 } else if e.name.rsplit_once('.').is_some_and(|(_, x)| x == ext) {
                     files.push(p);
@@ -553,7 +560,8 @@ impl Disk {
             }
         }
         files.sort();
-        (files, warning)
+        dirs.sort();
+        (files, dirs, warning)
     }
 
     pub fn remove_dir_all(&mut self, rel: &RelPath) -> Result<(), DiskError> {
@@ -1061,13 +1069,13 @@ mod tests {
     }
 
     #[test]
-    fn walk_files_is_recursive_sorted_and_filtered_by_extension() {
+    fn walk_is_recursive_sorted_and_filtered_by_extension() {
         let (_d, mut disk) = disk();
         disk.write(&RelPath::new("requests/main/b.toml").unwrap(), "").unwrap();
         disk.write(&RelPath::new("requests/main/sub/a.toml").unwrap(), "").unwrap();
         disk.write(&RelPath::new("requests/main/notes.md").unwrap(), "").unwrap();
         disk.write(&RelPath::new("requests/auth/c.toml").unwrap(), "").unwrap();
-        let (files, warning) = disk.walk_files(&RelPath::new("requests").unwrap(), "toml");
+        let (files, _, warning) = disk.walk(&RelPath::new("requests").unwrap(), "toml");
         let files: Vec<&str> = files.iter().map(|p| p.as_str()).collect();
         assert_eq!(
             files,
@@ -1076,16 +1084,37 @@ mod tests {
         assert!(warning.is_none());
     }
 
+    #[test]
+    fn walk_reports_every_directory_below_its_root_sorted() {
+        let (_d, mut disk) = disk();
+        disk.write(&RelPath::new("requests/main/sub/a.toml").unwrap(), "").unwrap();
+        disk.create_dir(&RelPath::new("requests/main/empty/deeper").unwrap()).unwrap();
+        let (files, dirs, warning) = disk.walk(&RelPath::new("requests").unwrap(), "toml");
+        let files: Vec<&str> = files.iter().map(|p| p.as_str()).collect();
+        let dirs: Vec<&str> = dirs.iter().map(|p| p.as_str()).collect();
+        assert_eq!(files, ["requests/main/sub/a.toml"]);
+        assert_eq!(
+            dirs,
+            [
+                "requests/main",
+                "requests/main/empty",
+                "requests/main/empty/deeper",
+                "requests/main/sub"
+            ]
+        );
+        assert!(warning.is_none());
+    }
+
     #[cfg(unix)]
     #[test]
-    fn walk_files_reports_an_unreadable_subdirectory_and_keeps_going() {
+    fn walk_reports_an_unreadable_subdirectory_and_keeps_going() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, mut disk) = disk();
         disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "").unwrap();
         disk.write(&RelPath::new("requests/locked/b.toml").unwrap(), "").unwrap();
         let locked = dir.path().join("requests/locked");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let (files, warning) = disk.walk_files(&RelPath::new("requests").unwrap(), "toml");
+        let (files, _, warning) = disk.walk(&RelPath::new("requests").unwrap(), "toml");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(files.len(), 1);
         assert!(warning.unwrap().contains("requests/locked"));

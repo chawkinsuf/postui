@@ -168,16 +168,16 @@ impl App {
         loop {
             let space = self.active_space();
             let folder = run.folder.clone().unwrap_or_else(|| space.clone());
+            // Spelled by shown names, as the create reads it (spec
+            // 2026-11-03 create folders F18a).
+            let shown = self.display_folder_path(&folder);
             let suggested = run.current().suggested_name();
             // A name already taken, or one that reads as no name, is the
             // user's to settle (S4).
-            let free = self.request_name_free(&folder, &suggested);
-            let name = self.free_request_name(&folder, &suggested);
+            let free = self.request_name_free(&shown, &suggested);
+            let name = self.free_request_name(&shown, &suggested);
             // The prompt speaks folders inside the space, as New request does.
-            let prefill = match folder.strip_prefix(&format!("{space}/")) {
-                Some(rel) => format!("{rel}/{name}"),
-                None => name,
-            };
+            let prefill = format!("{}{name}", self.prompt_folder_prefix(&folder));
             if !(free && self.create_unasked(&mut run, &prefill)) {
                 return self.push_modal(Modal::Prompt {
                     title: run.title(),
@@ -192,13 +192,16 @@ impl App {
         }
     }
 
-    /// Whether `base` reads as a request name in `folder`, as the create
-    /// will read it, that no request there has.
+    /// Whether `base` reads as a request name in `folder` (spelled by shown
+    /// names, [`App::display_folder_path`]), as the create will read it,
+    /// that no request there has.
     fn request_name_free(&self, folder: &str, base: &str) -> bool {
         let path = format!("{folder}/{base}");
+        // Read as the create reads it (spec 2026-11-03 create folders
+        // F18a): a segment can name a folder by its shown name.
         self.project().is_some_and(|p| {
-            postui_core::storage::split_display_path(&path)
-                .is_some_and(|(folder, leaf)| !p.sibling_name_taken(&folder, &leaf, None))
+            p.resolve_display_path(&path)
+                .is_ok_and(|(folder, _, leaf)| !p.sibling_name_taken(&folder, &leaf, None))
         })
     }
 
@@ -240,7 +243,7 @@ impl App {
             return base.to_string();
         };
         let path = format!("{folder}/{base}");
-        let Some((folder, leaf)) = postui_core::storage::split_display_path(&path) else {
+        let Ok((folder, _, leaf)) = p.resolve_display_path(&path) else {
             return base.to_string();
         };
         if !p.sibling_name_taken(&folder, &leaf, None) {
@@ -286,7 +289,8 @@ impl App {
             }
         };
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
-        let name = match self.create_request_from(name, |_| import.request, &secrets) {
+        let name = match self.create_request_from(name, NewAt::Import(&secrets), || import.request)
+        {
             CreateOutcome::Refused => return false,
             CreateOutcome::Opened => self.editor.name.clone().unwrap_or_else(|| name.to_string()),
             CreateOutcome::Unopened(leaf) => {
@@ -439,37 +443,37 @@ impl App {
         true
     }
 
-    /// The display path a paste's `# @name` renames `slug` to (replace spec
-    /// §6, N3 as amended): a name with a `/` in it (a leading one too)
-    /// reads from the space's top, as the Rename prompt and a top-level
-    /// import read it, so replaying the paste that imported a request
-    /// lands where the import put it; a bare name keeps the request's
-    /// folder. `None` when the request already has that name, spelled the
-    /// same, in that folder (N5): a different spelling, case included, is
-    /// what the comment
-    /// asks for, as the Rename prompt takes a case-only change. Asked
-    /// before the rename's checks, so a name that changes nothing never
-    /// refuses. What the rename would refuse is refused here, before the
-    /// dirty gate, in its own words (N2), a file gone from disk included:
-    /// the paste asks for a rename that cannot happen, and refusing before
-    /// anything changes says so, where replacing without it would drop the
-    /// comment unsaid (a bare curl still replaces). A rename that fails
-    /// only after the gate goes on without it instead (N1), since by then
-    /// the gate's answer has acted.
+    /// The name a paste's `# @name` renames `slug` to (replace spec §6):
+    /// the part after its last `/`, the request staying in its folder (spec
+    /// 2026-11-03 create folders F29, replacing N3's "a name with a `/`
+    /// reads from the space's top"; mine (approved: "C")). Only an import
+    /// reads the folders before it; here they are dropped, so replaying the
+    /// paste that imported a request (`api/List users`) names it as the
+    /// import did and changes nothing. `None` when the request already shows that name,
+    /// spelled the same (N5): a different spelling, case included, is what
+    /// the comment asks for, as the Rename prompt takes a case-only change.
+    /// Asked before the rename's checks, so a name that changes nothing
+    /// never refuses. What the rename would refuse is refused here, before
+    /// the dirty gate, in its own words (N2), a file gone from disk
+    /// included: the paste asks for a rename that cannot happen, and
+    /// refusing before anything changes says so, where replacing without
+    /// it would drop the comment unsaid (a bare curl still replaces). A
+    /// rename that fails only after the gate goes on without it instead
+    /// (N1), since by then the gate's answer has acted.
     fn curl_rename(&self, slug: &str, named: &str) -> Result<Option<String>, String> {
-        let folder = slug.rsplit_once('/').map(|(f, _)| f);
-        let base = if named.contains('/') { postui_core::storage::space_of(slug) } else { folder };
-        let named = named.trim_start_matches('/');
-        let to = match base {
-            Some(base) => format!("{base}/{named}"),
-            None => named.to_string(),
+        // A name may hold a `/` (F28): one that already names the request
+        // whole, as it is, changes nothing either (review round 4).
+        let named = if self.names_request_as_is(slug, named) {
+            named
+        } else {
+            named.rsplit('/').next().unwrap_or(named)
         };
-        let same = self.names_request_as_is(slug, &to);
+        let same = self.names_request_as_is(slug, named);
         let Some(p) = self.project().filter(|_| !same) else {
             return Ok(None);
         };
-        p.check_rename_request(slug, &to).map_err(|e| self.rename_refusal(slug, &e))?;
-        Ok(Some(to))
+        p.check_rename_request(slug, named).map_err(|e| self.rename_refusal(slug, &e))?;
+        Ok(Some(named.to_string()))
     }
 
     /// `Action::ForceReplaceWithCurl`, and a clean editor's way there:

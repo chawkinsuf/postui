@@ -12,7 +12,7 @@
 //! `Hit` variant is a compile error until it has decided whether it is a
 //! button with a hint or a surface without one.
 
-use crate::action::{Action, CopyTarget, ExtractDestination, KeymapAnswer};
+use crate::action::{Action, CopyTarget, ExtractDestination, KeymapAnswer, Verb};
 use crate::components::palette::all_commands;
 use crate::hit::Hit;
 use crate::keys::Keymap;
@@ -267,6 +267,12 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CycleTabs(_) => "Switch to the next tab".to_string(),
         Action::CloseScreen => "Go back to the request screen".to_string(),
         Action::SelectManageTab(tab) => format!("Show the {} tab", tab.label()),
+        // The sidebar's rename and delete chips run their key's verb, on
+        // a request row or a folder row (spec 2026-11-03 create folders).
+        Action::OnSelection(Verb::Rename) => "Rename the selected request or folder".to_string(),
+        Action::OnSelection(Verb::Delete { .. }) => {
+            "Delete the selected request or folder".to_string()
+        }
         Action::ConfirmTopModal => "Confirm the dialog".to_string(),
         Action::CancelTopModal => "Cancel the dialog".to_string(),
         _ => return None,
@@ -449,6 +455,13 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
 
         // -- Sidebar --
         Hit::SidebarNewRequest => of(Action::PromptNewRequest),
+        // `A` runs the verb, not `PromptNewFolder`, so the key is spelled
+        // from the verb: the footer has no `A` chip, and this hint is where
+        // the key shows (spec 2026-11-03 create folders F12).
+        Hit::SidebarNewFolder => Some(Source::Keyed(
+            "Create a folder where the cursor is".to_string(),
+            Action::OnSelection(Verb::AddAlt),
+        )),
         Hit::SidebarImportCurl => text("Import curl from clipboard"),
         Hit::SidebarFolderArrow(_) => {
             text(if ctx.on { "Collapse this folder" } else { "Expand this folder" })
@@ -639,6 +652,19 @@ mod tests {
         sidebar.spell.surface = crate::keyroute::Surface::Sidebar;
         assert_eq!(hint_for(&chip, &keymap, &sidebar).unwrap(), "Import curl from clipboard");
         assert!(!hint_for(&chip, &keymap, &ctx()).unwrap().contains("curl"));
+    }
+
+    /// The `+ Folder` button's hint names `A`, the key the footer has no
+    /// chip for (spec 2026-11-03 create folders F12).
+    #[test]
+    fn the_folder_button_hint_names_its_key() {
+        let keymap = Keymap::default_bindings();
+        let mut sidebar = ctx();
+        sidebar.spell.surface = crate::keyroute::Surface::Sidebar;
+        assert_eq!(
+            hint_for(&Hit::SidebarNewFolder, &keymap, &sidebar).unwrap(),
+            "Create a folder where the cursor is \u{b7} A"
+        );
     }
 
     /// The Variable Manager's shared `[Rename]`/`[Delete]` buttons act on
@@ -1109,6 +1135,7 @@ mod tests {
             Hit::SaveBodyButton,
             Hit::CopyUrl,
             Hit::SidebarNewRequest,
+            Hit::SidebarNewFolder,
             Hit::SidebarImportCurl,
             Hit::MethodSelector,
             Hit::EditorTab(0),

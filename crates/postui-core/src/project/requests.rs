@@ -25,6 +25,10 @@ use crate::order::{self, OrderEdit};
 /// `(from_slug, to_slug)` pairs of a batch move.
 pub type Moves = Vec<(String, String)>;
 
+/// The folders along a typed path, outside in: each one's full path and
+/// the text typed for it (see [`Project::resolve_display_path`]).
+pub type Along = Vec<(String, String)>;
+
 /// One sidebar item [`Project::move_to_level`] moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeItem {
@@ -34,7 +38,8 @@ pub enum TreeItem {
     Folder(String),
 }
 
-/// The directory of the folder at full path `path` (`"main/users"`).
+/// The directory of the folder at full path `path` (`"main/users"`),
+/// refused as an invalid name when it isn't a valid slug.
 fn folder_rel(path: &str) -> Result<RelPath, Error> {
     crate::storage::validate_slug(path).map_err(|e| Error::BadName(e.to_string()))?;
     rel(&format!("{REQUESTS_DIR}/{path}"))
@@ -65,18 +70,115 @@ impl ListingWarning {
     }
 }
 
+/// Whether `rel` (relative to `requests/`) passes through, or is, a file
+/// or directory whose name starts with `.` inside its space (spec
+/// 2026-11-03 create folders F16). The space segment itself is left to
+/// the space rules.
+///
+/// Skipped silently, like a dot file anywhere else: the project format
+/// already documents that a file or folder starting with `.` is ignored
+/// (the bundled skill's reference), so a `.wip/` of drafts is the user's
+/// to keep out of the tree. The cost: a request kept there before this
+/// rule no longer shows, and nothing says so. A warning per dot entry
+/// would nag every project that keeps a `.DS_Store` in a folder.
+fn hidden_in_space(rel: &str) -> bool {
+    rel.split('/').skip(1).any(super::is_hidden)
+}
+
+/// The name a [`crate::storage::FOLDER_FILE`]'s `text` gives its folder:
+/// `Ok(None)` for none (or an empty one), `Err` for a file that is no
+/// usable folder file. The one reading of the file: the listing's, and a
+/// copy's test of whether it may carry a file over (spec 2026-11-03 create
+/// folders F24).
+fn folder_file_name(text: &str) -> Result<Option<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct FolderMeta {
+        name: Option<String>,
+    }
+    let meta = toml::from_str::<FolderMeta>(text).map_err(|e| e.to_string())?;
+    // Trimmed, as a prompt trims it; a name holding `/` (written by hand:
+    // postui refuses one) counts as none, as an empty one does, so the
+    // folder shows its directory and its prefilled path finds it again.
+    Ok(meta.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty() && !n.contains('/')))
+}
+
+/// A folder name as typed into a prompt, trimmed: refused when empty, or
+/// when it holds `/`, which would make a prefilled path read as more than
+/// one folder (review block 1, mine (approved): "No").
+fn folder_name(name: &str) -> Result<&str, Error> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::BadName("a folder needs a name".to_string()));
+    }
+    if name.contains('/') {
+        return Err(Error::BadName(format!("{name:?}: a folder name can't hold /")));
+    }
+    Ok(name)
+}
+
+/// Every directory below a valid space in `dirs` (the walk's, relative to
+/// the root) as a folder, its [`crate::storage::FOLDER_FILE`] read for a
+/// name. A file that doesn't parse leaves the folder nameless, `broken`,
+/// with a warning naming the file (F24); one that can't be read leaves it
+/// nameless only (see below).
+fn list_folders(
+    disk: &mut Disk,
+    dirs: Vec<RelPath>,
+) -> (Vec<crate::storage::FolderListing>, Vec<ListingWarning>) {
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    for dir in dirs {
+        let rel = dir.as_str().strip_prefix("requests/").unwrap_or(dir.as_str());
+        let Some(space) = crate::storage::space_of(rel) else { continue };
+        if crate::storage::validate_slug(space).is_err() || hidden_in_space(rel) {
+            continue;
+        }
+        let Ok(file) = dir.join(crate::storage::FOLDER_FILE) else { continue };
+        // A file that can't be read leaves the folder nameless but not
+        // broken: what can't be read (most often a directory the walk
+        // couldn't list, already warned about) is no file that doesn't
+        // parse. A rename of it reports the read error from the op itself;
+        // it never overwrites a file it couldn't read (parse errors never
+        // default).
+        let read = match disk.read(&file) {
+            Ok(Some(text)) => folder_file_name(&text),
+            Ok(None) | Err(_) => Ok(None),
+        };
+        let (name, broken) = match read {
+            Ok(name) => (name, None),
+            Err(e) => {
+                warnings.push(ListingWarning {
+                    message: format!("{file}: {e}"),
+                    file: Some(file.as_str().to_string()),
+                });
+                (None, Some(e))
+            }
+        };
+        out.push(crate::storage::FolderListing { path: rel.to_string(), name, broken });
+    }
+    (out, warnings)
+}
+
 /// Walks `requests/` through `Disk`: every `.toml` in a valid space,
-/// parsed for its method and name; broken files listed with the error.
-/// The warnings name the first unreadable directory and every loose file.
-pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Vec<ListingWarning>) {
+/// parsed for its method and name; broken files listed with the error;
+/// and every folder (spec 2026-11-03 create folders F1). Files and
+/// directories whose names start with `.` inside a space are skipped
+/// (F16). The warnings name the first unreadable directory, every loose
+/// file and every unreadable folder file.
+pub(crate) fn list(
+    disk: &mut Disk,
+) -> (Vec<RequestListing>, Vec<crate::storage::FolderListing>, Vec<ListingWarning>) {
     let Ok(base) = RelPath::new(REQUESTS_DIR) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
-    let (files, walk_warning) = disk.walk_files(&base, "toml");
+    let (files, dirs, walk_warning) = disk.walk(&base, "toml");
     let mut out = Vec::new();
     let mut loose = Vec::new();
     for path in files {
         let rel = path.as_str().strip_prefix("requests/").unwrap_or(path.as_str());
+        if hidden_in_space(rel) {
+            continue;
+        }
         let slug = rel.strip_suffix(".toml").unwrap_or(rel).to_string();
         let why = match crate::storage::space_of(&slug) {
             None => Some("is not in a space (move it into a space directory)"),
@@ -101,15 +203,23 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Vec<ListingWarning>
         out.push(RequestListing { slug, broken, method, name });
     }
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    let (folders, folder_warnings) = list_folders(disk, dirs);
     let mut warnings: Vec<ListingWarning> =
         walk_warning.into_iter().map(|message| ListingWarning { file: None, message }).collect();
     warnings.extend(loose);
-    (out, warnings)
+    warnings.extend(folder_warnings);
+    (out, folders, warnings)
 }
 
 impl Project {
     pub fn requests(&self) -> &[RequestListing] {
         &self.listing
+    }
+
+    /// Every folder of every space, by path (spec 2026-11-03 create
+    /// folders F1).
+    pub fn folders(&self) -> &[crate::storage::FolderListing] {
+        &self.folder_listing
     }
 
     /// The walk's warnings as one line; `None` when there are none.
@@ -127,8 +237,9 @@ impl Project {
     /// Re-walks `requests/`. Called by every request op and by the app's
     /// sidebar refresh, as `list_requests` was.
     pub fn relist(&mut self) {
-        let (listing, warnings) = list(&mut self.disk);
+        let (listing, folders, warnings) = list(&mut self.disk);
         self.listing = listing;
+        self.folder_listing = folders;
         self.listing_warnings = warnings;
     }
 
@@ -282,6 +393,227 @@ impl Project {
         })
     }
 
+    /// `display_path` ("main/User Accounts/My Request!") split for a create
+    /// or a rename: the full path of the folder it lands in
+    /// (`"main/user-accounts"`), the folders on that path below the space
+    /// with the text typed for each, outside in, and the leaf. Refused for
+    /// an empty leaf, and for a segment more than one sibling folder shows
+    /// (folders made outside postui, which never makes two, F19): the name
+    /// can't say which one, and filing into either could be the wrong one.
+    ///
+    /// A folder segment is a name, as a request's leaf is (spec 2026-11-03
+    /// create folders F18a; the user: "There's no reason to search the name
+    /// other than the display name", "It should work just like the
+    /// requests do"). It goes into the sibling folder that shows it,
+    /// ignoring case, and is never read as a directory. Any other segment
+    /// is a folder still to be made, named by the typed text, its
+    /// directory given by the one naming rule ([`Self::folder_slot`]).
+    /// The TUI shows and prefills shown names, so a prefilled path finds
+    /// its own folder. The space segment is a directory, as before.
+    pub fn resolve_display_path(
+        &self,
+        display_path: &str,
+    ) -> Result<(String, Along, String), Error> {
+        let (folders, leaf) = display_path.rsplit_once('/').unwrap_or(("", display_path));
+        let leaf = leaf.trim();
+        if leaf.is_empty() {
+            return Err(Error::BadName(String::new()));
+        }
+        let mut path = String::new();
+        let mut along = Vec::new();
+        for seg in folders.split('/').map(str::trim).filter(|s| !s.is_empty()) {
+            if path.is_empty() {
+                path = crate::storage::segment_slug(seg);
+                continue;
+            }
+            // Below a folder this resolution made, nothing is on disk yet:
+            // no sibling shows anything, and no name is taken.
+            let mut shown = self.siblings_showing(&path, seg, None);
+            path = match (shown.next(), shown.next()) {
+                (Some(_), Some(_)) => {
+                    return Err(Error::Conflict(format!(
+                        "more than one folder here is named {seg:?}: rename one"
+                    )));
+                }
+                (Some(f), None) => f.path.clone(),
+                (None, _) => self.folder_slot(&path, seg, None),
+            };
+            along.push((path.clone(), seg.to_string()));
+        }
+        Ok((path, along, leaf.to_string()))
+    }
+
+    /// `folder` (a full path, `"main/accounts"`) spelled as a typed path
+    /// spells it: the space, then each folder's shown name (spec 2026-11-03
+    /// create folders F18a). The one owner of that spelling: the curl
+    /// import's prefill reads it (F29).
+    pub fn shown_folder_path(&self, folder: &str) -> String {
+        let mut segs = folder.split('/');
+        let mut out = segs.next().unwrap_or_default().to_string();
+        let mut path = out.clone();
+        for seg in segs {
+            path = format!("{path}/{seg}");
+            let shown = self
+                .folder_listing
+                .iter()
+                .find(|f| f.path == path)
+                .map_or(seg, crate::storage::FolderListing::display_name);
+            out = format!("{out}/{shown}");
+        }
+        out
+    }
+
+    /// The one naming rule for a folder's directory, used by a create, a
+    /// rename and a typed path alike (review block 1, mine (approved)): in
+    /// `level` (a full path), the slug of `name` as one segment
+    /// (`slugify`, `folder` when nothing safe survives), `-2`, `-3`, …
+    /// while something on disk already has it (F19), as a request's slug
+    /// is numbered. `current` is the folder a rename renames: a name whose
+    /// slug it already has, numbered or not, keeps its directory, as a
+    /// request rename keeps its slug (#209).
+    fn folder_slot(&self, level: &str, name: &str, current: Option<&str>) -> String {
+        let slug = |name: &str| format!("{level}/{}", crate::storage::slugify_or(name, "folder"));
+        let base = slug(name);
+        if let Some(current) = current {
+            // A numbered directory is kept only when it is this name's own:
+            // the folder shows a name with the same slug now (`f-2` showing
+            // "f", renamed "F"). A slug that merely ends in digits
+            // (`users-2024`) is no number.
+            let shown_base = self
+                .folder_listing
+                .iter()
+                .find(|f| f.path == current)
+                .is_some_and(|f| slug(f.display_name()) == base);
+            let numbered = shown_base
+                && current
+                    .strip_prefix(&format!("{base}-"))
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            if current == base || numbered {
+                return current.to_string();
+            }
+        }
+        // Taken by anything on disk, or by a listed folder spelled in any
+        // case (D18's rule for a drop: a case-only twin can't sit beside
+        // it on every filesystem), never by the folder being renamed.
+        let taken = |p: &str| {
+            current != Some(p)
+                && (rel(&format!("{REQUESTS_DIR}/{p}")).is_ok_and(|r| self.disk.exists(&r))
+                    || shows_folder_ignoring_case(&self.folder_listing, p))
+        };
+        let mut path = base.clone();
+        let mut n = 2;
+        while taken(&path) {
+            path = format!("{base}-{n}");
+            n += 1;
+        }
+        path
+    }
+
+    /// Refuses an op in or on a level (a space, or a folder) whose
+    /// directory name isn't a valid slug (made in a file manager:
+    /// `My Stuff/`), as an op on a request file of such a name is refused:
+    /// it shows, and nothing changes it (the user, 2026-11-03: "handle
+    /// invalid folder names the same way we handle invalid requests
+    /// names").
+    fn valid_level(level: &str) -> Result<(), Error> {
+        folder_rel(level).map(|_| ())
+    }
+
+    /// Makes each folder of `folders` (its full path and the text of its
+    /// [`crate::storage::FOLDER_FILE`]), outside in, that isn't on disk:
+    /// the directory, then its file, both journaled, so undo takes them
+    /// back (spec 2026-11-03 create folders F5, F17). Runs inside its
+    /// caller's transaction, before the file op that needs the folder.
+    /// Returns the paths it made.
+    pub(super) fn make_folders(
+        &mut self,
+        folders: &[(String, String)],
+    ) -> Result<Vec<String>, Error> {
+        let mut made = Vec::new();
+        for (path, text) in folders {
+            if self.disk.is_dir(&rel(&format!("{REQUESTS_DIR}/{path}"))?) {
+                continue;
+            }
+            let dir = folder_rel(path)?;
+            self.fs_create_dir(&dir)?;
+            self.fs_create_file(&rel(&format!("{dir}/{}", crate::storage::FOLDER_FILE))?, text)?;
+            // The listing knows what the op made, as `save_request` keeps
+            // its row: a later name check in the same op (the next copy of
+            // a Move all) sees this folder's name (F19). The next relist
+            // reads it from disk again.
+            self.folder_listing.push(crate::storage::FolderListing {
+                path: path.clone(),
+                name: folder_file_name(text).ok().flatten(),
+                broken: None,
+            });
+            made.push(path.clone());
+        }
+        Ok(made)
+    }
+
+    /// The folders `to` (a request's slug in another space, at the same
+    /// sub-path as `from`) sits in, for [`Self::make_folders`], each with
+    /// the text of the [`crate::storage::FOLDER_FILE`] of the folder at the
+    /// same sub-path over `from`, other keys included, or naming it by its
+    /// directory when that has none (spec 2026-11-03 create folders §3).
+    fn copied_folders(&mut self, from: &str, to: &str) -> Result<Vec<(String, String)>, Error> {
+        let (Some((from_space, _)), Some((to_space, rel_path))) =
+            (Self::split_space(from), Self::split_space(to))
+        else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for sub in order::ancestors(rel_path) {
+            out.push(self.copied_folder(from_space, to_space, sub)?);
+        }
+        Ok(out)
+    }
+
+    /// The folder at sub-path `sub` of `from_space`, as [`Self::make_folders`]
+    /// makes it in `to_space`: its full path there and the text of the
+    /// source's [`crate::storage::FOLDER_FILE`] as it is, other keys
+    /// included, or naming it by its directory when the source has none,
+    /// it can't be read, or the listing would call it broken
+    /// ([`folder_file_name`]): a move never fails on a name, and never
+    /// spreads a broken file to another space, where F24 would then block
+    /// renaming the copy (spec 2026-11-03 create folders §3, F27). The
+    /// broken source stays as it is, or goes to the trash with its folder.
+    /// A copy whose name a sibling in `to_space` already shows is named by
+    /// its directory too (F19 on every write).
+    fn copied_folder(
+        &mut self,
+        from_space: &str,
+        to_space: &str,
+        sub: &str,
+    ) -> Result<(String, String), Error> {
+        let file =
+            rel(&format!("{REQUESTS_DIR}/{from_space}/{sub}/{}", crate::storage::FOLDER_FILE))?;
+        let leaf = sub.rsplit('/').next().unwrap_or(sub);
+        let path = format!("{to_space}/{sub}");
+        let usable = self
+            .disk
+            .read(&file)
+            .ok()
+            .flatten()
+            .and_then(|text| folder_file_name(&text).ok().map(|name| (text, name)));
+        let level = path.rsplit_once('/').map_or(to_space, |(l, _)| l);
+        let taken = |name: &str| self.sibling_folder_name_taken(level, name, Some(&path));
+        let text = match usable {
+            Some((text, name)) if !taken(name.as_deref().unwrap_or(leaf)) => text,
+            // A name a sibling shows, or no usable file: named by its
+            // directory, `<dir> 2`, `<dir> 3`, … while a sibling shows that
+            // too, ignoring case (F19), as a curl import numbers a request.
+            _ => {
+                let name = std::iter::once(leaf.to_string())
+                    .chain((2..).map(|n| format!("{leaf} {n}")))
+                    .find(|n| !taken(n))
+                    .expect("some suffix is free");
+                folder_file_text(&name)
+            }
+        };
+        Ok((path, text))
+    }
+
     pub fn unique_slug(&self, folder: &str, leaf_display: &str, exclude: Option<&str>) -> String {
         let base = if folder.is_empty() {
             crate::storage::slugify(leaf_display)
@@ -298,42 +630,22 @@ impl Project {
     }
 }
 
-/// The arrival cascade for the request at `rel`, one of `arriving` (every
-/// request the op brings into `space`, relative slugs): each folder it
-/// sits in, outermost first, then the request itself. `slugs` is the
-/// relisted listing, which no longer shows what the op took away, so
-/// the op names that itself: `departed` holds the relative slugs it
-/// moved out of `space`'s levels (a rename's old slug).
-///
-/// A folder is new when nothing was under it before the op: every listed
-/// request under it is arriving, and none of the departed ones sat in
-/// it. A new folder arrives (lands last in its level, spec 2026-11-02
-/// drag into folders D4); one already there keeps its place. A rename
-/// from `a/x` to `a/sub/x` leaves `a/` where it was. `seen` holds the
-/// folders this op already handled, so a folder several arrivals share
-/// is placed once.
+/// The arrival cascade for the request at `rel`: each folder it sits in
+/// that the op made (`made`, full paths, from [`Project::make_folders`]),
+/// outermost first, then the request itself, each landing last in its
+/// level (spec 2026-11-02 drag into folders D4). The op knows what it
+/// made, so nothing is guessed from the list: a folder already there keeps
+/// its place, empty or not, and one the list misses (its completion
+/// couldn't run) draws by D6 until a completion writes it in.
 fn arrive_with_folders(
     space: &str,
     order: &mut Vec<String>,
     rel: &str,
-    arriving: &std::collections::HashSet<&str>,
-    departed: &[&str],
-    seen: &mut std::collections::HashSet<String>,
-    slugs: &[String],
+    made: &[String],
 ) -> Vec<OrderEdit> {
     let mut edits = Vec::new();
     for folder in order::ancestors(rel) {
-        if !seen.insert(folder.to_string()) {
-            continue;
-        }
-        let inside = format!("{folder}/");
-        let under = format!("{space}/{inside}");
-        let new = !departed.iter().any(|d| d.starts_with(&inside))
-            && slugs
-                .iter()
-                .filter_map(|s| s.strip_prefix(&under).map(|_| &s[space.len() + 1..]))
-                .all(|r| arriving.contains(r));
-        if new {
+        if made.iter().any(|m| m == &format!("{space}/{folder}")) {
             edits.extend(order::arrive(space, order, &order::folder_entry(folder)));
         }
     }
@@ -341,19 +653,54 @@ fn arrive_with_folders(
     edits
 }
 
-/// Whether `slugs` (a listing's full slugs) shows a folder at full path
-/// `path` spelled in any case: some request sits under it. A folder move
-/// refuses a destination this answers for (spec 2026-11-02 drag into
-/// folders D18), whatever the filesystem's case rule.
-fn shows_folder_ignoring_case(slugs: &[String], path: &str) -> bool {
-    let under = format!("{path}/").to_lowercase();
-    slugs.iter().any(|s| s.to_lowercase().starts_with(&under))
+/// Where a new item's `entry` goes (spec 2026-11-03 create folders F14,
+/// F30): right after `anchor` (the cursor's item) when the list names it,
+/// else by `arrive` (last in its level, D4). The one placement rule a new
+/// request and a new folder share.
+fn place_new(
+    space: &str,
+    order: &mut Vec<String>,
+    entry: &str,
+    anchor: Option<&str>,
+    arrive: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
+) -> Vec<OrderEdit> {
+    match anchor {
+        Some(a) if order.iter().any(|e| e == a) => {
+            order::insert_beside(space, order, entry, Some(a), true)
+        }
+        _ => arrive(order),
+    }
+}
+
+/// The text of a [`crate::storage::FOLDER_FILE`] naming its folder `name`
+/// (spec 2026-11-03 create folders F15).
+pub(super) fn folder_file_text(name: &str) -> String {
+    let mut doc = toml_edit::DocumentMut::new();
+    doc["name"] = toml_edit::value(name);
+    doc.to_string()
+}
+
+/// `along` (folders with the text typed for each, from
+/// [`Project::resolve_display_path`]) as [`Project::make_folders`] takes
+/// them: each named by its typed text.
+fn named(along: &[(String, String)]) -> Vec<(String, String)> {
+    along.iter().map(|(path, typed)| (path.clone(), folder_file_text(typed))).collect()
+}
+
+/// Whether `folders` lists a folder at full path `path` spelled in any
+/// case. A folder move refuses a destination this answers for (spec
+/// 2026-11-02 drag into folders D18), whatever the filesystem's case
+/// rule.
+fn shows_folder_ignoring_case(folders: &[crate::storage::FolderListing], path: &str) -> bool {
+    let wanted = path.to_lowercase();
+    folders.iter().any(|f| f.path.to_lowercase() == wanted)
 }
 
 /// Each of `spaces` whose list in `meta` [`order::complete_order`]
 /// changes, with the completed list.
 fn completed_lists(
     listing: &[RequestListing],
+    folders: &[crate::storage::FolderListing],
     meta: &ProjectMeta,
     spaces: &[String],
     drop_dead: bool,
@@ -362,7 +709,7 @@ fn completed_lists(
         .iter()
         .filter_map(|space| {
             let before = order::space_order(meta, space);
-            let after = order::complete_order(listing, before, space, drop_dead);
+            let after = order::complete_order(listing, folders, before, space, drop_dead);
             (after != before).then(|| (space.clone(), after))
         })
         .collect()
@@ -421,65 +768,44 @@ impl Project {
         Err(Error::Conflict("the order can't be saved without a project.toml".to_string()))
     }
 
-    /// Every listed request's full slug: what the order cascades test
-    /// existence against (`order::exists_in`). Callers have relisted.
-    fn listed_slugs(&self) -> Vec<String> {
-        self.listing.iter().map(|l| l.slug.clone()).collect()
-    }
-
-    /// The request at `rel` (relative to `space`) has just appeared, with
-    /// the listing already relisted: each folder it sits in that is new,
-    /// outermost first, then the request itself takes the arrival rule
-    /// (spec 2026-11-02 drag into folders D4). `departed` names what
-    /// the same op took out of `space` (see [`arrive_with_folders`]).
+    /// The request at `rel` (relative to `space`) has just appeared: each
+    /// folder it sits in that the op made, outermost first, then the
+    /// request itself takes the arrival rule (spec 2026-11-02 drag into
+    /// folders D4; see [`arrive_with_folders`]).
     pub(super) fn order_arrive(
         &mut self,
         space: &str,
         rel: &str,
-        departed: &[&str],
+        made: &[String],
     ) -> Result<Vec<OrderEdit>, Error> {
-        let slugs = self.listed_slugs();
-        let arriving = std::collections::HashSet::from([rel]);
-        let mut seen = std::collections::HashSet::new();
-        self.order_edit(space, |order| {
-            arrive_with_folders(space, order, rel, &arriving, departed, &mut seen, &slugs)
-        })
+        self.order_edit(space, |order| arrive_with_folders(space, order, rel, made))
     }
 
-    /// The request at `rel` has just left, with the listing already
-    /// relisted: its entry, then every folder entry it left empty (R9).
+    /// The request at `rel` has just left: its entry. The folders it sat
+    /// in stay, entries and all (spec 2026-11-03 create folders F2).
     pub(super) fn order_remove(&mut self, space: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
-        let slugs = self.listed_slugs();
-        self.order_edit(space, |order| {
-            let mut edits = order::remove(space, order, rel);
-            edits.extend(order::prune_folders(space, order, rel, &|s| order::exists_in(&slugs, s)));
-            edits
-        })
+        self.order_edit(space, |order| order::remove(space, order, rel))
     }
 
+    /// A request renamed in its own level: its entry, in place.
     pub(super) fn order_rename(
         &mut self,
         space: &str,
         from: &str,
         to: &str,
     ) -> Result<Vec<OrderEdit>, Error> {
-        if order::level_of(from) == order::level_of(to) {
-            return self.order_edit(space, |order| {
-                for e in order.iter_mut() {
-                    if e == from {
-                        *e = to.to_string();
-                    }
+        self.order_edit(space, |order| {
+            for e in order.iter_mut() {
+                if e == from {
+                    *e = to.to_string();
                 }
-                vec![OrderEdit::Renamed {
-                    space: space.to_string(),
-                    from: from.to_string(),
-                    to: to.to_string(),
-                }]
-            });
-        }
-        let mut edits = self.order_remove(space, from)?;
-        edits.extend(self.order_arrive(space, to, &[from])?);
-        Ok(edits)
+            }
+            vec![OrderEdit::Renamed {
+                space: space.to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+            }]
+        })
     }
 
     pub(super) fn order_insert_after(
@@ -529,7 +855,9 @@ impl Project {
             if level.is_empty() { format!("{space}/") } else { format!("{space}/{level}/") };
         let entries: Vec<&RequestListing> =
             self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).collect();
-        let items = order::split_level(&entries, &prefix);
+        let folders: Vec<&crate::storage::FolderListing> =
+            self.folder_listing.iter().filter(|f| f.path.starts_with(&prefix)).collect();
+        let items = order::split_level(&entries, &folders, &prefix);
         let order = order::OrderIndex::new(order::space_order(&self.meta, space));
         order::order_entries(&items.requests, &items.folder_paths(), &order, space)
             .iter()
@@ -594,7 +922,10 @@ impl Project {
             .iter()
             .any(|s| order::space_order(&on_disk, s) != order::space_order(&self.meta, s));
         // The peek only decides whether there is anything to do.
-        if !unread && completed_lists(&self.listing, &on_disk, &spaces, whole).is_empty() {
+        if !unread
+            && completed_lists(&self.listing, &self.folder_listing, &on_disk, &spaces, whole)
+                .is_empty()
+        {
             return Ok(false);
         }
         let outside_edit = self.disk.changed(&path);
@@ -604,12 +935,13 @@ impl Project {
         // listing is cloned because the closure can't borrow `self`; this
         // only happens when there is something to write.
         let listing = self.listing.clone();
+        let folders = self.folder_listing.clone();
         let mut wrote = false;
         self.edit_project_toml(|doc| {
             // A document that no longer parses gets no list; the write
             // then refuses it (`edit_project_toml` validates).
             let Ok(meta) = toml::from_str::<ProjectMeta>(&doc.to_string()) else { return };
-            for (space, after) in completed_lists(&listing, &meta, &spaces, whole) {
+            for (space, after) in completed_lists(&listing, &folders, &meta, &spaces, whole) {
                 order::write_order(doc, &space, &after);
                 wrote = true;
             }
@@ -656,35 +988,47 @@ impl Project {
     }
 
     /// One read-modify-write per space, however many requests moved.
+    ///
+    /// `drawn` is `from`'s items as the sidebar drew them before the move
+    /// ([`order::drawn_entries`]), `moves` the requests' `(from, to)`
+    /// relative slugs, `carried` the entries of the folders the move made
+    /// in `to`, and `emptied` those of the source folders the move took away
+    /// (spec 2026-11-03 create folders F27). `from` loses the moved
+    /// requests and the emptied folders; `to` gains each item it lacks in
+    /// draw order, a folder before what is in it, so every level arrives
+    /// looking as it drew in `from` (D4, D22). The list as stored won't
+    /// do: it may keep a level's entries apart and in any order across
+    /// levels. A folder `to` already had keeps its place.
     pub(super) fn order_move_all(
         &mut self,
         from: &str,
         to: &str,
+        drawn: &[String],
         moves: &[(String, String)],
+        carried: &[String],
+        emptied: &[String],
     ) -> Result<(), Error> {
-        let slugs = self.listed_slugs();
-        let exists = |s: &str| order::exists_in(&slugs, s);
         self.order_edit(from, |order| {
-            moves
-                .iter()
-                .flat_map(|(f, _)| {
-                    let mut edits = order::remove(from, order, f);
-                    edits.extend(order::prune_folders(from, order, f, &exists));
-                    edits
-                })
-                .collect()
+            let gone = moves.iter().map(|(f, _)| f).chain(emptied);
+            gone.flat_map(|e| order::remove(from, order, e)).collect()
         })?;
-        let arriving: std::collections::HashSet<&str> =
-            moves.iter().map(|(_, t)| t.as_str()).collect();
-        let mut seen = std::collections::HashSet::new();
         // The destination side only adds arrivals.
+        let carried: std::collections::HashSet<&str> = carried.iter().map(String::as_str).collect();
+        let moved: std::collections::HashMap<&str, &str> =
+            moves.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
         self.order_edit(to, |order| {
-            moves
-                .iter()
-                .flat_map(|(_, t)| {
-                    arrive_with_folders(to, order, t, &arriving, &[], &mut seen, &slugs)
-                })
-                .collect::<Vec<_>>()
+            let mut edits = Vec::new();
+            for e in drawn {
+                if order::is_folder_entry(e) {
+                    if carried.contains(e.as_str()) && !order.contains(e) {
+                        edits.extend(order::arrive(to, order, e));
+                    }
+                } else if let Some(t) = moved.get(e.as_str()) {
+                    // Its folders arrived above, at their own places.
+                    edits.extend(arrive_with_folders(to, order, t, &[]));
+                }
+            }
+            edits
         })?;
         Ok(())
     }
@@ -701,27 +1045,77 @@ impl Project {
         EntryMeta { moves, active_env: None }
     }
 
-    /// Creates a request from a typed display path ("Folder/My Request!").
+    /// Creates a request from a typed display path ("Folder/My Request!"):
+    /// the curl import's, the one input that reads a folder path (spec
+    /// 2026-11-03 create folders F29). Each folder segment is the sibling
+    /// folder showing that name when there is one, else a folder made for
+    /// it; the leaf is the request's name, refused when a request in that
+    /// folder already shows it. It lands last in its level (D4).
     pub fn create_request(
         &mut self,
         display_path: &str,
+        req: HttpRequest,
+    ) -> Result<(String, String), Error> {
+        // Folder names resolve against the disk as it is now: a folder made
+        // outside since the last relist is found by its name.
+        self.relist();
+        let (folder, along, leaf) = self.resolve_display_path(display_path)?;
+        self.create_at(&folder, &along, leaf, None, req)
+    }
+
+    /// Creates a request named `name` in `level` (a full path: a space or
+    /// a folder). The name is only a name: a `/` in it is part of it (spec
+    /// 2026-11-03 create folders F28). Its entry goes right after
+    /// `after`'s (the cursor's item, F30), or last in its level (D4).
+    pub fn create_request_in(
+        &mut self,
+        level: &str,
+        name: &str,
+        after: Option<&TreeItem>,
+        req: HttpRequest,
+    ) -> Result<(String, String), Error> {
+        self.relist();
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::BadName(name.to_string()));
+        }
+        if !self.level_exists(level) {
+            return Err(Error::NotFound(level.to_string()));
+        }
+        self.create_at(level, &[], name.to_string(), after, req)
+    }
+
+    /// The create both entry points share: `leaf` in `folder`, making the
+    /// folders of `along` that are missing first.
+    fn create_at(
+        &mut self,
+        folder: &str,
+        along: &[(String, String)],
+        leaf: String,
+        after: Option<&TreeItem>,
         mut req: HttpRequest,
     ) -> Result<(String, String), Error> {
-        let Some((folder, leaf)) = crate::storage::split_display_path(display_path) else {
-            return Err(Error::BadName(display_path.to_string()));
-        };
-        if self.sibling_name_taken(&folder, &leaf, None) {
+        Self::valid_level(folder)?;
+        if self.sibling_name_taken(folder, &leaf, None) {
             return Err(Error::AlreadyExists(leaf));
         }
-        let slug = self.unique_slug(&folder, &leaf, None);
+        let slug = self.unique_slug(folder, &leaf, None);
+        let Some((space, rel)) = Self::split_space(&slug) else {
+            return Err(Error::BadName(slug));
+        };
+        let (space, rel) = (space.to_string(), rel.to_string());
+        let anchor = after.and_then(|a| Self::item_entry(a, &space));
         req.name = Some(leaf.clone());
         let meta = self.meta_for_moves(Vec::new());
         self.order_transaction("create request", meta, |p| {
+            let made = p.make_folders(&named(along))?;
             p.fs_create_file(&request_rel(&slug)?, &req.to_toml_string())?;
             p.relist();
-            if let Some((space, rel)) = Self::split_space(&slug) {
-                p.order_arrive(space, rel, &[])?;
-            }
+            p.order_edit(&space, |order| {
+                place_new(&space, order, &rel, anchor.as_deref(), |order| {
+                    arrive_with_folders(&space, order, &rel, &made)
+                })
+            })?;
             Ok(())
         })?;
         Ok((slug, leaf))
@@ -734,16 +1128,18 @@ impl Project {
     pub fn check_rename_request(
         &self,
         from_slug: &str,
-        display_path: &str,
+        name: &str,
     ) -> Result<(String, String), Error> {
         let from_path = request_rel(from_slug)?;
         if !self.disk.is_file(&from_path) {
             return Err(Error::NotFound(from_slug.to_string()));
         }
-        let Some((folder, leaf)) = crate::storage::split_display_path(display_path) else {
-            return Err(Error::BadName(display_path.to_string()));
-        };
-        if self.sibling_name_taken(&folder, &leaf, Some(from_slug)) {
+        let leaf = name.trim().to_string();
+        if leaf.is_empty() {
+            return Err(Error::BadName(name.to_string()));
+        }
+        let folder = from_slug.rsplit_once('/').map_or("", |(dir, _)| dir);
+        if self.sibling_name_taken(folder, &leaf, Some(from_slug)) {
             return Err(Error::AlreadyExists(leaf));
         }
         // The slug is derived from the name, but a file need not sit at the
@@ -757,37 +1153,32 @@ impl Project {
         // other name, a case change included, derives its slug as before,
         // so a file at a `-2` slug still returns to a freed base slug on a
         // rename that changes its name.
-        let from_folder = from_slug.rsplit_once('/').map_or("", |(dir, _)| dir);
-        let same_name = folder == from_folder
-            && self
-                .listing
-                .iter()
-                .find(|l| l.slug == from_slug)
-                .is_some_and(|l| l.display_name().trim() == leaf);
+        let same_name = self
+            .listing
+            .iter()
+            .find(|l| l.slug == from_slug)
+            .is_some_and(|l| l.display_name().trim() == leaf);
         let to_slug = if same_name {
             from_slug.to_string()
         } else {
-            self.unique_slug(&folder, &leaf, Some(from_slug))
+            self.unique_slug(folder, &leaf, Some(from_slug))
         };
-        // A rename stays in its space (the order bookkeeping below is
-        // keyed by one space); crossing spaces is `move_request`'s job.
-        if crate::storage::space_of(from_slug) != crate::storage::space_of(&to_slug) {
-            return Err(Error::BadName(format!(
-                "{display_path}: a rename stays in its space — move the request instead"
-            )));
-        }
         Ok((to_slug, leaf))
     }
 
-    /// Renames to a new typed display path; rewrites `name` when the file
-    /// parses (a broken file just moves).
+    /// Renames the request to `name`, in its own folder: the name is only
+    /// a name, and a `/` in it is part of it (spec 2026-11-03 create
+    /// folders F28; moving between folders is a drag). Rewrites `name`
+    /// when the file parses (a broken file just moves). Its entry keeps
+    /// its place.
     pub fn rename_request(
         &mut self,
         from_slug: &str,
-        display_path: &str,
+        name: &str,
     ) -> Result<(String, String), Error> {
         let from_path = request_rel(from_slug)?;
-        let (to_slug, leaf) = self.check_rename_request(from_slug, display_path)?;
+        self.relist();
+        let (to_slug, leaf) = self.check_rename_request(from_slug, name)?;
         let to_path = request_rel(&to_slug)?;
         // Which held entries still matched their file BEFORE this op
         // touched anything: only those may be re-stamped afterwards (see
@@ -856,6 +1247,12 @@ impl Project {
         let meta = self.meta_for_moves(vec![(slug.to_string(), new_slug.clone())]);
         let slug = slug.to_string();
         self.order_transaction("move request", meta, |p| {
+            // The listing these copies' name checks read is fresh: the
+            // transaction's completion (`complete_order_for_op`) relisted
+            // just before this closure runs, so a folder made outside since
+            // the last refresh counts (F19).
+            let copies = p.copied_folders(&slug, &new_slug)?;
+            let made = p.make_folders(&copies)?;
             p.fs_rename(&from_path, &to_path)?;
             if let Some(req) = p.open_requests.shift_remove(&slug) {
                 p.open_requests.insert(new_slug.clone(), req);
@@ -864,7 +1261,7 @@ impl Project {
             let (from_space, from_rel) = Self::split_space(&slug).expect("validated");
             let (to_space, to_rel) = Self::split_space(&new_slug).expect("validated");
             p.order_remove(from_space, from_rel)?;
-            p.order_arrive(to_space, to_rel, &[])?;
+            p.order_arrive(to_space, to_rel, &made)?;
             Ok(())
         })?;
         Ok(new_slug)
@@ -883,7 +1280,8 @@ impl Project {
     /// after the move completes the list (D5): completion lists every item
     /// that draws, that one included, without moving any. The item's entry
     /// leaves its old level and lands above the item at `at` (last past
-    /// the end); an emptied folder's entry goes (R9).
+    /// the end); a folder it empties stays, with its entry (spec
+    /// 2026-11-03 create folders F2, replacing 2026-11-01 R9).
     ///
     /// A request keeps its file name, `-2`, `-3`, … when the folder has it,
     /// and its text. A folder's directory moves whole, every request under
@@ -920,10 +1318,9 @@ impl Project {
         // The checks read the disk as it is now: a request added outside
         // since the last relist can clash (D18).
         self.relist();
-        let listed = self.listed_slugs();
         let present = if is_folder {
             folder_rel(full)?;
-            order::exists_in(&listed, &format!("{full}/"))
+            order::folder_exists(&self.folder_listing, full)
         } else {
             self.disk.is_file(&request_rel(full)?)
         };
@@ -936,7 +1333,9 @@ impl Project {
         if is_folder && (level == rel || level.starts_with(&format!("{rel}/"))) {
             return Err(Error::BadName(format!("{full} can't go inside itself")));
         }
-        if !level.is_empty() && !order::exists_in(&listed, &format!("{space}/{level}/")) {
+        if !level.is_empty()
+            && !order::folder_exists(&self.folder_listing, &format!("{space}/{level}"))
+        {
             return Err(Error::NotFound(format!("{space}/{level}")));
         }
         let dest = if level.is_empty() { space.clone() } else { format!("{space}/{level}") };
@@ -979,12 +1378,12 @@ impl Project {
                 p.open_requests.insert(new_slug.clone(), held);
             }
             p.relist();
-            let slugs = p.listed_slugs();
             // The edit list stays empty: no caller of `order_edit` reads it.
+            // The folder the request left stays (spec 2026-11-03 create
+            // folders F2).
             p.order_edit(space, |order| {
                 order::remove(space, order, rel);
                 order::insert_before(space, order, &new_rel, anchor.as_deref());
-                order::prune_folders(space, order, rel, &|s| order::exists_in(&slugs, s));
                 Vec::new()
             })?;
             Ok(())
@@ -1010,48 +1409,83 @@ impl Project {
         // D18: a folder the destination shows, in any case, is the clash;
         // anything else of that name on disk there (a directory left
         // behind, a plain file) is refused, naming the path.
-        if shows_folder_ignoring_case(&self.listed_slugs(), &new_path) {
+        if shows_folder_ignoring_case(&self.folder_listing, &new_path) {
             return Err(Error::AlreadyExists(name.to_string()));
+        }
+        // A sibling there that already shows the folder's display name is
+        // the clash too (spec 2026-11-03 create folders F19): two rows of
+        // one name would be ambiguous to a typed path (F18a).
+        let shown = self
+            .folder_listing
+            .iter()
+            .find(|f| f.path == path)
+            .map_or(name, |f| f.display_name())
+            .to_string();
+        if self.sibling_folder_name_taken(dest, &shown, Some(path)) {
+            return Err(Error::AlreadyExists(shown));
         }
         if self.disk.exists(&to_dir) {
             return Err(Error::Conflict(format!("{to_dir} already exists on disk")));
         }
         let new_rel = order::relative(&new_path, space).unwrap_or(&new_path).to_string();
-        let inside = format!("{path}/");
-        let moves: Vec<(String, String)> = self
-            .listing
-            .iter()
-            .filter_map(|l| {
-                let rest = l.slug.strip_prefix(&inside)?;
-                Some((l.slug.clone(), format!("{new_path}/{rest}")))
-            })
-            .collect();
+        let moves = self.moves_under(path, &new_path);
         let meta = self.meta_for_moves(moves.clone());
         self.order_transaction("move folder to folder", meta, |p| {
-            p.fs_rename(&from_dir, &to_dir)?;
-            for (old, new) in &moves {
-                if let Some(held) = p.open_requests.shift_remove(old) {
-                    p.open_requests.insert(new.clone(), held);
-                }
-            }
-            p.relist();
-            let slugs = p.listed_slugs();
+            p.shift_folder(&from_dir, &to_dir, &moves)?;
             let entry = order::folder_entry(&new_rel);
             // The edit list stays empty: no caller of `order_edit` reads it.
             p.order_edit(space, |order| {
-                // Nothing was on disk at the new path (D18 refused it), so
-                // an entry already under it (one a partial walk kept, D7)
-                // names nothing; left in, it would take the moved
-                // contents' first slot.
-                order.retain(|e| !e.starts_with(&entry));
-                order::rename_prefix(order, rel, &new_rel);
+                // Nothing was on disk at the new path (D18 refused it).
+                order::rename_folder_entries(order, rel, &new_rel);
                 order::insert_before(space, order, &entry, anchor.as_deref());
-                order::prune_folders(space, order, rel, &|s| order::exists_in(&slugs, s));
                 Vec::new()
             })?;
             Ok(())
         })?;
         Ok((new_path, moves))
+    }
+
+    /// Every request under the folder at full path `path` with its slug
+    /// once the folder is at `new_path`.
+    fn moves_under(&self, path: &str, new_path: &str) -> Moves {
+        self.slugs_under(path)
+            .into_iter()
+            .map(|slug| {
+                let to = format!("{new_path}{}", &slug[path.len()..]);
+                (slug, to)
+            })
+            .collect()
+    }
+
+    /// The slug of every request under the folder at full path `path`, at
+    /// any depth.
+    fn slugs_under(&self, path: &str) -> Vec<String> {
+        let inside = format!("{path}/");
+        self.listing
+            .iter()
+            .filter(|l| l.slug.starts_with(&inside))
+            .map(|l| l.slug.clone())
+            .collect()
+    }
+
+    /// A folder's directory renamed `from_dir` → `to_dir` inside its
+    /// caller's transaction, with every held request in `moves` following,
+    /// then a relist: the one directory move a folder drop and a folder
+    /// rename share.
+    fn shift_folder(
+        &mut self,
+        from_dir: &RelPath,
+        to_dir: &RelPath,
+        moves: &Moves,
+    ) -> Result<(), Error> {
+        self.fs_rename(from_dir, to_dir)?;
+        for (old, new) in moves {
+            if let Some(held) = self.open_requests.shift_remove(old) {
+                self.open_requests.insert(new.clone(), held);
+            }
+        }
+        self.relist();
+        Ok(())
     }
 
     /// Every request of `from` into `to`, as one entry. Pre-flights the
@@ -1069,8 +1503,12 @@ impl Project {
         space_rel(to)?;
         // In the order the sidebar shows them (every level of the space),
         // so the requests arrive in `to` looking as they did in `from`.
-        let sources: Vec<String> =
-            order::displayed_slugs(&self.listing, order::space_order(&self.meta, from), from);
+        let sources: Vec<String> = order::displayed_slugs(
+            &self.listing,
+            &self.folder_listing,
+            order::space_order(&self.meta, from),
+            from,
+        );
         let mut pairs: Vec<(String, String)> = Vec::new();
         let mut reserved: Vec<String> = Vec::new();
         let mut left_behind: Vec<Warning> = Vec::new();
@@ -1088,8 +1526,40 @@ impl Project {
             reserved.push(target.clone());
             pairs.push((slug.clone(), target));
         }
+        // The folders go too, empty ones included (spec 2026-11-03 create
+        // folders F27), by path, so a parent comes before what is in it.
+        // Every folder whose name is a valid slug is made in `to`; one
+        // whose name isn't stays, as its requests do (F33), and so does
+        // everything under it. A valid path's parents are valid, so each
+        // folder's parent is made before it, with its file and journaled.
+        // The cost of carrying every valid folder: one that holds only what
+        // is left behind gets an empty twin in `to`. Picking which folders
+        // to carry by what they hold took a patch per case in review
+        // (rounds 5 and 6), and a twin loses nothing.
+        let prefix = format!("{from}/");
+        let mut folders: Vec<String> = Vec::new();
+        for f in self.folder_listing.iter().filter(|f| f.path.starts_with(&prefix)) {
+            let Ok(dir) = folder_rel(&f.path) else {
+                // Named once, where its own name is invalid, as `check`
+                // names it (F33); what is under it stays with it unsaid.
+                if !f.own_name_is_valid() {
+                    left_behind.push(format!(
+                        "left behind: requests/{}/ (its name is not a valid slug; rename it first)",
+                        f.path
+                    ));
+                }
+                continue;
+            };
+            // One removed outside since the last relist is simply gone: an
+            // empty folder holds nothing to lose, unlike a request, whose
+            // absence refuses the whole move above.
+            if !self.disk.is_dir(&dir) {
+                continue;
+            }
+            folders.push(f.path.clone());
+        }
         // Moving nothing changes no order, so it writes nothing (D5).
-        if pairs.is_empty() {
+        if pairs.is_empty() && folders.is_empty() {
             return Ok((pairs, left_behind));
         }
         let meta = self.meta_for_moves(pairs.clone());
@@ -1103,17 +1573,249 @@ impl Project {
             })
             .collect();
         self.order_transaction("move all requests", meta, |p| {
+            // The items as they draw, read before anything moves.
+            let drawn = order::drawn_entries(
+                &p.listing,
+                &p.folder_listing,
+                order::space_order(&p.meta, from),
+                from,
+            );
+            // A folder `to` already has keeps its own file (F27).
+            // One at a time, so each copy's name is checked against the
+            // copies made before it, not only the target's own (F19).
+            let mut made = Vec::new();
+            for path in &folders {
+                let copy = p.copied_folder(from, to, &path[prefix.len()..])?;
+                made.extend(p.make_folders(&[copy])?);
+            }
             for (f, t) in &pairs {
                 p.fs_rename(&request_rel(f)?, &request_rel(t)?)?;
                 if let Some(req) = p.open_requests.shift_remove(f) {
                     p.open_requests.insert(t.clone(), req);
                 }
             }
+            // The source folders, inside out, once nothing is left in them
+            // but their own `.folder.toml`: one that still holds anything
+            // else (a request left behind, a dot file the user keeps there,
+            // a `.DS_Store`) stays where it is with it (F16: dot files are
+            // the user's).
+            let mut emptied = Vec::new();
+            for path in folders.iter().rev() {
+                let dir = folder_rel(path)?;
+                let only_its_file =
+                    |e: &crate::disk::DirEntry| !e.is_dir && e.name == crate::storage::FOLDER_FILE;
+                if p.disk.list(&dir)?.iter().all(only_its_file) {
+                    p.fs_trash(&dir)?;
+                    emptied.push(order::folder_entry(&path[prefix.len()..]));
+                }
+            }
             p.relist();
-            p.order_move_all(from, to, &rel_pairs)?;
+            // Only the folders the op made arrive: one `to` already had keeps
+            // its place, even when its list misses it (its completion
+            // couldn't run), as every other op's arrivals do.
+            let to_prefix = format!("{to}/");
+            let carried: Vec<String> = made
+                .iter()
+                .filter_map(|m| m.strip_prefix(&to_prefix))
+                .map(order::folder_entry)
+                .collect();
+            p.order_move_all(from, to, &drawn, &rel_pairs, &carried, &emptied)?;
             Ok(())
         })?;
         Ok((pairs, left_behind))
+    }
+
+    /// Whether a folder directly in `level` (a full path: a space, or a
+    /// folder) already shows `name`, ignoring case (spec 2026-11-03 create
+    /// folders F19), `exclude` aside.
+    pub fn sibling_folder_name_taken(
+        &self,
+        level: &str,
+        name: &str,
+        exclude: Option<&str>,
+    ) -> bool {
+        self.siblings_showing(level, name, exclude).next().is_some()
+    }
+
+    /// The folders directly in `level` (a full path) that show `name`,
+    /// ignoring case, `exclude` aside.
+    fn siblings_showing<'a>(
+        &'a self,
+        level: &str,
+        name: &str,
+        exclude: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a crate::storage::FolderListing> + use<'a> {
+        let wanted = name.trim().to_lowercase();
+        let parent = format!("{level}/");
+        self.folder_listing.iter().filter(move |f| {
+            exclude != Some(f.path.as_str())
+                && f.path.strip_prefix(&parent).is_some_and(|rest| !rest.contains('/'))
+                && f.display_name().to_lowercase() == wanted
+        })
+    }
+
+    /// Whether `level` (a full path) is a space or a listed folder.
+    /// A space counts with or without its directory: one listed in
+    /// `project.toml` whose directory git didn't keep (it had no file yet)
+    /// takes a new request or folder, as a create made it before folders
+    /// did (the write makes the directory).
+    fn level_exists(&self, level: &str) -> bool {
+        if level.contains('/') {
+            order::folder_exists(&self.folder_listing, level)
+        } else {
+            self.spaces.iter().any(|s| s == level)
+                || space_rel(level).is_ok_and(|dir| self.disk.is_dir(&dir))
+        }
+    }
+
+    /// A list entry for `item` in `space`, for an anchor.
+    fn item_entry(item: &TreeItem, space: &str) -> Option<String> {
+        match item {
+            TreeItem::Request(slug) => order::relative(slug, space).map(str::to_string),
+            TreeItem::Folder(path) => order::relative(path, space).map(order::folder_entry),
+        }
+    }
+
+    /// Makes a folder named `name` in `level` (a full path: a space, or a
+    /// folder), with its [`crate::storage::FOLDER_FILE`], as one undo step
+    /// (spec 2026-11-03 create folders F14, F18, F19). Its entry goes right
+    /// after `after`'s (the cursor's item) or, with none, last in its level
+    /// (2026-11-02 D4). Returns its full path.
+    ///
+    /// Refused, with nothing written: an empty name, a missing level, and a
+    /// name a sibling folder already shows. A slug that clashes while the
+    /// shown names differ gets `-2`, `-3`, …
+    pub fn create_folder(
+        &mut self,
+        level: &str,
+        name: &str,
+        after: Option<&TreeItem>,
+    ) -> Result<String, Error> {
+        let name = folder_name(name)?;
+        self.relist();
+        if !self.level_exists(level) {
+            return Err(Error::NotFound(level.to_string()));
+        }
+        Self::valid_level(level)?;
+        if self.sibling_folder_name_taken(level, name, None) {
+            return Err(Error::AlreadyExists(name.to_string()));
+        }
+        let path = self.folder_slot(level, name, None);
+        let Some((space, rel_path)) = Self::split_space(&path) else {
+            return Err(Error::BadName(path));
+        };
+        let (space, entry) = (space.to_string(), order::folder_entry(rel_path));
+        let anchor = after.and_then(|a| Self::item_entry(a, &space));
+        let meta = self.meta_for_moves(Vec::new());
+        self.order_transaction("create folder", meta, |p| {
+            p.make_folders(&[(path.clone(), folder_file_text(name))])?;
+            p.relist();
+            p.order_edit(&space, |order| {
+                place_new(&space, order, &entry, anchor.as_deref(), |order| {
+                    order::arrive(&space, order, &entry)
+                })
+            })?;
+            Ok(())
+        })?;
+        Ok(path)
+    }
+
+    /// Renames the folder at full path `path` to show `name`, as one undo
+    /// step (spec 2026-11-03 create folders F21, F23): a new slug renames
+    /// the directory, its entry and its contents' entries in place (its
+    /// slot is kept), and held requests follow; then its
+    /// [`crate::storage::FOLDER_FILE`] gets the name, other keys kept, or
+    /// is made (F20). Returns its new full path and the `(old, new)` slug of
+    /// every request it moved.
+    ///
+    /// Refused, with nothing written: a folder not listed, an empty name, a
+    /// name a sibling folder shows, a folder file that doesn't parse (F24),
+    /// and a folder whose directory name isn't a valid slug (made in a file
+    /// manager: `My Stuff/`), as an op on a request file of such a name is.
+    /// A new slug something on disk already has is numbered (`-2`, `-3`, …),
+    /// not refused (F19's one naming rule).
+    pub fn rename_folder(&mut self, path: &str, name: &str) -> Result<(String, Moves), Error> {
+        let name = folder_name(name)?;
+        self.relist();
+        let Some(listed) = self.folder_listing.iter().find(|f| f.path == path).cloned() else {
+            return Err(Error::NotFound(path.to_string()));
+        };
+        let from_dir = folder_rel(path)?;
+        if let Some(e) = &listed.broken {
+            return Err(Error::BadName(format!("{from_dir}/{}: {e}", crate::storage::FOLDER_FILE)));
+        }
+        let Some((level, _)) = path.rsplit_once('/') else {
+            return Err(Error::BadName(path.to_string()));
+        };
+        if self.sibling_folder_name_taken(level, name, Some(path)) {
+            return Err(Error::AlreadyExists(name.to_string()));
+        }
+        // The one naming rule: the directory it has when the name's slug
+        // is that one, else the slug, numbered while taken (F19).
+        let new_path = self.folder_slot(level, name, Some(path));
+        let to_dir = folder_rel(&new_path)?;
+        let moves = if new_path == path { Vec::new() } else { self.moves_under(path, &new_path) };
+        let space = crate::storage::space_of(path).unwrap_or(path).to_string();
+        let (from_rel, to_rel) = (
+            order::relative(path, &space).unwrap_or(path).to_string(),
+            order::relative(&new_path, &space).unwrap_or(&new_path).to_string(),
+        );
+        let meta = self.meta_for_moves(moves.clone());
+        self.order_transaction("rename folder", meta, |p| {
+            if new_path != path {
+                p.shift_folder(&from_dir, &to_dir, &moves)?;
+            }
+            let file = rel(&format!("{to_dir}/{}", crate::storage::FOLDER_FILE))?;
+            match p.disk.read(&file)? {
+                Some(text) => {
+                    let mut doc: toml_edit::DocumentMut = text
+                        .parse()
+                        .map_err(|e: toml_edit::TomlError| Error::BadName(e.to_string()))?;
+                    doc["name"] = toml_edit::value(name);
+                    if doc.to_string() != text {
+                        p.fs_write_text(&file, Some(&doc.to_string()))?;
+                    }
+                }
+                None => p.fs_create_file(&file, &folder_file_text(name))?,
+            }
+            p.relist();
+            if new_path != path {
+                // Nothing was on disk at the new path (refused above).
+                p.order_edit(&space, |order| {
+                    order::rename_folder_entries(order, &from_rel, &to_rel);
+                    Vec::new()
+                })?;
+            }
+            Ok(())
+        })?;
+        Ok((new_path, moves))
+    }
+
+    /// Deletes the folder at full path `path` and everything in it, as one
+    /// undo step, with no confirmation (spec 2026-11-03 create folders
+    /// F21): its directory goes to the trash, held requests in it are
+    /// dropped, and its entry and every entry under it leave the list.
+    /// Returns the slug of each request it took.
+    pub fn delete_folder(&mut self, path: &str) -> Result<Vec<String>, Error> {
+        self.relist();
+        if !order::folder_exists(&self.folder_listing, path) {
+            return Err(Error::NotFound(path.to_string()));
+        }
+        let dir = folder_rel(path)?;
+        let gone = self.slugs_under(path);
+        let space = crate::storage::space_of(path).unwrap_or(path).to_string();
+        let entry = order::folder_entry(order::relative(path, &space).unwrap_or(path));
+        let meta = self.meta_for_moves(Vec::new());
+        self.order_transaction("delete folder", meta, |p| {
+            p.fs_trash(&dir)?;
+            for slug in &gone {
+                p.open_requests.shift_remove(slug);
+            }
+            p.relist();
+            p.order_edit(&space, |order| order::remove_under(&space, order, &entry))?;
+            Ok(())
+        })?;
+        Ok(gone)
     }
 
     /// Deletes every request in `slugs` as one undo entry (piece 4 spec
@@ -1155,8 +1857,8 @@ impl Project {
     }
 
     /// One delete inside its caller's transaction, the list already
-    /// completed: the file trashed, then its entry and any folder it
-    /// emptied out of the list.
+    /// completed: the file trashed, then its entry out of the list. The
+    /// folder it sat in stays (spec 2026-11-03 create folders F2).
     fn delete_one(&mut self, slug: &str) -> Result<(), Error> {
         self.fs_trash(&request_rel(slug)?)?;
         self.open_requests.shift_remove(slug);
@@ -1290,6 +1992,7 @@ impl Project {
                 }
             }
             (_, Some((space, rel))) => {
+                // A copy lands in its anchor's folder, which is there.
                 self.order_arrive(space, rel, &[])?;
             }
             _ => {}
@@ -1303,6 +2006,7 @@ mod tests {
     use super::super::tests::{fixture, read};
     use super::*;
     use crate::journal::Op;
+    use crate::storage::FolderListing;
 
     fn req(url: &str) -> HttpRequest {
         HttpRequest {
@@ -1385,7 +2089,7 @@ mod tests {
     #[test]
     fn rename_moves_the_file_rewrites_the_name_and_records_the_move() {
         let (dir, mut p) = fixture();
-        let (slug, _) = p.rename_request("main/ping", "main/Pong").unwrap();
+        let (slug, _) = p.rename_request("main/ping", "Pong").unwrap();
         assert_eq!(slug, "main/pong");
         assert!(!dir.path().join("requests/main/ping.toml").exists());
         assert!(read(&dir, "requests/main/pong.toml").unwrap().contains("name = \"Pong\""));
@@ -1495,17 +2199,46 @@ mod tests {
         assert!(dir.path().join("requests/auth/ping.toml").is_file());
     }
 
+    /// Spec 2026-11-03 create folders F28: a rename takes a name only. A
+    /// `/` in it is part of the name, so the request stays in its folder
+    /// and its space.
     #[test]
-    fn rename_refuses_to_cross_spaces() {
+    fn a_rename_is_a_name_only() {
         let (dir, mut p) = fixture();
-        let r = p.rename_request("main/ping", "auth/Pong");
-        assert!(matches!(r, Err(Error::BadName(_))), "{r:?}");
-        assert!(dir.path().join("requests/main/ping.toml").is_file());
-        assert_eq!(p.journal_len(), 0);
+        let (slug, leaf) = p.rename_request("main/ping", "auth/Pong").unwrap();
+        assert_eq!((slug.as_str(), leaf.as_str()), ("main/auth-pong", "auth/Pong"));
+        assert!(dir.path().join("requests/main/auth-pong.toml").is_file());
+        assert!(!dir.path().join("requests/main/auth").exists());
+        assert!(!dir.path().join("requests/auth/pong.toml").exists());
     }
 
-    /// #206: a hand-made folder whose name `slugify` would change (`old-`,
-    /// `-wip`) is still the folder a rename that names it lands in.
+    /// F28, F30: a name-only create lands in its level right after the
+    /// item it is given, or last; a `/` in the name is part of it.
+    #[test]
+    fn create_request_in_lands_after_its_anchor_or_last() {
+        let (dir, mut p) =
+            folder_project(&["a", "f/", "f/x", "b"], &["main/a", "main/b", "main/f/x"]);
+        let (slug, _) =
+            p.create_request_in("main", "N/1", Some(&req_item("main/a")), req("u")).unwrap();
+        assert_eq!(slug, "main/n-1");
+        assert!(!dir.path().join("requests/main/n").exists());
+        let (slug, _) = p.create_request_in("main/f", "Last", None, req("u")).unwrap();
+        assert_eq!(slug, "main/f/last");
+        // `f/last` is last in its level as it draws (D4).
+        assert_eq!(main_order(&p), ["a", "n-1", "f/", "f/x", "b", "f/last"]);
+        assert!(matches!(
+            p.create_request_in("main", "N/1", None, req("u")),
+            Err(Error::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            p.create_request_in("main/gone", "x", None, req("u")),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    /// #206: a request in a hand-made folder whose name `slugify` would
+    /// change (`old-`, `-wip`) stays in it on a rename, and a curl import's
+    /// path naming it lands in it.
     #[test]
     fn rename_in_a_hand_made_folder_keeps_the_folder() {
         let (dir, mut p) = fixture();
@@ -1520,7 +2253,7 @@ mod tests {
         p.relist();
         for folder in ["old-", "-wip"] {
             let from = format!("main/{folder}/ping");
-            let (slug, leaf) = p.rename_request(&from, &format!("main/{folder}/Ping2")).unwrap();
+            let (slug, leaf) = p.rename_request(&from, "Ping2").unwrap();
             assert_eq!(
                 (slug.as_str(), leaf.as_str()),
                 (format!("main/{folder}/ping2").as_str(), "Ping2")
@@ -1544,7 +2277,7 @@ mod tests {
         )
         .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        let (slug, _) = p.rename_request("old-/ping", "old-/Ping2").unwrap();
+        let (slug, _) = p.rename_request("old-/ping", "Ping2").unwrap();
         assert_eq!(slug, "old-/ping2");
         let (slug, _) = p.create_request("old-/Fresh", req("u")).unwrap();
         assert_eq!(slug, "old-/fresh");
@@ -1556,8 +2289,8 @@ mod tests {
     /// it is, even when the file's slug is not the one its name derives: a
     /// nameless hand-made `ping-` (whose name `slugify` turns into `ping`,
     /// free or taken), and a named file under a slug of its own, its name
-    /// read as the prompt reads it back (trimmed). Another name, or the
-    /// same name in another folder, derives its slug as before.
+    /// read as the prompt reads it back (trimmed). Another name derives its
+    /// slug as before.
     #[test]
     fn a_rename_to_the_same_name_keeps_the_slug() {
         for ping_taken in [false, true] {
@@ -1572,7 +2305,7 @@ mod tests {
                 std::fs::remove_file(dir.path().join("requests/main/ping.toml")).unwrap();
             }
             p.relist();
-            let (slug, leaf) = p.rename_request("main/ping-", "main/ping-").unwrap();
+            let (slug, leaf) = p.rename_request("main/ping-", "ping-").unwrap();
             assert_eq!((slug.as_str(), leaf.as_str()), ("main/ping-", "ping-"), "{ping_taken}");
             assert!(dir.path().join("requests/main/ping-.toml").is_file());
             assert!(!dir.path().join("requests/main/ping-2.toml").exists());
@@ -1580,7 +2313,7 @@ mod tests {
         }
 
         let (dir, mut p) = fixture();
-        for (name, typed) in [("Get User", "main/Get User"), (" Pong ", "main/ Pong ")] {
+        for (name, typed) in [("Get User", "Get User"), (" Pong ", " Pong ")] {
             std::fs::write(
                 dir.path().join("requests/main/odd.toml"),
                 format!("name = {name:?}\nmethod = \"GET\"\nurl = \"u\"\n"),
@@ -1591,9 +2324,7 @@ mod tests {
             assert_eq!(slug, "main/odd", "{typed:?}");
         }
         assert_eq!(slugs(&p).iter().filter(|s| s.starts_with("main/")).count(), 2);
-        let (slug, _) = p.rename_request("main/odd", "main/sub/ Pong ").unwrap();
-        assert_eq!(slug, "main/sub/pong", "the same name in another folder moves the file");
-        let (slug, _) = p.rename_request("main/sub/pong", "main/Other").unwrap();
+        let (slug, _) = p.rename_request("main/odd", "Other").unwrap();
         assert_eq!(slug, "main/other", "another name derives its slug");
     }
 
@@ -1606,7 +2337,7 @@ mod tests {
         let (b, _) = p.create_request("main/get user!", req("u")).unwrap();
         assert_eq!(b, "main/get-user-2");
         p.delete_request("main/get-user").unwrap();
-        let (slug, _) = p.rename_request(&b, "main/Get User").unwrap();
+        let (slug, _) = p.rename_request(&b, "Get User").unwrap();
         assert_eq!(slug, "main/get-user");
     }
 
@@ -1685,21 +2416,42 @@ mod tests {
         (dir, p)
     }
 
-    /// Spec 2026-11-01 reorder folders R9: a folder whose last request
-    /// leaves loses its entry, with every ancestor the same op emptied,
-    /// and undo puts the list back byte for byte. The requests the list
-    /// missed are written in first (2026-11-02 D5).
+    /// Spec 2026-11-03 create folders F2 (replacing 2026-11-01 R9): a
+    /// folder whose last request leaves stays, its entry and every
+    /// ancestor's with it, and undo puts the list back byte for byte. The
+    /// requests the list missed are written in first (2026-11-02 D5).
     #[test]
-    fn deleting_a_folders_last_request_drops_its_entry_and_undo_restores_it() {
+    fn deleting_a_folders_last_request_keeps_the_folder_and_its_entry() {
         let (dir, mut p) = folder_project(
             &["b/", "a/", "a/c/", "a/c/x", "z/"],
             &["main/a/c/x", "main/b/y", "main/z/q"],
         );
         let before = read(&dir, "project.toml");
         p.delete_request("main/a/c/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "z/", "b/y", "z/q"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "a/c/", "z/", "b/y", "z/q"]);
+        assert!(p.folders().iter().any(|f| f.path == "main/a/c"), "the folder stays");
         p.undo().unwrap();
         assert_eq!(read(&dir, "project.toml"), before);
+    }
+
+    /// F1, F4: an empty folder takes an entry when the list is completed.
+    #[test]
+    fn complete_order_writes_an_entry_for_an_empty_folder() {
+        let (dir, mut p) = folder_project(&["r"], &["main/r"]);
+        std::fs::create_dir_all(dir.path().join("requests/main/e")).unwrap();
+        p.relist();
+        assert!(p.complete_order().unwrap());
+        assert_eq!(order::space_order(p.meta(), "main"), ["r", "e/"]);
+    }
+
+    /// F2: a request created into an empty folder keeps the folder's slot.
+    #[test]
+    fn a_create_in_an_empty_folder_keeps_its_slot() {
+        let (dir, mut p) = folder_project(&["e/", "r"], &["main/r"]);
+        std::fs::create_dir_all(dir.path().join("requests/main/e")).unwrap();
+        p.relist();
+        p.create_request("main/e/New", req("u")).unwrap();
+        assert_eq!(order::space_order(p.meta(), "main"), ["e/", "r", "e/new"]);
     }
 
     /// D5: the folder keeps its entry, and the list is completed first.
@@ -1708,29 +2460,6 @@ mod tests {
         let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/a/y", "main/b/z"]);
         p.delete_request("main/a/x").unwrap();
         assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/z", "a/y"]);
-    }
-
-    /// Spec 2026-11-02 drag into folders D4: the new folder and the
-    /// request in it land last, after the items the completion (D5)
-    /// wrote in.
-    #[test]
-    fn a_rename_out_of_a_folder_drops_it_and_into_a_new_one_appends_it() {
-        let (_dir, mut p) = folder_project(&["b/", "a/"], &["main/a/x", "main/b/z"]);
-        p.rename_request("main/a/x", "main/c/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "b/z", "c/", "c/x"]);
-    }
-
-    /// A rename that changes level inside a folder leaves that folder where
-    /// it was: it never stopped existing, so it is not new. What does
-    /// arrive (the new `sub/`, the request) lands last (D4), after what
-    /// the completion (D5) wrote in.
-    #[test]
-    fn a_rename_within_a_folder_keeps_the_folders_slot() {
-        let (_dir, mut p) = folder_project(&["a/", "b/"], &["main/a/x", "main/b/z"]);
-        p.rename_request("main/a/x", "main/a/sub/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "b/z", "a/sub/", "a/sub/x"]);
-        p.rename_request("main/a/sub/x", "main/a/x").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a/", "b/", "b/z", "a/x"]);
     }
 
     /// D4: a create lands last, in a level whatever it lists (replaces
@@ -1782,7 +2511,7 @@ mod tests {
             .unwrap();
         p.relist();
         p.move_request("main/a/x", "auth").unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "b/z"]);
+        assert_eq!(order::space_order(p.meta(), "main"), ["b/", "a/", "b/z"], "a/ stays (F2)");
         assert_eq!(order::space_order(p.meta(), "auth"), ["x/", "x/k", "a/", "a/x"]);
     }
 
@@ -1796,11 +2525,100 @@ mod tests {
             .unwrap();
         p.relist();
         p.move_all_requests("main", "auth").unwrap();
+        // Spec 2026-11-03 create folders F27: the folders go too, so
+        // `main` ends empty; each level of `auth` gains them as `main`
+        // drew them.
         assert!(order::space_order(p.meta(), "main").is_empty());
         assert_eq!(
             order::space_order(p.meta(), "auth"),
             ["x/", "x/k", "b/", "b/z", "a/", "a/x", "a/y"]
         );
+    }
+
+    /// F27: empty and nested folders cross too, each with its file, and
+    /// the source ends empty; undo is exact.
+    #[test]
+    fn move_all_carries_empty_and_nested_folders_and_empties_the_source() {
+        let (dir, mut p) = folder_project(&[], &["main/a/x"]);
+        write(&dir, "requests/main/a/.folder.toml", "name = \"Ay\"\n");
+        std::fs::create_dir_all(dir.path().join("requests/main/a/b")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main/e")).unwrap();
+        p.relist();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.move_all_requests("main", "auth").unwrap();
+        });
+        let under = |space: &str| -> Vec<String> {
+            let prefix = format!("{space}/");
+            p.folders()
+                .iter()
+                .filter(|f| f.path.starts_with(&prefix))
+                .map(|f| f.path.clone())
+                .collect()
+        };
+        assert!(under("main").is_empty(), "{:?}", under("main"));
+        assert_eq!(under("auth"), ["auth/a", "auth/a/b", "auth/e"]);
+        assert_eq!(read(&dir, "requests/auth/a/.folder.toml").as_deref(), Some("name = \"Ay\"\n"));
+        assert!(dir.path().join("requests/auth/a/x.toml").is_file());
+        assert!(order::space_order(p.meta(), "main").is_empty());
+        let auth = order::space_order(p.meta(), "auth");
+        for e in ["a/", "a/b/", "e/", "a/x"] {
+            assert!(auth.contains(&e.to_string()), "{e} in {auth:?}");
+        }
+    }
+
+    /// F27, D22: each level arrives as it drew, whatever order the source
+    /// list keeps its entries in across levels (review round 1: walking
+    /// the list as stored put `f/` above `c`).
+    #[test]
+    fn move_all_keeps_each_level_as_it_drew_from_an_interleaved_list() {
+        let (_dir, mut p) =
+            folder_project(&["f/y", "c", "f/", "f/x"], &["main/c", "main/f/x", "main/f/y"]);
+        let drawn = order::displayed_slugs(p.requests(), p.folders(), &main_order(&p), "main");
+        assert_eq!(drawn, ["main/c", "main/f/y", "main/f/x"]);
+        p.move_all_requests("main", "auth").unwrap();
+        let auth = order::space_order(p.meta(), "auth").to_vec();
+        assert_eq!(
+            order::displayed_slugs(p.requests(), p.folders(), &auth, "auth"),
+            ["auth/c", "auth/f/y", "auth/f/x"]
+        );
+    }
+
+    /// F27: a folder the target has at the same path is merged into, and
+    /// keeps the target's file.
+    #[test]
+    fn move_all_merges_into_a_same_path_folder_keeping_its_file() {
+        let (dir, mut p) = folder_project(&[], &["main/a/x", "auth/a/y"]);
+        write(&dir, "requests/main/a/.folder.toml", "name = \"From\"\n");
+        write(&dir, "requests/auth/a/.folder.toml", "name = \"To\"\n");
+        p.relist();
+        p.move_all_requests("main", "auth").unwrap();
+        assert_eq!(read(&dir, "requests/auth/a/.folder.toml").as_deref(), Some("name = \"To\"\n"));
+        assert!(dir.path().join("requests/auth/a/x.toml").is_file());
+        assert!(dir.path().join("requests/auth/a/y.toml").is_file());
+        assert!(!dir.path().join("requests/main/a").exists());
+    }
+
+    /// F27: a space holding only empty folders moves them.
+    #[test]
+    fn move_all_from_a_space_with_only_empty_folders_moves_them() {
+        let (dir, mut p) = folder_project(&[], &[]);
+        std::fs::create_dir_all(dir.path().join("requests/main/e")).unwrap();
+        p.relist();
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(dir.path().join("requests/auth/e").is_dir());
+        assert!(!dir.path().join("requests/main/e").exists());
+    }
+
+    /// F27: a folder still holding a file postui can't move (a left-behind
+    /// request, a note) stays, with what it holds.
+    #[test]
+    fn move_all_keeps_a_source_folder_that_still_holds_files() {
+        let (dir, mut p) = folder_project(&[], &["main/a/x"]);
+        write(&dir, "requests/main/a/notes.md", "keep me");
+        p.relist();
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(dir.path().join("requests/main/a/notes.md").is_file());
+        assert!(dir.path().join("requests/auth/a/x.toml").is_file());
     }
 
     /// Spec §5.2: a batch delete is one journal entry, refused whole on a
@@ -2196,7 +3014,7 @@ mod tests {
     fn held_request_drift_is_none_for_the_new_slug_after_a_rename() {
         let (_dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
-        let (to_slug, _) = p.rename_request("main/ping", "main/renamed").unwrap();
+        let (to_slug, _) = p.rename_request("main/ping", "renamed").unwrap();
         assert_eq!(
             p.held_request_drift(&to_slug),
             None,
@@ -2220,7 +3038,7 @@ mod tests {
             "url = \"https://example.test/edited-outside-the-app\"\n",
         )
         .unwrap();
-        let (to_slug, _) = p.rename_request("main/ping", "main/renamed").unwrap();
+        let (to_slug, _) = p.rename_request("main/ping", "renamed").unwrap();
         assert_eq!(
             p.held_request_drift(&to_slug),
             Some(HeldDrift::Changed),
@@ -2332,7 +3150,7 @@ mod tests {
         // but its `name` is rewritten, so the stamp still has to follow.
         let (_dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
-        let (to_slug, leaf) = p.rename_request("main/ping", "main/Ping!!!").unwrap();
+        let (to_slug, leaf) = p.rename_request("main/ping", "Ping!!!").unwrap();
         assert_eq!((to_slug.as_str(), leaf.as_str()), ("main/ping", "Ping!!!"));
         assert_eq!(
             p.held_request_drift("main/ping"),
@@ -2351,7 +3169,7 @@ mod tests {
             "url = \"https://example.test/edited-outside-the-app\"\n",
         )
         .unwrap();
-        let (to_slug, _) = p.rename_request("main/ping", "main/Ping!!!").unwrap();
+        let (to_slug, _) = p.rename_request("main/ping", "Ping!!!").unwrap();
         assert_eq!(to_slug, "main/ping");
         assert_eq!(
             p.held_request_drift("main/ping"),
@@ -2607,7 +3425,7 @@ mod tests {
     fn a_rename_on_a_list_naming_nothing_keeps_its_place() {
         let (dir, mut p) = unordered_fixture();
         undo_redo_exact(&dir, &mut p, |p| {
-            p.rename_request("main/b", "main/Zed").unwrap();
+            p.rename_request("main/b", "Zed").unwrap();
         });
         assert_eq!(main_order(&p), ["a", "zed", "c"]);
     }
@@ -2744,7 +3562,7 @@ mod tests {
         write(&dir, "project.toml", "spaces = [");
         assert!(!p.complete_order().unwrap());
         assert_eq!(read(&dir, "project.toml").as_deref(), Some("spaces = ["));
-        let (slug, _) = p.rename_request("main/health", "main/HEALTH").unwrap();
+        let (slug, _) = p.rename_request("main/health", "HEALTH").unwrap();
         assert_eq!(slug, "main/health");
         assert_eq!(read(&dir, "project.toml").as_deref(), Some("spaces = ["));
     }
@@ -2762,7 +3580,7 @@ mod tests {
         write(&dir, "requests/main/zeta.toml", "method = \"GET\"\nurl = \"u\"\n");
         let before = read(&dir, "project.toml");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let renamed = p.rename_request("main/health", "main/HEALTH");
+        let renamed = p.rename_request("main/health", "HEALTH");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let (slug, leaf) = renamed.unwrap();
         assert_eq!((slug.as_str(), leaf.as_str()), ("main/health", "HEALTH"));
@@ -2782,19 +3600,18 @@ mod tests {
         assert!(!dir.path().join("project.toml").exists());
     }
 
-    /// D4: in a completed list a create (a curl import is one) lands
-    /// last, and so does a rename into a new folder; a same-level rename
-    /// keeps its place.
+    /// D4: in a completed list a curl import's create lands last, a new
+    /// folder on its path with it; a rename keeps its place.
     #[test]
-    fn after_completion_arrivals_land_last_and_a_same_level_rename_keeps_its_place() {
+    fn after_completion_arrivals_land_last_and_a_rename_keeps_its_place() {
         let (_dir, mut p) = unordered_fixture();
         p.complete_order().unwrap();
         p.create_request("main/Aaa", req("u")).unwrap();
         assert_eq!(main_order(&p), ["a", "b", "c", "aaa"]);
-        p.rename_request("main/b", "main/Bee").unwrap();
+        p.rename_request("main/b", "Bee").unwrap();
         assert_eq!(main_order(&p), ["a", "bee", "c", "aaa"]);
-        p.rename_request("main/a", "main/f/A").unwrap();
-        assert_eq!(main_order(&p), ["bee", "c", "aaa", "f/", "f/a"]);
+        p.create_request("main/f/A", req("u")).unwrap();
+        assert_eq!(main_order(&p), ["a", "bee", "c", "aaa", "f/", "f/a"]);
     }
 
     /// D17: a request moves into a folder at the slot it was dropped on,
@@ -2849,9 +3666,10 @@ mod tests {
     }
 
     /// D15: the slot counts a folder the move empties, as the sidebar drew
-    /// it, and the emptied folder's entry goes (2026-11-01 R9).
+    /// it, and the emptied folder stays with its entry (spec 2026-11-03
+    /// create folders F2, replacing 2026-11-01 R9).
     #[test]
-    fn a_request_leaving_its_folder_empty_prunes_it_and_keeps_its_slot() {
+    fn a_request_leaving_its_folder_empty_keeps_the_folder_and_its_slot() {
         let (dir, mut p) = tree_fixture();
         write(&dir, "requests/main/zeta.toml", "method = \"GET\"\nurl = \"u\"\n");
         p.relist();
@@ -2869,6 +3687,7 @@ mod tests {
                 "users/v1/list",
                 "users/v1/get",
                 "health",
+                "orders/",
                 "new",
                 "zeta"
             ]
@@ -3033,7 +3852,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            order::displayed_slugs(p.requests(), &main_order(&p), "main"),
+            order::displayed_slugs(p.requests(), p.folders(), &main_order(&p), "main"),
             ["main/users/login", "main/health", "main/v1/list", "main/v1/get", "main/orders/new"]
         );
         assert!(p.held_request("main/users/v1/get").is_none());
@@ -3051,10 +3870,10 @@ mod tests {
         );
     }
 
-    /// R9: a folder whose move empties its parent takes the parent's entry
-    /// with it.
+    /// Spec 2026-11-03 create folders F2 (replacing R9): a folder whose
+    /// move empties its parent leaves the parent and its entry in place.
     #[test]
-    fn a_folder_move_that_empties_its_parent_prunes_it() {
+    fn a_folder_move_that_empties_its_parent_keeps_the_parent() {
         let (dir, mut p) = tree_fixture();
         write(&dir, "requests/main/deep/inner/x.toml", "method = \"GET\"\nurl = \"u\"\n");
         p.relist();
@@ -3062,8 +3881,22 @@ mod tests {
         assert_eq!(main_order(&p)[8..], ["deep/", "deep/inner/", "deep/inner/x"]);
         p.move_to_level(&folder_item("main/deep/inner"), "", 0).unwrap();
         assert_eq!(main_order(&p)[..1], ["inner/"]);
-        assert_eq!(main_order(&p)[9..], ["inner/x"]);
-        assert!(!main_order(&p).contains(&"deep/".to_string()));
+        assert_eq!(main_order(&p)[9..], ["deep/", "inner/x"]);
+        assert!(p.folders().iter().any(|f| f.path == "main/deep"));
+    }
+
+    /// F1: an empty folder moves like any folder, and into an empty one.
+    #[test]
+    fn an_empty_folder_moves_into_another_empty_folder() {
+        let (dir, mut p) = tree_fixture();
+        std::fs::create_dir_all(dir.path().join("requests/main/e")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main/f")).unwrap();
+        p.relist();
+        let (new, moves) = p.move_to_level(&folder_item("main/e"), "f", 0).unwrap();
+        assert_eq!(new, "main/f/e");
+        assert!(moves.is_empty());
+        assert!(dir.path().join("requests/main/f/e").is_dir());
+        assert!(main_order(&p).ends_with(&["f/".to_string(), "f/e/".to_string()]));
     }
 
     /// D18: the destination already has a folder of that name.
@@ -3086,29 +3919,40 @@ mod tests {
     /// at the destination that shows no folder refuses, naming the path,
     /// whatever it holds: an empty directory left behind, nested empty
     /// directories, one holding only a `.DS_Store`, a plain file. Nothing
-    /// moves and nothing is journaled.
+    /// moves and nothing is journaled. *Amended 2026-11-03 (spec create
+    /// folders F3, F8):* a directory is a folder now, shown even when
+    /// empty, so the first three clash as a shown folder; only the plain
+    /// file is refused naming the path.
     #[test]
     fn a_folder_move_onto_a_leftover_directory_refuses_naming_the_path() {
         type Leftover = fn(&tempfile::TempDir);
-        let cases: [(&str, Leftover); 4] = [
-            ("an empty directory", |d| {
-                std::fs::create_dir_all(d.path().join("requests/main/v1")).unwrap()
-            }),
-            ("nested empty directories", |d| {
-                std::fs::create_dir_all(d.path().join("requests/main/v1/sub/deeper")).unwrap()
-            }),
-            ("a .DS_Store", |d| write(d, "requests/main/v1/.DS_Store", "x")),
-            ("a plain file", |d| write(d, "requests/main/v1", "notes")),
+        let cases: [(&str, Leftover, bool); 4] = [
+            (
+                "an empty directory",
+                |d| std::fs::create_dir_all(d.path().join("requests/main/v1")).unwrap(),
+                true,
+            ),
+            (
+                "nested empty directories",
+                |d| std::fs::create_dir_all(d.path().join("requests/main/v1/sub/deeper")).unwrap(),
+                true,
+            ),
+            ("a .DS_Store", |d| write(d, "requests/main/v1/.DS_Store", "x"), true),
+            ("a plain file", |d| write(d, "requests/main/v1", "notes"), false),
         ];
-        for (what, make) in cases {
+        for (what, make, shown) in cases {
             let (dir, mut p) = tree_fixture();
             make(&dir);
             let before = read(&dir, "project.toml");
             let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
-            assert!(
-                matches!(&r, Err(Error::Conflict(m)) if m == "requests/main/v1 already exists on disk"),
-                "{what}: {r:?}"
-            );
+            if shown {
+                assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "v1"), "{what}: {r:?}");
+            } else {
+                assert!(
+                    matches!(&r, Err(Error::Conflict(m)) if m == "requests/main/v1 already exists on disk"),
+                    "{what}: {r:?}"
+                );
+            }
             assert!(dir.path().join("requests/main/users/v1/get.toml").is_file(), "{what}");
             assert!(dir.path().join("requests/main/v1").exists(), "{what}: left as it was");
             assert_eq!(read(&dir, "project.toml"), before, "{what}");
@@ -3268,8 +4112,8 @@ mod tests {
     /// No op ever creates a `project.toml` (spec 2026-11-02 drag into
     /// folders §3, `Project`, new round 2, replacing main's reorders and
     /// puts creating one): in a bare directory (the TUI opens one when a
-    /// registered project lost its `project.toml`) a create, a rename into
-    /// a folder, Move to space, a put and a drop in another folder do their
+    /// registered project lost its `project.toml`) a create, a rename, Move
+    /// to space, a put and a drop in another folder do their
     /// file part and write no order. The two reorders have nothing but an
     /// order to write, so they are refused, writing nothing and recording
     /// no step.
@@ -3281,10 +4125,13 @@ mod tests {
         let (slug, _) = p.create_request("main/New", req("u")).unwrap();
         assert!(p.request_exists(&slug));
         assert!(none(&dir), "a create");
-        let (slug, _) = p.rename_request("main/a", "main/g/A").unwrap();
+        let (slug, _) = p.create_request("main/g/A", req("u")).unwrap();
+        assert!(p.request_exists(&slug));
+        assert!(none(&dir), "a create into a new folder");
+        let (slug, _) = p.rename_request("main/a", "Ay").unwrap();
         assert!(p.request_exists(&slug));
         assert!(!dir.path().join("requests/main/a.toml").exists());
-        assert!(none(&dir), "a rename into a folder");
+        assert!(none(&dir), "a rename");
         let slug = p.move_request("main/b", "auth").unwrap();
         assert!(p.request_exists(&slug));
         assert!(!dir.path().join("requests/main/b.toml").exists());
@@ -3317,12 +4164,907 @@ mod tests {
     /// folder move clashes with.
     #[test]
     fn a_shown_folder_matches_its_path_in_any_case() {
-        let slugs: Vec<String> =
-            ["main/Users/login", "main/usersx/a"].iter().map(|s| s.to_string()).collect();
-        assert!(shows_folder_ignoring_case(&slugs, "main/users"));
-        assert!(shows_folder_ignoring_case(&slugs, "main/Users"));
-        assert!(shows_folder_ignoring_case(&slugs, "main/USERSX"));
-        assert!(!shows_folder_ignoring_case(&slugs, "main/user"), "a whole segment only");
-        assert!(!shows_folder_ignoring_case(&slugs, "main/Users/login"), "a request is no folder");
+        let folders: Vec<FolderListing> = ["main/Users", "main/usersx"]
+            .iter()
+            .map(|s| FolderListing { path: s.to_string(), name: None, broken: None })
+            .collect();
+        assert!(shows_folder_ignoring_case(&folders, "main/users"));
+        assert!(shows_folder_ignoring_case(&folders, "main/Users"));
+        assert!(shows_folder_ignoring_case(&folders, "main/USERSX"));
+        assert!(!shows_folder_ignoring_case(&folders, "main/user"), "a whole segment only");
+        assert!(!shows_folder_ignoring_case(&folders, "main/Users/login"), "nothing deeper");
+    }
+
+    // --- spec 2026-11-03 create folders ---
+
+    /// A project with one space, `main`, holding `a`, and `files` written
+    /// on top (paths relative to the root; a path ending in `/` is an
+    /// empty directory).
+    fn folder_tree(files: &[(&str, &str)]) -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir, "project.toml", "spaces = [\"main\"]\n");
+        write(&dir, "requests/main/a.toml", "method = \"GET\"\nurl = \"u\"\n");
+        for (rel, text) in files {
+            if let Some(d) = rel.strip_suffix('/') {
+                std::fs::create_dir_all(dir.path().join(d)).unwrap();
+            } else {
+                write(&dir, rel, text);
+            }
+        }
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        (dir, p)
+    }
+
+    fn folder_paths(p: &Project) -> Vec<String> {
+        p.folders().iter().map(|f| f.path.clone()).collect()
+    }
+
+    /// F1: a directory is a folder, empty or not.
+    #[test]
+    fn an_empty_directory_lists_as_a_folder() {
+        let (_d, p) = folder_tree(&[("requests/main/empty/", "")]);
+        assert_eq!(
+            p.folders(),
+            [FolderListing { path: "main/empty".into(), name: None, broken: None }]
+        );
+        assert_eq!(p.folders()[0].display_name(), "empty");
+    }
+
+    /// F15: `.folder.toml` names its folder, and is no request.
+    #[test]
+    fn a_folder_toml_names_its_folder() {
+        let (_d, p) =
+            folder_tree(&[("requests/main/users/.folder.toml", "name = \"User Accounts\"\n")]);
+        assert_eq!(p.folders()[0].name.as_deref(), Some("User Accounts"));
+        assert_eq!(p.folders()[0].display_name(), "User Accounts");
+        assert_eq!(slugs(&p), ["main/a"]);
+    }
+
+    /// F16: dot files and dot directories inside a space are skipped.
+    #[test]
+    fn dot_files_and_dot_directories_inside_a_space_are_skipped() {
+        let (_d, p) = folder_tree(&[
+            ("requests/main/.drafts/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/.x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/f/.DS_Store", "junk"),
+        ]);
+        assert_eq!(slugs(&p), ["main/a"]);
+        assert_eq!(folder_paths(&p), ["main/f"]);
+    }
+
+    /// F24: a `.folder.toml` that doesn't parse leaves the folder listed
+    /// under its directory name, with a warning naming the file.
+    #[test]
+    fn a_broken_folder_toml_lists_the_folder_with_a_warning() {
+        let (_d, p) = folder_tree(&[("requests/main/f/.folder.toml", "name = ")]);
+        let f = &p.folders()[0];
+        assert_eq!((f.path.as_str(), f.name.as_deref()), ("main/f", None));
+        assert!(f.broken.is_some());
+        assert_eq!(f.display_name(), "f");
+        let files: Vec<Option<&str>> =
+            p.listing_warnings().iter().map(|w| w.file.as_deref()).collect();
+        assert_eq!(files, [Some("requests/main/f/.folder.toml")]);
+    }
+
+    /// Review focus 2: a directory whose name isn't a slug lists by it.
+    #[test]
+    fn a_directory_with_a_non_slug_name_lists_by_its_name() {
+        let (_d, p) = folder_tree(&[("requests/main/My Stuff/", "")]);
+        assert_eq!(folder_paths(&p), ["main/My Stuff"]);
+        assert_eq!(p.folders()[0].display_name(), "My Stuff");
+    }
+
+    /// Every path under `requests/` with its bytes (`None` for a
+    /// directory): what an exact undo must give back.
+    fn requests_tree(
+        dir: &tempfile::TempDir,
+    ) -> std::collections::BTreeMap<String, Option<Vec<u8>>> {
+        fn walk(
+            base: &std::path::Path,
+            d: &std::path::Path,
+            out: &mut std::collections::BTreeMap<String, Option<Vec<u8>>>,
+        ) {
+            for e in std::fs::read_dir(d).unwrap() {
+                let path = e.unwrap().path();
+                let key = path.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    out.insert(key, None);
+                    walk(base, &path, out);
+                } else {
+                    out.insert(key, Some(std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir.path(), &dir.path().join("requests"), &mut out);
+        out
+    }
+
+    /// `op` is one undo step; undo gives back `requests/` and
+    /// `project.toml` exactly, and redo gives back what `op` made.
+    fn undo_redo_tree_exact(
+        dir: &tempfile::TempDir,
+        p: &mut Project,
+        op: impl FnOnce(&mut Project),
+    ) {
+        let (files, meta) = (requests_tree(dir), read(dir, "project.toml"));
+        op(p);
+        assert_eq!(p.journal_len(), 1, "one undo step");
+        let (files_after, meta_after) = (requests_tree(dir), read(dir, "project.toml"));
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(dir), files, "undo restores requests/");
+        assert_eq!(read(dir, "project.toml"), meta, "undo restores project.toml");
+        p.redo().unwrap().unwrap();
+        assert_eq!(requests_tree(dir), files_after, "redo makes it again");
+        assert_eq!(read(dir, "project.toml"), meta_after);
+    }
+
+    /// F5, F17: a create in a new folder makes it with its `.folder.toml`,
+    /// named by the typed segment, and undo leaves nothing behind.
+    #[test]
+    fn a_create_in_a_new_folder_makes_it_with_its_name_and_undo_leaves_nothing() {
+        let (dir, mut p) = folder_tree(&[]);
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            let (slug, _) = p.create_request("main/User Accounts/login", req("u")).unwrap();
+            assert_eq!(slug, "main/user-accounts/login");
+        });
+        assert_eq!(
+            read(&dir, "requests/main/user-accounts/.folder.toml").as_deref(),
+            Some("name = \"User Accounts\"\n")
+        );
+        assert_eq!(main_order(&p), ["a", "user-accounts/", "user-accounts/login"]);
+        p.undo().unwrap().unwrap();
+        assert!(!dir.path().join("requests/main/user-accounts").exists());
+    }
+
+    /// F17: every new ancestor gets its own file.
+    #[test]
+    fn a_create_in_a_new_nested_folder_makes_every_ancestor_with_its_file() {
+        let (dir, mut p) = folder_tree(&[]);
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.create_request("main/Outer/Inner \"Q\"/x", req("u")).unwrap();
+        });
+        assert_eq!(
+            read(&dir, "requests/main/outer/.folder.toml").as_deref(),
+            Some("name = \"Outer\"\n")
+        );
+        assert_eq!(
+            read(&dir, "requests/main/outer/inner-q/.folder.toml").as_deref(),
+            Some("name = 'Inner \"Q\"'\n")
+        );
+    }
+
+    /// F17: a create into a folder already there writes no folder file.
+    #[test]
+    fn a_create_in_an_existing_folder_writes_no_folder_file() {
+        let (dir, mut p) = folder_tree(&[("requests/main/f/", "")]);
+        p.create_request("main/f/x", req("u")).unwrap();
+        assert!(!dir.path().join("requests/main/f/.folder.toml").exists());
+    }
+
+    /// F28: a rename with a `/` makes no folder, and undo is exact.
+    #[test]
+    fn a_rename_with_a_slash_makes_no_folder() {
+        let (dir, mut p) = folder_tree(&[]);
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            assert_eq!(p.rename_request("main/a", "New Place/a").unwrap().0, "main/new-place-a");
+        });
+        assert!(!dir.path().join("requests/main/new-place").exists());
+    }
+
+    /// §3: Move to space copies the source folder's file into the folder
+    /// it makes; undo is exact.
+    #[test]
+    fn a_move_to_space_copies_the_folder_file_into_the_folder_it_makes() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/.folder.toml", "name = \"Eff\"\ncolor = \"red\"\n"),
+            ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/auth/", ""),
+            ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+        ]);
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.move_request("main/f/x", "auth").unwrap();
+        });
+        assert_eq!(
+            read(&dir, "requests/auth/f/.folder.toml").as_deref(),
+            Some("name = \"Eff\"\ncolor = \"red\"\n")
+        );
+    }
+
+    /// A source folder file that can't be read doesn't stop a move: the
+    /// folder made in the other space is named by its directory (review
+    /// round 1), in Move to space and Move all alike.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_folder_file_names_the_copy_by_its_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        for all in [false, true] {
+            let (dir, mut p) = folder_tree(&[
+                ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+                ("requests/main/f/.folder.toml", "name = \"Eff\"\n"),
+                ("requests/auth/", ""),
+                ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+            ]);
+            let file = dir.path().join("requests/main/f/.folder.toml");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let moved = if all {
+                p.move_all_requests("main", "auth").map(|_| ())
+            } else {
+                p.move_request("main/f/x", "auth").map(|_| ())
+            };
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).ok();
+            moved.unwrap_or_else(|e| panic!("all={all}: {e}"));
+            assert_eq!(
+                read(&dir, "requests/auth/f/.folder.toml").as_deref(),
+                Some("name = \"f\"\n"),
+                "all={all}"
+            );
+        }
+    }
+
+    /// F18a: a typed segment matches a sibling folder by its shown name
+    /// only, never its directory (the user: "There's no reason to search
+    /// the name other than the display name").
+    #[test]
+    fn a_typed_segment_matches_only_shown_names() {
+        let (_dir, mut p) = folder_tree(&[
+            ("requests/main/a/.folder.toml", "name = \"B\"\n"),
+            ("requests/main/b/.folder.toml", "name = \"A\"\n"),
+        ]);
+        assert_eq!(p.create_request("main/B/x", req("u")).unwrap().0, "main/a/x");
+        assert_eq!(p.create_request("main/a/y", req("u")).unwrap().0, "main/b/y");
+    }
+
+    /// F18a, F19: a segment matching no shown name makes a new folder named
+    /// by it, even when its slug is a directory showing another name: that
+    /// directory is taken, so the new one is numbered.
+    #[test]
+    fn a_segment_whose_slug_is_taken_by_another_name_makes_a_numbered_folder() {
+        let (dir, mut p) =
+            folder_tree(&[("requests/main/users/.folder.toml", "name = \"Accounts\"\n")]);
+        let (slug, _) = p.create_request("main/Users/login", req("u")).unwrap();
+        assert_eq!(slug, "main/users-2/login");
+        assert_eq!(
+            read(&dir, "requests/main/users-2/.folder.toml").as_deref(),
+            Some("name = \"Users\"\n")
+        );
+    }
+
+    /// D18 with F19: a folder drag onto a level whose sibling already shows
+    /// the dragged folder's name is refused (review round 2).
+    #[test]
+    fn a_folder_drag_onto_a_shown_name_is_refused() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/x/v1/.folder.toml", "name = \"Users\"\n"),
+            ("requests/main/users/.folder.toml", "name = \"Users\"\n"),
+        ]);
+        let before = requests_tree(&dir);
+        let r = p.move_to_level(&folder_item("main/x/v1"), "", 0);
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "Users"), "{r:?}");
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    /// A move doesn't copy a folder file that doesn't parse: the copy is
+    /// named by its directory (review rounds 1 and 2).
+    #[test]
+    fn a_broken_folder_file_is_not_copied_by_a_move() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/f/.folder.toml", "name = "),
+            ("requests/auth/", ""),
+            ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+        ]);
+        p.move_request("main/f/x", "auth").unwrap();
+        assert_eq!(read(&dir, "requests/auth/f/.folder.toml").as_deref(), Some("name = \"f\"\n"));
+    }
+
+    /// F18a: a typed segment goes into the sibling folder whose shown name
+    /// it matches, in any case, even when its directory is named otherwise.
+    #[test]
+    fn a_typed_segment_matches_a_folder_by_its_shown_name() {
+        let (_dir, mut p) = folder_tree(&[(
+            "requests/main/accounts/.folder.toml",
+            "name = \"Customer Accounts\"\n",
+        )]);
+        let (slug, _) = p.create_request("main/customer accounts/x", req("u")).unwrap();
+        assert_eq!(slug, "main/accounts/x");
+    }
+
+    // --- create, rename and delete folder (F14, F18–F21, F23, F24) ---
+
+    /// `main` holds `a`, `b` and folder `f/` holding `x`, its list complete.
+    fn three_items() -> (tempfile::TempDir, Project) {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/b.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+        ]);
+        p.complete_order().unwrap();
+        assert_eq!(main_order(&p), ["a", "b", "f/", "f/x"]);
+        (dir, p)
+    }
+
+    #[test]
+    fn create_folder_makes_the_directory_and_file_and_lands_after_its_anchor() {
+        let (dir, mut p) = three_items();
+        let path = p.create_folder("main", "User Accounts", Some(&req_item("main/a"))).unwrap();
+        assert_eq!(path, "main/user-accounts");
+        assert_eq!(
+            read(&dir, "requests/main/user-accounts/.folder.toml").as_deref(),
+            Some("name = \"User Accounts\"\n")
+        );
+        assert_eq!(main_order(&p), ["a", "user-accounts/", "b", "f/", "f/x"]);
+        assert_eq!(
+            p.folders().iter().find(|f| f.path == path).unwrap().display_name(),
+            "User Accounts"
+        );
+    }
+
+    #[test]
+    fn create_folder_after_a_folder_lands_after_its_contents_entry() {
+        let (_dir, mut p) = three_items();
+        p.create_folder("main", "G", Some(&folder_item("main/f"))).unwrap();
+        assert_eq!(main_order(&p), ["a", "b", "f/", "g/", "f/x"]);
+    }
+
+    #[test]
+    fn create_folder_with_no_anchor_lands_last_inside_its_level() {
+        let (_dir, mut p) = three_items();
+        let path = p.create_folder("main/f", "Inner", None).unwrap();
+        assert_eq!(path, "main/f/inner");
+        assert_eq!(main_order(&p), ["a", "b", "f/", "f/x", "f/inner/"]);
+    }
+
+    /// F19: a shown name is refused in any case; nothing is written.
+    #[test]
+    fn create_folder_refuses_a_shown_name_in_any_case() {
+        let (dir, mut p) = three_items();
+        write(&dir, "requests/main/f/.folder.toml", "name = \"Eff\"\n");
+        p.relist();
+        let before = requests_tree(&dir);
+        assert!(
+            matches!(p.create_folder("main", "EFF", None), Err(Error::AlreadyExists(n)) if n == "EFF")
+        );
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(p.journal_len(), 0);
+        // The directory name alone is no shown name: a slug clash, numbered.
+        assert_eq!(p.create_folder("main", "f", None).unwrap(), "main/f-2");
+    }
+
+    /// F19: a slug that clashes while the shown names differ is numbered.
+    #[test]
+    fn create_folder_numbers_a_slug_clash_with_another_shown_name() {
+        let (_dir, mut p) =
+            folder_tree(&[("requests/main/ping/.folder.toml", "name = \"Ping\"\n")]);
+        assert_eq!(p.create_folder("main", "Ping!", None).unwrap(), "main/ping-2");
+    }
+
+    /// A space listed in `project.toml` whose directory isn't on disk (a
+    /// fresh clone of a space with no file yet) takes a new request and a
+    /// new folder at its top, the write making its directory.
+    #[test]
+    fn a_listed_space_without_its_directory_takes_creates() {
+        let (dir, mut p) = folder_project(&[], &["main/a"]);
+        std::fs::remove_dir(dir.path().join("requests/auth")).unwrap();
+        p.relist();
+        // Undo takes the space's directory back with the create.
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            let (slug, _) = p.create_request_in("auth", "Ping", None, req("u")).unwrap();
+            assert_eq!(slug, "auth/ping");
+        });
+        p.undo().unwrap().unwrap();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            assert_eq!(p.create_folder("auth", "Users", None).unwrap(), "auth/users");
+        });
+        assert!(dir.path().join("requests/auth/users/.folder.toml").is_file());
+        assert!(matches!(
+            p.create_request_in("nope", "x", None, req("u")),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    /// Every journaled write makes the directories above it journaled
+    /// (`fs_make_parents`): Move to space and Move all into a space with
+    /// no directory are undone exactly, its directory included.
+    #[test]
+    fn moves_into_a_space_without_its_directory_undo_exactly() {
+        let (dir, mut p) = folder_project(&[], &["main/api/x", "main/y"]);
+        std::fs::remove_dir(dir.path().join("requests/auth")).unwrap();
+        p.relist();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            assert_eq!(p.move_request("main/api/x", "auth").unwrap(), "auth/api/x");
+        });
+        p.undo().unwrap().unwrap();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.move_all_requests("main", "auth").unwrap();
+        });
+    }
+
+    #[test]
+    fn create_folder_refuses_an_empty_name_and_a_missing_level() {
+        let (_dir, mut p) = three_items();
+        assert!(matches!(p.create_folder("main", "  ", None), Err(Error::BadName(_))));
+        assert!(matches!(p.create_folder("main/nope", "x", None), Err(Error::NotFound(_))));
+    }
+
+    /// F5: create, rename and delete are each one undo step, exact.
+    #[test]
+    fn create_rename_and_delete_folder_undo_exactly() {
+        let (dir, mut p) = three_items();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.create_folder("main", "New", Some(&req_item("main/b"))).unwrap();
+        });
+        let (dir, mut p) = three_items();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.rename_folder("main/f", "Renamed").unwrap();
+        });
+        let (dir, mut p) = three_items();
+        undo_redo_tree_exact(&dir, &mut p, |p| {
+            p.delete_folder("main/f").unwrap();
+        });
+    }
+
+    /// F21, F23: a rename renames the directory and the file, keeps the
+    /// folder's slot, and its contents' entries follow in place.
+    #[test]
+    fn rename_folder_renames_directory_and_file_and_keeps_its_slot() {
+        let (dir, mut p) = three_items();
+        p.complete_order().unwrap();
+        let (path, moves) = p.rename_folder("main/f", "Customers").unwrap();
+        assert_eq!(path, "main/customers");
+        assert_eq!(moves, [("main/f/x".to_string(), "main/customers/x".to_string())]);
+        assert!(dir.path().join("requests/main/customers/x.toml").is_file());
+        assert!(!dir.path().join("requests/main/f").exists());
+        assert_eq!(
+            read(&dir, "requests/main/customers/.folder.toml").as_deref(),
+            Some("name = \"Customers\"\n"),
+            "F20: a folder without the file gets one"
+        );
+        assert_eq!(main_order(&p), ["a", "b", "customers/", "customers/x"]);
+    }
+
+    /// A rename that keeps the slug only rewrites the file, keeping its
+    /// other keys (F24).
+    #[test]
+    fn rename_folder_same_slug_writes_only_the_file_and_keeps_other_keys() {
+        let (dir, mut p) = three_items();
+        write(&dir, "requests/main/f/.folder.toml", "name = \"Eff\"\ncolor = \"red\"\n");
+        p.relist();
+        let (path, moves) = p.rename_folder("main/f", "F").unwrap();
+        assert_eq!(path, "main/f");
+        assert!(moves.is_empty());
+        assert_eq!(
+            read(&dir, "requests/main/f/.folder.toml").as_deref(),
+            Some("name = \"F\"\ncolor = \"red\"\n")
+        );
+    }
+
+    /// F24: a broken file refuses the rename, and nothing is written.
+    #[test]
+    fn rename_folder_refuses_a_broken_file_and_writes_nothing() {
+        let (dir, mut p) = three_items();
+        write(&dir, "requests/main/f/.folder.toml", "name = ");
+        p.relist();
+        let before = requests_tree(&dir);
+        assert!(matches!(p.rename_folder("main/f", "G"), Err(Error::BadName(_))));
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    /// F19: a name a sibling shows is refused; a name whose slug something
+    /// on disk has (a plain file) numbers, as a create does (review block
+    /// 1's one naming rule, replacing "refused, naming the path").
+    #[test]
+    fn rename_folder_refuses_a_shown_name_and_numbers_a_taken_slug() {
+        let (dir, mut p) = three_items();
+        write(&dir, "requests/main/g", "notes");
+        std::fs::create_dir_all(dir.path().join("requests/main/h")).unwrap();
+        p.relist();
+        assert!(matches!(p.rename_folder("main/f", "H"), Err(Error::AlreadyExists(_))));
+        assert!(dir.path().join("requests/main/f/x.toml").is_file());
+        assert_eq!(p.rename_folder("main/f", "g").unwrap().0, "main/g-2");
+    }
+
+    /// A rename drops entries already under its new path before renaming
+    /// its own, as a folder move does: left in (a partial walk keeps them,
+    /// D7), they'd name the folder twice (review round 1).
+    #[cfg(unix)]
+    #[test]
+    fn rename_folder_drops_stale_entries_under_its_new_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/locked/y.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            (
+                "project.toml",
+                "spaces = [\"main\"]\n[space.main]\norder = [\"a\", \"g/\", \"g/x\", \"f/\", \"f/x\"]\n",
+            ),
+        ]);
+        let locked = dir.path().join("requests/main/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let renamed = p.rename_folder("main/f", "G");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        renamed.unwrap();
+        let order = main_order(&p);
+        for e in ["g/", "g/x"] {
+            assert_eq!(order.iter().filter(|o| *o == e).count(), 1, "{e} once in {order:?}");
+        }
+    }
+
+    #[test]
+    fn rename_folder_moves_held_requests() {
+        let (_dir, mut p) = three_items();
+        p.open_request("main/f/x").unwrap();
+        p.rename_folder("main/f", "G").unwrap();
+        assert!(p.held_request("main/g/x").is_some());
+        assert!(p.held_request("main/f/x").is_none());
+    }
+
+    /// F21: delete takes the folder, its contents and their entries.
+    #[test]
+    fn delete_folder_trashes_it_and_its_entries() {
+        let (dir, mut p) = three_items();
+        p.open_request("main/f/x").unwrap();
+        let gone = p.delete_folder("main/f").unwrap();
+        assert_eq!(gone, ["main/f/x"]);
+        assert!(!dir.path().join("requests/main/f").exists());
+        assert_eq!(main_order(&p), ["a", "b"]);
+        assert!(p.held_request("main/f/x").is_none());
+    }
+
+    /// Review focus 1: a folder holding only a `.DS_Store` renames and
+    /// deletes, the dot file going with it.
+    #[test]
+    fn a_folder_holding_only_ds_store_renames_and_deletes() {
+        let (dir, mut p) = folder_tree(&[("requests/main/d/.DS_Store", "junk")]);
+        p.rename_folder("main/d", "E").unwrap();
+        assert!(dir.path().join("requests/main/e/.DS_Store").is_file());
+        p.delete_folder("main/e").unwrap();
+        assert!(!dir.path().join("requests/main/e").exists());
+    }
+
+    /// F33: a directory whose name isn't a slug shows as a folder and is
+    /// changed by nothing, as a request file of such a name is: its rename,
+    /// its delete, a create or a drop in it, and a create or rename of a
+    /// folder in it are refused as an invalid name, with nothing written.
+    #[test]
+    fn a_non_slug_directory_shows_and_nothing_changes_it() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/My Stuff/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/My Stuff/ok/", ""),
+        ]);
+        assert!(folder_paths(&p).contains(&"main/My Stuff".to_string()));
+        let before = requests_tree(&dir);
+        let bad = |r: Result<(), Error>| matches!(r, Err(Error::BadName(_)));
+        assert!(bad(p.rename_folder("main/My Stuff", "Mine").map(|_| ())));
+        assert!(bad(p.delete_folder("main/My Stuff").map(|_| ())));
+        assert!(bad(p.create_request_in("main/My Stuff", "N", None, req("u")).map(|_| ())));
+        assert!(bad(p.create_request("main/My Stuff/N", req("u")).map(|_| ())));
+        assert!(bad(p.create_folder("main/My Stuff", "N", None).map(|_| ())));
+        assert!(bad(p.rename_folder("main/My Stuff/ok", "Fine").map(|_| ())));
+        assert!(p.move_to_level(&req_item("main/a"), "My Stuff", 0).is_err());
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    // --- review block 1 adjustment: one naming rule (mine (approved)) ---
+
+    /// A folder name can't hold `/` (replacing F18's "a `/` is part of the
+    /// name"), in a create and a rename; nothing is written.
+    #[test]
+    fn a_folder_name_holding_a_slash_is_refused() {
+        let (dir, mut p) = three_items();
+        let before = requests_tree(&dir);
+        assert!(matches!(p.create_folder("main", "a/b", None), Err(Error::BadName(_))));
+        assert!(matches!(p.rename_folder("main/f", "a/b"), Err(Error::BadName(_))));
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    /// A rename keeps the directory when the name's slug is the one it has,
+    /// numbered or not, as a request rename keeps its slug (#209).
+    #[test]
+    fn a_numbered_folder_renames_to_its_base_name_in_place() {
+        let (dir, mut p) = folder_tree(&[("requests/main/f/.folder.toml", "name = \"Other\"\n")]);
+        assert_eq!(p.create_folder("main", "f", None).unwrap(), "main/f-2");
+        let (path, _) = p.rename_folder("main/f-2", "F").unwrap();
+        assert_eq!(path, "main/f-2");
+        assert_eq!(read(&dir, "requests/main/f-2/.folder.toml").as_deref(), Some("name = \"F\"\n"));
+        let (path, _) = p.rename_folder("main/f-2", "Zed").unwrap();
+        assert_eq!(path, "main/zed");
+    }
+
+    /// Create and rename make one slug of a name, as requests do: a case
+    /// change keeps the directory, and a name with nothing safe in it
+    /// gets `folder` either way.
+    #[test]
+    fn create_and_rename_slug_a_name_alike() {
+        let (_dir, mut p) = folder_tree(&[]);
+        let wip = p.create_folder("main", "-wip", None).unwrap();
+        assert_eq!(p.rename_folder(&wip, "-WIP").unwrap().0, wip);
+        let bang = p.create_folder("main", "!!!", None).unwrap();
+        assert_eq!(bang, "main/folder");
+        assert_eq!(p.rename_folder(&bang, "???").unwrap().0, bang);
+    }
+
+    /// A rename onto a directory taken by a folder showing another name
+    /// numbers, as a create does, instead of refusing.
+    #[test]
+    fn a_rename_onto_a_taken_directory_numbers() {
+        let (_dir, mut p) = three_items();
+        std::fs::create_dir_all(p.root().join("requests/main/g")).unwrap();
+        std::fs::write(p.root().join("requests/main/g/.folder.toml"), "name = \"Gee\"\n").unwrap();
+        p.relist();
+        assert_eq!(p.rename_folder("main/f", "g").unwrap().0, "main/g-2");
+    }
+
+    /// An empty name in a folder file counts as no name.
+    #[test]
+    fn an_empty_folder_name_counts_as_none() {
+        let (_dir, p) = folder_tree(&[("requests/main/e/.folder.toml", "name = \"  \"\n")]);
+        assert_eq!(p.folders()[0].name, None);
+        assert_eq!(p.folders()[0].display_name(), "e");
+    }
+
+    /// The copy checks a folder file as the listing does: `name = 5` is no
+    /// usable file, so the copy is named by its directory.
+    #[test]
+    fn a_copy_skips_a_folder_file_the_listing_calls_broken() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/f/.folder.toml", "name = 5\n"),
+            ("requests/auth/", ""),
+            ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+        ]);
+        assert!(p.folders().iter().find(|f| f.path == "main/f").unwrap().broken.is_some());
+        p.move_request("main/f/x", "auth").unwrap();
+        assert_eq!(read(&dir, "requests/auth/f/.folder.toml").as_deref(), Some("name = \"f\"\n"));
+    }
+
+    /// F19 on a copy: a folder made in the target whose name a sibling
+    /// there already shows is named by its directory.
+    #[test]
+    fn a_copy_whose_name_a_target_sibling_shows_is_named_by_its_directory() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/u/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/u/.folder.toml", "name = \"Users\"\n"),
+            ("requests/auth/a/.folder.toml", "name = \"Users\"\n"),
+            ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+        ]);
+        p.move_request("main/u/x", "auth").unwrap();
+        assert_eq!(read(&dir, "requests/auth/u/.folder.toml").as_deref(), Some("name = \"u\"\n"));
+    }
+
+    // --- review round 4 ---
+
+    /// A copy's fallback name is numbered while a target sibling shows it
+    /// too, ignoring case (F19).
+    #[test]
+    fn a_copys_fallback_name_is_numbered_while_shown() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/users/get.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/auth/people/.folder.toml", "name = \"Users\"\n"),
+            ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+        ]);
+        p.move_request("main/users/get", "auth").unwrap();
+        assert_eq!(
+            read(&dir, "requests/auth/users/.folder.toml").as_deref(),
+            Some("name = \"users 2\"\n")
+        );
+    }
+
+    /// Move all checks each copy's name against the copies made before it
+    /// too: no two folders it leaves side by side show one name (F19).
+    #[test]
+    fn move_all_copies_never_share_a_shown_name() {
+        let (_dir, mut p) = folder_tree(&[
+            ("requests/main/a/.folder.toml", "name = \"Q\"\n"),
+            ("requests/main/q/.folder.toml", "name = \"A\"\n"),
+            ("requests/auth/z/.folder.toml", "name = \"Q\"\n"),
+            ("project.toml", "spaces = [\"main\", \"auth\"]\n"),
+        ]);
+        p.move_all_requests("main", "auth").unwrap();
+        p.relist();
+        let mut shown: Vec<String> = p
+            .folders()
+            .iter()
+            .filter(|f| f.path.starts_with("auth/"))
+            .map(|f| f.display_name().to_lowercase())
+            .collect();
+        let count = shown.len();
+        shown.sort();
+        shown.dedup();
+        assert_eq!(shown.len(), count, "{shown:?}");
+        assert_eq!(count, 3);
+    }
+
+    /// A slug counts as taken by a listed folder in any case, but a rename
+    /// that only changes its own directory's case is no clash.
+    #[test]
+    fn folder_slots_compare_listed_directories_ignoring_case() {
+        let (_dir, mut p) =
+            folder_tree(&[("requests/main/Accounts/.folder.toml", "name = \"Billing\"\n")]);
+        assert_eq!(p.create_folder("main", "accounts", None).unwrap(), "main/accounts-2");
+    }
+
+    /// A folder file's name is trimmed, and a name holding `/` (hand-made)
+    /// counts as none, so the folder's prefill finds it again.
+    #[test]
+    fn a_folder_files_name_is_trimmed_and_a_slash_name_counts_as_none() {
+        let (_dir, mut p) = folder_tree(&[
+            ("requests/main/u/.folder.toml", "name = \" Users \"\n"),
+            ("requests/main/s/.folder.toml", "name = \"a/b\"\n"),
+        ]);
+        let shown = |p: &Project, path: &str| {
+            p.folders().iter().find(|f| f.path == path).unwrap().display_name().to_string()
+        };
+        assert_eq!(shown(&p, "main/u"), "Users");
+        assert_eq!(shown(&p, "main/s"), "s");
+        assert_eq!(p.create_request("main/Users/x", req("u")).unwrap().0, "main/u/x");
+    }
+
+    /// A typed folder name more than one sibling shows (made outside
+    /// postui) refuses the import with nothing written, rather than filing
+    /// into whichever comes first.
+    #[test]
+    fn a_folder_name_two_siblings_show_refuses_the_import() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/accounts/.folder.toml", "name = \"Users\"\n"),
+            ("requests/main/users/", ""),
+        ]);
+        let before = requests_tree(&dir);
+        let r = p.create_request("main/users/ping", req("u"));
+        assert!(matches!(r, Err(Error::Conflict(_))), "{r:?}");
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    /// A curl import's create reads the disk as it is: a folder made
+    /// outside since the last relist is found by its name.
+    #[test]
+    fn a_create_finds_a_folder_made_since_the_last_relist() {
+        let (dir, mut p) = folder_tree(&[]);
+        write(&dir, "requests/main/users/.folder.toml", "name = \"Users\"\n");
+        assert_eq!(p.create_request("main/Users/ping", req("u")).unwrap().0, "main/users/ping");
+    }
+
+    /// The numbered directory a rename keeps is one of its own name's: a
+    /// folder whose slug merely ends in digits takes the new name's slug.
+    #[test]
+    fn a_rename_keeps_only_its_own_numbered_directory() {
+        let (_dir, mut p) =
+            folder_tree(&[("requests/main/users-2024/.folder.toml", "name = \"Users 2024\"\n")]);
+        assert_eq!(p.rename_folder("main/users-2024", "Users").unwrap().0, "main/users");
+    }
+
+    /// A directory the walk can't list is warned about once, by the walk,
+    /// and isn't marked broken.
+    #[cfg(unix)]
+    #[test]
+    fn an_unlistable_directory_warns_once_and_is_not_broken() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _) =
+            folder_tree(&[("requests/main/secret/x.toml", "method = \"GET\"\nurl = \"u\"\n")]);
+        let secret = dir.path().join("requests/main/secret");
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let warnings = p.listing_warnings().len();
+        let broken = p.folders().iter().find(|f| f.path == "main/secret").map(|f| f.broken.clone());
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(warnings, 1);
+        assert_eq!(broken, Some(None));
+    }
+
+    // --- review round 5 ---
+
+    /// A rename stays in the request's own folder, even beside a sibling
+    /// that shows the same name (two folders of one name, made outside
+    /// postui): it never reads a folder from a name (F28).
+    #[test]
+    fn a_rename_stays_in_its_own_folder() {
+        let (_dir, mut p) = folder_tree(&[
+            ("requests/main/accounts/.folder.toml", "name = \"Users\"\n"),
+            ("requests/main/users/x.toml", "name = \"X\"\nmethod = \"GET\"\nurl = \"u\"\n"),
+        ]);
+        let (slug, _) = p.rename_request("main/users/x", "Y").unwrap();
+        assert_eq!(slug, "main/users/y");
+    }
+
+    /// Move all reads the disk as it is: a folder deleted outside since the
+    /// last relist doesn't fail it.
+    #[test]
+    fn move_all_survives_a_folder_deleted_since_the_last_relist() {
+        let (dir, mut p) = folder_project(&[], &["main/a/x"]);
+        std::fs::create_dir_all(dir.path().join("requests/main/old")).unwrap();
+        p.relist();
+        std::fs::remove_dir(dir.path().join("requests/main/old")).unwrap();
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(dir.path().join("requests/auth/a/x.toml").is_file());
+        assert!(!dir.path().join("requests/auth/old").exists());
+    }
+
+    /// Only a folder the op made arrives in the list: an existing folder the
+    /// list misses (no completion ran for its space) keeps drawing where it
+    /// draws, never jumps last.
+    #[test]
+    fn only_folders_the_op_made_arrive() {
+        // A list missing `users/` (its completion couldn't write).
+        let mut order = vec!["b".to_string()];
+        arrive_with_folders("main", &mut order, "users/new", &[]);
+        assert_eq!(order, ["b", "users/new"], "an existing folder doesn't jump last");
+        let mut order = vec!["b".to_string()];
+        arrive_with_folders("main", &mut order, "fresh/n", &["main/fresh".to_string()]);
+        assert_eq!(order, ["b", "fresh/", "fresh/n"], "one the op made arrives");
+    }
+
+    /// Move all carries every valid folder. One holding only a request it
+    /// leaves behind stays with that request, and gets an empty twin in the
+    /// target, made with its file. Undo is exact.
+    #[test]
+    fn move_all_keeps_a_folder_holding_a_left_behind_request() {
+        let (dir, mut p) = folder_project(&[], &["main/ok"]);
+        write(&dir, "requests/main/users/Get User.toml", "method = \"GET\"\nurl = \"u\"\n");
+        p.relist();
+        let before = requests_tree(&dir);
+        let (_, warnings) = p.move_all_requests("main", "auth").unwrap();
+        assert!(warnings.iter().any(|w| w.contains("Get User.toml")), "{warnings:?}");
+        assert!(dir.path().join("requests/main/users/Get User.toml").is_file());
+        assert!(dir.path().join("requests/auth/users/.folder.toml").is_file());
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    /// A folder whose parent holds only what is left behind is made under
+    /// a parent made with it, both journaled: undo leaves nothing behind.
+    #[test]
+    fn move_all_makes_each_carried_folders_parent_with_it() {
+        let (dir, mut p) = folder_project(&[], &["main/ok"]);
+        write(&dir, "requests/main/f/Bad Name.toml", "method = \"GET\"\nurl = \"u\"\n");
+        std::fs::create_dir_all(dir.path().join("requests/main/f/g")).unwrap();
+        p.relist();
+        let before = requests_tree(&dir);
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(dir.path().join("requests/auth/f/.folder.toml").is_file());
+        assert!(dir.path().join("requests/auth/f/g/.folder.toml").is_file());
+        assert!(!dir.path().join("requests/main/f/g").exists(), "g is emptied and goes");
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(&dir), before);
+    }
+
+    /// A dot file the user keeps in a folder is theirs (F16): Move all
+    /// leaves the folder in place with it, instead of trashing both.
+    #[test]
+    fn move_all_leaves_a_folder_holding_a_dot_file() {
+        let (dir, mut p) = folder_project(&[], &["main/users/list"]);
+        write(&dir, "requests/main/users/.draft.toml", "x = 1\n");
+        p.relist();
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(dir.path().join("requests/auth/users/list.toml").is_file());
+        assert_eq!(read(&dir, "requests/main/users/.draft.toml").as_deref(), Some("x = 1\n"));
+    }
+
+    /// A folder holding a left-behind file and a moved request is carried:
+    /// the folder the request lands in is made with its file, journaled,
+    /// and the source keeps what stayed.
+    #[test]
+    fn move_all_carries_a_folder_holding_a_moved_and_a_left_behind_request() {
+        let (dir, mut p) = folder_project(&[], &["main/users/ok"]);
+        write(&dir, "requests/main/users/Get User.toml", "method = \"GET\"\nurl = \"u\"\n");
+        p.relist();
+        let before = requests_tree(&dir);
+        p.move_all_requests("main", "auth").unwrap();
+        assert!(dir.path().join("requests/auth/users/ok.toml").is_file());
+        assert!(
+            dir.path().join("requests/auth/users/.folder.toml").is_file(),
+            "the folder it made has its file"
+        );
+        assert!(dir.path().join("requests/main/users/Get User.toml").is_file());
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(&dir), before, "undo leaves nothing behind");
+    }
+
+    /// Nested folders list outside in, by path; a space is no folder.
+    #[test]
+    fn nested_folders_list_by_path_and_spaces_are_not_folders() {
+        let (_d, p) = folder_tree(&[
+            ("requests/main/u/v/w.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/e/", ""),
+        ]);
+        assert_eq!(folder_paths(&p), ["main/e", "main/u", "main/u/v"]);
     }
 }

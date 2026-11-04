@@ -477,6 +477,12 @@ const CASES: &[Case] = &[
     vim("L.verbs", VarList, "A", &[PromptOpen]),
     vim("L.verbs", VarList, "r", &[PromptOpen]),
     vim("L.verbs", VarGrid, "a", &[FieldLive(true)]),
+    // Spec 2026-11-03 create folders F12: `A` makes a folder, `r` renames
+    // a folder row, in both profiles.
+    vim("L.verbs", SidebarThree, "A", &[PromptOpen]),
+    vim("L.verbs", SidebarFolder, "r", &[PromptOpen]),
+    arrows("L.verbs", SidebarThree, "A", &[PromptOpen]),
+    arrows("L.verbs", SidebarFolder, "r", &[PromptOpen]),
     arrows("L.verbs", SidebarThree, "a", &[PromptOpen]),
     arrows("L.verbs", SidebarThree, "n", &[NoModal]),
     arrows("L.verbs", SidebarThree, "r", &[PromptOpen]),
@@ -491,6 +497,9 @@ const CASES: &[Case] = &[
     // Delete never confirms (the user's rule); one undo brings it back.
     vim_u("L.dd", SidebarThree, "dd", &[Requests(&["main/alpha", "main/gamma"]), NoModal]),
     arrows_u("L.dd", SidebarThree, "d", &[Requests(&["main/alpha", "main/gamma"]), NoModal]),
+    // F12, F21: on a folder row the folder goes, with what it holds.
+    vim_u("L.dd", SidebarFolder, "dd", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoModal]),
+    arrows_u("L.dd", SidebarFolder, "d", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoModal]),
     vim_u("L.dd", TableThreeHeaders, "dd", &[Headers(&["a", "c"])]),
     arrows_u("L.dd", TableThreeHeaders, "d", &[Headers(&["a", "c"])]),
     vim_u("L.dd", ManageEnvs, "dd", &[EnvNames(&["qa", "dev"]), NoModal]),
@@ -1421,11 +1430,17 @@ fn every_verb_chip_resolves_to_its_chip() {
                 {
                     continue;
                 }
-                assert_eq!(
-                    app.selection_action(surface, verb),
-                    Some(action.clone()),
-                    "{profile:?} {f:?}: the {label} chip and its key disagree"
-                );
+                // A chip that runs its key's own verb resolves as the key
+                // does by construction: the sidebar's rename and delete,
+                // which pick the request's op or the folder's by the row
+                // (spec 2026-11-03 create folders F12).
+                if action != Action::OnSelection(verb) {
+                    assert_eq!(
+                        app.selection_action(surface, verb),
+                        Some(action.clone()),
+                        "{profile:?} {f:?}: the {label} chip and its key disagree"
+                    );
+                }
                 let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb))
                 else {
                     continue; // no key in this profile: the chip drops its keycap

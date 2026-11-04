@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::project::ProjectMeta;
-use crate::storage::RequestListing;
+use crate::storage::{FolderListing, RequestListing};
 
 /// The order list of `space`, empty when none is written.
 pub fn space_order<'a>(meta: &'a ProjectMeta, space: &str) -> &'a [String] {
@@ -55,15 +55,11 @@ pub fn entry_level(e: &str) -> &str {
     level_of(e.strip_suffix('/').unwrap_or(e))
 }
 
-/// Whether `full` names something in `slugs` (a listing's full slugs): a
-/// request when it is a slug, a folder when it ends in `/` and some
-/// request sits under it.
-pub fn exists_in(slugs: &[String], full: &str) -> bool {
-    if full.ends_with('/') {
-        slugs.iter().any(|s| s.starts_with(full))
-    } else {
-        slugs.iter().any(|s| s == full)
-    }
+/// Whether `folders` lists the folder at full path `path` (no trailing
+/// slash): a folder exists while its directory does (spec 2026-11-03
+/// create folders F1), whatever it holds.
+pub fn folder_exists(folders: &[FolderListing], path: &str) -> bool {
+    folders.iter().any(|f| f.path == path)
 }
 
 /// One item of a level, as [`order_entries`] draws it.
@@ -85,14 +81,22 @@ impl LevelItem<'_> {
     }
 }
 
+/// Everything under one folder, at any depth: what [`split_level`] needs
+/// to split the folder's own level.
+#[derive(Debug, Default)]
+pub struct Contents<'a> {
+    pub requests: Vec<&'a RequestListing>,
+    pub folders: Vec<&'a FolderListing>,
+}
+
 /// One level of a space split by kind (see [`split_level`]).
 #[derive(Debug, Default)]
 pub struct Level<'a> {
     /// The requests directly in the level.
     pub requests: Vec<&'a RequestListing>,
-    /// The level's folders by full path (`"main/users"`), each with every
-    /// request under it, at any depth.
-    pub folders: BTreeMap<String, Vec<&'a RequestListing>>,
+    /// The level's folders by full path (`"main/users"`), each with
+    /// everything under it.
+    pub folders: BTreeMap<String, Contents<'a>>,
 }
 
 impl Level<'_> {
@@ -106,12 +110,46 @@ impl Level<'_> {
 /// sidebar's rows, the tree walk and [`complete_order`] all read it.
 /// `prefix` is the level's full path with a trailing slash (`"main/"`,
 /// `"main/users/"`); entries outside it are skipped.
-pub fn split_level<'a>(entries: &[&'a RequestListing], prefix: &str) -> Level<'a> {
+///
+/// A level's folders are the listed folders directly in it, empty ones
+/// included: the folder listing is the one source of which folders exist
+/// (spec 2026-11-03 create folders F1). It is walked with the requests, so
+/// every request's folder is in it; a request whose folder isn't is under
+/// no folder of this level and is left out, as a caller that forgot the
+/// listing then shows at once.
+///
+/// Why one source and not the requests' folders as well (review rounds 3,
+/// 4 and 8 argued both ways): the two listings can't drift, because one
+/// walk (`requests::list`) makes both and every caller takes them from the
+/// same `Project` or the same sidebar refresh, and `complete_order` (the
+/// one writer that drops entries) relists first. A second source would
+/// only hide a caller that forgot the folder listing, by drawing the
+/// folders that hold requests and silently losing the empty ones.
+pub fn split_level<'a>(
+    requests: &[&'a RequestListing],
+    folders: &[&'a FolderListing],
+    prefix: &str,
+) -> Level<'a> {
     let mut level = Level::default();
-    for e in entries {
+    for f in folders {
+        let Some(rest) = f.path.strip_prefix(prefix).filter(|r| !r.is_empty()) else { continue };
+        match rest.split_once('/') {
+            Some((seg, _)) => {
+                level.folders.entry(format!("{prefix}{seg}")).or_default().folders.push(f)
+            }
+            None => {
+                level.folders.entry(f.path.clone()).or_default();
+            }
+        }
+    }
+    for e in requests {
         let Some(rest) = e.slug.strip_prefix(prefix) else { continue };
         match rest.split_once('/') {
-            Some((seg, _)) => level.folders.entry(format!("{prefix}{seg}")).or_default().push(e),
+            Some((seg, _)) => {
+                if let Some(inside) = level.folders.get_mut(&format!("{prefix}{seg}")) {
+                    inside.requests.push(e);
+                }
+            }
             None => level.requests.push(e),
         }
     }
@@ -281,29 +319,34 @@ pub(crate) fn rename_prefix(order: &mut [String], from: &str, to: &str) {
     }
 }
 
+/// The folder at relative path `from` renamed or moved to `to`: entries
+/// already under `to` go first (nothing was on disk there, so they name
+/// nothing; left in, one a partial walk kept (D7) would name the folder
+/// twice or take its contents' first slot), then every entry under `from`
+/// is renamed in place, so the folder and its contents keep their order.
+pub(crate) fn rename_folder_entries(order: &mut Vec<String>, from: &str, to: &str) {
+    let entry = folder_entry(to);
+    order.retain(|e| !e.starts_with(&entry));
+    rename_prefix(order, from, to);
+}
+
+/// [`remove`] for a folder: `entry` (a folder entry, `"a/"`) and every
+/// entry under it, recorded last index first as `remove` records them.
+pub(crate) fn remove_under(space: &str, order: &mut Vec<String>, entry: &str) -> Vec<OrderEdit> {
+    let mut edits = Vec::new();
+    for at in (0..order.len()).rev() {
+        if order[at].starts_with(entry) {
+            let rel = order.remove(at);
+            edits.push(OrderEdit::Removed { space: space.to_string(), rel, at });
+        }
+    }
+    edits
+}
+
 /// Every folder `rel` sits in, outermost first: `"a/b/c"` gives `"a"`,
 /// `"a/b"`.
 pub(crate) fn ancestors(rel: &str) -> Vec<&str> {
     rel.match_indices('/').map(|(i, _)| &rel[..i]).collect()
-}
-
-/// After the request at `rel` left its level: the entry of every folder
-/// it sat in that nothing is under any more, innermost first (spec
-/// 2026-11-01 R9). A folder made again later starts with no slot.
-pub(crate) fn prune_folders(
-    space: &str,
-    order: &mut Vec<String>,
-    rel: &str,
-    exists: &dyn Fn(&str) -> bool,
-) -> Vec<OrderEdit> {
-    let mut edits = Vec::new();
-    for folder in ancestors(rel).into_iter().rev() {
-        let entry = folder_entry(folder);
-        if !exists(&format!("{space}/{entry}")) {
-            edits.extend(remove(space, order, &entry));
-        }
-    }
-    edits
 }
 
 /// [`order_remove`]'s edit, on a list already in hand: every occurrence,
@@ -356,13 +399,33 @@ pub fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<St
 /// sidebar draws them with every folder open: each level under
 /// [`order_entries`], recursing into a folder at its place in its level
 /// (spec 2026-11-02 drag into folders D22).
-pub fn displayed_slugs(listing: &[RequestListing], order: &[String], space: &str) -> Vec<String> {
+pub fn displayed_slugs(
+    listing: &[RequestListing],
+    folders: &[FolderListing],
+    order: &[String],
+    space: &str,
+) -> Vec<String> {
     let mut out = Vec::new();
-    walk_space(listing, order, space, &mut |item| {
+    walk_space(listing, folders, order, space, &mut |item| {
         if let LevelItem::Request(r) = item {
             out.push(r.slug.clone());
         }
     });
+    out
+}
+
+/// Every item of `space`, both kinds, as list entries in the order the
+/// sidebar draws them with every folder open: a folder before what is in
+/// it. Appending these one by one to another space's list draws each
+/// level there as it drew here (spec 2026-11-03 create folders F27).
+pub fn drawn_entries(
+    listing: &[RequestListing],
+    folders: &[FolderListing],
+    order: &[String],
+    space: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    walk_space(listing, folders, order, space, &mut |item| out.extend(item.entry(space)));
     out
 }
 
@@ -376,12 +439,13 @@ pub fn displayed_slugs(listing: &[RequestListing], order: &[String], space: &str
 /// `order` did, and a complete list comes back unchanged.
 pub fn complete_order(
     listing: &[RequestListing],
+    folders: &[FolderListing],
     order: &[String],
     space: &str,
     drop_dead: bool,
 ) -> Vec<String> {
     let mut drawn: Vec<String> = Vec::new();
-    walk_space(listing, order, space, &mut |item| drawn.extend(item.entry(space)));
+    walk_space(listing, folders, order, space, &mut |item| drawn.extend(item.entry(space)));
     if !drop_dead {
         let held: HashSet<&str> = order.iter().map(String::as_str).collect();
         let missing = drawn.iter().filter(|e| !held.contains(e.as_str())).cloned();
@@ -402,6 +466,7 @@ pub fn complete_order(
 /// its contents.
 fn walk_space(
     listing: &[RequestListing],
+    folders: &[FolderListing],
     order: &[String],
     space: &str,
     visit: &mut dyn FnMut(LevelItem<'_>),
@@ -409,21 +474,25 @@ fn walk_space(
     let prefix = format!("{space}/");
     let entries: Vec<&RequestListing> =
         listing.iter().filter(|e| e.slug.starts_with(&prefix)).collect();
-    walk_level(&entries, &prefix, &OrderIndex::new(order), space, visit);
+    let folders: Vec<&FolderListing> =
+        folders.iter().filter(|f| f.path.starts_with(&prefix)).collect();
+    walk_level(&entries, &folders, &prefix, &OrderIndex::new(order), space, visit);
 }
 
 fn walk_level(
     entries: &[&RequestListing],
+    folders: &[&FolderListing],
     prefix: &str,
     order: &OrderIndex<'_>,
     space: &str,
     visit: &mut dyn FnMut(LevelItem<'_>),
 ) {
-    let level = split_level(entries, prefix);
+    let level = split_level(entries, folders, prefix);
     for item in order_entries(&level.requests, &level.folder_paths(), order, space) {
         visit(item);
         if let LevelItem::Folder(path) = item {
-            walk_level(&level.folders[path], &format!("{path}/"), order, space, visit);
+            let inside = &level.folders[path];
+            walk_level(&inside.requests, &inside.folders, &format!("{path}/"), order, space, visit);
         }
     }
 }
@@ -432,7 +501,7 @@ fn walk_level(
 mod tests {
     use super::*;
     use crate::model::Method;
-    use crate::storage::RequestListing;
+    use crate::storage::{FolderListing, RequestListing};
 
     fn entry(slug: &str, name: Option<&str>) -> RequestListing {
         RequestListing {
@@ -514,13 +583,59 @@ mod tests {
         let x = entry("main/a/x", None);
         let y = entry("main/a/b/y", None);
         let q = entry("main/z/q", None);
-        let level = split_level(&[&r, &x, &y, &q], "main/");
+        let folders = held(&[r.clone(), x.clone(), y.clone(), q.clone()]);
+        let folders: Vec<&FolderListing> = folders.iter().collect();
+        let level = split_level(&[&r, &x, &y, &q], &folders, "main/");
         assert_eq!(level.requests.iter().map(|e| e.slug.as_str()).collect::<Vec<_>>(), ["main/r"]);
         assert_eq!(level.folders.keys().collect::<Vec<_>>(), ["main/a", "main/z"]);
-        assert_eq!(level.folders["main/a"].len(), 2, "everything under the folder");
-        let inner = split_level(&level.folders["main/a"], "main/a/");
+        assert_eq!(level.folders["main/a"].requests.len(), 2, "everything under the folder");
+        let a = &level.folders["main/a"];
+        let inner = split_level(&a.requests, &a.folders, "main/a/");
         assert_eq!(inner.requests.len(), 1);
         assert_eq!(inner.folders.keys().collect::<Vec<_>>(), ["main/a/b"]);
+    }
+
+    fn folder(path: &str) -> FolderListing {
+        FolderListing { path: path.to_string(), name: None, broken: None }
+    }
+
+    /// The folder listing a walk would give for `listing`'s requests.
+    fn held(listing: &[RequestListing]) -> Vec<FolderListing> {
+        crate::fixtures::folders_holding(listing)
+    }
+
+    /// The folder listing is the one source of folders (F1): a request
+    /// whose folder isn't listed is under no folder of its level.
+    #[test]
+    fn split_level_takes_folders_from_the_listing_only() {
+        let x = entry("main/a/x", None);
+        let level = split_level(&[&x], &[], "main/");
+        assert!(level.folders.is_empty() && level.requests.is_empty());
+    }
+
+    /// Spec 2026-11-03 create folders F1: a listed folder is a level's
+    /// folder with nothing in it, nested ones under their parent.
+    #[test]
+    fn split_level_lists_empty_folders() {
+        let r = entry("main/r", None);
+        let (e, a, ab) = (folder("main/e"), folder("main/a"), folder("main/a/b"));
+        let level = split_level(&[&r], &[&e, &a, &ab], "main/");
+        assert_eq!(level.folders.keys().collect::<Vec<_>>(), ["main/a", "main/e"]);
+        assert!(level.folders["main/e"].requests.is_empty());
+        let a = &level.folders["main/a"];
+        assert_eq!(a.folders, [&ab]);
+        let inner = split_level(&a.requests, &a.folders, "main/a/");
+        assert_eq!(inner.folders.keys().collect::<Vec<_>>(), ["main/a/b"]);
+    }
+
+    /// F1, F4: an empty folder takes its entry when a list is completed,
+    /// and a folder entry names something while its directory is listed.
+    #[test]
+    fn complete_order_keeps_and_adds_empty_folders() {
+        let listing = vec![entry("main/r", None)];
+        let folders = vec![folder("main/e"), folder("main/f")];
+        let out = complete_order(&listing, &folders, &v(&["f/", "gone/"]), "main", true);
+        assert_eq!(out, v(&["f/", "r", "e/"]));
     }
 
     #[test]
@@ -722,7 +837,7 @@ mod tests {
             entry("other/o", None),
         ];
         assert_eq!(
-            complete_order(&listing, &[], "main", true),
+            complete_order(&listing, &held(&listing), &[], "main", true),
             v(&["a", "b", "y/", "y/p", "z/", "z/q"])
         );
     }
@@ -739,12 +854,12 @@ mod tests {
             entry("main/f/y", None),
         ];
         let order = v(&["f/y", "c", "f/"]);
-        let out = complete_order(&listing, &order, "main", true);
+        let out = complete_order(&listing, &held(&listing), &order, "main", true);
         assert_eq!(out, v(&["f/y", "c", "f/", "f/x", "a", "b"]));
         // Drawn from the completed list, every level reads as it did.
         assert_eq!(
-            displayed_slugs(&listing, &out, "main"),
-            displayed_slugs(&listing, &order, "main")
+            displayed_slugs(&listing, &held(&listing), &out, "main"),
+            displayed_slugs(&listing, &held(&listing), &order, "main")
         );
     }
 
@@ -758,10 +873,10 @@ mod tests {
             entry("main/a/x", None),
             entry("main/b/y", None),
         ];
-        let out = complete_order(&listing, &v(&["b/", "a/"]), "main", true);
+        let out = complete_order(&listing, &held(&listing), &v(&["b/", "a/"]), "main", true);
         assert_eq!(out, v(&["b/", "a/", "b/y", "a/x", "r1", "r2"]));
         assert_eq!(
-            displayed_slugs(&listing, &out, "main"),
+            displayed_slugs(&listing, &held(&listing), &out, "main"),
             v(&["main/b/y", "main/a/x", "main/r1", "main/r2"])
         );
     }
@@ -771,7 +886,10 @@ mod tests {
     fn complete_order_drops_entries_naming_nothing() {
         let listing = vec![entry("main/a/x", None), entry("main/r", None)];
         let order = v(&["gone", "a/", "x/", "a/gone", "a/x", "a/x", "r", "", "a//x"]);
-        assert_eq!(complete_order(&listing, &order, "main", true), v(&["a/", "a/x", "r"]));
+        assert_eq!(
+            complete_order(&listing, &held(&listing), &order, "main", true),
+            v(&["a/", "a/x", "r"])
+        );
     }
 
     /// D7: a listing that is not whole drops nothing. Every entry stays as
@@ -782,7 +900,7 @@ mod tests {
         let listing = vec![entry("main/a/x", None), entry("main/r", None), entry("main/q", None)];
         let order = v(&["gone/", "gone/y", "r", "r", "a/x"]);
         assert_eq!(
-            complete_order(&listing, &order, "main", false),
+            complete_order(&listing, &held(&listing), &order, "main", false),
             v(&["gone/", "gone/y", "r", "r", "a/x", "q", "a/"])
         );
     }
@@ -793,26 +911,17 @@ mod tests {
     fn complete_order_leaves_a_complete_list_alone() {
         let listing = vec![entry("main/a/x", None), entry("main/r", None), entry("main/s", None)];
         let order = v(&["a/x", "s", "a/", "r"]);
-        assert_eq!(complete_order(&listing, &order, "main", true), order);
-        assert_eq!(complete_order(&listing, &order, "main", false), order);
+        assert_eq!(complete_order(&listing, &held(&listing), &order, "main", true), order);
+        assert_eq!(complete_order(&listing, &held(&listing), &order, "main", false), order);
     }
 
     #[test]
-    fn exists_in_answers_for_requests_and_folders() {
-        let listing = v(&["main/a", "main/users/list"]);
-        assert!(exists_in(&listing, "main/a"));
-        assert!(!exists_in(&listing, "main/users"));
-        assert!(exists_in(&listing, "main/users/"));
-        assert!(!exists_in(&listing, "main/use/"));
-    }
-
-    #[test]
-    fn prune_folders_drops_every_emptied_ancestor_innermost_first() {
-        let listing = v(&["main/a/keep"]);
-        let exists = |s: &str| exists_in(&listing, s);
-        let mut order = v(&["a/", "a/b/", "a/b/c/", "z/"]);
-        prune_folders("main", &mut order, "a/b/c/gone", &exists);
-        assert_eq!(order, v(&["a/", "z/"]));
+    fn folder_exists_answers_for_listed_folders_only() {
+        let folders = vec![folder("main/users"), folder("main/e")];
+        assert!(folder_exists(&folders, "main/users"));
+        assert!(folder_exists(&folders, "main/e"), "an empty folder exists");
+        assert!(!folder_exists(&folders, "main/use"));
+        assert!(!folder_exists(&folders, "main/users/"), "a path, not an entry");
     }
 
     /// Spec 2026-11-02 drag into folders D6: the listed folders come
@@ -828,7 +937,7 @@ mod tests {
         ];
         let order = v(&["z/", "a/", "a/b/"]);
         assert_eq!(
-            displayed_slugs(&listing, &order, "main"),
+            displayed_slugs(&listing, &held(&listing), &order, "main"),
             v(&["main/z/q", "main/a/b/y", "main/a/x", "main/r"])
         );
     }
@@ -844,7 +953,7 @@ mod tests {
         ];
         let order = v(&["r1", "a/", "a/y", "a/x", "r2"]);
         assert_eq!(
-            displayed_slugs(&listing, &order, "main"),
+            displayed_slugs(&listing, &held(&listing), &order, "main"),
             v(&["main/r1", "main/a/y", "main/a/x", "main/r2"])
         );
     }
@@ -853,7 +962,10 @@ mod tests {
     fn displayed_slugs_puts_a_folder_before_a_longer_name_like_the_sidebar() {
         // `-` sorts before `/`, so a walk by level slug put `a-b` first.
         let listing = vec![entry("main/a-b/y", None), entry("main/a/x", None)];
-        assert_eq!(displayed_slugs(&listing, &[], "main"), v(&["main/a/x", "main/a-b/y"]));
+        assert_eq!(
+            displayed_slugs(&listing, &held(&listing), &[], "main"),
+            v(&["main/a/x", "main/a-b/y"])
+        );
     }
 
     #[test]
@@ -867,7 +979,7 @@ mod tests {
         ];
         let order = v(&["b", "auth/y"]);
         assert_eq!(
-            displayed_slugs(&listing, &order, "main"),
+            displayed_slugs(&listing, &held(&listing), &order, "main"),
             v(&["main/b", "main/a", "main/auth/y", "main/auth/x"])
         );
     }

@@ -97,6 +97,30 @@ fn show_refuses_a_broken_active_env() {
     assert_eq!(v["file"], s(&root.join("environments/dev.toml")));
 }
 
+/// Spec 2026-11-03 create folders F7: an empty folder, and a folder's
+/// `.folder.toml`, add nothing to the listing.
+#[test]
+fn requests_ignore_empty_folders_and_folder_files() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    let listed = |home: &Home| {
+        let out = home.run_json(&["requests", "-p", s(&root)]);
+        assert_ok(&out, "requests");
+        json(&out)["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["slug"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let before = listed(&home);
+    std::fs::create_dir_all(root.join("requests/main/empty")).unwrap();
+    std::fs::write(root.join("requests/main/users/.folder.toml"), "name = \"Users\"\n").unwrap();
+    assert_eq!(listed(&home), before);
+    let out = home.run_json(&["requests", "-p", s(&root)]);
+    assert_eq!(json(&out)["warnings"], serde_json::json!([]));
+}
+
 #[test]
 fn requests_in_sidebar_order_with_paths() {
     let home = Home::new();
@@ -644,6 +668,22 @@ fn check_clean_project_is_ok() {
     );
 
     assert_eq!(tree(&root), before, "check writes nothing");
+}
+
+/// A folder whose directory name is invalid is an error on that
+/// directory, empty or not, named once (spec 2026-11-03 create folders:
+/// handled as an invalid request file name is).
+#[test]
+fn check_reports_an_invalid_folder_name() {
+    let home = Home::new();
+    let root = write_project(&home, "api");
+    std::fs::create_dir_all(root.join("requests/main/My Stuff/inner")).unwrap();
+    let out = home.run_json(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let errors = findings(&json(&out), "errors");
+    let dir = s(&root.join("requests/main/My Stuff")).to_string();
+    assert_eq!(errors.iter().filter(|(f, _)| f.starts_with(&dir)).count(), 1, "{errors:?}");
+    assert!(errors.iter().any(|(f, m)| *f == dir && m.contains("folder name")), "{errors:?}");
 }
 
 /// Review Focus 1: each broken file is an error naming that file, and the

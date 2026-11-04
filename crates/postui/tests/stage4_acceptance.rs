@@ -146,11 +146,11 @@ async fn stage4_mouse_only_acceptance_flow() {
         matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })),
         "clicking the new-request button opens the naming prompt"
     );
-    type_text(&mut app, "items/create");
+    type_text(&mut app, "create item");
     submit_prompt(&mut app);
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("main/items/create"),
+        Some("main/create-item"),
         "naming prompt created and opened the request"
     );
 

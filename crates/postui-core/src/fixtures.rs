@@ -20,6 +20,25 @@ use crate::varmodel;
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 
+/// Every folder `listing`'s requests sit in, nameless, as the walk would
+/// list their directories: the folder listing for a test that builds a
+/// request listing by hand (the folder listing is the one source of which
+/// folders exist, spec 2026-11-03 create folders F1).
+pub fn folders_holding(listing: &[RequestListing]) -> Vec<crate::storage::FolderListing> {
+    let mut paths = std::collections::BTreeSet::new();
+    for l in listing {
+        let segs: Vec<&str> = l.slug.split('/').collect();
+        // The space, then each folder; the last segment is the request.
+        for end in 2..segs.len() {
+            paths.insert(segs[..end].join("/"));
+        }
+    }
+    paths
+        .into_iter()
+        .map(|path| crate::storage::FolderListing { path, name: None, broken: None })
+        .collect()
+}
+
 // ---------------------------------------------------------------------
 // The trash: deletes were renames into a per-project trash so undo
 // was a rename back. `Disk` owns the trash now; this is what the tests of

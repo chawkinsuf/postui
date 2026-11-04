@@ -5238,14 +5238,17 @@ fn startup_restores_the_stored_space_and_its_request() {
 fn new_and_renamed_requests_land_inside_the_active_space() {
     let (mut app, dir) = spaced_app();
     app.update(Action::SwitchSpace("auth".into()));
+    // A name only: the `/` is part of it (spec 2026-11-03 create folders
+    // F28), so no folder is made.
     app.update(Action::CreateRequest("Tokens/Refresh".into()));
-    assert!(dir.path().join("requests/auth/tokens/refresh.toml").is_file());
-    assert_eq!(app.editor.slug.as_deref(), Some("auth/tokens/refresh"));
+    assert!(dir.path().join("requests/auth/tokens-refresh.toml").is_file());
+    assert!(!dir.path().join("requests/auth/tokens").exists());
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/tokens-refresh"));
     app.update(Action::PromptRenameRequest);
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else { panic!("prompt") };
-    assert_eq!(input.text(), "tokens/Refresh", "prefill hides the space");
+    assert_eq!(input.text(), "Tokens/Refresh", "the name, nothing of the space");
     app.update(Action::Close);
-    app.update(Action::RenameRequest { from: "auth/tokens/refresh".into(), to: "Renewed".into() });
+    app.update(Action::RenameRequest { from: "auth/tokens-refresh".into(), to: "Renewed".into() });
     assert!(dir.path().join("requests/auth/renewed.toml").is_file());
 }
 
@@ -5277,6 +5280,311 @@ fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
     );
 
     assert_eq!(app.sidebar.rows, rows_before, "the loose file is skipped, never listed");
+}
+
+/// Spec 2026-11-03 create folders F24: a folder file that doesn't parse
+/// warns once, as a chronic state, and the folder still draws under its
+/// directory name.
+#[test]
+fn a_broken_folder_file_warns_once_and_the_folder_still_draws() {
+    let (mut app, dir) = folder_app();
+    std::fs::write(dir.path().join("requests/main/a/.folder.toml"), "name = ").unwrap();
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    let warned: Vec<_> =
+        app.toasts.entries().into_iter().filter(|(m, _)| m.contains(".folder.toml")).collect();
+    assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
+    assert_eq!(warned[0].1, &crate::components::toast::ToastKind::Warning);
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    assert!(!app.toasts.messages().iter().any(|m| m.contains(".folder.toml")));
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"]);
+}
+
+fn prompt_title(app: &App) -> Option<String> {
+    match app.modals.top() {
+        Some(Modal::Prompt { title, .. }) => Some(title.clone()),
+        _ => None,
+    }
+}
+
+/// Types `text` into the focused prompt and confirms it.
+fn submit_folder_prompt(app: &mut App, text: &str) {
+    let input = app.modals.focused_input_mut().expect("a prompt");
+    input.set_text(text);
+    app.update(Action::ConfirmTopModal);
+}
+
+/// Spec 2026-11-03 create folders F12: `A` on the sidebar opens New
+/// folder in both profiles.
+#[test]
+fn shift_a_on_the_sidebar_opens_new_folder_in_both_profiles() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let (mut app, _dir) = folder_app();
+        app.use_profile(profile);
+        app.focus = PaneId::Sidebar;
+        app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        assert_eq!(prompt_title(&app).as_deref(), Some("New folder"), "{profile:?}");
+        assert_eq!(app.modals.focused_input().unwrap().text(), "", "{profile:?}");
+    }
+}
+
+/// F14, F26: New folder lands right after the cursor's row, in its level,
+/// gets the cursor, and toasts its name; undo takes it away.
+#[test]
+fn new_folder_lands_after_the_cursor_row_and_gets_the_cursor() {
+    let (mut app, dir) = folder_app();
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::PromptNewFolder);
+    submit_folder_prompt(&mut app, "User Accounts");
+    assert!(dir.path().join("requests/main/user-accounts/.folder.toml").is_file());
+    assert_eq!(level_order(&dir, "")[..2], ["alpha".to_string(), "user-accounts/".to_string()]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/user-accounts".into())));
+    assert!(app.toasts.messages().iter().any(|m| m.contains("Created folder User Accounts")));
+    app.update(Action::Undo);
+    assert!(!dir.path().join("requests/main/user-accounts").exists());
+    assert!(rendered_text(&mut app).contains("Undid create of folder User Accounts"));
+}
+
+/// F14: on a request inside an open folder, the new folder goes in that
+/// folder, beside the request.
+#[test]
+fn new_folder_beside_a_nested_request_goes_in_its_folder() {
+    let (mut app, dir) = folder_app();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/a".to_string());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    app.sidebar.select_slug("main/a/x");
+    app.update(Action::PromptNewFolder);
+    submit_folder_prompt(&mut app, "Inner");
+    assert!(dir.path().join("requests/main/a/inner").is_dir());
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/a/inner".into())));
+}
+
+/// F13, F14: the folder menu's New folder here lands last inside it.
+#[test]
+fn new_folder_here_lands_last_inside() {
+    let (mut app, dir) = folder_app();
+    app.update(Action::PromptNewFolderIn("main/a".into()));
+    submit_folder_prompt(&mut app, "Deep");
+    assert!(dir.path().join("requests/main/a/deep").is_dir());
+    assert_eq!(level_order(&dir, "a"), ["a/x", "a/deep/"]);
+}
+
+/// F19: a taken name refuses and brings the prompt back with the text.
+#[test]
+fn new_folder_with_a_shown_name_is_refused_and_keeps_the_prompt() {
+    let (mut app, _dir) = folder_app();
+    app.update(Action::PromptNewFolder);
+    submit_folder_prompt(&mut app, "B");
+    assert_eq!(prompt_title(&app).as_deref(), Some("New folder"));
+    assert_eq!(app.modals.focused_input().unwrap().text(), "B");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("already")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+/// F12, F23: `r` on a folder row renames it with its name prefilled.
+#[test]
+fn r_on_a_folder_row_renames_it_with_the_name_prefilled() {
+    let (mut app, dir) = folder_app();
+    std::fs::write(dir.path().join("requests/main/a/.folder.toml"), "name = \"Ay\"\n").unwrap();
+    app.update(Action::RefreshSidebar);
+    app.sidebar.selected = Some(folder_row(&app, "main/a"));
+    app.focus = PaneId::Sidebar;
+    press(&mut app, 'r');
+    assert_eq!(prompt_title(&app).as_deref(), Some("Rename folder"));
+    assert_eq!(app.modals.focused_input().unwrap().text(), "Ay");
+    submit_folder_prompt(&mut app, "Customers");
+    assert!(dir.path().join("requests/main/customers/x.toml").is_file());
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/customers".into())));
+    assert!(app.toasts.messages().iter().any(|m| m.contains("Renamed folder to Customers")));
+}
+
+/// F12, F21, F26: `d` (arrows) and `dd` (vim) delete a folder row; undo
+/// brings it back.
+#[test]
+fn d_and_dd_on_a_folder_row_delete_it_and_undo_restores_it() {
+    use crate::config::KeyProfile;
+    for (profile, keys) in [(KeyProfile::Arrows, "d"), (KeyProfile::Vim, "dd")] {
+        let (mut app, dir) = folder_app();
+        app.use_profile(profile);
+        app.sidebar.selected = Some(folder_row(&app, "main/b"));
+        app.focus = PaneId::Sidebar;
+        for c in keys.chars() {
+            press(&mut app, c);
+        }
+        assert!(!dir.path().join("requests/main/b").exists(), "{profile:?}");
+        assert!(
+            app.toasts.messages().iter().any(|m| m.contains("Deleted folder b")),
+            "{profile:?}: {:?}",
+            app.toasts.messages()
+        );
+        app.update(Action::Undo);
+        assert!(dir.path().join("requests/main/b/y.toml").is_file(), "{profile:?}");
+        // The undo toast follows every delete's: "Restored <what>".
+        assert!(
+            app.toasts.messages().iter().any(|m| m.contains("Restored folder b")),
+            "{profile:?}: {:?}",
+            app.toasts.messages()
+        );
+    }
+}
+
+/// F33: a folder whose directory name is invalid shows, and its rename
+/// is refused as an invalid name, as a request file's is.
+#[test]
+fn renaming_a_broken_folder_file_to_its_shown_name_says_why() {
+    let (mut app, dir) = folder_app();
+    std::fs::write(dir.path().join("requests/main/a/.folder.toml"), "name = [").unwrap();
+    app.update(Action::RefreshSidebar);
+    app.toasts = Default::default();
+    app.update(Action::RenameFolder { from: "main/a".into(), to: "a".into() });
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains(".folder.toml")),
+        "the broken file is named: {:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("requests/main/a/.folder.toml")).unwrap(),
+        "name = ["
+    );
+}
+
+#[test]
+fn a_non_slug_folder_shows_and_refuses_a_rename() {
+    let (mut app, dir) = folder_app();
+    std::fs::create_dir_all(dir.path().join("requests/main/My Stuff")).unwrap();
+    app.update(Action::RefreshSidebar);
+    folder_row(&app, "main/My Stuff");
+    app.update(Action::RenameFolder { from: "main/My Stuff".into(), to: "Stuff".into() });
+    assert!(dir.path().join("requests/main/My Stuff").is_dir());
+    assert!(!dir.path().join("requests/main/stuff").exists());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("invalid")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+/// The footer's rename and delete chips run their key's verb, so on a
+/// folder row they act on the folder as `r` and `d` do (review round 4).
+/// The request actions stay request-only: the palette's "Request: delete"
+/// and "Request: rename" never take a folder.
+#[test]
+fn the_rename_and_delete_chips_act_on_a_folder_row() {
+    use crate::action::Verb;
+    let (mut app, dir) = folder_app();
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = Some(folder_row(&app, "main/a"));
+    app.update(Action::DeleteSelectedRequest);
+    app.update(Action::PromptRenameRequest);
+    assert!(app.modals.is_empty());
+    assert!(dir.path().join("requests/main/a").exists());
+
+    app.update(Action::OnSelection(Verb::Rename));
+    assert_eq!(prompt_title(&app).as_deref(), Some("Rename folder"));
+    app.modals.pop();
+    app.update(Action::OnSelection(Verb::Delete { count: 1 }));
+    assert!(!dir.path().join("requests/main/a").exists());
+}
+
+/// F12: a count on a folder row's delete is refused.
+#[test]
+fn a_counted_delete_on_a_folder_row_is_refused() {
+    use crate::config::KeyProfile;
+    let (mut app, dir) = folder_app();
+    app.use_profile(KeyProfile::Vim);
+    app.sidebar.selected = Some(folder_row(&app, "main/a"));
+    app.focus = PaneId::Sidebar;
+    for c in "2dd".chars() {
+        press(&mut app, c);
+    }
+    assert!(dir.path().join("requests/main/a").exists());
+    assert!(dir.path().join("requests/main/b").exists());
+    assert!(app.toasts.messages().iter().any(|m| m.contains("Counted delete")));
+}
+
+/// F13: the folder row menu.
+#[test]
+fn the_folder_menu_lists_new_folder_here_rename_and_delete() {
+    let (mut app, _dir) = folder_app();
+    let i = folder_row(&app, "main/a");
+    let labels: Vec<String> = app
+        .context_menu_for(&Hit::SidebarRow(i))
+        .unwrap()
+        .iter()
+        .map(|m| m.label.clone())
+        .collect();
+    for want in ["New request here…", "New folder here…", "Import curl here…", "Rename…", "Delete"]
+    {
+        assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
+    }
+}
+
+/// F25: deleting a folder holding the open request lands as deleting that
+/// request does, and undo brings it back.
+#[test]
+fn deleting_a_folder_holding_the_open_request_lands_like_a_request_delete() {
+    let (mut app, dir) = folder_app();
+    app.update(Action::ForceOpenRequest("main/a/x".into()));
+    app.sidebar.selected = Some(folder_row(&app, "main/a"));
+    app.update(Action::DeleteSelectedFolder);
+    assert!(!dir.path().join("requests/main/a").exists());
+    assert_ne!(app.editor.slug.as_deref(), Some("main/a/x"));
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/a/x.toml").is_file());
+}
+
+/// F28: a rename takes a name only. A `/` typed there is part of the
+/// name, and the request stays in its folder.
+#[test]
+fn a_rename_with_a_slash_stays_in_its_folder() {
+    let (mut app, dir) = spaced_app();
+    let mut get = req("https://x/g");
+    get.name = Some("Get".into());
+    postui_core::fixtures::save_request(dir.path(), "main/users/get", &get).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::RenameRequest { from: "main/users/get".into(), to: "Accounts/Get".into() });
+    assert!(dir.path().join("requests/main/users/accounts-get.toml").is_file());
+    assert!(!dir.path().join("requests/main/accounts").exists());
+    let listed = app.proj().requests().iter().find(|l| l.slug == "main/users/accounts-get");
+    assert_eq!(listed.and_then(|l| l.name.as_deref()), Some("Accounts/Get"));
+}
+
+/// F12: the palette offers New folder.
+#[test]
+fn the_palette_offers_new_folder() {
+    let commands = crate::components::palette::all_commands();
+    assert!(
+        commands.iter().any(|c| c.action == Action::PromptNewFolder && c.name == "Folder: new")
+    );
+}
+
+/// F1, F15: an empty folder draws by its display name, and a request
+/// dragged onto its open row goes inside it (2026-11-02 D10).
+#[test]
+fn an_empty_folder_draws_by_its_name_and_takes_a_dragged_request() {
+    let (mut app, dir) = folder_app();
+    std::fs::create_dir_all(dir.path().join("requests/main/e")).unwrap();
+    std::fs::write(dir.path().join("requests/main/e/.folder.toml"), "name = \"Empty One\"\n")
+        .unwrap();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/e".to_string());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c", "main/e"]);
+    assert!(rendered_text(&mut app).contains("Empty One/"));
+    let e = folder_rect(&mut app, "main/e");
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), e.y));
+    app.handle_mouse(left_up(names_x(r0), e.y));
+    assert!(dir.path().join("requests/main/e/alpha.toml").is_file());
 }
 
 #[test]
@@ -6245,12 +6553,49 @@ fn undo_of_a_rename_restores_the_order_slot() {
 #[test]
 fn undo_of_a_create_drops_its_arrival() {
     let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    // Spec 2026-11-03 create folders F30: right after the cursor's row.
+    app.sidebar.select_slug("main/alpha");
     app.update(Action::CreateRequest("newest".into()));
-    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "newest"]);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "newest", "gamma"]);
     app.update(Action::Undo);
     assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
     app.update(Action::Redo);
-    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "newest"]);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "newest", "gamma"]);
+}
+
+/// F30: the new request's place is read when the create is asked for,
+/// before the dirty gate, so its Save (which lands the cursor on the saved
+/// row) can't move it.
+#[test]
+fn a_new_requests_place_is_fixed_before_the_dirty_gate() {
+    let (mut app, _dir) = folder_app();
+    app.update(Action::ForceOpenRequest("main/a/x".into()));
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/edited");
+    app.capture_undo();
+    app.sidebar.selected = Some(folder_row(&app, "main/b"));
+    app.update(Action::CreateRequest("N".into()));
+    let Some(Modal::Confirm { choices, .. }) = app.modals.top() else { panic!("the gate") };
+    let want = Action::ForceCreateRequestAt {
+        level: "main".into(),
+        after: Some(crate::components::sidebar::RowKey::Folder("main/b".into())),
+        name: "N".into(),
+    };
+    assert!(
+        choices.iter().any(|(_, _, actions)| format!("{actions:?}").contains(&format!("{want:?}"))),
+        "{choices:?}"
+    );
+}
+
+/// F30: with the cursor on a folder row a new request goes beside the
+/// folder, and New request here puts it last inside.
+#[test]
+fn a_new_request_beside_a_folder_row_and_inside_it_from_here() {
+    let (mut app, dir) = folder_app();
+    app.sidebar.selected = Some(folder_row(&app, "main/a"));
+    app.update(Action::CreateRequest("Beside".into()));
+    assert!(dir.path().join("requests/main/beside.toml").is_file());
+    app.update(Action::CreateRequestIn { folder: "main/a".into(), name: "Inside".into() });
+    assert!(dir.path().join("requests/main/a/inside.toml").is_file());
 }
 
 #[test]
@@ -7570,18 +7915,21 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     app.focus = PaneId::Sidebar;
     app.handle_key(plain('a'));
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })));
+    // A name only: the `/` is part of it (spec 2026-11-03 create folders
+    // F28).
     for c in "api/ping".chars() {
         app.handle_key(plain(c));
     }
     submit_prompt(&mut app);
     assert!(app.modals.is_empty());
-    assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
-    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api-ping"));
+    assert_eq!(app.editor.name.as_deref(), Some("api/ping"));
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api-ping").is_ok());
     assert!(
         app.sidebar
             .rows
             .iter()
-            .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/api/ping")),
+            .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/api-ping")),
         "sidebar should list the new request: {:?}",
         app.sidebar.rows
     );
@@ -7609,7 +7957,7 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
 fn new_request_blank_name_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
     app.update(Action::PromptNewRequest);
-    for c in "folder/   ".chars() {
+    for c in "   ".chars() {
         app.handle_key(plain(c));
     }
     submit_prompt(&mut app);
@@ -7661,9 +8009,9 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
-/// #206: the Rename prompt and New request here name a hand-made folder
-/// whose name `slugify` would change (`old-`) by its own name, and both
-/// land in it.
+/// #206: in a hand-made folder whose name `slugify` would change (`old-`),
+/// a rename stays and New request here lands in it. Neither prompt shows
+/// the folder (spec 2026-11-03 create folders F28).
 #[test]
 fn rename_and_new_request_here_keep_a_hand_made_folder() {
     let mut app = App::new_for_test();
@@ -7675,17 +8023,46 @@ fn rename_and_new_request_here_keep_a_hand_made_folder() {
     app.update(Action::ForceOpenRequest("main/old-/ping".into()));
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/old-/ping"));
     app.update(Action::PromptRenameRequest);
-    assert_eq!(app.modals.focused_input().unwrap().text(), "old-/ping");
+    assert_eq!(app.modals.focused_input().unwrap().text(), "ping");
     type_str(&mut app, "2");
     submit_prompt(&mut app);
     assert!(app.proj().request_exists("main/old-/ping2"), "{:?}", app.toasts.messages());
     assert!(!app.proj().root().join("requests/main/old").exists());
 
     app.update(Action::PromptNewRequestIn("main/old-".into()));
-    assert_eq!(app.modals.focused_input().unwrap().text(), "old-/");
+    assert_eq!(app.modals.focused_input().unwrap().text(), "");
     type_str(&mut app, "Fresh");
     submit_prompt(&mut app);
     assert_eq!(app.editor.slug.as_deref(), Some("main/old-/fresh"));
+}
+
+/// Spec 2026-11-03 create folders F28: the Rename prompt shows only the
+/// request's name and New request here shows nothing, and each lands in
+/// the folder it came from.
+#[test]
+fn prompts_prefill_no_folder_path() {
+    let mut app = App::new_for_test();
+    let mut get = req("https://x/g");
+    get.name = Some("Get".into());
+    postui_core::fixtures::save_request(app.proj().root(), "main/accounts/get", &get).unwrap();
+    std::fs::write(
+        app.proj().root().join("requests/main/accounts/.folder.toml"),
+        "name = \"Customer Accounts\"\n",
+    )
+    .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/accounts/get".into()));
+    app.update(Action::PromptRenameRequest);
+    assert_eq!(app.modals.focused_input().unwrap().text(), "Get");
+    type_str(&mut app, " v2");
+    submit_prompt(&mut app);
+    assert!(app.proj().request_exists("main/accounts/get-v2"), "{:?}", app.toasts.messages());
+
+    app.update(Action::PromptNewRequestIn("main/accounts".into()));
+    assert_eq!(app.modals.focused_input().unwrap().text(), "");
+    type_str(&mut app, "Fresh");
+    submit_prompt(&mut app);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/accounts/fresh"));
 }
 
 /// #209: the Rename prompt submitted as prefilled leaves a hand-made
@@ -7757,15 +8134,11 @@ fn saving_a_legacy_request_does_not_invent_a_name() {
 #[test]
 fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     let mut app = App::new_for_test();
-    postui_core::fixtures::save_request(
-        app.proj().root(),
-        "main/api/ping",
-        &req("https://x/existing"),
-    )
-    .unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/existing"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::PromptNewRequest);
-    for c in "api/ping".chars() {
+    for c in "ping".chars() {
         app.handle_key(plain(c));
     }
     submit_prompt(&mut app);
@@ -7774,9 +8147,9 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("the name prompt stays open after the rejection")
     };
-    assert_eq!(input.text(), "api/ping");
+    assert_eq!(input.text(), "ping");
     assert!(!app.toasts.is_empty(), "a duplicate name must toast");
-    let existing = postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").unwrap();
+    let existing = postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap();
     assert_eq!(existing.url, "https://x/existing", "existing file must not be overwritten");
 }
 
@@ -7818,7 +8191,7 @@ fn rename_request_updates_disk_and_open_slug() {
 fn an_unchanged_rename_changes_nothing() {
     for (slug, prefill, text) in [
         ("main/ping-", "ping-", "# hand-made\nmethod = \"GET\"\nurl = \"https://x/a\"\n"),
-        ("main/api/ping-", "api/ping-", "# hand-made\nurl = \"https://x/b\"\nmethod = \"GET\"\n"),
+        ("main/api/ping-", "ping-", "# hand-made\nurl = \"https://x/b\"\nmethod = \"GET\"\n"),
         (
             "main/odd",
             "Get User",
@@ -11236,13 +11609,13 @@ fn confirm_click_confirms_even_with_cancel_aimed() {
     let mut app = App::new_for_test();
     app.anims.enabled = false;
     app.update(Action::PromptNewRequest);
-    type_chars(&mut app, "api/ping");
+    type_chars(&mut app, "ping");
     app.modals.close_top_field();
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     render_once(&mut app);
     let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
     app.handle_mouse(left_down(confirm.x, confirm.y));
-    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/ping").is_ok());
 }
 
 #[test]
@@ -11250,7 +11623,7 @@ fn click_prompt_confirm_button_creates_the_request_like_enter() {
     let mut app = App::new_for_test();
     app.anims.enabled = false;
     app.update(Action::PromptNewRequest);
-    for c in "api/ping".chars() {
+    for c in "ping".chars() {
         app.handle_key(plain(c));
     }
     render_once(&mut app);
@@ -11258,7 +11631,7 @@ fn click_prompt_confirm_button_creates_the_request_like_enter() {
     assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
     assert!(app.modals.is_empty());
     assert!(
-        postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok(),
+        postui_core::fixtures::load_request(app.proj().root(), "main/ping").is_ok(),
         "clicking Confirm must create the request, exactly like Enter"
     );
 }
@@ -23978,7 +24351,9 @@ mod undo_tests {
             ("undo duplicate", Action::Undo),
             ("save as", Action::SaveRequestAs("savedcopy".into())),
             ("undo save as", Action::Undo),
-            ("delete open", Action::DeleteRequest("main/fresh".into())),
+            // `fresh` went beside the cursor's `sub/inner` (spec 2026-11-03
+            // create folders F30).
+            ("delete open", Action::DeleteRequest("main/sub/fresh".into())),
             ("undo delete", Action::Undo),
             ("redo delete", Action::Redo),
             ("undo delete again", Action::Undo),
@@ -23995,10 +24370,6 @@ mod undo_tests {
             ("switch back", Action::ForceSwitchSpace("main".into())),
             ("move all", Action::ForceMoveAllRequests { from: "auth".into(), to: "main".into() }),
             ("undo move all", Action::Undo),
-            // `alpha`, not `beta`: `fresh` arrived at the end of `main`'s
-            // list (spec 2026-11-02 drag into folders D4), and while the
-            // rest of that list is unwritten it draws first (D6), leaving
-            // `beta` the last request, where a step down is no op.
             ("reorder", Action::MoveRequest { slug: "main/alpha".into(), delta: 1 }),
             ("undo reorder", Action::Undo),
             ("create space", Action::CreateSpace("billing".into())),
@@ -24048,10 +24419,11 @@ mod undo_tests {
         // without going through the app — remove the cursor's row, then
         // add a new one — and `RefreshSidebar` must still find a cursor.
         // Pattern from `an_outside_delete_of_the_cursor_row_lands_on_the_neighbour`.
-        app.update(Action::ForceOpenRequest("main/fresh".into()));
-        app.sidebar.select_slug("main/fresh");
-        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/fresh"));
-        std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/fresh")).unwrap();
+        app.update(Action::ForceOpenRequest("main/sub/fresh".into()));
+        app.sidebar.select_slug("main/sub/fresh");
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/sub/fresh"));
+        std::fs::remove_file(postui_core::storage::request_path(dir.path(), "main/sub/fresh"))
+            .unwrap();
         app.update(Action::RefreshSidebar);
         check(&app, "outside delete of the cursor row");
 
@@ -32440,7 +32812,10 @@ fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
 fn a_hovered_footer_chip_keeps_the_chip_row() {
     let mut app = App::new_for_test();
     render_once(&mut app);
-    let rename = app.hits.rect_of(&Hit::FooterChip(Action::PromptRenameRequest)).unwrap();
+    let rename = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::OnSelection(crate::action::Verb::Rename)))
+        .unwrap();
     app.handle_mouse(moved(rename.x, rename.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
     assert!(row.contains("rename") && row.contains("reorder"), "chips stay: {row:?}");
@@ -37112,10 +37487,8 @@ fn footer_keycaps_follow_the_profile() {
     app.focus = PaneId::Sidebar;
     assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some("^P commands"));
     assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"));
-    assert_eq!(
-        footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(),
-        Some("d delete")
-    );
+    let delete = Action::OnSelection(crate::action::Verb::Delete { count: 1 });
+    assert_eq!(footer_chip_text(&mut app, delete.clone()).as_deref(), Some("d delete"));
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
     app.use_profile(KeyProfile::Vim);
     assert_eq!(
@@ -37128,10 +37501,7 @@ fn footer_keycaps_follow_the_profile() {
         Some("a new"),
         "a shared letter"
     );
-    assert_eq!(
-        footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(),
-        Some("dd delete")
-    );
+    assert_eq!(footer_chip_text(&mut app, delete).as_deref(), Some("dd delete"));
     assert_eq!(
         footer_chip_text(&mut app, Action::CloseWindow { write: false, force: false }).as_deref(),
         Some(":q quit"),
@@ -37716,10 +38086,11 @@ fn selection_action_on_a_table() {
     assert_eq!(app.selection_action(s, Verb::Rename), None);
 }
 
-/// Review Focus 2: `dd` on a folder row, or on the table's add row, does
-/// nothing at all.
+/// Review Focus 2: `dd` on the table's add row does nothing at all.
+/// *Amended 2026-11-03 (spec create folders F12):* on a folder row it
+/// deletes the folder, and a counted delete there is refused with a note.
 #[test]
-fn delete_on_a_folder_or_the_add_row_does_nothing() {
+fn delete_on_a_folder_deletes_it_and_on_the_add_row_does_nothing() {
     use crate::action::Verb;
     use crate::keyroute::Surface;
     let (mut app, dir) = sidebar_test_app_three_flat_rows();
@@ -37733,8 +38104,14 @@ fn delete_on_a_folder_or_the_add_row_does_nothing() {
         .position(|r| matches!(r, Row::Folder { .. }))
         .expect("the folder is listed");
     app.sidebar.selected = Some(folder);
-    assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 1 }), None);
-    assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 3 }), None);
+    assert_eq!(
+        app.selection_action(Surface::Sidebar, Verb::Delete { count: 1 }),
+        Some(Action::DeleteSelectedFolder)
+    );
+    assert!(matches!(
+        app.selection_action(Surface::Sidebar, Verb::Delete { count: 3 }),
+        Some(Action::ShowToast(m, _)) if m == crate::keyroute::table::NO_COUNTED_DELETE
+    ));
     let mut table = three_header_app();
     table.editor.table.set_selected(Some(Stop::Add));
     let s = Surface::Table(EditorTab::Headers);
@@ -38233,7 +38610,8 @@ fn a_folder_dropped_at_the_top_level_names_it() {
     app.handle_mouse(moved(names_x(v1), r0.y));
     app.handle_mouse(left_up(names_x(v1), r0.y));
     assert!(dir.path().join("requests/main/v1/get.toml").is_file());
-    assert_eq!(level_order(&dir, ""), ["v1/", "alpha", "beta"], "users/ went with its last item");
+    // Spec 2026-11-03 create folders F2: the emptied users/ stays.
+    assert_eq!(level_order(&dir, ""), ["v1/", "alpha", "beta", "users/"], "users/ stays, emptied");
     app.update(Action::Undo);
     let text = rendered_text(&mut app);
     assert!(text.contains("Undid move of folder v1 to the top level"), "{text}");

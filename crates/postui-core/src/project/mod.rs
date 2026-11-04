@@ -136,6 +136,9 @@ pub struct Project {
     /// joined; re-derived by every `refresh_environments`.
     environments_warning: Option<String>,
     listing: Vec<RequestListing>,
+    /// Every folder (spec 2026-11-03 create folders F1), walked with
+    /// `listing`.
+    folder_listing: Vec<crate::storage::FolderListing>,
     listing_warnings: Vec<ListingWarning>,
     /// Requests loaded on demand, held while open (Task 7).
     open_requests: IndexMap<String, Held>,
@@ -681,7 +684,12 @@ impl Project {
             return Ok(());
         }
         match after {
-            Some(t) => self.disk.write(path, t)?,
+            Some(t) => {
+                if before.is_none() {
+                    self.fs_make_parents(path)?;
+                }
+                self.disk.write(path, t)?
+            }
             None => self.disk.remove(path)?,
         }
         self.record(Op::Text { path: path.clone(), before, after: after.map(str::to_string) });
@@ -689,8 +697,41 @@ impl Project {
     }
 
     pub(crate) fn fs_rename(&mut self, from: &RelPath, to: &RelPath) -> Result<(), Error> {
+        self.fs_make_parents(to)?;
         self.disk.rename(from, to)?;
         self.record(Op::Renamed { from: from.clone(), to: to.clone() });
+        Ok(())
+    }
+
+    /// Makes each directory above `path` that is missing, outside in, each
+    /// journaled, before an op writes at `path`. `Disk` makes missing
+    /// parents itself (its backstop for `.postui/` and the trash), and a
+    /// parent made there is one undo never hears of: a space listed in
+    /// `project.toml` whose directory git didn't keep, made by a create
+    /// or a move into it, stayed after undo (spec 2026-11-03 create
+    /// folders F5, the user's "undo restores exactly"). Every journaled
+    /// write goes through here, so no op has to know which parents it
+    /// makes.
+    ///
+    /// Only below `requests/`: the spaces and folders are what an op makes
+    /// there. Everything else stays with `Disk`'s backstop as before, above
+    /// all `.postui/` (the lock, the trash, secrets and state), which an
+    /// undo must never take back (spec §3: "directories the journal must
+    /// not own"; review round 7).
+    fn fs_make_parents(&mut self, path: &RelPath) -> Result<(), Error> {
+        let full = path.as_str().to_string();
+        if !full.starts_with(&format!("{REQUESTS_DIR}/")) {
+            return Ok(());
+        }
+        // `requests/` itself is left to `Disk` too: only the spaces and
+        // folders below it are an op's to make and take back.
+        for (i, _) in full.match_indices('/').skip(1) {
+            let dir = rel(&full[..i])?;
+            if !self.disk.is_dir(&dir) {
+                self.disk.create_dir(&dir)?;
+                self.record(Op::Created { path: dir });
+            }
+        }
         Ok(())
     }
 
@@ -700,6 +741,7 @@ impl Project {
         if self.disk.is_dir(path) {
             return Ok(());
         }
+        self.fs_make_parents(path)?;
         self.disk.create_dir(path)?;
         self.record(Op::Created { path: path.clone() });
         Ok(())
@@ -707,6 +749,7 @@ impl Project {
 
     /// Creates a file that must not exist (`AlreadyExists` otherwise).
     pub(crate) fn fs_create_file(&mut self, path: &RelPath, text: &str) -> Result<(), Error> {
+        self.fs_make_parents(path)?;
         self.disk.write_new(path, text)?;
         self.record(Op::Created { path: path.clone() });
         Ok(())
@@ -1256,7 +1299,7 @@ impl Project {
             }
         }
 
-        let (listing, listing_warnings) = requests::list(&mut disk);
+        let (listing, folder_listing, listing_warnings) = requests::list(&mut disk);
 
         let mut project = Project {
             disk,
@@ -1271,6 +1314,7 @@ impl Project {
             spaces_warning,
             environments_warning,
             listing,
+            folder_listing,
             listing_warnings,
             open_requests: IndexMap::new(),
             local: Local {
@@ -2075,6 +2119,28 @@ mod tests {
         let joined = p.listing_warning().unwrap();
         assert!(joined.contains("requests/Other/x.toml is not in a valid space"), "{joined}");
         assert!(joined.contains("; requests/loose.toml is not in a space"), "{joined}");
+    }
+
+    /// Only the directories an op makes under `requests/` are journaled:
+    /// one outside it (here a new top-level directory, as `.postui/` would
+    /// be) is left to `Disk`, so undo never takes it back.
+    #[test]
+    fn only_directories_under_requests_are_journaled_as_made() {
+        let (dir, mut p) = fixture();
+        let path = RelPath::new("notes/today.toml").unwrap();
+        p.transaction("t", EntryMeta::default(), |p| p.fs_write_text(&path, Some("x = 1\n")))
+            .unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(!dir.path().join("notes/today.toml").exists());
+        assert!(dir.path().join("notes").is_dir(), "not the journal's to take back");
+
+        // Nor is `requests/` itself; the space below it is.
+        std::fs::remove_dir_all(dir.path().join("requests")).unwrap();
+        let path = RelPath::new("requests/main/x.toml").unwrap();
+        p.transaction("t", EntryMeta::default(), |p| p.fs_create_file(&path, "x = 1\n")).unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(!dir.path().join("requests/main").exists(), "the space it made goes");
+        assert!(dir.path().join("requests").is_dir(), "requests/ stays");
     }
 
     #[test]
