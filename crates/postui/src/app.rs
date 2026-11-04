@@ -5155,10 +5155,7 @@ impl App {
                     Action::CreateRequestIn { folder, name } => {
                         Action::ForceCreateRequestAt { level: folder, after: None, name }
                     }
-                    Action::CreateRequest(name) => {
-                        let (level, after) = self.cursor_place();
-                        Action::ForceCreateRequestAt { level, after, name }
-                    }
+                    Action::CreateRequest(name) => self.create_at_cursor(name),
                     _ => unreachable!("matched above"),
                 };
                 if self.leaving_unsaved() {
@@ -5167,13 +5164,6 @@ impl App {
                 } else {
                     self.apply(force)
                 }
-            }
-            Action::ForceCreateRequest(name) => {
-                if self.refuse_without_project() {
-                    return true;
-                }
-                self.create_or_save_as(&name, NewAt::Cursor, blank_request);
-                true
             }
             Action::ForceCreateRequestAt { level, after, name } => {
                 if self.refuse_without_project() {
@@ -11613,6 +11603,13 @@ impl App {
             Some(Row::Folder { path, .. }) => (parent(path), Some(RowKey::Folder(path.clone()))),
             None => (space.clone(), None),
         }
+    }
+
+    /// What `CreateRequest(name)` applies past the dirty gate: a create at
+    /// the cursor's place, read now (spec 2026-11-03 create folders F30).
+    fn create_at_cursor(&self, name: String) -> Action {
+        let (level, after) = self.cursor_place();
+        Action::ForceCreateRequestAt { level, after, name }
     }
 
     /// Writes a new request built by `build` under `name`, placed by `at`,
