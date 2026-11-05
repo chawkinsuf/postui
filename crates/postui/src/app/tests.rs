@@ -5196,6 +5196,139 @@ fn switching_spaces_goes_through_the_dirty_gate() {
     assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
 }
 
+/// Whether a gated action has applied, from the app and its project root.
+type Applied = fn(&App, &std::path::Path) -> bool;
+
+/// The actions that gate through `apply_gated`, each with what it does
+/// once applied, for a [`gate_case_app`].
+fn apply_gated_cases() -> Vec<(Action, Applied)> {
+    fn opened(app: &App, slug: &str) -> bool {
+        app.editor.slug.as_deref() == Some(slug)
+    }
+    fn a_copy_opened(app: &App, _: &std::path::Path) -> bool {
+        app.editor.slug.as_deref().is_some_and(|s| s != "main/alpha" && s != "main/beta")
+    }
+    vec![
+        (Action::OpenRequest("main/beta".into()), |app, _| opened(app, "main/beta")),
+        (Action::DuplicateRequest, a_copy_opened),
+        (Action::PutRequest { anchor: None, above: false, count: 1 }, a_copy_opened),
+        (Action::CreateRequest("fresh".into()), |app, _| opened(app, "main/fresh")),
+        (Action::CreateRequestIn { folder: "main".into(), name: "inner".into() }, |app, _| {
+            opened(app, "main/inner")
+        }),
+        (Action::SwitchSpace("auth".into()), |app, _| app.proj().local().active_space == "auth"),
+        (
+            Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() },
+            |_, dir| dir.join("requests/auth/alpha.toml").exists(),
+        ),
+        (Action::MoveAllRequests { from: "main".into(), to: "auth".into() }, |_, dir| {
+            ["alpha", "beta"].iter().all(|n| dir.join(format!("requests/auth/{n}.toml")).exists())
+        }),
+        (Action::ReplaceWithCurl(Some("main/beta".into())), |app, _| {
+            opened(app, "main/beta") && app.editor.url.text() == "https://x/new"
+        }),
+    ]
+}
+
+/// A [`spaced_app`] with `main/alpha` open, under the sidebar's cursor and
+/// in the row register, and a curl command on the clipboard, for
+/// [`apply_gated_cases`].
+fn gate_case_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.sidebar.select_slug("main/alpha");
+    app.yank = crate::yank::Register::Request("main/alpha".into());
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("curl https://x/new");
+    app.set_clipboard_for_test(clip);
+    (app, dir)
+}
+
+/// Every file under `requests/`, by its path there, sorted.
+fn request_files(root: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else {
+                out.push(path.strip_prefix(base).unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    let base = root.join("requests");
+    let mut out = Vec::new();
+    walk(&base, &base, &mut out);
+    out.sort();
+    out
+}
+
+/// Each gate that goes through `apply_gated` over unsaved edits asks and
+/// reports a change, so the dialog draws, and applies nothing yet.
+#[test]
+fn a_gate_that_asks_reports_a_change() {
+    for (action, applied) in apply_gated_cases() {
+        let (mut app, dir) = gate_case_app();
+        dirty_the_editor(&mut app);
+        let files = request_files(dir.path());
+        let what = format!("{action:?}");
+        assert!(app.update(action), "{what} reports a change");
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes"),
+            "{what} asks"
+        );
+        assert!(!applied(&app, dir.path()), "{what} applies nothing yet");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{what} opens nothing yet");
+        assert_eq!(app.proj().local().active_space, "main", "{what} switches nothing yet");
+        assert_eq!(request_files(dir.path()), files, "{what} writes nothing yet");
+    }
+}
+
+/// The same gates over a clean editor ask nothing: each applies at once.
+///
+/// `apply_gated` passes `then`'s answer on here, but every `Force*` these
+/// reach answers `true`, so the `true` below cannot tell a pass-through
+/// from a hard-coded one; no real action through the gate answers `false`
+/// to tell them apart with.
+#[test]
+fn a_gate_over_a_clean_editor_applies_at_once() {
+    for (action, applied) in apply_gated_cases() {
+        let (mut app, dir) = gate_case_app();
+        let what = format!("{action:?}");
+        assert!(app.update(action), "{what} reports a change");
+        assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "{what} asks nothing");
+        assert!(applied(&app, dir.path()), "{what} applied");
+    }
+}
+
+/// A move that leaves the open request where it is does not gate, over
+/// unsaved edits too: it applies at once, and the open request stays open
+/// with its edits and its open field.
+#[test]
+fn a_move_that_leaves_the_open_request_asks_nothing() {
+    let cases: Vec<(Action, &str)> = vec![
+        (
+            Action::MoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() },
+            "requests/auth/beta.toml",
+        ),
+        (
+            Action::MoveAllRequests { from: "auth".into(), to: "main".into() },
+            "requests/main/login.toml",
+        ),
+    ];
+    for (action, moved) in cases {
+        let (mut app, dir) = gate_case_app();
+        dirty_the_editor(&mut app);
+        let what = format!("{action:?}");
+        assert!(app.update(action), "{what} reports a change");
+        assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "{what} asks nothing");
+        assert!(dir.path().join(moved).exists(), "{what} applied");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{what} keeps the open request");
+        assert!(app.editor.is_dirty(), "{what} keeps its edits");
+        assert!(app.editor.url_open(), "{what} leaves its field open");
+    }
+}
+
 #[test]
 fn jump_and_cycle_resolve_by_position_and_wrap() {
     let (mut app, _dir) = spaced_app();

@@ -431,16 +431,18 @@ impl App {
         let import = commands.into_iter().next().expect("checked: one command");
         let replace = CurlReplace { import, notes, vars, rename };
         match other {
-            // Every gate asks through `leaving_unsaved`, so none can forget
-            // the cell; its close is a no-op after the one above.
-            Some(slug) if self.leaving_unsaved() => {
+            // Opening another request leaves this one: it is gated like an
+            // open, through `apply_gated` as OpenRequest is, so it cannot
+            // forget the cell; its close is a no-op after the one above.
+            Some(slug) => {
                 let replace = Box::new(replace);
-                self.dirty_gate("open", Action::ForceReplaceWithCurl { slug, replace });
+                self.apply_gated("open", Action::ForceReplaceWithCurl { slug, replace })
             }
-            Some(slug) => self.open_and_replace(slug, replace),
-            None => self.apply_curl_replace(replace),
+            None => {
+                self.apply_curl_replace(replace);
+                true
+            }
         }
-        true
     }
 
     /// The name a paste's `# @name` renames `slug` to (replace spec §6):
@@ -476,8 +478,7 @@ impl App {
         Ok(Some(named.to_string()))
     }
 
-    /// `Action::ForceReplaceWithCurl`, and a clean editor's way there:
-    /// opens `slug`, then replaces it.
+    /// `Action::ForceReplaceWithCurl`: opens `slug`, then replaces it.
     pub(super) fn open_and_replace(&mut self, slug: String, replace: CurlReplace) {
         self.apply(Action::ForceOpenRequest(slug.clone()));
         if self.editor.slug.as_deref() != Some(slug.as_str()) {

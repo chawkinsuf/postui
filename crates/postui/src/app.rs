@@ -4574,14 +4574,7 @@ impl App {
                 self.pending_terminal_action = Some(Action::OpenResponseInEditor);
                 true
             }
-            Action::OpenRequest(slug) => {
-                if self.leaving_unsaved() {
-                    self.dirty_gate("open", Action::ForceOpenRequest(slug));
-                    true
-                } else {
-                    self.apply(Action::ForceOpenRequest(slug))
-                }
-            }
+            Action::OpenRequest(slug) => self.apply_gated("open", Action::ForceOpenRequest(slug)),
             Action::ForceOpenRequest(slug) => {
                 // The outgoing request's open field closes as its own step
                 // (land flushes it) before the buffer is replaced; a slug
@@ -4733,12 +4726,7 @@ impl App {
                 // anything is written (spec §4.3: the gate runs before the op).
                 let force =
                     Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
-                if self.leaving_unsaved() {
-                    self.dirty_gate("duplicate", force);
-                    true
-                } else {
-                    self.apply(force)
-                }
+                self.apply_gated("duplicate", force)
             }
             Action::ForceDuplicateRequest { slug, anchor, above, count } => {
                 let t = self.begin_op();
@@ -5014,12 +5002,7 @@ impl App {
                 // The copy opens, so unsaved edits are gated first, as
                 // Duplicate's are: once, the count riding with the
                 // deferred put.
-                if self.leaving_unsaved() {
-                    self.dirty_gate("duplicate", force);
-                    true
-                } else {
-                    self.apply(force)
-                }
+                self.apply_gated("duplicate", force)
             }
             Action::PutTableRow { at, count } => {
                 let (tab, key, entry) = match self.yank.clone() {
@@ -5112,13 +5095,11 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
+                // Only a move of the open request leaves it, so only that
+                // one is gated; any other leaves an open cell alone.
                 let moving_open = self.editor.slug.as_deref() == Some(slug.as_str());
-                if moving_open && self.leaving_unsaved() {
-                    self.dirty_gate("move", Action::ForceMoveRequestToSpace { slug, space });
-                } else {
-                    self.apply(Action::ForceMoveRequestToSpace { slug, space });
-                }
-                true
+                let force = Action::ForceMoveRequestToSpace { slug, space };
+                if moving_open { self.apply_gated("move", force) } else { self.apply(force) }
             }
             Action::ForceMoveRequestToSpace { slug, space } => {
                 let display_before = self.request_display(&slug);
@@ -5177,12 +5158,7 @@ impl App {
                     }
                     _ => unreachable!("matched above"),
                 };
-                if self.leaving_unsaved() {
-                    self.dirty_gate("create", force);
-                    true
-                } else {
-                    self.apply(force)
-                }
+                self.apply_gated("create", force)
             }
             Action::ForceCreateRequestAt { level, after, name } => {
                 if self.refuse_without_project() {
@@ -5775,8 +5751,7 @@ impl App {
                 if self.is_open_project(&target) {
                     return false;
                 }
-                self.apply_gated("switch", Action::ForceSwitchProject(target));
-                true
+                self.apply_gated_or_stop("switch", Action::ForceSwitchProject(target))
             }
             Action::ForceSwitchProject(target) => {
                 // The open project, by whatever spelling, is already open,
@@ -5946,8 +5921,7 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                self.apply_gated("create", Action::ForceCreateProject { path, name: None });
-                true
+                self.apply_gated_or_stop("create", Action::ForceCreateProject { path, name: None })
             }
             Action::ForceCreateProject { path, name } => {
                 // This runs after the dirty gate was answered, so a Cancel
@@ -6000,8 +5974,10 @@ impl App {
                     return true;
                 }
                 let path = crate::config::expand_tilde(&path);
-                self.apply_gated("create", Action::ForceCreateProject { path, name: Some(name) });
-                true
+                self.apply_gated_or_stop(
+                    "create",
+                    Action::ForceCreateProject { path, name: Some(name) },
+                )
             }
             Action::OpenEnvChooser => {
                 use crate::components::modal::{DropdownState, MenuItem};
@@ -7923,12 +7899,7 @@ impl App {
                 if name == self.active_space() {
                     return true;
                 }
-                if self.leaving_unsaved() {
-                    self.dirty_gate("switch", Action::ForceSwitchSpace(name));
-                    true
-                } else {
-                    self.apply(Action::ForceSwitchSpace(name))
-                }
+                self.apply_gated("switch", Action::ForceSwitchSpace(name))
             }
             Action::ForceSwitchSpace(name) => {
                 if !self.spaces().contains(&name) {
@@ -8446,12 +8417,9 @@ impl App {
                 // reloads the editor from disk — so unsaved edits to a
                 // request living in `from` are gated exactly like a space
                 // switch.
-                if self.open_in_space(&from) && self.leaving_unsaved() {
-                    self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
-                } else {
-                    self.apply(Action::ForceMoveAllRequests { from, to });
-                }
-                true
+                let gated = self.open_in_space(&from);
+                let force = Action::ForceMoveAllRequests { from, to };
+                if gated { self.apply_gated("move", force) } else { self.apply(force) }
             }
             Action::ForceMoveAllRequests { from, to } => {
                 let open = self.editor.slug.clone();
@@ -11354,9 +11322,9 @@ impl App {
     /// save could not keep it (a row needs a name), so it stays outside
     /// the request and goes with the request, as on main (task #68).
     ///
-    /// It commits, so a guard puts it last: `moving_open &&
-    /// leaving_unsaved()` commits only when the gate applies, and a move
-    /// that does not touch the open request leaves its cell alone.
+    /// It commits, so a guard comes first: a move gates through
+    /// [`Self::apply_gated`] only when it moves the open request, and one
+    /// that does not touch it leaves its cell alone.
     ///
     /// The other open inputs close with the cell (`close_open_inputs`,
     /// task #75): what follows the gate changes the app state, and the
@@ -11372,19 +11340,44 @@ impl App {
     /// edits. The gate asks before `then` does anything, so a Cancel
     /// leaves no trace of it: creating a project writes nothing until
     /// Save or Discard (task #69).
-    fn apply_gated(&mut self, verb: &str, then: Action) {
-        // `then` (a project switch or create) stops on an input that
-        // refuses to close; stopping here instead keeps the gate from
-        // asking first, so a Discard never throws the request's edits away
-        // for a switch that then does not happen.
-        if !self.close_inputs_or_stop(true) {
-            return;
-        }
+    ///
+    /// `then`'s own answer when it runs; `true` when the gate asks, since
+    /// its dialog is a change to draw.
+    ///
+    /// An input that refuses to close does not stop it (`leaving_unsaved`
+    /// goes on past a refusal, task #75's "the dirty gate's check"): a
+    /// request's open, create, duplicate or move, or a space switch, writes
+    /// nothing a Manager or Settings input belongs to, so the refused
+    /// typing can stay open across it
+    /// (`a_refused_close_in_the_dirty_gate_check_fails_no_action`). A
+    /// change that does touch that state stops first: a project switch or
+    /// create through [`Self::apply_gated_or_stop`], whose name keeps the
+    /// choice in sight at each call site, and a Replace with curl before it
+    /// gets here (`replace_with_curl`).
+    fn apply_gated(&mut self, verb: &str, then: Action) -> bool {
         if self.leaving_unsaved() {
             self.dirty_gate(verb, then);
+            true
         } else {
-            self.apply(then);
+            self.apply(then)
         }
+    }
+
+    /// [`Self::apply_gated`] for a `then` (a project switch or create) that
+    /// stops on an input that refuses to close. Stopping before the gate
+    /// instead keeps it from asking first, so a Discard never throws the
+    /// request's edits away for a switch that then does not happen
+    /// (`a_refused_input_stops_a_project_switch_before_its_gate`).
+    ///
+    /// It answers `true` whatever happens, not `then`'s answer: a refusal
+    /// toasted, and a create's init can toast warnings before its switch
+    /// answers `false` (a create at the open project's own path), so
+    /// passing `then`'s answer on would leave those undrawn.
+    fn apply_gated_or_stop(&mut self, verb: &str, then: Action) -> bool {
+        if self.close_inputs_or_stop(true) {
+            self.apply_gated(verb, then);
+        }
+        true
     }
 
     /// Push the standard unsaved-changes confirm. A slugged request's
