@@ -1,5 +1,6 @@
-//! Painted chips (small tinted pills used for method/status/count badges)
-//! and the tab strip (labels row + underline row under the active tab).
+//! Painted chips (small tinted pills used for method/status/count badges),
+//! runs of icon pill buttons, and the tab strip (labels row + underline
+//! row under the active tab).
 
 use std::time::Instant;
 
@@ -56,6 +57,51 @@ impl Chip<'_> {
         text(buf, x, y, &s, fg, bg, true);
         width
     }
+}
+
+/// One button of an [`icon_pill_run`]: its `glyph::*_PILL`, whether it
+/// removes something, and whether the pointer is on it.
+pub struct IconPill<'a> {
+    pub pill: &'a str,
+    /// A removal: its hover fill is error red rather than accent.
+    pub destructive: bool,
+    pub hovered: bool,
+}
+
+/// Paints a run of icon pill buttons on row `area.y`, side by side in the
+/// order given, right-aligned to end `margin` columns before
+/// `area.right()`: a table row's actions and the Variable Manager grid's
+/// (margin 1), a dropdown row's own buttons (margin 0).
+///
+/// A pill rests muted on `rest`, the row's own fill, and inverts onto
+/// accent under the pointer (error red for a destructive one), padding
+/// included: the whole pill is the button.
+///
+/// Answers each pill's hit rect, in the order given, for the caller to
+/// register: the run knows where its pills are, the caller what they do.
+pub fn icon_pill_run<'p, I>(
+    buf: &mut Buffer,
+    area: Rect,
+    margin: u16,
+    pills: I,
+    rest: Color,
+    theme: &Theme,
+) -> impl Iterator<Item = Rect> + use<I>
+where
+    I: IntoIterator<Item = IconPill<'p>>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let pills = pills.into_iter();
+    let w = crate::glyph::PILL_W;
+    let count = pills.len() as u16;
+    let first_x = area.right().saturating_sub(margin + w * count);
+    let y = area.y;
+    for (k, pill) in (0..).zip(pills) {
+        let hot = if pill.destructive { theme.error } else { theme.accent };
+        let (fg, bg) = if pill.hovered { (theme.on_accent, hot) } else { (theme.text_muted, rest) };
+        text(buf, first_x + w * k, y, pill.pill, fg, bg, false);
+    }
+    (0..count).map(move |k| Rect::new(first_x + w * k, y, w, 1))
 }
 
 /// Where a [`TabStrip`]'s accent segment goes.
@@ -267,6 +313,52 @@ mod tests {
 
     fn buf_cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> &ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap()
+    }
+
+    /// An icon pill run ends `margin` columns short of its area's right
+    /// edge, a `PILL_W`-cell pill each in the order given, and answers
+    /// those cells as its hit rects. A pill rests muted on the row's fill;
+    /// under the pointer the whole pill, padding included, inverts onto
+    /// accent, or error red for a destructive one.
+    #[test]
+    fn an_icon_pill_run_right_aligns_its_pills_and_inverts_the_hovered_one() {
+        let theme = Theme::dark();
+        let rest = theme.control;
+        let pill = |pill, destructive, hovered| IconPill { pill, destructive, hovered };
+        for margin in [0, 1] {
+            for hovered in [None, Some(0), Some(1), Some(2)] {
+                let area = Rect::new(2, 1, 16, 1);
+                let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+                let pills = [
+                    pill(crate::glyph::COPY_PILL, false, hovered == Some(0)),
+                    pill(crate::glyph::PENCIL_PILL, false, hovered == Some(1)),
+                    pill(crate::glyph::DELETE_PILL, true, hovered == Some(2)),
+                ];
+                let rects: Vec<Rect> =
+                    icon_pill_run(&mut buf, area, margin, pills, rest, &theme).collect();
+                let first = area.right() - margin - 3 * crate::glyph::PILL_W;
+                let expected: Vec<Rect> =
+                    (0..3).map(|k| Rect::new(first + 3 * k, 1, 3, 1)).collect();
+                assert_eq!(rects, expected, "margin {margin}");
+                let glyphs = [crate::glyph::COPY, crate::glyph::PENCIL, crate::glyph::DELETE];
+                for (k, rect) in rects.iter().enumerate() {
+                    let (fg, bg) = match hovered {
+                        Some(h) if h == k && k == 2 => (theme.on_accent, theme.error),
+                        Some(h) if h == k => (theme.on_accent, theme.accent),
+                        _ => (theme.text_muted, rest),
+                    };
+                    for x in rect.left()..rect.right() {
+                        let cell = &buf[(x, 1)];
+                        assert_eq!((cell.fg, cell.bg), (fg, bg), "pill {k}, hover {hovered:?}");
+                    }
+                    assert_eq!(buf[(rect.x + 1, 1)].symbol(), glyphs[k], "pill {k}'s glyph");
+                }
+                // Nothing past the run: the margin stays the row's own.
+                for x in area.right() - margin..area.right() {
+                    assert_eq!(buf[(x, 1)].bg, Color::Reset, "margin cell {x}");
+                }
+            }
+        }
     }
 
     /// Regression for the checkpoint-2 report: `theme.accent` in the

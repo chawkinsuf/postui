@@ -13,9 +13,9 @@ use ratatui::{Frame, buffer::Buffer, layout::Rect, text::Line};
 use crate::anim::{AnimKey, ListId};
 use crate::components::DrawCtx;
 use crate::paint::{
-    self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, ListRow, Pill,
-    PropertyRow, RowHighlight, TabStrip, TextField, Toggle, Underline, Well, floating_panel,
-    frac_vspan, label_column, pill_min_width,
+    self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, IconPill, ListRow,
+    Pill, PropertyRow, RowHighlight, TabStrip, TextField, Toggle, Underline, Well, floating_panel,
+    frac_vspan, icon_pill_run, label_column, pill_min_width,
 };
 
 /// One column each side of `area`, and a left column reserved for the
@@ -37,7 +37,7 @@ const STATE_NAMES: [&str; 5] = ["Normal", "Hover", "Pressed", "Focused", "Disabl
 
 /// Draws the testbed screen into `area`: a static grid of every painted
 /// primitive (`Button`, `TextField`, `ListRow`, `TabStrip`, `Chip`,
-/// `frac_vspan`, `floating_panel`) across every state it has, on
+/// `icon_pill_run`, `frac_vspan`, `floating_panel`) across every state it has, on
 /// `theme.page`, with a `theme.text_muted` label over every section and
 /// every specimen column.
 ///
@@ -255,6 +255,35 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         for (label, color) in chips {
             let w = Chip { label, color }.paint(buf, cx, y, theme.page, theme);
             cx += w + 1;
+        }
+    }
+    y += 2;
+
+    // --- Icon pill runs: at rest, hovered, hovered destructive -----------
+    if !section_label(buf, area, x0, &mut y, "ICON PILLS", theme) {
+        return;
+    }
+    if fits(area, y, 1) {
+        let mut sx = x0;
+        for (label, hovered) in [("rest", None), ("hover", Some(0)), ("hover delete", Some(1))] {
+            safe_text(buf, area, sx, y, label, theme.text_muted, theme.page, false);
+            let run_x = sx + crate::ui::cells(label) as u16 + 1;
+            let run = Rect::new(run_x, y, 2 * crate::glyph::PILL_W, 1);
+            let pills = [
+                IconPill {
+                    pill: crate::glyph::COPY_PILL,
+                    destructive: false,
+                    hovered: hovered == Some(0),
+                },
+                IconPill {
+                    pill: crate::glyph::DELETE_PILL,
+                    destructive: true,
+                    hovered: hovered == Some(1),
+                },
+            ];
+            // Nothing here is interactive, so the hit rects go unused.
+            let _ = icon_pill_run(buf, run, 0, pills, theme.page, theme);
+            sx = run.right() + 3;
         }
     }
     y += 2;
@@ -565,6 +594,7 @@ mod tests {
         assert!(content.contains("LIST ROWS"), "section label missing");
         assert!(content.contains("TAB STRIP"), "section label missing");
         assert!(content.contains("CHIPS"), "section label missing");
+        assert!(content.contains("ICON PILLS"), "section label missing");
         assert!(content.contains("FRAC_VSPAN"), "section label missing");
         assert!(content.contains("FLOATING PANEL"), "section label missing");
     }

@@ -463,7 +463,8 @@ fn draw_var_tooltip(
         pills.push((crate::glyph::COPY_PILL, Hit::TipCopy(tip.name.clone())));
     }
     pills.push((crate::glyph::PENCIL_PILL, Hit::TipEdit(tip.name.clone())));
-    let pills_w = 3 * pills.len();
+    let pill_w = crate::glyph::PILL_W;
+    let pills_w = usize::from(pill_w) * pills.len();
     // Rows wrap to the max width, or what the screen has room for inside
     // the padding and the drop shadow. The top row carries the pills, so
     // the value — whose block starts there — wraps a pill strip (and a
@@ -602,10 +603,10 @@ fn draw_var_tooltip(
     // The pills, flush with the panel's right padding.
     let mut cx = x + width - 2 - pills_w as u16;
     for (label, hit) in pills {
-        let rect = Rect::new(cx, y + 1, 3, 1);
+        let rect = Rect::new(cx, y + 1, pill_w, 1);
         crate::paint::action(buf, rect, label, hit.clone(), hovered, theme.panel, theme);
         hits.register(rect, hit);
-        cx += 3;
+        cx += pill_w;
     }
 }
 

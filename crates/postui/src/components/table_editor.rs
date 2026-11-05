@@ -2,7 +2,7 @@ use super::DrawCtx;
 use super::line_input::LineInput;
 use super::var_tokens::{VarView, paint_field_tokens};
 use crate::hit::{Hit, HitMap};
-use crate::paint::{fill, text};
+use crate::paint::{IconPill, fill, icon_pill_run, text};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
@@ -104,14 +104,14 @@ impl TableOutcome {
 /// either side, which is also the row's left padding.
 pub(crate) const TOGGLE_W: u16 = 3;
 
-/// One right-edge action button's zone (copy, delete): a glyph centred in
-/// three cells.
-const ACTION_W: u16 = 3;
+/// The column of margin outside a row's right-edge actions.
+const ACTIONS_MARGIN: u16 = 1;
 
-/// The columns a row's right-edge actions claim: copy, delete, and a
-/// column of margin outside them. A cell edit's input stops short of this
-/// so a long value never runs under the buttons.
-const ACTIONS_W: u16 = ACTION_W * 2 + 1;
+/// The columns a row's right-edge actions claim: copy, delete (a
+/// [`crate::glyph::PILL_W`]-cell pill each), and [`ACTIONS_MARGIN`]
+/// outside them. A cell edit's input stops short of this so a long value
+/// never runs under the buttons.
+const ACTIONS_W: u16 = crate::glyph::PILL_W * 2 + ACTIONS_MARGIN;
 
 /// Column x-offsets, relative to the drawn area's own left edge. Every
 /// row — plain, hovered or active — lays out from the same offsets, so
@@ -930,44 +930,38 @@ impl TableEditorState {
         hits.register(Rect::new(x, y, TOGGLE_W, 1), hit);
     }
 
-    /// Paints the row's right-edge actions — copy then delete, each a Nerd
-    /// Font Material glyph centred in its own [`ACTION_W`]-cell zone —
-    /// flush against `right` with one column of margin. A directly-hovered
-    /// button inverts onto accent (error red for the trash), the same
-    /// treatment the response pane's copy pills use.
+    /// Paints the row's right-edge actions — copy then delete, an icon
+    /// pill run ([`crate::paint::icon_pill_run`]) at `row`'s right edge
+    /// with [`ACTIONS_MARGIN`]. A directly-hovered button inverts onto
+    /// accent (error red for the trash).
     #[allow(clippy::too_many_arguments)]
     fn draw_row_actions(
         buf: &mut ratatui::buffer::Buffer,
         hits: &mut HitMap,
-        right: u16,
-        y: u16,
+        row: Rect,
         i: usize,
         bg: ratatui::style::Color,
         hovered: Option<&Hit>,
         theme: &Theme,
     ) {
-        let trash_x = right.saturating_sub(ACTION_W + 1);
-        let copy_x = trash_x.saturating_sub(ACTION_W);
-        Self::clear_strike(buf, copy_x, y, ACTIONS_W);
-
-        let copy_hit = Hit::TableCopy(i);
-        let (cfg, cbg) = if hovered == Some(&copy_hit) {
-            (theme.on_accent, theme.accent)
-        } else {
-            (theme.text_muted, bg)
-        };
-        text(buf, copy_x, y, crate::glyph::COPY_PILL, cfg, cbg, false);
-
-        let trash_hit = Hit::TableDelete(i);
-        let (dfg, dbg) = if hovered == Some(&trash_hit) {
-            (theme.on_accent, theme.error)
-        } else {
-            (theme.text_muted, bg)
-        };
-        text(buf, trash_x, y, crate::glyph::DELETE_PILL, dfg, dbg, false);
-
-        hits.register(Rect::new(copy_x, y, ACTION_W, 1), copy_hit);
-        hits.register(Rect::new(trash_x, y, ACTION_W, 1), trash_hit);
+        Self::clear_strike(buf, row.right().saturating_sub(ACTIONS_W), row.y, ACTIONS_W);
+        let (copy, trash) = (Hit::TableCopy(i), Hit::TableDelete(i));
+        let pills = [
+            IconPill {
+                pill: crate::glyph::COPY_PILL,
+                destructive: false,
+                hovered: hovered == Some(&copy),
+            },
+            IconPill {
+                pill: crate::glyph::DELETE_PILL,
+                destructive: true,
+                hovered: hovered == Some(&trash),
+            },
+        ];
+        let rects = icon_pill_run(buf, row, ACTIONS_MARGIN, pills, bg, theme);
+        for (rect, hit) in rects.zip([copy, trash]) {
+            hits.register(rect, hit);
+        }
     }
 
     /// Strikes through `len` cells starting at `(x, y)` — the disabled
@@ -1143,7 +1137,8 @@ impl TableEditorState {
             Self::draw_row_toggle(buf, hits, area.x, y, i, entry.enabled, bg, ctx.hovered, theme);
         }
         if show_actions {
-            Self::draw_row_actions(buf, hits, area.right(), y, i, bg, ctx.hovered, theme);
+            let row = Rect::new(area.x, y, area.width, 1);
+            Self::draw_row_actions(buf, hits, row, i, bg, ctx.hovered, theme);
         }
     }
 
