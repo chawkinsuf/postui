@@ -219,13 +219,24 @@ impl App {
                 // keeps a press-then-wander over the header (or any other
                 // chrome) from starting one; once started, motion anywhere
                 // is mapped by `row_at_y`.
-                // The row index recorded at press time can be stale by now
-                // (a `ReloadProjectFiles` on focus-gained, a folder toggle
-                // or a background refresh can have rebuilt the rows), so
-                // the drag target is re-resolved by the pressed slug; a
-                // press whose request is gone promotes nothing. A modal
-                // opened by the press itself (a broken row's error) owns
-                // the pointer, so nothing promotes under one either.
+                // There is no dead zone beyond the row: a terminal reports
+                // whole cells, so the pointer reaching another row is the
+                // smallest move it can show, and a press that wobbles onto
+                // a neighbour is a drag. A drag that comes back to its own
+                // row stays one, and its release opens nothing (#247):
+                // counting it as a click would raise the Unsaved changes
+                // dialog after a drag, which is what #247's rule avoids
+                // (the user on #247: "would it be odd to drag it around and
+                // only then get the popup afterwards?"). The cost: a click
+                // that slips onto a neighbour and back only selects, and a
+                // second click opens.
+                // The rows can have been rebuilt since the press (a
+                // `ReloadProjectFiles` on focus-gained, a folder toggle or
+                // a background refresh), so the drag target is resolved by
+                // the pressed key; a press whose row is gone promotes
+                // nothing. A modal opened by the press itself (a broken
+                // row's error) owns the pointer, so nothing promotes under
+                // one either.
                 // A live thumb drag or text sweep owns the button as well
                 // (a live pane resize returned above): a press left armed
                 // by a lost release never promotes over one of those.
@@ -767,8 +778,12 @@ impl App {
     /// reordering, "Click behaviour"; a folder's press opens nothing at
     /// its release): the pressed row opens when the release lands on its
     /// block ([`Self::on_row_block`], the promote's test turned round). A
-    /// release anywhere else is the click's cancel, and so is keyboard
-    /// input while the button is held ([`Self::end_armed_press`]).
+    /// release anywhere else is the click's cancel (`mine`, on #247), as a
+    /// GUI list cancels a click released off its item. On the row's own
+    /// line that is only the pane's two margin columns (the focus bar's
+    /// lane, the scrollbar's) and beyond: the row's hit spans the list's
+    /// width between them. Keyboard input while the button is held is a
+    /// cancel too ([`Self::end_armed_press`]).
     ///
     /// Only the release knows that the press did not become a drag, so a
     /// press whose release never arrives opens nothing; it has selected
