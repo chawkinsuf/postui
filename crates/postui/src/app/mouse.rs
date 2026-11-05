@@ -684,6 +684,12 @@ impl App {
                 }
                 // A request row's press that ends with no row drag settled
                 // above was a click, and its release opens the row (#247).
+                // The returns above never drop a click: every left press
+                // ends whatever else was live first (`cancel_stale_drags`),
+                // and a resize or a Manage list drag starts only from a
+                // press of its own, so an armed row press here is either
+                // the sidebar drag it became, settled above, or the only
+                // thing the button held.
                 match pressed {
                     Some(key) => self.open_released_row(&key, m.column, m.row) | ended,
                     None => ended,
@@ -744,6 +750,14 @@ impl App {
     /// drag once the pointer is off the block (on another row, or in the
     /// empty area below the rows), and the release opens the pressed
     /// request when it lands on it.
+    ///
+    /// `hit_at` here and the press's `hit_at_ignoring_var_tokens` differ
+    /// only on `{{token}}` spans, which are clipped to the editor control
+    /// they sit on and never lie over a sidebar row. A tooltip panel
+    /// counts in both: one over the row at the press takes the press, and
+    /// none can open over it while the button is held (the pointer's tip
+    /// needs the pointer on a token, the caret's a focused editor, and the
+    /// press focused the sidebar).
     fn on_row_block(&self, i: usize, x: u16, y: u16) -> bool {
         matches!(self.hits.hit_at(x, y), Some(Hit::SidebarRow(_)))
             && self.sidebar.span_of(i).contains(&self.sidebar.row_at_y(y))

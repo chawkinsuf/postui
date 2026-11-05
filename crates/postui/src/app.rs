@@ -11745,10 +11745,13 @@ impl App {
         self.modals.is_empty() && self.screen == Screen::Main && self.focus == PaneId::Sidebar
     }
 
-    /// A terminal's bracketed paste (`Event::Paste`), the app's keyboard
-    /// entry for pasted text as [`Self::handle_key`] is for keys: it ends
-    /// an armed row press first ([`Self::end_armed_press`], #247), then
-    /// routes the text ([`Self::paste_text`]).
+    /// A terminal's bracketed paste (`Event::Paste`), from the event loop:
+    /// it ends an armed row press first ([`Self::end_armed_press`], #247),
+    /// as [`Self::handle_key`] does for a key, then routes the text
+    /// ([`Self::paste_text`], which keeps its own check for the edit
+    /// flag's waiting screen). That is all it shares with `handle_key`:
+    /// the key path's other steps (the quit disarm, the event-end
+    /// bookkeeping) do not run for a paste, as they did not before #247.
     pub fn handle_paste(&mut self, text: &str) -> bool {
         self.end_armed_press();
         self.paste_text(text)
