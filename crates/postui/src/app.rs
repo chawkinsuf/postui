@@ -478,14 +478,6 @@ pub struct App {
     /// hidden): the split's editor-minimized end, saved with the split
     /// ([`Self::persist_sizes`]).
     pub table_collapsed: bool,
-    /// The last `table_collapsed` value `AnimKey::PaneCollapse` was driven
-    /// toward, tracked so `update` can tell when it flips
-    /// (`Action::ToggleTableCollapse`) and start easing the layout split
-    /// rather than snapping it every frame it's still settled.
-    pane_collapsed_target: bool,
-    /// Mirror of [`Self::pane_collapsed_target`] for the Response pane's
-    /// collapse anim — see [`Self::sync_response_collapse_anim`].
-    response_collapsed_target: bool,
     /// The editor's share of the main column while both panes are shown —
     /// the split's free share, 0 to 1 (see [`crate::split`]). Sticky
     /// through minimize/expand so re-opening lands where the user left it.
@@ -493,9 +485,6 @@ pub struct App {
     /// The sidebar's saved width in columns; `None` is the default 28%.
     /// Set by a drag or key, seeded from and saved to the project.
     pub sidebar_width: Option<u16>,
-    /// The last `split_ratio` value `AnimKey::SplitRatio` was driven
-    /// toward — see [`Self::sync_split_ratio_anim`].
-    split_ratio_target: f32,
     /// The most recent left press, for the click counts
     /// ([`mouse::count_clicks`]).
     last_click: Option<mouse::LastClick>,
@@ -2079,11 +2068,8 @@ impl App {
             sidebar_press: None,
             manage_press: None,
             table_collapsed: false,
-            pane_collapsed_target: false,
-            response_collapsed_target: false,
             split_ratio: crate::split::SplitState::default().ratio,
             sidebar_width: None,
-            split_ratio_target: crate::split::SplitState::default().ratio,
             last_click: None,
             last_action_failed: false,
             last_loose_warning: None,
@@ -2592,65 +2578,6 @@ impl App {
         changed || swapped
     }
 
-    /// Keeps `AnimKey::PaneCollapse` chasing `table_collapsed` (the same
-    /// condition `ui::draw` uses — hide applies on every tab, the Body
-    /// buffer included): whenever it flips
-    /// (`Action::ToggleTableCollapse`/the `⌄ hide` chip), retargets the
-    /// anim from wherever it currently sits to the new pole over
-    /// `ui_settings.anim_ms.pane_collapse` (120ms by default). Called on
-    /// every `update`, not just the toggle action. With `snap` it jumps
-    /// to the pole instead, eased or settled (see [`Self::sync_split_anims`]).
-    fn sync_pane_collapse_anim(&mut self, snap: bool) {
-        let target = self.table_collapsed;
-        if target == self.pane_collapsed_target && !snap {
-            return;
-        }
-        debug_assert!(
-            snap || self.anims.target(AnimKey::PaneCollapse).is_some(),
-            "PaneCollapse eased while unset (see `sync_split_anims`)"
-        );
-        self.pane_collapsed_target = target;
-        let target_v = if target { 1.0 } else { 0.0 };
-        if snap {
-            self.anims.snap(AnimKey::PaneCollapse, target_v);
-            return;
-        }
-        self.anims.retarget(
-            AnimKey::PaneCollapse,
-            target_v,
-            self.ui_settings.anim_ms.pane_collapse,
-            Instant::now(),
-        );
-    }
-
-    /// Keeps `AnimKey::ResponseCollapse` chasing the response pane's
-    /// `collapsed` flag the same way [`Self::sync_pane_collapse_anim`]
-    /// chases `table_collapsed`. The flag lives on `session.response` but
-    /// is a sticky layout preference (`session.sync_open` carries it
-    /// across request switches).
-    fn sync_response_collapse_anim(&mut self, snap: bool) {
-        let target = self.session.response.collapsed;
-        if target == self.response_collapsed_target && !snap {
-            return;
-        }
-        debug_assert!(
-            snap || self.anims.target(AnimKey::ResponseCollapse).is_some(),
-            "ResponseCollapse eased while unset (see `sync_split_anims`)"
-        );
-        self.response_collapsed_target = target;
-        let target_v = if target { 1.0 } else { 0.0 };
-        if snap {
-            self.anims.snap(AnimKey::ResponseCollapse, target_v);
-            return;
-        }
-        self.anims.retarget(
-            AnimKey::ResponseCollapse,
-            target_v,
-            self.ui_settings.anim_ms.pane_collapse,
-            Instant::now(),
-        );
-    }
-
     /// Records both pane sizes the app holds, the split and the sidebar
     /// width, as the project's (`layout.toml`), in one write: the
     /// one save behind every size change. Best-effort, like every
@@ -2728,9 +2655,8 @@ impl App {
     fn apply_split_state(&mut self, next: crate::split::SplitState) -> bool {
         let prev = self.split_state();
         self.set_split_fields(next);
-        // `sync_pane_collapse_anim` / `sync_response_collapse_anim` /
-        // `sync_split_ratio_anim` (run on every `update`) ease whichever
-        // of the three the jump actually moved.
+        // `sync_split_anims` (run on every `update`) eases whichever of
+        // the three the jump actually moved.
         if next != prev {
             self.persist_sizes();
         }
@@ -2749,34 +2675,50 @@ impl App {
     /// Sets the split to `s` with no easing: a live drag's line follows
     /// the pointer row by row (spec E5, E14), and a project's seeded split
     /// draws at once ([`Self::seed_sizes_from_project`]). The three anims
-    /// snap to the new values and their targets follow, so the `sync_*`
-    /// passes `update` runs find nothing to ease. Saves nothing; the drag
-    /// saves once at its end (P2).
+    /// snap to the new values and their targets follow, so the
+    /// `sync_split_anims` pass `update` runs finds nothing to ease. Saves
+    /// nothing; the drag saves once at its end (P2).
     fn set_split_now(&mut self, s: crate::split::SplitState) {
         self.set_split_fields(s);
         self.sync_split_anims(true);
     }
 
-    /// Brings the split's three anims to the split fields — the one place
-    /// each anim's target is derived. `update` eases them (`snap` false);
-    /// a change that draws at once snaps them, settled or mid-ease, and so
-    /// does [`Self::reset_anims`], where every anim set is built, so the
-    /// three are always set and a first ease starts from the split drawn.
+    /// Brings the split's three anims to the split fields, the only setter
+    /// of the three keys' targets: `AnimKey::PaneCollapse` chases
+    /// `table_collapsed` (the editor's hide, on every tab, the Body buffer
+    /// included), `AnimKey::ResponseCollapse` the response's `collapsed`
+    /// (a sticky layout preference `session.sync_open` carries across
+    /// request switches), and `AnimKey::SplitRatio` `split_ratio`.
+    /// `update` eases them (`snap` false) over `anim_ms.pane_collapse`,
+    /// leaving one alone when its `Anims::target` (kept after the glide
+    /// lands) is already the field's value; a change that draws at once
+    /// snaps them, settled or mid-ease, and so does [`Self::reset_anims`],
+    /// where every anim set is built, so the three are always set and a
+    /// first ease starts from the split drawn.
     ///
-    /// Builds with debug assertions check that on each ease, with a
-    /// `debug_assert!` that the key is set, made before the sync writes
-    /// anything; a snap needs none, since it is what sets it. It checks
-    /// with animations off too, where an unset key only jumps as a set one
-    /// would: the rule is how a set is built, and a set built without the
-    /// snap would ease wrong once animations are turned on.
-    /// Other builds check nothing: a set built anywhere else would still
-    /// draw the right split, but its first change would jump instead of easing
-    /// (`Anims::retarget` starts an unset key at its target) and keep the
-    /// loop redrawing, with nothing moving, for one ease's length.
+    /// An eased sync debug-asserts that the key is set, animations on or
+    /// off, since it checks how the set was built, not how it moves. Other
+    /// builds don't check; there an unset key's first sync sets it at its
+    /// target with no ease (`Anims::retarget`).
     fn sync_split_anims(&mut self, snap: bool) {
-        self.sync_pane_collapse_anim(snap);
-        self.sync_response_collapse_anim(snap);
-        self.sync_split_ratio_anim(snap);
+        let flag = |on: bool| if on { 1.0 } else { 0.0 };
+        let targets = [
+            (AnimKey::PaneCollapse, flag(self.table_collapsed)),
+            (AnimKey::ResponseCollapse, flag(self.session.response.collapsed)),
+            (AnimKey::SplitRatio, self.split_ratio),
+        ];
+        for (key, target_v) in targets {
+            if snap {
+                self.anims.snap(key, target_v);
+                continue;
+            }
+            let cur = self.anims.target(key);
+            debug_assert!(cur.is_some(), "{key:?} is unset (see `sync_split_anims`)");
+            if cur != Some(target_v) {
+                let dur = self.ui_settings.anim_ms.pane_collapse;
+                self.anims.retarget(key, target_v, dur, Instant::now());
+            }
+        }
     }
 
     /// The layout the sizes put on screen at the terminal's size, with
@@ -3050,32 +2992,6 @@ impl App {
             self.persist_sizes();
         }
         true
-    }
-
-    /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
-    /// the same way [`Self::sync_pane_collapse_anim`] chases
-    /// `table_collapsed`: whenever the share changes, eases from wherever
-    /// it currently sits to the new share, or with `snap` jumps there.
-    fn sync_split_ratio_anim(&mut self, snap: bool) {
-        let target = self.split_ratio;
-        if target == self.split_ratio_target && !snap {
-            return;
-        }
-        debug_assert!(
-            snap || self.anims.target(AnimKey::SplitRatio).is_some(),
-            "SplitRatio eased while unset (see `sync_split_anims`)"
-        );
-        self.split_ratio_target = target;
-        if snap {
-            self.anims.snap(AnimKey::SplitRatio, target);
-            return;
-        }
-        self.anims.retarget(
-            AnimKey::SplitRatio,
-            target,
-            self.ui_settings.anim_ms.pane_collapse,
-            Instant::now(),
-        );
     }
 
     /// Builds the Vars tab's shadow hint map: `name → "<source>: <value>"`
@@ -4460,7 +4376,7 @@ impl App {
                 self.table_collapsed = !self.table_collapsed;
                 // Hiding the only expanded panel would leave the screen
                 // blank: swap instead — the response expands as the editor
-                // hides. (`sync_*_collapse_anim` ease both moves.)
+                // hides. (`sync_split_anims` eases both moves.)
                 if self.table_collapsed && self.session.response.collapsed {
                     self.session.response.collapsed = false;
                 }
@@ -4468,10 +4384,9 @@ impl App {
                 true
             }
             Action::ToggleResponseCollapse => {
-                // `sync_response_collapse_anim` (run on every `update`)
-                // retargets the anim — here as well as when `sync_open`
-                // swaps in another request's response with a different
-                // collapsed state.
+                // `sync_split_anims` (run on every `update`) retargets the
+                // anim — here as well as when `sync_open` swaps in another
+                // request's response with a different collapsed state.
                 self.session.response.collapsed = !self.session.response.collapsed;
                 // Hiding the only expanded panel would leave the screen
                 // blank: swap instead — the editor expands as the response

@@ -72,15 +72,20 @@ pub enum AnimKey {
     UrlWellHover,
     FocusFade,
     ModalOpen,
+    /// The editor pane's hide/show collapse (0.0 shown → 1.0 hidden),
+    /// eased to `App::table_collapsed`. Its target and those of
+    /// [`AnimKey::ResponseCollapse`] and [`AnimKey::SplitRatio`] are set
+    /// only by `App::sync_split_anims`, which each `update` runs.
     PaneCollapse,
     /// The Response pane's hide/show collapse (0.0 shown → 1.0 hidden),
-    /// driven by `Action::ToggleResponseCollapse` with the same easing and
-    /// duration as [`AnimKey::PaneCollapse`].
+    /// eased to the response's `collapsed` flag, which
+    /// `Action::ToggleResponseCollapse` flips. Set as
+    /// [`AnimKey::PaneCollapse`] says.
     ResponseCollapse,
     /// The editor's share of the main column while both panes are shown
-    /// (see `layout::compute_layout`'s `editor_share`), easing to each new
-    /// share a chip or keyboard stop sets, with the same duration as
-    /// [`AnimKey::PaneCollapse`]. A live drag snaps it (spec E14).
+    /// (see `layout::compute_layout`'s `editor_share`), eased to
+    /// `App::split_ratio`, which chips, keyboard stops and drags set; a
+    /// live drag snaps it (spec E14). Set as [`AnimKey::PaneCollapse`] says.
     SplitRatio,
     SendBreathe,
     ToastFade(u64),
