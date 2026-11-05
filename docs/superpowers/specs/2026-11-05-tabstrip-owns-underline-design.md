@@ -40,7 +40,10 @@ Consequences of R5-R7 worth naming:
 
 - A request switch that brings in a response on another tab glides there
   (main snapped it, through `reset_response_tab_underline`). A new response
-  that drops the Tree tab glides to the tab it lands on (R1, R5).
+  that drops the Tree tab glides to the tab it lands on (R1, R5). The strip
+  is right-aligned, so dropping Tree narrows it from the left: the glide
+  starts where Tree was, now outside the strip, and the segment, clipped to
+  the strip as every segment is, grows in from the strip's left edge.
 - An editor count or badge change, and a request switch whose tabs have
   other counts, follow at once (#117 glided them). R3, R6.
 - A tab a single dispatch passes through (#117's project switch through an
@@ -96,7 +99,8 @@ frame") and records the glide's duration from
   `ManageTab::strip_spans`; `Editor::tab_strip_spans`. Each existed only to
   aim the underline away from the paint.
 - `AnimKey::TabUnderline` and `AnimKey::TabUnderlineWidth`. `StripId` stays,
-  as the underline map's key.
+  as the underline map's key. `Anims::retarget_with`, whose one in-out
+  caller was the underline, folds into `retarget`.
 - The per-strip static fallbacks in `editor.rs`, `response.rs` and
   `manage.rs`.
 
@@ -115,6 +119,13 @@ Each is driven through a draw (`ui::draw` on a test terminal):
 - A header count change on the editor strip follows at once (R3, R6).
 - `animations = false` places a switch with no glide (R8).
 
+Also: typing a jq filter with Tree active keeps the underline on Tree
+(R4); showing the hidden Response pane places it (R7); a method change off
+Body glides, a POST-to-POST project switch starts no glide, and a request
+switch with other counts follows at once (#117's cases); a request switch
+to a response on another tab glides (R5). `anim.rs` pins R6's in-flight case
+and R7 directly. The tests live in `app/tab_underline_tests.rs`.
+
 Tests that checked the anim right after `update` now draw first.
 
 ## Mine, for veto
@@ -122,3 +133,5 @@ Tests that checked the anim right after `update` now draw first.
 - R5-R7, and that the state lives in `Anims` behind a `Mutex`.
 - R6's in-flight case moves the glide's start and end by the label's move,
   edge by edge, rather than restarting it.
+- The tab-drop glide's clipped start (above), rather than clamping the
+  start to the strip.

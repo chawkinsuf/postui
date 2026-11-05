@@ -1,6 +1,8 @@
 //! Painted chips (small tinted pills used for method/status/count badges)
 //! and the tab strip (labels row + underline row under the active tab).
 
+use std::time::Instant;
+
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
 use crate::paint::text;
@@ -56,20 +58,32 @@ impl Chip<'_> {
     }
 }
 
+/// Where a [`TabStrip`]'s accent segment goes.
+pub enum Underline<'a> {
+    /// Under the active tab, aimed while the strip paints from the area and
+    /// spans it lays out (#119, [`crate::anim::Anims::aim_underline`]): a
+    /// move to another tab glides, the active tab's own move is followed at
+    /// once, and a strip not painted last frame is placed. `tab` names the
+    /// active tab for the strip's whole life, which its index does not
+    /// always do (the Response strip's Tree tab comes and goes).
+    Aimed { anims: &'a crate::anim::Anims, strip: crate::anim::StripId, tab: usize, now: Instant },
+    /// A fixed segment, `(left, width)` in fractional columns relative to
+    /// the strip's `area.x`: the testbed's demos.
+    At(f32, f32),
+}
+
 /// A horizontal strip of flat GUI-style tabs: labels sit directly on
 /// surface `on` (no block fills) over a full-width hairline rule, with an
 /// accent segment sliding under the active tab. Each tuple is `(label,
 /// badge)` — a badge renders a trailing colored glyph (e.g. the Body tab's
-/// JSON-validity `✓`/`✗`) after the label.
+/// JSON-validity `✓`/`✗`) after the label. The one tabs component: the
+/// editor, Response and Manage strips all paint through it.
 pub struct TabStrip<'a> {
     pub tabs: &'a [(String, Option<(&'static str, Color)>)],
     pub active: usize,
     /// The index of the tab currently under the mouse, if any.
     pub hovered: Option<usize>,
-    /// The underline segment in fractional columns relative to `area.x`:
-    /// `(left, width)`. Callers animate this (Task 10); pass the active
-    /// tab's own span (from [`TabStrip::spans`]) for a static strip.
-    pub underline: (f32, f32),
+    pub underline: Underline<'a>,
     /// A tab that can't currently be selected (e.g. Body while the method
     /// is GET/HEAD): label and badge paint in `theme.text_disabled` and
     /// hover has no effect on it.
@@ -83,8 +97,8 @@ impl TabStrip<'_> {
     /// Pure geometry: each tab's `(x_offset, width)` span on the label row,
     /// relative to the strip's own origin, using the same `" label "` (+2
     /// for a badge) padding and 2-column inter-tab gap that [`Self::paint`]
-    /// lays out with. Callers use this to compute underline animation
-    /// targets and hit rects without painting.
+    /// lays out with. Callers use this to size or place a strip before
+    /// painting it.
     pub fn spans(tabs: &[(String, Option<(&'static str, Color)>)]) -> Vec<(u16, u16)> {
         let mut x = 0u16;
         let mut spans = Vec::with_capacity(tabs.len());
@@ -187,7 +201,17 @@ impl TabStrip<'_> {
         // a click), so the segment is always the accent — never the
         // focus ring.
         let accent = theme.accent;
-        let (left, width) = self.underline;
+        let (left, width) = match self.underline {
+            Underline::At(left, width) => (left, width),
+            Underline::Aimed { anims, strip, tab, now } => match spans.get(self.active) {
+                Some(&(offset, w)) => {
+                    let x = f32::from(area.x.saturating_add(offset));
+                    let (l, r) = anims.aim_underline(strip, tab, (x, x + f32::from(w)), now);
+                    (l - f32::from(area.x), r - l)
+                }
+                None => (0.0, 0.0),
+            },
+        };
         if width > 0.0 {
             let right = left + width;
             // Snapped to the nearest half-cell (not whole cell) so a
@@ -407,7 +431,7 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: None,
-                underline: (spans[0].0 as f32, spans[0].1 as f32),
+                underline: Underline::At(spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
                 right_anchored: 0,
             }
@@ -448,7 +472,7 @@ mod tests {
                     tabs: &tabs,
                     active: 0,
                     hovered: None,
-                    underline: (left0 as f32 + 3.0, width0 as f32),
+                    underline: Underline::At(left0 as f32 + 3.0, width0 as f32),
                     disabled: None,
                     right_anchored: 0,
                 }
@@ -494,7 +518,7 @@ mod tests {
                 hovered: None,
                 // Left edge at column 2.5, right edge at column 6.5: both
                 // boundaries land mid-cell.
-                underline: (2.5, 4.0),
+                underline: Underline::At(2.5, 4.0),
                 disabled: None,
                 right_anchored: 0,
             }
@@ -531,7 +555,7 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: None,
-                underline: (spans[0].0 as f32, spans[0].1 as f32),
+                underline: Underline::At(spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
                 right_anchored: 0,
             }
@@ -557,7 +581,7 @@ mod tests {
                 tabs: &tabs,
                 active: 0,
                 hovered: Some(1),
-                underline: (spans[0].0 as f32, spans[0].1 as f32),
+                underline: Underline::At(spans[0].0 as f32, spans[0].1 as f32),
                 disabled: None,
                 right_anchored: 0,
             }

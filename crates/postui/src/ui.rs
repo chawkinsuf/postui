@@ -28,6 +28,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // which could otherwise see an animation at very slightly different
     // points within the same frame.
     let now = std::time::Instant::now();
+    // The tab strips aim their underlines as they paint (#119); a strip
+    // not painted in the frame before this one is placed, not glided.
+    app.anims.begin_frame(app.ui_settings.anim_ms.tab_slide);
     // Hide collapses the editor to its strip on every tab — the Body tab's
     // buffer hides just like the Params/Headers/Vars table does.
     // `App::sync_pane_collapse_anim` (run on every `update`) keeps
@@ -162,25 +165,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 height: crate::components::manage::BAR_HEIGHT.min(layout.body.height),
                 ..layout.body
             };
-            // Recorded so `App::retarget_manage_tab_underline` (run from
-            // `update`, off the draw path) can lay the strip out with the
-            // same right-anchored geometry `draw_manage_bar` below will
-            // actually paint. Both read it from `manage::strip_area`, so
-            // "the strip's width" has exactly one definition.
-            app.manage_strip_width = crate::components::manage::strip_area(bar).width;
             let body = Rect {
                 y: layout.body.y + bar.height,
                 height: layout.body.height - bar.height,
                 ..layout.body
             };
-            // The strip's underline follows the app's eased edges while a
-            // tab switch glides; untracked (the screen just opened) it
-            // sits on the active tab's static span.
-            let underline = {
-                use crate::anim::{AnimKey, StripId};
-                let left = app.anims.value(AnimKey::TabUnderline(StripId::ManageTabs), now);
-                let right = app.anims.value(AnimKey::TabUnderlineWidth(StripId::ManageTabs), now);
-                left.zip(right).map(|(l, r)| (l, r - l))
+            let underline = crate::paint::Underline::Aimed {
+                anims: &app.anims,
+                strip: crate::anim::StripId::ManageTabs,
+                tab: app.manage.tab.index(),
+                now,
             };
             crate::components::manage::draw_manage_bar(
                 frame,

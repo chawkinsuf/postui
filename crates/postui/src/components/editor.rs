@@ -1703,15 +1703,12 @@ impl Editor {
     /// Whether the Body tab carries its validity badge: only once there's
     /// body text to validate, and never while the tab is disabled — a
     /// bright ✓ on a disabled tab made it read as lit as its neighbours.
-    /// Shared by [`Self::draw_tab_bar`] and [`Self::tab_strip_spans`] since
-    /// badge presence affects the tab's on-screen width.
     fn body_badge_present(&self) -> bool {
         !self.body_tab_disabled() && !self.body_text().is_empty()
     }
 
-    /// Shared by [`Self::draw_tab_bar`] and [`Self::tab_strip_spans`] so
-    /// the two can never drift apart on the counts that drive each tab's
-    /// on-screen width.
+    /// A tab's label in the strip: its name, and its entry count when it
+    /// has entries.
     fn tab_label_text(&self, t: EditorTab) -> String {
         let count = match t {
             EditorTab::Params => self.params.len(),
@@ -1720,25 +1717,6 @@ impl Editor {
             EditorTab::Body => 0,
         };
         if count > 0 { format!("{} · {count}", t.label()) } else { t.label().to_string() }
-    }
-
-    /// The tab strip's current per-tab spans (see [`crate::paint::TabStrip::spans`]),
-    /// in [`DRAW_ORDER`]. Used by `app.rs` to compute where the underline
-    /// animation (Task 10) should retarget to on a tab switch, without
-    /// needing a `Theme` — badge *presence* (Body only) affects a span's
-    /// width, but badge color never does, so this stands in a fixed color
-    /// where [`Self::draw_tab_bar`] uses the real validity color.
-    pub fn tab_strip_spans(&self) -> Vec<(u16, u16)> {
-        let labels: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = DRAW_ORDER
-            .iter()
-            .map(|t| {
-                let label = self.tab_label_text(*t);
-                let badge = (matches!(t, EditorTab::Body) && self.body_badge_present())
-                    .then_some(("_", ratatui::style::Color::Reset));
-                (label, badge)
-            })
-            .collect();
-        crate::paint::TabStrip::spans(&labels)
     }
 
     /// The tab content's scroll state, as of the last draw. `None` before a
@@ -3899,26 +3877,6 @@ impl Editor {
             .map(|(i, _)| i);
 
         let strip_area = Rect { height: 2, ..area };
-        let spans = crate::paint::TabStrip::spans(&tab_strip);
-        let (static_left, static_width) =
-            spans.get(active).map(|(x, w)| (*x as f32, *w as f32)).unwrap_or((0.0, 0.0));
-        // Independently animated left/right edges (Task 10): each key falls
-        // back to this tab's own static edge when untracked, so a draw
-        // before any update places it snaps straight there with no
-        // slide-in from zero. `App::sync_editor_tab_underline`, in the tail
-        // of every dispatch, is what places these keys and sets them in
-        // motion (#117).
-        let left = ctx.anims.value_or(
-            crate::anim::AnimKey::TabUnderline(crate::anim::StripId::EditorTabs),
-            ctx.now,
-            static_left,
-        );
-        let right = ctx.anims.value_or(
-            crate::anim::AnimKey::TabUnderlineWidth(crate::anim::StripId::EditorTabs),
-            ctx.now,
-            static_left + static_width,
-        );
-        let underline = (left, right - left);
         // The pane-collapse progress doubles as the tabs' fade: hiding the
         // editor fades the tab labels (underline, badge, and vars indicator
         // with them) out entirely — settled hidden, the strip isn't painted
@@ -3940,7 +3898,14 @@ impl Editor {
                     tabs: &tab_strip,
                     active,
                     hovered,
-                    underline,
+                    // A tab is its draw position: the strip's tab set never
+                    // changes.
+                    underline: crate::paint::Underline::Aimed {
+                        anims: ctx.anims,
+                        strip: crate::anim::StripId::EditorTabs,
+                        tab: active,
+                        now: ctx.now,
+                    },
                     disabled: self.body_tab_disabled().then(|| EditorTab::Body.draw_position()),
                     right_anchored: 0,
                 }
@@ -7743,19 +7708,35 @@ mod tests {
         );
     }
 
-    /// `tab_strip_spans` must agree with `draw_tab_bar` on badge presence
-    /// (it affects the Body tab's width): no badge on an empty body, one
-    /// once the body has text and the method sends it.
+    /// The Body tab's badge, and the 2 cells it adds to the tab: none on an
+    /// empty body, one once the body has text and the method sends it, and
+    /// none on a disabled tab.
     #[test]
-    fn tab_strip_spans_track_badge_presence() {
+    fn the_body_tab_wears_its_badge_only_with_a_body_it_sends() {
+        let body_width = |e: &mut Editor| {
+            let theme = Theme::dark();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered: None,
+                pointer: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+            hits.rect_of(&crate::hit::Hit::EditorTab(EditorTab::Body.draw_position()))
+                .unwrap()
+                .width
+        };
         let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
-        let without = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
+        let without = body_width(&mut e);
         e.set_body_text("{}");
-        let with = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
-        assert_eq!(with, without + 2, "badge adds its 2-cell span");
+        assert_eq!(body_width(&mut e), without + 2, "badge adds its 2-cell span");
         e.method = postui_core::model::Method::Get;
-        let disabled = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
-        assert_eq!(disabled, without, "disabled tab drops the badge");
+        assert_eq!(body_width(&mut e), without, "disabled tab drops the badge");
     }
 
     #[test]
