@@ -460,30 +460,32 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
     }
 }
 
-/// Task #249: every constructor leaves the split's three anims snapped in,
-/// so the `sync_*` passes never meet them unset: `bare` itself, and
-/// `with_root` when its project fails to open and it skips the seed.
-///
-/// That a first split change then eases from this settled value is pinned
-/// in pieces, not by one test: the toggle and stop tests build with
-/// `new_for_test_with_anims`, whose set `a_fresh_anim_set_has_the_split_snapped_in`
-/// pins as set and settled, and `anim.rs`'s
-/// `retarget_mid_flight_starts_from_current_value` pins that a retarget
-/// starts from the current value. Of the toggle and stop tests, only
-/// `toggle_table_collapse_retargets_pane_collapse_instead_of_snapping`
-/// checks the value before its toggle; the other two assert only that the
-/// anim is in flight after it.
+/// Task #249: `bare`, which every constructor starts from, leaves the
+/// split's three anims snapped in at the split it draws, so with
+/// animations on a first split change eases from that drawn value, for
+/// each of the three.
 #[test]
-fn every_app_starts_with_the_split_snapped_in() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    assert_split_drawn_settled(&App::bare(tx, std::path::PathBuf::new()));
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = tempfile::tempdir().unwrap();
-    postui_core::fixtures::ensure_project(dir.path()).unwrap();
-    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
-    let app = App::with_root(tx, dir.path().to_path_buf());
-    assert!(app.open_error.is_some(), "the project failed to open");
-    assert_split_drawn_settled(&app);
+fn a_first_split_change_eases_from_the_drawn_value() {
+    use crate::anim::AnimKey;
+    let drawn = SplitState::default();
+    for (key, next, from, to) in [
+        (AnimKey::PaneCollapse, SplitState { editor_minimized: true, ..drawn }, 0.0, 1.0),
+        (AnimKey::ResponseCollapse, SplitState { response_minimized: true, ..drawn }, 0.0, 1.0),
+        (AnimKey::SplitRatio, SplitState { ratio: 0.25, ..drawn }, drawn.ratio, 0.25),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::bare(tx, std::path::PathBuf::new());
+        assert_eq!(app.split_state(), drawn);
+        assert_split_drawn_settled(&app);
+        app.anims.set_enabled(true);
+        let before = std::time::Instant::now();
+        app.set_split_fields(next);
+        app.update(Action::Tick);
+        // Sampled before the ease began, the value is the ease's start.
+        assert_eq!(app.anims.value(key, before), Some(from), "{key:?} starts where it was drawn");
+        assert_eq!(app.anims.target(key), Some(to), "{key:?} heads to the new split");
+        assert!(!app.anims.is_done(key, std::time::Instant::now()), "{key:?} eases");
+    }
 }
 
 /// Task #93 (P5): with animations on, a project switch draws the next
