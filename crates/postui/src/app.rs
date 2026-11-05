@@ -2611,6 +2611,10 @@ impl App {
             self.anims.snap(AnimKey::PaneCollapse, target_v);
             return;
         }
+        debug_assert!(
+            self.anims.target(AnimKey::PaneCollapse).is_some(),
+            "PaneCollapse eased while unset (see `sync_split_anims`)"
+        );
         self.anims.retarget(
             AnimKey::PaneCollapse,
             target_v,
@@ -2635,6 +2639,10 @@ impl App {
             self.anims.snap(AnimKey::ResponseCollapse, target_v);
             return;
         }
+        debug_assert!(
+            self.anims.target(AnimKey::ResponseCollapse).is_some(),
+            "ResponseCollapse eased while unset (see `sync_split_anims`)"
+        );
         self.anims.retarget(
             AnimKey::ResponseCollapse,
             target_v,
@@ -2755,10 +2763,12 @@ impl App {
     /// does [`Self::reset_anims`], where every anim set is built, so the
     /// three are always set and a first ease starts from the split drawn.
     ///
-    /// Nothing checks that at run time. A set built anywhere else would
-    /// still draw the right split, but its first change would jump instead
-    /// of easing (`Anims::retarget` starts an unset key at its target) and
-    /// keep the loop redrawing, with nothing moving, for one ease's length.
+    /// Debug and test builds check that on each ease, with a `debug_assert!`
+    /// that the key is set; a snap needs none, since it is what sets it.
+    /// A release build checks nothing: a set built anywhere else would still
+    /// draw the right split, but its first change would jump instead of easing
+    /// (`Anims::retarget` starts an unset key at its target) and keep the
+    /// loop redrawing, with nothing moving, for one ease's length.
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);
@@ -3052,6 +3062,10 @@ impl App {
             self.anims.snap(AnimKey::SplitRatio, target);
             return;
         }
+        debug_assert!(
+            self.anims.target(AnimKey::SplitRatio).is_some(),
+            "SplitRatio eased while unset (see `sync_split_anims`)"
+        );
         self.anims.retarget(
             AnimKey::SplitRatio,
             target,

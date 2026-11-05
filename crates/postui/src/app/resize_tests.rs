@@ -489,6 +489,35 @@ fn a_first_split_change_eases_from_the_drawn_value() {
     }
 }
 
+/// Task #252: in a debug build, easing one of the split's anims while its
+/// key is unset panics, for each of the three, so a set built without the
+/// snap is caught by the first test that changes the split.
+#[cfg(debug_assertions)]
+#[test]
+fn easing_an_unset_split_anim_panics_in_debug() {
+    use crate::anim::AnimKey;
+    let drawn = SplitState::default();
+    for (key, next) in [
+        (AnimKey::PaneCollapse, SplitState { editor_minimized: true, ..drawn }),
+        (AnimKey::ResponseCollapse, SplitState { response_minimized: true, ..drawn }),
+        (AnimKey::SplitRatio, SplitState { ratio: 0.25, ..drawn }),
+    ] {
+        let mut app = App::new_for_test();
+        app.anims.clear(key);
+        app.set_split_fields(next);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.update(Action::Tick);
+        }))
+        .expect_err("easing an unset key panics");
+        let message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or_default();
+        assert!(message.contains(&format!("{key:?} eased while unset")), "{key:?}: {message}");
+    }
+}
+
 /// Task #93 (P5): with animations on, a project switch draws the next
 /// project's saved split at once, not easing out of the previous one's.
 #[test]
