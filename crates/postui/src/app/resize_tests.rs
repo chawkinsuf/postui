@@ -462,11 +462,17 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
 
 /// Task #249: every constructor leaves the split's three anims snapped in,
 /// so the `sync_*` passes never meet them unset: `bare` itself, and
-/// `with_root` when its project fails to open and it skips the seed. That
-/// a first split change then eases from this settled value is in the
-/// toggle and stop tests (`toggle_table_collapse_retargets_pane_collapse_instead_of_snapping`,
-/// `toggle_response_collapse_flips_the_flag_and_eases_the_anim`,
-/// `split_stops_update_the_split_and_ease_the_ratio_anim`).
+/// `with_root` when its project fails to open and it skips the seed.
+///
+/// That a first split change then eases from this settled value is pinned
+/// in pieces, not by one test: the toggle and stop tests build with
+/// `new_for_test_with_anims`, whose set `a_fresh_anim_set_has_the_split_snapped_in`
+/// pins as set and settled, and `anim.rs`'s
+/// `retarget_mid_flight_starts_from_current_value` pins that a retarget
+/// starts from the current value. Of the toggle and stop tests, only
+/// `toggle_table_collapse_retargets_pane_collapse_instead_of_snapping`
+/// checks the value before its toggle; the other two assert only that the
+/// anim is in flight after it.
 #[test]
 fn every_app_starts_with_the_split_snapped_in() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

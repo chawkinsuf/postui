@@ -2760,10 +2760,13 @@ impl App {
     /// Nothing checks that at run time: the two places a set is built
     /// (`bare`, [`Self::reset_anims`]) are pinned by tests
     /// (`every_app_starts_with_the_split_snapped_in`,
-    /// `a_fresh_anim_set_has_the_split_snapped_in`), and a set built some
-    /// new way without the snap would only cost the first change its ease
-    /// (`Anims::retarget` starts an unset key at its target), never draw a
-    /// wrong split.
+    /// `a_fresh_anim_set_has_the_split_snapped_in`). A set built some new
+    /// way without the snap would still never draw a wrong split, but with
+    /// animations on its first change would jump instead of easing:
+    /// `Anims::retarget` starts an unset key at its target, and the entry
+    /// that leaves (start equal to target, over `anim_ms.pane_collapse`)
+    /// counts as active, so the loop redraws with nothing moving for that
+    /// long.
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);
