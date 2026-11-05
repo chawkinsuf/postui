@@ -4199,14 +4199,12 @@ mod tests {
         );
     }
 
-    /// A disabled (instantly-jumping) `Anims` shared by every test's draw
-    /// call, so a dropdown's open-settle animation never intrudes on
-    /// geometry/behavior assertions that don't care about it — untracked
-    /// keys (never `retarget`ed here) read as fully settled via
+    /// A disabled `Anims`, so a dropdown's open-settle animation never
+    /// intrudes on geometry/behavior assertions that don't care about it —
+    /// untracked keys (never `retarget`ed here) read as fully settled via
     /// `value_or`'s default.
     fn test_anims() -> &'static crate::anim::Anims {
-        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
-        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
+        crate::anim::Anims::for_tests()
     }
 
     #[test]

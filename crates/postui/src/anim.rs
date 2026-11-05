@@ -1,7 +1,7 @@
 //! Eased animated values driving the motion catalog. Time is always passed
 //! in, never sampled, so tests are deterministic.
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub fn ease_out_cubic(t: f32) -> f32 {
@@ -10,7 +10,7 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 }
 
 /// Symmetric in-out cubic: slow start, fast middle, slow finish. Used only
-/// by the tab-strip underline slide (Task 10, controller amendment 2) — the
+/// by the tab-strip underline glide ([`Anims::aim_underline`]) — the
 /// reference app's stretchy leading-edge motion reads better eased in-out
 /// than the default ease-out every other animation uses.
 pub fn ease_in_out_cubic(t: f32) -> f32 {
@@ -21,9 +21,8 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
 /// Which easing curve an [`Anim`] eases through: `OutCubic` for every
 /// [`Anims::retarget`], `InOutCubic` for the tab-strip underline glide
 /// ([`Anims::aim_underline`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Easing {
-    #[default]
+#[derive(Clone, Copy)]
+enum Easing {
     OutCubic,
     InOutCubic,
 }
@@ -124,6 +123,10 @@ impl Anim {
     fn done(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.started) >= self.dur
     }
+    /// How long it has left to run at `now`: zero once done.
+    fn remaining(&self, now: Instant) -> Duration {
+        (self.started + self.dur).saturating_duration_since(now)
+    }
 }
 
 /// One tab strip's accent underline (#119): the tab it is aimed at, its
@@ -146,11 +149,8 @@ pub struct Anims {
     entries: HashMap<AnimKey, Anim>,
     /// The tab strips' underlines, aimed while each strip paints
     /// ([`Self::aim_underline`]), from the area and spans only the paint
-    /// knows. The paint holds `&Anims` (through `DrawCtx`), hence the
-    /// lock; nothing contends for it, and a `Mutex` rather than a
-    /// `RefCell` keeps `Anims` `Sync` for the test helpers that share one
-    /// in a `static`.
-    underlines: Mutex<HashMap<StripId, Underline>>,
+    /// knows. The paint holds `&Anims` (through `DrawCtx`), hence the cell.
+    underlines: RefCell<HashMap<StripId, Underline>>,
     /// Counts the frames `ui::draw` has begun ([`Self::begin_frame`]), so
     /// an underline can tell whether its strip was painted last frame.
     frame: u64,
@@ -164,16 +164,10 @@ impl Anims {
         Self {
             enabled,
             entries: HashMap::new(),
-            underlines: Mutex::default(),
+            underlines: RefCell::default(),
             frame: 0,
             tab_slide: Duration::ZERO,
         }
-    }
-
-    fn underlines(&self) -> std::sync::MutexGuard<'_, HashMap<StripId, Underline>> {
-        // A panic mid-paint poisons nothing this map relies on: each entry
-        // is replaced whole.
-        self.underlines.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Starts a frame: `ui::draw` calls it first, with the configured glide
@@ -186,59 +180,59 @@ impl Anims {
 
     /// Aims `strip`'s underline at its active tab, `tab` (an identity the
     /// strip keeps for that tab whatever its index), whose label paints at
-    /// absolute columns `[left, right)` this frame, and answers where to
-    /// draw the edges at `now`:
+    /// absolute columns `[left, right)` this frame in a strip spanning
+    /// `within`, and answers where to draw the edges at `now`.
     ///
-    /// - the strip was not painted last frame (a screen just opened, a pane
-    ///   shown again, the first frame): placed on the tab;
-    /// - another tab than last frame's: a glide from where the underline is
-    ///   drawn now, over the glide duration, in-out cubic (zero while
-    ///   animations are off);
-    /// - the same tab at new columns (a badge, a count, a resize): each edge
-    ///   moves by what the label's moved, at once. A glide still running
-    ///   toward this tab moves with it, so it lands on the label.
+    /// The strip was not painted last frame (a screen just opened, a pane
+    /// shown again, the first frame): the underline is placed on the tab.
+    /// Otherwise an edge whose target changed moves on from where it is
+    /// drawn now, clamped into the strip, to its new column, over:
     ///
-    /// Absolute columns keep a still tab still when the strip around it
-    /// moves (the Response strip is right-aligned).
+    /// - the glide duration, in-out cubic, for another tab than last
+    ///   frame's (zero while animations are off);
+    /// - what is left of its glide, for the same tab at new columns (a
+    ///   badge, a count, a resize). That is zero once the glide has landed,
+    ///   so a settled underline follows its label at once (R3), and a glide
+    ///   still running toward it bends to the new columns with no jump.
+    ///
+    /// That one start, the segment as drawn, is what keeps it from ever
+    /// popping (R1). It is in absolute screen columns, the place the user
+    /// last saw it, so it needs no conversion when the strip moves: a frame
+    /// relative to the strip would not do for every strip (the Response
+    /// strip is right-aligned, so its origin moves when the Tree tab comes
+    /// and goes while its other labels stay put). The clamp keeps a start
+    /// the strip has moved or narrowed away from (the Tree tab dropped
+    /// under it) on the strip, so the glide grows from its edge instead of
+    /// running clipped outside it.
     pub fn aim_underline(
         &self,
         strip: StripId,
         tab: usize,
         (left, right): (f32, f32),
+        (lo, hi): (f32, f32),
         now: Instant,
     ) -> (f32, f32) {
-        let mut underlines = self.underlines();
+        let mut underlines = self.underlines.borrow_mut();
         let painted = self.frame;
         let last = underlines.get(&strip).filter(|u| u.painted + 1 >= painted);
         let next = match last {
             None => Underline { tab, left: Anim::at(left), right: Anim::at(right), painted },
-            Some(u) if u.tab != tab => {
-                let dur = if self.enabled { self.tab_slide } else { Duration::ZERO };
-                let glide = |from: &Anim, to: f32| Anim {
-                    start: from.value(now),
-                    target: to,
-                    started: now,
-                    dur,
-                    easing: Easing::InOutCubic,
-                };
-                Underline {
-                    tab,
-                    left: glide(&u.left, left),
-                    right: glide(&u.right, right),
-                    painted,
-                }
-            }
             Some(u) => {
-                let follow = |edge: Anim, to: f32| {
-                    let by = to - edge.target;
-                    Anim { start: edge.start + by, target: to, ..edge }
+                let switched = u.tab != tab;
+                let glide = if self.enabled { self.tab_slide } else { Duration::ZERO };
+                let aim = |edge: Anim, to: f32| {
+                    if !switched && edge.target == to {
+                        return edge;
+                    }
+                    Anim {
+                        start: edge.value(now).clamp(lo, hi),
+                        target: to,
+                        started: now,
+                        dur: if switched { glide } else { edge.remaining(now) },
+                        easing: Easing::InOutCubic,
+                    }
                 };
-                Underline {
-                    tab,
-                    left: follow(u.left, left),
-                    right: follow(u.right, right),
-                    painted,
-                }
+                Underline { tab, left: aim(u.left, left), right: aim(u.right, right), painted }
             }
         };
         underlines.insert(strip, next);
@@ -277,8 +271,8 @@ impl Anims {
     pub fn retarget(&mut self, key: AnimKey, target: f32, dur: Duration, now: Instant) {
         let start = self.value(key, now).unwrap_or(target);
         let dur = if self.enabled { dur } else { Duration::ZERO };
-        let easing = Easing::OutCubic;
-        self.entries.insert(key, Anim { start, target, started: now, dur, easing });
+        self.entries
+            .insert(key, Anim { start, target, started: now, dur, easing: Easing::OutCubic });
     }
 
     /// The value `key` is easing toward (its resting value once done), or
@@ -301,10 +295,16 @@ impl Anims {
 
     /// Whether any tracked animation is still in flight at `now`, an
     /// underline glide included: one started at paint keeps the main loop
-    /// ticking (`App::animating`) until it lands.
+    /// ticking (`App::animating`) until it lands. Only on a strip the last
+    /// frame painted: one that went unpainted is placed when it next
+    /// paints, so its glide has nothing left to show.
     pub fn active(&self, now: Instant) -> bool {
         self.entries.values().any(|a| !a.done(now))
-            || self.underlines().values().any(|u| !u.left.done(now) || !u.right.done(now))
+            || self
+                .underlines
+                .borrow()
+                .values()
+                .any(|u| u.painted == self.frame && (!u.left.done(now) || !u.right.done(now)))
     }
 
     /// Whether `key`'s own tracked animation (if any) has finished at
@@ -343,10 +343,22 @@ impl Anims {
     /// [`Self::set_enabled`], turning motion off.
     pub fn finish_all(&mut self) {
         self.entries.values_mut().for_each(Anim::land);
-        for u in self.underlines().values_mut() {
+        for u in self.underlines.get_mut().values_mut() {
             u.left.land();
             u.right.land();
         }
+    }
+
+    /// A disabled (instantly-jumping) `Anims` for the component tests'
+    /// `DrawCtx`, so they stay deterministic without threading an owned one
+    /// through each call site. One per test thread, since the underlines'
+    /// `RefCell` keeps `Anims` from being shared across threads.
+    #[cfg(test)]
+    pub fn for_tests() -> &'static Anims {
+        thread_local! {
+            static ANIMS: &'static Anims = Box::leak(Box::new(Anims::new(false)));
+        }
+        ANIMS.with(|a| *a)
     }
 }
 
@@ -458,9 +470,12 @@ mod tests {
         assert_eq!(ease_in_out_cubic(2.0), 1.0);
     }
 
+    /// A strip wide enough that nothing below is clamped.
+    const WIDE: (f32, f32) = (0.0, 100.0);
+
     /// #119 R6: a glide still running toward a tab whose label moves (a
-    /// badge, a count) moves with it, edge by edge, and lands on the new
-    /// columns.
+    /// badge, a count) bends to the new columns from where it is drawn,
+    /// with no jump, and lands on them when it was due to.
     #[test]
     fn a_glide_toward_a_tab_that_moves_lands_on_its_new_columns() {
         let t0 = Instant::now();
@@ -468,23 +483,61 @@ mod tests {
         let mut a = Anims::new(true);
         let strip = StripId::EditorTabs;
         a.begin_frame(dur);
-        a.aim_underline(strip, 0, (0.0, 4.0), t0);
+        a.aim_underline(strip, 0, (0.0, 4.0), WIDE, t0);
         a.begin_frame(dur);
-        assert_eq!(a.aim_underline(strip, 1, (10.0, 14.0), t0), (0.0, 4.0), "a glide starts");
+        assert_eq!(a.aim_underline(strip, 1, (10.0, 14.0), WIDE, t0), (0.0, 4.0), "a glide starts");
         a.begin_frame(dur);
-        let (quarter, _) = a.aim_underline(strip, 1, (10.0, 14.0), t0 + dur / 4);
+        let (quarter, _) = a.aim_underline(strip, 1, (10.0, 14.0), WIDE, t0 + dur / 4);
         assert!(quarter < 2.5, "in-out cubic starts slow, got {quarter} at t=0.25");
         let mid = t0 + Duration::from_millis(50);
         a.begin_frame(dur);
-        let (l, r) = a.aim_underline(strip, 1, (10.0, 14.0), mid);
+        let drawn = a.aim_underline(strip, 1, (10.0, 14.0), WIDE, mid);
         a.begin_frame(dur);
-        assert_eq!(a.aim_underline(strip, 1, (12.0, 17.0), mid), (l + 2.0, r + 3.0));
+        assert_eq!(a.aim_underline(strip, 1, (12.0, 17.0), WIDE, mid), drawn, "no jump");
         a.begin_frame(dur);
-        assert_eq!(a.aim_underline(strip, 1, (12.0, 17.0), t0 + dur), (12.0, 17.0));
+        let (l, r) = a.aim_underline(strip, 1, (12.0, 17.0), WIDE, mid + dur / 4);
+        assert!(l > drawn.0 && l < 12.0 && r > drawn.1 && r < 17.0, "still gliding: {l}, {r}");
+        a.begin_frame(dur);
+        assert_eq!(a.aim_underline(strip, 1, (12.0, 17.0), WIDE, t0 + dur), (12.0, 17.0));
+        assert!(!a.active(t0 + dur), "landed when it was due to");
+    }
+
+    /// #119 R3: a settled underline follows its label's move at once.
+    #[test]
+    fn a_settled_underline_follows_its_label_at_once() {
+        let t0 = Instant::now();
+        let mut a = Anims::new(true);
+        let strip = StripId::EditorTabs;
+        a.begin_frame(Duration::from_millis(100));
+        a.aim_underline(strip, 0, (0.0, 4.0), WIDE, t0);
+        a.begin_frame(Duration::from_millis(100));
+        assert_eq!(a.aim_underline(strip, 0, (3.0, 9.0), WIDE, t0), (3.0, 9.0));
+        assert!(!a.active(t0), "nothing in flight");
+    }
+
+    /// #119: a glide starts from the segment as drawn, clamped into the
+    /// strip: a start the strip narrowed away from (the Tree tab dropped
+    /// under it) or moved away from starts on the strip's edge.
+    #[test]
+    fn a_glide_starts_on_the_strip_when_the_strip_left_the_segment() {
+        let t0 = Instant::now();
+        let dur = Duration::from_millis(100);
+        let mut a = Anims::new(true);
+        let strip = StripId::ResponseTabs;
+        a.begin_frame(dur);
+        a.aim_underline(strip, 0, (10.0, 16.0), (10.0, 40.0), t0);
+        a.begin_frame(dur);
+        let start = a.aim_underline(strip, 1, (18.0, 23.0), (18.0, 32.0), t0);
+        assert_eq!(start, (18.0, 18.0), "grows from the strip's left edge");
+        a.begin_frame(dur);
+        let (l, r) = a.aim_underline(strip, 1, (18.0, 23.0), (18.0, 32.0), t0 + dur / 2);
+        assert_eq!(l, 18.0);
+        assert!(r > 18.0 && r < 23.0, "growing toward Raw: {r}");
     }
 
     /// #119 R7: a strip that missed a frame is placed, whatever tab its
-    /// underline was last aimed at.
+    /// underline was last aimed at; and while it goes unpainted, a glide
+    /// it left in flight keeps nothing ticking.
     #[test]
     fn a_strip_not_painted_last_frame_is_placed() {
         let t0 = Instant::now();
@@ -492,10 +545,14 @@ mod tests {
         let mut a = Anims::new(true);
         let strip = StripId::ManageTabs;
         a.begin_frame(dur);
-        a.aim_underline(strip, 0, (0.0, 4.0), t0);
+        a.aim_underline(strip, 0, (0.0, 4.0), WIDE, t0);
         a.begin_frame(dur);
+        a.aim_underline(strip, 1, (10.0, 14.0), WIDE, t0);
+        assert!(a.active(t0), "a glide in flight");
         a.begin_frame(dur);
-        assert_eq!(a.aim_underline(strip, 3, (30.0, 38.0), t0), (30.0, 38.0));
+        assert!(!a.active(t0), "its strip went unpainted: nothing to tick for");
+        a.begin_frame(dur);
+        assert_eq!(a.aim_underline(strip, 3, (30.0, 38.0), WIDE, t0), (30.0, 38.0));
         assert!(!a.active(t0), "nothing in flight");
     }
 

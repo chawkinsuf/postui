@@ -5048,12 +5048,8 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
-    /// A disabled (instantly-jumping) `Anims` shared by every test's
-    /// `DrawCtx`, so tests stay deterministic without threading an owned
-    /// `Anims` through each call site.
     fn test_anims() -> &'static crate::anim::Anims {
-        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
-        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
+        crate::anim::Anims::for_tests()
     }
 
     #[test]

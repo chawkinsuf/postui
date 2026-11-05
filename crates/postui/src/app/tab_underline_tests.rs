@@ -315,6 +315,32 @@ fn an_editor_count_change_follows_at_once() {
     assert_eq!(drawn, cols(&app, &params), "followed at once");
 }
 
+/// A glide under way toward Params when a header count shifts Params goes
+/// on from where it is drawn: Headers' own columns, where it started, since
+/// a glide drawn mid-flight is still at its start here. It does not jump
+/// by Params' move, and still lands on Params.
+#[test]
+fn a_glide_toward_a_tab_that_moves_does_not_jump() {
+    let mut app = app();
+    let tabs = editor_tabs();
+    let headers = Hit::EditorTab(EditorTab::Headers.draw_position());
+    let params = Hit::EditorTab(EditorTab::Params.draw_position());
+    assert!(EditorTab::Headers.draw_position() < EditorTab::Params.draw_position());
+    let start = draw(&mut app, &tabs);
+    assert_eq!(start, cols(&app, &headers));
+    app.update(Action::EditorTabSelect(EditorTab::Params.index()));
+    assert_eq!(draw(&mut app, &tabs), start, "the glide starts on Headers");
+
+    let before = cols(&app, &params);
+    let entry = postui_core::model::Entry { value: "1".into(), enabled: true };
+    app.editor.headers.insert("X-One".into(), entry);
+    let drawn = draw(&mut app, &tabs);
+    assert!(moved(before, &app, &params), "the Headers count shifts Params");
+    assert_eq!(drawn, start, "no jump");
+    app.anims.finish_all();
+    assert_eq!(draw(&mut app, &tabs), cols(&app, &params), "it lands on Params");
+}
+
 // --- placing (R7) ---
 
 /// Opening Manage places the underline on the tab it opens on, even when
@@ -353,10 +379,11 @@ fn showing_the_response_pane_places_the_underline() {
 
 // --- another tab, with no switch action behind it (R5) ---
 
-/// The strip is right-aligned, so dropping Tree narrows it from the left:
-/// the glide starts where Tree was, now outside the strip, and the strip
-/// shows it as it enters (TabStrip clips the segment to its own area). So
-/// the first frame shows nothing of it rather than Raw's own underline.
+/// The strip is right-aligned, so dropping Tree narrows it from the left,
+/// and where Tree's underline was drawn is now outside the strip. The
+/// glide starts there clamped into the strip: on its left edge, with no
+/// width yet, growing to Raw (`anim.rs` pins the growth). So the first
+/// frame shows none of it rather than Raw's own underline.
 fn assert_glides_in_to_raw(app: &mut App, tabs: &[Hit]) {
     let raw = Hit::ResponseTab(ViewMode::Raw);
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw);

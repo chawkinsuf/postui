@@ -5023,11 +5023,12 @@ fn draw_header_strip(
         active,
         hovered,
         // A tab is its mode, not its index: the Tree tab comes and goes, so
-        // Raw's index changes with it while Raw stays the tab it was.
+        // Raw's index changes with it while Raw stays the tab it was. The
+        // mode of the tab painted active, so the two never disagree.
         underline: crate::paint::Underline::Aimed {
             anims: ctx.anims,
             strip: crate::anim::StripId::ResponseTabs,
-            tab: view.mode as usize,
+            tab: modes[active] as usize,
             now: ctx.now,
         },
         disabled: None,
@@ -6150,12 +6151,8 @@ mod tests {
         key(KeyCode::Char(c))
     }
 
-    /// A disabled (instantly-jumping) `Anims` shared by every test's
-    /// `DrawCtx`, so tests stay deterministic without threading an owned
-    /// `Anims` through each call site.
     fn test_anims() -> &'static crate::anim::Anims {
-        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
-        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
+        crate::anim::Anims::for_tests()
     }
 
     fn data(body: &str) -> crate::http::ResponseData {

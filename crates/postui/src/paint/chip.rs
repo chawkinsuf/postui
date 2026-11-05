@@ -62,8 +62,9 @@ impl Chip<'_> {
 pub enum Underline<'a> {
     /// Under the active tab, aimed while the strip paints from the area and
     /// spans it lays out (#119, [`crate::anim::Anims::aim_underline`]): a
-    /// move to another tab glides, the active tab's own move is followed at
-    /// once, and a strip not painted last frame is placed. `tab` names the
+    /// move to another tab glides, the active tab's own move is followed (at
+    /// once when nothing is in flight), and a strip not painted last frame
+    /// is placed. `tab` names the
     /// active tab for the strip's whole life, which its index does not
     /// always do (the Response strip's Tree tab comes and goes).
     Aimed { anims: &'a crate::anim::Anims, strip: crate::anim::StripId, tab: usize, now: Instant },
@@ -206,7 +207,9 @@ impl TabStrip<'_> {
             Underline::Aimed { anims, strip, tab, now } => match spans.get(self.active) {
                 Some(&(offset, w)) => {
                     let x = f32::from(area.x.saturating_add(offset));
-                    let (l, r) = anims.aim_underline(strip, tab, (x, x + f32::from(w)), now);
+                    let within = (f32::from(area.x), f32::from(area.right()));
+                    let (l, r) =
+                        anims.aim_underline(strip, tab, (x, x + f32::from(w)), within, now);
                     (l - f32::from(area.x), r - l)
                 }
                 None => (0.0, 0.0),
