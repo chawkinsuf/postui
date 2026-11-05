@@ -449,6 +449,15 @@ fn a_launch_restoring_a_request_starts_with_nothing_in_flight() {
     assert!(!app.anims.active(std::time::Instant::now()), "nothing eases into the first frame");
 }
 
+/// Task #113: a fresh anim set is built with the split's three anims
+/// snapped in, so a test app with its own set draws the split the way a
+/// launch does, not through `ui::draw`'s fallback for an anim never set.
+#[test]
+fn a_fresh_anim_set_has_the_split_snapped_in() {
+    let app = App::new_for_test_with_anims(true);
+    assert_split_drawn_settled(&app);
+}
+
 /// Task #93 (P5): with animations on, a project switch draws the next
 /// project's saved split at once, not easing out of the previous one's.
 #[test]

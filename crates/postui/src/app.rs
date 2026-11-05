@@ -1240,15 +1240,24 @@ impl App {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         // A fresh set, so the first frame starts with nothing in flight:
         // whatever `with_root`'s restore started (an underline, a fade) is
-        // dropped, settled. The split's three anims are snapped back in at
-        // the seeded split, so a launch draws it at once just as a project
-        // switch does (task #93).
-        self.anims = Anims::new(ui_settings.animations);
-        self.sync_split_anims(true);
+        // dropped, settled.
+        self.reset_anims(ui_settings.animations);
         self.theme = theme;
         self.theme_name = theme_name;
         self.theme_contrast = ui_settings.theme_contrast;
         self.finish_ui_settings(ui_settings);
+    }
+
+    /// Replaces the whole anim set with a fresh one, `enabled` or not, and
+    /// snaps the split's three anims in at the split on screen, so the
+    /// next frame draws it at once (task #93) rather than through
+    /// `ui::draw`'s fallback for an anim never set. Every fresh set an
+    /// `App` takes after it is built comes through here: a launch
+    /// ([`Self::apply_ui_settings`]) and a test app's own set
+    /// ([`Self::new_for_test_with_anims`]).
+    fn reset_anims(&mut self, enabled: bool) {
+        self.anims = Anims::new(enabled);
+        self.sync_split_anims(true);
     }
 
     /// [`Self::apply_ui_settings`] for a *live* reload, minus the theme
@@ -2145,13 +2154,14 @@ impl App {
         app
     }
 
-    /// Like [`Self::new_for_test`], but with `self.anims` freshly built as
-    /// `Anims::new(enabled)` — needed by tests that exercise an animated
-    /// retarget (e.g. the tab-underline slide, Task 10) with animations
-    /// deliberately on, regardless of `UiSettings::default().animations`.
+    /// Like [`Self::new_for_test`], but with a fresh anim set, `enabled`
+    /// or not ([`Self::reset_anims`]) — needed by tests that exercise an
+    /// animated retarget (e.g. the tab-underline slide, Task 10) with
+    /// animations deliberately on, regardless of
+    /// `UiSettings::default().animations`.
     pub fn new_for_test_with_anims(enabled: bool) -> Self {
         let mut app = Self::new_for_test();
-        app.anims = Anims::new(enabled);
+        app.reset_anims(enabled);
         app
     }
 
@@ -2680,7 +2690,7 @@ impl App {
     /// project's split (a switch). Only here does the app know the change
     /// is a seed; the `sync_*` passes `update` runs can't tell it from a
     /// chip click. At a launch, `App::new` then replaces the whole anim
-    /// set and snaps the split's anims back in (`apply_ui_settings`).
+    /// set and snaps the split's anims back in ([`Self::reset_anims`]).
     fn seed_sizes_from_project(&mut self) {
         let layout = self.project().map(|p| &p.local().layout);
         let split = layout
@@ -2762,8 +2772,8 @@ impl App {
     /// Brings the split's three anims to the split fields — the one place
     /// each anim's target is derived. `update` eases them (`snap` false);
     /// a live drag and a project's seed snap them, settled or mid-ease
-    /// ([`Self::set_split_now`]), as does a launch's fresh anim set
-    /// ([`Self::apply_ui_settings`]).
+    /// ([`Self::set_split_now`]), as does a fresh anim set
+    /// ([`Self::reset_anims`]).
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);

@@ -34,8 +34,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // `AnimKey::PaneCollapse` chasing this same condition, so its eased
     // value at `now` is what actually drives the row split — falling back
     // to the settled bool (as a plain 0.0/1.0) only while the anim was
-    // never set. A project's seed and a launch's fresh anim set both snap
-    // all three split anims, so with a project open they are always set.
+    // never set. A project's seed and every fresh set after the build
+    // (`App::reset_anims`: a launch, a test app's own set) snap all three
+    // split anims, so the fallback is left to an `App` straight from
+    // `with_root` whose project failed to open, before any reset.
     let collapse_t = app.anims.value_or(
         crate::anim::AnimKey::PaneCollapse,
         now,

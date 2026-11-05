@@ -21394,9 +21394,13 @@ fn toggle_table_collapse_retargets_pane_collapse_instead_of_snapping() {
     app.editor.active_tab = EditorTab::Params;
     assert!(!app.table_collapsed);
     let now = std::time::Instant::now();
-    assert!(
-        app.anims.value(crate::anim::AnimKey::PaneCollapse, now).is_none(),
-        "untouched before the first toggle"
+    // Settled at the shown pole before the first toggle, as at a launch: a
+    // fresh anim set comes with the split snapped in (task #113).
+    assert!(app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now));
+    assert_eq!(
+        app.anims.value(crate::anim::AnimKey::PaneCollapse, now),
+        Some(0.0),
+        "settled, shown, before the first toggle"
     );
 
     app.update(Action::ToggleTableCollapse);
