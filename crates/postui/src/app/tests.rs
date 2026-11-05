@@ -28942,6 +28942,15 @@ fn a_click_on_the_open_row_keeps_its_edits_and_reopens_it_clean() {
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(left_up(r0.x + 2, r0.y));
     assert_eq!(app.editor.url.text(), "https://x/outside", "clean, the click re-reads the file");
+
+    // And the clean press that reopens still starts a drag.
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "gamma", "alpha"]);
 }
 
 #[test]
@@ -38591,6 +38600,8 @@ fn a_request_dropped_in_a_folder_moves_there_and_stays_open() {
     assert!(!dir.path().join("requests/main/auth/alpha.toml").exists());
     assert_eq!(saved_order(&dir), ["alpha", "beta", "auth/", "auth/x"]);
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.url.text(), "https://x/edited", "the undo keeps the unsaved edit");
+    assert!(app.editor.is_dirty());
     let text = rendered_text(&mut app);
     assert!(text.contains("Undid move of alpha to auth"), "{text}");
     app.update(Action::Redo);
