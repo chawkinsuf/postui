@@ -2765,6 +2765,9 @@ impl App {
     ///
     /// Debug and test builds check that on each ease, with a `debug_assert!`
     /// that the key is set; a snap needs none, since it is what sets it.
+    /// It checks with animations off too, where an unset key only jumps as
+    /// a set one would: the rule is how a set is built, and a set built
+    /// without the snap would ease wrong once animations are turned on.
     /// A release build checks nothing: a set built anywhere else would still
     /// draw the right split, but its first change would jump instead of easing
     /// (`Anims::retarget` starts an unset key at its target) and keep the
