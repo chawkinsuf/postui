@@ -439,21 +439,17 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::Redo,
         },
         // It meets the dirty gate, and is refused when vim's `:` line
-        // opened over a dialog (`GatedQuit`, task #85).
-        Command { id: "quit", name: "Quit", description: "Exit postui", action: Action::GatedQuit },
+        // opened over a dialog (task #85).
+        Command { id: "quit", name: "Quit", description: "Exit postui", action: Action::Quit },
     ]
 }
 
 /// The action whose key a row with `action` shows: its own, except the
-/// palette's Quit and the tooltip's pills. The Quit row runs `GatedQuit`,
-/// the quit that is refused while a dialog is up (task #85), and the
-/// keymap binds `^C` to `Quit`, the same quit as a key press; the row
-/// shows `^C`. A pill row names the tooltip's variable (`TipPillOn`),
+/// tooltip's pills. A pill row names the tooltip's variable (`TipPillOn`),
 /// while its key presses the open tooltip's pill (`TipPill`, #135).
 fn key_action(action: &Action) -> std::borrow::Cow<'_, Action> {
     use std::borrow::Cow;
     match action {
-        Action::GatedQuit => Cow::Owned(Action::Quit),
         Action::TipPillOn { pill, .. } => Cow::Owned(Action::TipPill(*pill)),
         other => Cow::Borrowed(other),
     }
@@ -1474,7 +1470,7 @@ mod tests {
         select_id(&mut p, "quit");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
-        assert_eq!(res.actions, vec![Action::GatedQuit]);
+        assert_eq!(res.actions, vec![Action::Quit]);
         assert_eq!(res.usage.as_deref(), Some("quit"));
     }
 

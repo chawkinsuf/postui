@@ -110,6 +110,13 @@ no longer means "skip the gate under a dialog", and `GatedQuit` no longer
 "meets the gate over a dialog". `Action::quits_under_a_dialog` names the
 quit actions.
 
+Amended 2026-11-05 (task #87, `mine`): with the two acting alike,
+`GatedQuit` is gone. `:qa`, `:q` off Manage and the palette's Quit row run
+`Quit`. The quit chip's keycap is decided by the surface (vim where the
+`:` line opens: the ex verb the chip runs, `:q` or `:qa`; else `Quit`'s
+key), not by the variant, and its hover reads "Quit postui" in both
+profiles (vim's `:qa` chip on Manage read the palette row's "Exit postui").
+
 ## 4. Tests
 
 - R1: `^C ^C` over a dialog (the palette, a prompt with typing) neither

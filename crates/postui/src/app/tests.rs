@@ -28689,7 +28689,7 @@ fn a_cell_left_by_a_pane_jump_commits_before_another_request_opens() {
 fn a_dirty_gate_commits_an_open_cell_and_asks() {
     let gates: [(&str, Action); 3] = [
         ("quit", Action::Quit),
-        (":q", Action::GatedQuit),
+        (":q", Action::CloseWindow { write: false, force: false }),
         ("open", Action::OpenRequest("main/beta".into())),
     ];
     for (how, action) in gates {
@@ -37591,7 +37591,7 @@ fn footer_keycaps_follow_the_profile() {
     // Sweep backlog item 4: on Manage `:q` closes the screen, so the quit
     // chip is `:qa`, and the way back is its own chip.
     app.update(Action::OpenManage { tab: None });
-    assert_eq!(footer_chip_text(&mut app, Action::GatedQuit).as_deref(), Some(":qa quit"));
+    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some(":qa quit"));
     assert_eq!(footer_chip_text(&mut app, Action::CloseScreen).as_deref(), Some("esc back"));
 }
 

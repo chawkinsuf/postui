@@ -54,7 +54,7 @@ mod act {
     pub fn force_close() -> Action { Action::CloseWindow { write: false, force: true } }
     pub fn write_close() -> Action { Action::CloseWindow { write: true, force: false } }
     pub fn force_write_close() -> Action { Action::CloseWindow { write: true, force: true } }
-    pub fn quit() -> Action { Action::GatedQuit }
+    pub fn quit() -> Action { Action::Quit }
     pub fn force_quit() -> Action { Action::ForceQuit }
     pub fn write_quit() -> Action { Action::WriteQuit }
     pub fn force_write() -> Action { Action::ForceWrite { quit: false } }
@@ -309,11 +309,7 @@ mod tests {
             assert_eq!(pinned(q, &sidebar()).actions, window(true, false), "{q}");
         }
         for q in ["qa", "qall", "quitall"] {
-            assert_eq!(
-                pinned(q, &sidebar()).actions,
-                vec![close.clone(), Action::GatedQuit],
-                "{q}"
-            );
+            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::Quit], "{q}");
         }
         assert_eq!(
             pinned("qa!", &sidebar()).actions,
@@ -582,12 +578,7 @@ mod tests {
             spelling(&Action::CloseWindow { write: false, force: false }).as_deref(),
             Some(":q")
         );
-        assert_eq!(spelling(&Action::GatedQuit).as_deref(), Some(":qa"));
-        assert_eq!(
-            spelling(&Action::Quit),
-            None,
-            "the quit chip spells `:q` itself (`spell::Key::Quit`)"
-        );
+        assert_eq!(spelling(&Action::Quit).as_deref(), Some(":qa"));
         assert_eq!(spelling(&Action::CycleSplit).as_deref(), Some(":split"));
         assert_eq!(spelling(&Action::CycleSplitBack).as_deref(), Some(":splitback"));
         assert_eq!(spelling(&Action::Send).as_deref(), Some(":send"));

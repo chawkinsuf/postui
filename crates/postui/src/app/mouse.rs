@@ -69,9 +69,7 @@ pub(super) fn count_clicks(
 fn is_quit_chip(hit: &Hit) -> bool {
     matches!(
         hit,
-        Hit::FooterChip(
-            Action::Quit | Action::GatedQuit | Action::CloseWindow { write: false, force: false }
-        )
+        Hit::FooterChip(Action::Quit | Action::CloseWindow { write: false, force: false })
     )
 }
 
