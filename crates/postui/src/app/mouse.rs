@@ -1874,9 +1874,18 @@ impl App {
                     // A press on a request row also arms a possible row
                     // drag; the click itself still opens the request (the
                     // drag only starts once the pointer leaves the row).
+                    // The open request's own row opens nothing new, so it
+                    // neither reopens nor asks about unsaved edits, and the
+                    // drag can start over them (#236). Enter and the menu's
+                    // Open still reopen through the gate: that Discard is a
+                    // way back to the file.
                     Some(Row::Request { slug, broken: None, .. }) => {
                         self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
-                        self.update(Action::OpenRequest(slug))
+                        if self.editor.slug.as_deref() == Some(slug.as_str()) {
+                            self.update(Action::Render)
+                        } else {
+                            self.update(Action::OpenRequest(slug))
+                        }
                     }
                     Some(Row::Request { slug, broken: Some(_), .. }) => {
                         self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
