@@ -8187,8 +8187,10 @@ fn rename_request_updates_disk_and_open_slug() {
 /// file keeps its bytes (no `name` added, its comment kept), and no undo
 /// step or toast follows. A nameless file at a slug its name does not
 /// derive (`ping-`), in a folder too, and a named one. #211: a name with a
-/// `/` is a name, not a folder path (spec 2026-11-03 create folders F28),
-/// so `a/b` left as prefilled doesn't move `main/x` to `main/a/b`.
+/// `/` (`a/b`) prefills as itself, and left as it is it is skipped like
+/// any unchanged name, so `main/x` doesn't move to `main/a/b`. A changed
+/// name with a `/` staying in its folder (F28) is
+/// `a_rename_with_a_slash_stays_in_its_folder`.
 #[test]
 fn an_unchanged_rename_changes_nothing() {
     for (slug, prefill, text) in [
@@ -8221,6 +8223,7 @@ fn an_unchanged_rename_changes_nothing() {
         assert_eq!(app.history.undo_len(), steps, "{slug}: no undo step");
         assert_eq!(app.toasts.messages().len(), toasts, "{slug}: no toast");
         assert_eq!(app.editor.slug.as_deref(), Some(slug));
+        assert!(!app.proj().root().join("requests/main/a").exists(), "{slug}: no folder made");
     }
 }
 
