@@ -125,8 +125,9 @@ impl JqDocument {
     /// `mine (approved)`). jaq's own reader also takes `#` comments and
     /// NaN/Infinity.
     pub fn parse(body: &str) -> Result<Self, JqError> {
+        // One value per event, as the Tree reads an event.
         let event = |d: &str| {
-            strict_json(d).ok()?;
+            serde_json::from_str::<serde::de::IgnoredAny>(d).ok()?;
             jaq_json::read::parse_single(d.as_bytes()).ok()
         };
         if let Some(values) = crate::sse::values(body, event) {
