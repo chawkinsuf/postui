@@ -543,6 +543,18 @@ cope:
   row underneath rather than letting its eventual release commit the
   stale reorder.
 
+*Amended 2026-11-05 (task #250, `mine`):* a press arms its row only
+when the row is under the pointer in the rows as they are after the
+press. The recovery press above selects the row that was painted under
+the pointer, and the snap-back usually moves that row away; armed, the
+first held motion promoted a drag of it and the release dropped it
+there. It now selects only, and a second click opens or drags. And a
+`Moved` ends an armed press, promoting nothing, once the terminal has
+sent a `Drag(Left)` this session: such a terminal reports held motion
+as a drag, so its bare `Moved` means the press's release was lost. From
+a terminal that has sent none, a `Moved` still promotes (the "Move"
+rule above).
+
 **`rebuild_sidebar` snaps `AnimKey::ListTravel(Sidebar)` too.** The
 per-motion drag path (`App::rebuild_sidebar`) originally omitted the
 snap that `refresh_sidebar` does after every rebuild, on the theory
