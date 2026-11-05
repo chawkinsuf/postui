@@ -691,10 +691,8 @@ impl App {
                 // A request row's press that ends with no row drag settled
                 // above was a click, and its release opens the row (#247).
                 match pressed {
-                    Some((_, RowKey::Request(slug))) => {
-                        self.open_released_row(&slug, m.column, m.row) | ended
-                    }
-                    _ => ended,
+                    Some((_, key)) => self.open_released_row(&key, m.column, m.row) | ended,
+                    None => ended,
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -746,48 +744,35 @@ impl App {
     }
 
     /// A click's release on a request row (#247, spec 2026-09-04 request
-    /// reordering, "Click behaviour"): the row the press armed opens when
-    /// the release lands on that same row, re-found by its slug since the
-    /// rows can be rebuilt under a held button. A release anywhere else is
-    /// the click's usual cancel and opens nothing. That takes in the click
-    /// that recovers a lost release (`cancel_stale_drags`): its press arms
-    /// the row painted under the pointer, then the rows snap back under it,
-    /// so the release usually lands on another row and opens nothing; the
-    /// row is selected, and one more click opens it. Matching the release
-    /// to where the press landed instead would keep a copy of the press's
-    /// frame for a terminal's lost release. A key pressed while the button
-    /// is held does not cancel the click, as it doesn't in a GUI list: the
-    /// press is checked here, where it acts, as the promote checks it,
-    /// rather than disarmed by each key. A key that moved the row from
-    /// under the pointer or replaced the rows (a reorder, a space switch)
-    /// leaves no matching row, and one that raised a dialog leaves the
-    /// pointer to it, as a dialog does for the drag's promote. The row
-    /// under the pointer is read from the last frame's hit map, as the
-    /// press read it (`on_hit`) and every click does: a handler that
-    /// changes the rows reports it, so the loop draws before the next event
-    /// (`main.rs`). Over unsaved edits the open goes through the gate, so
-    /// the dialog comes here, at the release, and never under a drag. The
-    /// open request's own row over unsaved edits opens nothing, so it asks
-    /// nothing (#236); clean, it reopens as any row does (a re-read of its
-    /// file). That check is `leaving_unsaved`, which closes open inputs
-    /// first (#75): a cell's typing must count here, or the open's own gate
-    /// would count it and ask. Enter and the menu's Open still reopen
-    /// through the gate: their Discard is an asked-for way back to the file.
-    fn open_released_row(&mut self, slug: &str, x: u16, y: u16) -> bool {
-        let on_row = match self.hits.hit_at(x, y).cloned() {
-            Some(Hit::SidebarRow(i)) => matches!(
-                self.sidebar.rows.get(i),
-                Some(Row::Request { slug: row, broken: None, .. }) if row == slug
-            ),
-            _ => false,
+    /// reordering, "Click behaviour"; a folder's press opens nothing at
+    /// its release): the pressed row opens when the
+    /// release lands on it, found as the promote finds it (its key in the
+    /// rows as they are now, the pointer's row in the hit map). A release
+    /// anywhere else is the click's cancel, and so is a key while the
+    /// button is held (`handle_key`), which disarms the press. After a lost
+    /// release the recovery click (`cancel_stale_drags`) arms the row that
+    /// was painted under the pointer and the rows snap back, so its release
+    /// usually lands on another row: it selects, and a second click opens.
+    ///
+    /// Over unsaved edits the open goes through the gate, so the dialog
+    /// comes here, never under a drag. The open request's own row over
+    /// unsaved edits opens nothing and asks nothing (#236); `leaving_unsaved`
+    /// closes open inputs on the way (#75), so that is a change to draw.
+    fn open_released_row(&mut self, pressed: &RowKey, x: u16, y: u16) -> bool {
+        let RowKey::Request(slug) = pressed else {
+            return false;
         };
+        let on_row = self
+            .sidebar
+            .row_of_key(pressed)
+            .is_some_and(|i| matches!(self.hits.hit_at(x, y), Some(&Hit::SidebarRow(j)) if j == i));
         if !on_row || !self.modals.is_empty() {
             return false;
         }
-        if self.editor.slug.as_deref() == Some(slug) && self.leaving_unsaved() {
-            return false;
+        if self.editor.slug.as_deref() == Some(slug.as_str()) && self.leaving_unsaved() {
+            return self.update(Action::Render);
         }
-        self.update(Action::OpenRequest(slug.to_string()))
+        self.update(Action::OpenRequest(slug.clone()))
     }
 
     /// Ends every drag a lost button release can leave live — the two row

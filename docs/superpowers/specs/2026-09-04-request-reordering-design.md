@@ -67,7 +67,11 @@ brainstorm"; this is that brainstorm.
   over them and a drag never asks. A release off the pressed row with
   no drag opens nothing, the usual cancel of a click (`mine`). Keys and
   the row menu's Open are unchanged, and so is a broken row, whose error
-  still comes at the press ("Promotion yields to modals" below).)*
+  still comes at the press ("Promotion yields to modals" below).
+  2026-11-05, `mine (approved)`: any key pressed while the button is
+  held ends the press, so the click opens nothing at its release and no
+  drag starts; Escape is such a key. A live drag keeps its own keys
+  (below).)*
 - **An undo step** *(revised 2026-09-04; originally "not an undo step,
   matching space reorder")*: a dropped drag, an alt+↑/↓ press and the
   row menu's Move up/down each record one `StepKind::Reorder` (target

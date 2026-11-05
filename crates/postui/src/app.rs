@@ -468,10 +468,11 @@ pub struct App {
     /// stale size. `None` before the first frame.
     pub(crate) term_area: Option<ratatui::layout::Rect>,
     /// A left press on a sidebar request or folder row: `(row index, the
-    /// row)`. Armed by `on_hit`, cleared on release; becomes a live row
-    /// drag the moment the pointer moves onto another row (see
-    /// `mouse.rs`). A request row's press that is still armed at its
-    /// release, on the same row, was a click: the release opens it (#247).
+    /// row)`. Armed by `on_hit`, cleared on release and, outside a live
+    /// drag, by any key (`handle_key`); becomes a live row drag the moment
+    /// the pointer moves onto another row (see `mouse.rs`). A request
+    /// row's press that is still armed at its release, on the same row,
+    /// was a click: the release opens it (#247).
     pub sidebar_press: Option<(usize, RowKey)>,
     /// A left press on a Manage screen list row (Environments or Spaces
     /// tab): `(row index, item)`. The Manage-screen twin of
@@ -12426,6 +12427,13 @@ impl App {
     /// The edit flag's waiting screen takes keys before all of it, unless a
     /// dialog is over it (`edit_block.rs`).
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        // Any key ends an armed row press, so a click held across a key
+        // neither opens its row at the release nor becomes a drag (#247):
+        // what the key did may have changed what the press meant. A live
+        // row drag keeps its press; it owns the keys (`route_key`).
+        if self.sidebar.drag.is_none() {
+            self.sidebar_press = None;
+        }
         if self.edit_block.is_some() && self.modals.is_empty() {
             return self.blocked_key(ev);
         }

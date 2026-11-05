@@ -29050,6 +29050,75 @@ fn a_drag_back_onto_its_own_row_opens_nothing() {
     assert_eq!(saved_order(&dir), THREE_ROWS, "nothing moved");
 }
 
+/// #247: any key while the button is held ends the press, whatever the
+/// key does (F12 does nothing, Down moves the selection): its release
+/// opens nothing, and the pointer reaching another row starts no drag.
+#[test]
+fn a_key_mid_press_cancels_the_click() {
+    for ev in [
+        KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    ] {
+        let (mut app, dir) = three_row_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        let r1 = row_rect(&mut app, 1);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r1.x + 2, r1.y));
+        app.handle_key(ev);
+        assert!(app.sidebar_press.is_none(), "{ev:?}: the key ends the press");
+        app.handle_mouse(moved(r1.x + 2, r2.y));
+        assert!(app.sidebar.drag.is_none(), "{ev:?}: no drag starts");
+        app.handle_mouse(moved(r1.x + 2, r1.y));
+        app.handle_mouse(left_up(r1.x + 2, r1.y));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{ev:?}: nothing opens");
+        assert!(app.modals.is_empty(), "{ev:?}");
+        assert_eq!(saved_order(&dir), THREE_ROWS, "{ev:?}: nothing moved");
+    }
+}
+
+/// #247: Escape while the button is held cancels the click too, over
+/// unsaved edits as anywhere: the release asks nothing and opens nothing.
+#[test]
+fn escape_mid_press_cancels_the_click() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert!(app.modals.is_empty(), "the release asks nothing");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "and opens nothing");
+    assert_eq!(app.editor.url.text(), "https://x/edited");
+}
+
+/// #247 (#236's open row): a release on the open request's own row over
+/// unsaved edits opens nothing, but the gate's check closes an open input
+/// on the way (`leaving_unsaved`), so the release reports a change to
+/// draw. The cell is opened directly, as any open input the release finds.
+#[test]
+fn a_release_on_the_dirty_open_row_that_commits_a_cell_redraws() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    let input = crate::components::line_input::LineInput::new("page");
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
+    assert!(app.handle_mouse(left_up(r0.x + 2, r0.y)), "the closed cell is a change to draw");
+    assert!(app.editor.table.editing.is_none(), "the release closed the cell");
+    assert!(app.modals.is_empty(), "nothing asks");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.url.text(), "https://x/edited", "the edits stay");
+}
+
 #[test]
 fn press_move_release_reorders_and_persists() {
     let (mut app, dir) = three_row_app();
@@ -29935,6 +30004,10 @@ fn every_other_key_is_swallowed_during_a_sidebar_drag() {
         assert_eq!(app.sidebar.selected_slug(), selected, "{ev:?}");
         assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
         assert_eq!(saved_order(&dir), THREE_ROWS, "{ev:?}: nothing written");
+        // The key leaves the live drag whole (a key ends only an armed
+        // press, #247), so it still drops where it shows.
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+        assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{ev:?}: the drop writes");
     }
 }
 
