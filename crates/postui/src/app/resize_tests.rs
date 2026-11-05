@@ -451,8 +451,7 @@ fn a_launch_restoring_a_request_starts_with_nothing_in_flight() {
 
 /// Task #113: a fresh anim set is built with the split's three anims
 /// snapped in, animations on or off, so a test app with its own set draws
-/// the split the way a launch does, not through `ui::draw`'s fallback for
-/// an anim never set.
+/// the split the way a launch does.
 #[test]
 fn a_fresh_anim_set_has_the_split_snapped_in() {
     for enabled in [true, false] {
@@ -461,31 +460,20 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
     }
 }
 
-/// Task #113: an `App` whose split anims were never set (straight from
-/// `bare`: no seed, no fresh set) eases its first split change from the
-/// value `ui::draw` drew while they were unset, for each of the three.
+/// Task #249: every constructor leaves the split's three anims snapped in,
+/// so the `sync_*` passes never meet them unset: `bare` itself, and
+/// `with_root` when its project fails to open and it skips the seed.
 #[test]
-fn a_first_split_change_with_the_anims_unset_eases_from_the_drawn_value() {
-    use crate::anim::AnimKey;
-    let drawn = SplitState::default();
-    for (key, next, from, to) in [
-        (AnimKey::PaneCollapse, SplitState { editor_minimized: true, ..drawn }, 0.0, 1.0),
-        (AnimKey::ResponseCollapse, SplitState { response_minimized: true, ..drawn }, 0.0, 1.0),
-        (AnimKey::SplitRatio, SplitState { ratio: 0.25, ..drawn }, drawn.ratio, 0.25),
-    ] {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::bare(tx, std::path::PathBuf::new());
-        app.anims.set_enabled(true);
-        assert_eq!(app.split_state(), drawn);
-        let before = std::time::Instant::now();
-        assert_eq!(app.anims.value(key, before), None, "{key:?} unset");
-        app.set_split_fields(next);
-        app.update(Action::Tick);
-        // Sampled before the ease began, the value is the ease's start.
-        assert_eq!(app.anims.value(key, before), Some(from), "{key:?} starts where it was drawn");
-        assert_eq!(app.anims.target(key), Some(to), "{key:?} heads to the new split");
-        assert!(!app.anims.is_done(key, std::time::Instant::now()), "{key:?} eases");
-    }
+fn every_app_starts_with_the_split_snapped_in() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    assert_split_drawn_settled(&App::bare(tx, std::path::PathBuf::new()));
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(app.open_error.is_some(), "the project failed to open");
+    assert_split_drawn_settled(&app);
 }
 
 /// Task #93 (P5): with animations on, a project switch draws the next

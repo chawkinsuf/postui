@@ -1246,10 +1246,7 @@ impl App {
 
     /// Replaces the whole anim set with a fresh one, `enabled` or not, and
     /// snaps the split's three anims in at the split on screen, so the
-    /// next frame draws it at once (task #93) rather than unset (see
-    /// [`Self::sync_split_anims`]). A launch ([`Self::apply_ui_settings`])
-    /// and a test app's own set ([`Self::new_for_test_with_anims`]) take
-    /// their set through here.
+    /// next frame draws it at once (task #93).
     fn reset_anims(&mut self, enabled: bool) {
         self.anims = Anims::new(enabled);
         self.sync_split_anims(true);
@@ -2106,6 +2103,9 @@ impl App {
             testbed_list_dir_plan: 1,
             testbed_list_dir_alt: 1,
         };
+        // The split's anims start snapped in at the split fields, so no
+        // app is ever without them ([`Self::sync_split_anims`]).
+        app.sync_split_anims(true);
         if flagged {
             app.raise_edit_block(root);
         }
@@ -2612,9 +2612,6 @@ impl App {
             self.anims.snap(AnimKey::PaneCollapse, target_v);
             return;
         }
-        if self.anims.value(AnimKey::PaneCollapse, now).is_none() {
-            self.anims.snap(AnimKey::PaneCollapse, 1.0 - target_v);
-        }
         self.anims.retarget(
             AnimKey::PaneCollapse,
             target_v,
@@ -2639,9 +2636,6 @@ impl App {
         if snap {
             self.anims.snap(AnimKey::ResponseCollapse, target_v);
             return;
-        }
-        if self.anims.value(AnimKey::ResponseCollapse, now).is_none() {
-            self.anims.snap(AnimKey::ResponseCollapse, 1.0 - target_v);
         }
         self.anims.retarget(
             AnimKey::ResponseCollapse,
@@ -2678,8 +2672,7 @@ impl App {
     /// column never eases out of the default (a launch) or the previous
     /// project's split (a switch). Only here does the app know the change
     /// is a seed; the `sync_*` passes `update` runs can't tell it from a
-    /// chip click. At a launch, `App::new` then replaces the whole anim
-    /// set and snaps the split's anims back in ([`Self::reset_anims`]).
+    /// chip click.
     fn seed_sizes_from_project(&mut self) {
         let layout = self.project().map(|p| &p.local().layout);
         let split = layout
@@ -2760,15 +2753,8 @@ impl App {
 
     /// Brings the split's three anims to the split fields — the one place
     /// each anim's target is derived. `update` eases them (`snap` false);
-    /// a live drag and a project's seed snap them, settled or mid-ease
-    /// ([`Self::set_split_now`]), as does a fresh anim set
-    /// ([`Self::reset_anims`]).
-    ///
-    /// Until the first snap the three anims are unset. [`Self::bare`]
-    /// builds them so; a seed or a fresh set snaps them, which `App::new`
-    /// always gives and `with_root` skips when its project fails to open.
-    /// While unset, `ui::draw` draws the split fields themselves, and the
-    /// first ease starts from the value they held.
+    /// a change that draws at once snaps them, settled or mid-ease, and so
+    /// does every new anim set, so the three are always set.
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);
@@ -3057,21 +3043,16 @@ impl App {
         if target == self.split_ratio_target && !snap {
             return;
         }
-        let previous = self.split_ratio_target;
         self.split_ratio_target = target;
         if snap {
             self.anims.snap(AnimKey::SplitRatio, target);
             return;
         }
-        let now = Instant::now();
-        if self.anims.value(AnimKey::SplitRatio, now).is_none() {
-            self.anims.snap(AnimKey::SplitRatio, previous);
-        }
         self.anims.retarget(
             AnimKey::SplitRatio,
             target,
             self.ui_settings.anim_ms.pane_collapse,
-            now,
+            Instant::now(),
         );
     }
 
