@@ -106,6 +106,10 @@ follow the same rules.
   opens the request, and the Unsaved changes dialog comes up instead of a
   drag. This is on main for a plain reorder too, filed as #236. D19's
   "unsaved edits included" holds for the code path.
+  2026-11-04, #236 (`mine`): a press on the open request's own row over
+  unsaved edits now opens nothing and asks nothing, so it drags like any
+  row. A press on another row still raises the dialog, so another row
+  can't be dragged while the open one has unsaved edits.
 - An op or refresh made while request files are missing (a git branch
   switch in progress) drops their entries (D7); when they come back they
   land at the end of their levels.
