@@ -460,10 +460,10 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
     }
 }
 
-/// Task #249: `bare`, which every constructor starts from, leaves the
-/// split's three anims snapped in at the split it draws, so with
-/// animations on a first split change eases from that drawn value, for
-/// each of the three.
+/// Task #249: `bare`, which every constructor starts from, builds its anim
+/// set through `reset_anims`, so the split's three anims start snapped in
+/// at the split it draws, and with animations on a first split change
+/// eases from that drawn value, for each of the three.
 #[test]
 fn a_first_split_change_eases_from_the_drawn_value() {
     use crate::anim::AnimKey;
@@ -477,6 +477,7 @@ fn a_first_split_change_eases_from_the_drawn_value() {
         let mut app = App::bare(tx, std::path::PathBuf::new());
         assert_eq!(app.split_state(), drawn);
         assert_split_drawn_settled(&app);
+        // On whatever `UiSettings::default()` says, so the change eases.
         app.anims.set_enabled(true);
         let before = std::time::Instant::now();
         app.set_split_fields(next);

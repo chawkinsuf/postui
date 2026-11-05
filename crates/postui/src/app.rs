@@ -1246,7 +1246,8 @@ impl App {
 
     /// Replaces the whole anim set with a fresh one, `enabled` or not, and
     /// snaps the split's three anims in at the split on screen, so the
-    /// next frame draws it at once (task #93).
+    /// next frame draws it at once (task #93). Every anim set is built
+    /// here, `bare`'s first one too, so the split's anims are always set.
     fn reset_anims(&mut self, enabled: bool) {
         self.anims = Anims::new(enabled);
         self.sync_split_anims(true);
@@ -2041,7 +2042,8 @@ impl App {
             theme_contrast: crate::theme::Contrast::default(),
             theme_preview: None,
             theme_picker_dark: true,
-            anims: Anims::new(crate::config::UiSettings::default().animations),
+            // Built for real by `reset_anims` below.
+            anims: Anims::new(false),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             router: crate::keyroute::Router::default(),
@@ -2103,12 +2105,7 @@ impl App {
             testbed_list_dir_plan: 1,
             testbed_list_dir_alt: 1,
         };
-        // The split's anims start snapped in at the split fields, so no
-        // app is ever without them ([`Self::sync_split_anims`]). This snaps
-        // the set the literal above built; `reset_anims` would build a
-        // second one. A seed and a launch's `reset_anims` snap again, each
-        // for its own reason (a switch keeps its set; a launch replaces it).
-        app.sync_split_anims(true);
+        app.reset_anims(app.ui_settings.animations);
         if flagged {
             app.raise_edit_block(root);
         }
@@ -2755,10 +2752,10 @@ impl App {
     /// Brings the split's three anims to the split fields — the one place
     /// each anim's target is derived. `update` eases them (`snap` false);
     /// a change that draws at once snaps them, settled or mid-ease, and so
-    /// does every new anim set (`bare`, [`Self::reset_anims`]), so the
+    /// does [`Self::reset_anims`], where every anim set is built, so the
     /// three are always set and a first ease starts from the split drawn.
     ///
-    /// Nothing checks that at run time. A set built without the snap would
+    /// Nothing checks that at run time. A set built anywhere else would
     /// still draw the right split, but its first change would jump instead
     /// of easing (`Anims::retarget` starts an unset key at its target) and
     /// keep the loop redrawing, with nothing moving, for one ease's length.
