@@ -498,7 +498,7 @@ impl Project {
         let taken = |p: &str| {
             current != Some(p)
                 && (rel(&format!("{REQUESTS_DIR}/{p}")).is_ok_and(|r| self.disk.exists(&r))
-                    || shows_folder_ignoring_case(&self.folder_listing, p))
+                    || folder_ignoring_case(&self.folder_listing, p).is_some())
         };
         let mut path = base.clone();
         let mut n = 2;
@@ -679,13 +679,15 @@ fn named(along: &[(String, String)]) -> Vec<(String, String)> {
     along.iter().map(|(path, typed)| (path.clone(), folder_file_text(typed))).collect()
 }
 
-/// Whether `folders` lists a folder at full path `path` spelled in any
-/// case. A folder move refuses a destination this answers for (spec
-/// 2026-11-02 drag into folders D18), whatever the filesystem's case
-/// rule.
-fn shows_folder_ignoring_case(folders: &[crate::storage::FolderListing], path: &str) -> bool {
+/// The folder `folders` lists at full path `path` spelled in any case. A
+/// folder move refuses a destination this finds (spec 2026-11-02 drag
+/// into folders D18), whatever the filesystem's case rule.
+fn folder_ignoring_case<'a>(
+    folders: &'a [crate::storage::FolderListing],
+    path: &str,
+) -> Option<&'a crate::storage::FolderListing> {
     let wanted = path.to_lowercase();
-    folders.iter().any(|f| f.path.to_lowercase() == wanted)
+    folders.iter().find(|f| f.path.to_lowercase() == wanted)
 }
 
 /// Each of `spaces` whose list in `meta` [`order::complete_order`]
@@ -1379,11 +1381,11 @@ impl Project {
         let new_path = format!("{dest}/{name}");
         let from_dir = folder_rel(path)?;
         let to_dir = folder_rel(&new_path)?;
-        // D18: a folder the destination shows, in any case, is the clash;
-        // anything else of that name on disk there (a directory left
-        // behind, a plain file) is refused, naming the path.
-        if shows_folder_ignoring_case(&self.folder_listing, &new_path) {
-            return Err(Error::AlreadyExists(name.to_string()));
+        // D18: a folder the destination shows, in any case, is the clash,
+        // named as it shows; anything else of that name on disk there (a
+        // directory left behind, a plain file) is refused, naming the path.
+        if let Some(clash) = folder_ignoring_case(&self.folder_listing, &new_path) {
+            return Err(Error::AlreadyExists(clash.display_name().to_string()));
         }
         // A sibling there that already shows the folder's display name is
         // the clash too (spec 2026-11-03 create folders F19): two rows of
@@ -3937,7 +3939,25 @@ mod tests {
         p.complete_order().unwrap();
         let before = read(&dir, "project.toml");
         let r = p.move_to_level(&folder_item("main/x/users"), "", 0);
-        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "users"), "{r:?}");
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "Users"), "{r:?}");
+        assert!(dir.path().join("requests/main/x/users/b.toml").is_file());
+        assert_eq!(read(&dir, "project.toml"), before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// D18 names the clashing folder by the name it shows (spec 2026-11-03
+    /// create folders F15), not by its directory.
+    #[test]
+    fn a_folder_move_refused_by_d18_names_the_clash_by_its_shown_name() {
+        let (dir, mut p) = fixture();
+        write(&dir, "requests/main/users/.folder.toml", "name = \"Accounts\"\n");
+        write(&dir, "requests/main/users/a.toml", "method = \"GET\"\nurl = \"u\"\n");
+        write(&dir, "requests/main/x/users/b.toml", "method = \"GET\"\nurl = \"u\"\n");
+        p.relist();
+        p.complete_order().unwrap();
+        let before = read(&dir, "project.toml");
+        let r = p.move_to_level(&folder_item("main/x/users"), "", 0);
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "Accounts"), "{r:?}");
         assert!(dir.path().join("requests/main/x/users/b.toml").is_file());
         assert_eq!(read(&dir, "project.toml"), before);
         assert_eq!(p.journal_len(), 0);
@@ -4133,11 +4153,12 @@ mod tests {
             .iter()
             .map(|s| FolderListing { path: s.to_string(), name: None, broken: None })
             .collect();
-        assert!(shows_folder_ignoring_case(&folders, "main/users"));
-        assert!(shows_folder_ignoring_case(&folders, "main/Users"));
-        assert!(shows_folder_ignoring_case(&folders, "main/USERSX"));
-        assert!(!shows_folder_ignoring_case(&folders, "main/user"), "a whole segment only");
-        assert!(!shows_folder_ignoring_case(&folders, "main/Users/login"), "nothing deeper");
+        let found = |path| folder_ignoring_case(&folders, path).map(|f| f.path.as_str());
+        assert_eq!(found("main/users"), Some("main/Users"));
+        assert_eq!(found("main/Users"), Some("main/Users"));
+        assert_eq!(found("main/USERSX"), Some("main/usersx"));
+        assert_eq!(found("main/user"), None, "a whole segment only");
+        assert_eq!(found("main/Users/login"), None, "nothing deeper");
     }
 
     // --- spec 2026-11-03 create folders ---
