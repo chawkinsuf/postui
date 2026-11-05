@@ -29076,6 +29076,48 @@ fn a_key_mid_press_cancels_the_click() {
     }
 }
 
+/// #247: a terminal's paste (cmd+V, ctrl+shift+V) ends the press as a key
+/// does, ctrl+v included: the paste is keyboard input too, whatever it
+/// does (a paste that holds no curl only says so).
+#[test]
+fn a_paste_mid_press_cancels_the_click() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.paste_text("hello");
+    assert!(app.sidebar_press.is_none(), "the paste ends the press");
+    app.handle_mouse(moved(r1.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none(), "no drag starts");
+    app.handle_mouse(moved(r1.x + 2, r1.y));
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "nothing opens");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing moved");
+}
+
+/// #247: the release opens the row as it is then. One whose file broke
+/// while the button was held (a reload on focus) is refused by the open
+/// itself, which says why: the release needs no check of its own.
+#[test]
+fn a_release_on_a_row_that_broke_mid_press_is_refused_by_the_open() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    std::fs::write(dir.path().join("requests/main/beta.toml"), "url = [").unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    assert!(
+        matches!(app.sidebar.rows.get(1), Some(Row::Request { slug, broken: Some(_), .. }) if slug == "main/beta"),
+        "beta broke under the held press"
+    );
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "alpha stays open");
+    let said = app.toasts.last_message().unwrap_or_default();
+    assert!(said.starts_with("could not open main/beta"), "{said}");
+}
+
 /// #247: Escape while the button is held cancels the click too, over
 /// unsaved edits as anywhere: the release asks nothing and opens nothing.
 #[test]

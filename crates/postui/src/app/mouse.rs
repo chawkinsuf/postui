@@ -745,27 +745,31 @@ impl App {
 
     /// A click's release on a request row (#247, spec 2026-09-04 request
     /// reordering, "Click behaviour"; a folder's press opens nothing at
-    /// its release): the pressed row opens when the
-    /// release lands on it, found as the promote finds it (its key in the
-    /// rows as they are now, the pointer's row in the hit map). A release
-    /// anywhere else is the click's cancel, and so is a key while the
-    /// button is held (`handle_key`), which disarms the press. After a lost
-    /// release the recovery click (`cancel_stale_drags`) arms the row that
-    /// was painted under the pointer and the rows snap back, so its release
-    /// usually lands on another row: it selects, and a second click opens.
+    /// its release): the pressed row opens when the release lands on it,
+    /// by the promote's own test turned round (the pointer on a row in the
+    /// hit map, and `row_at_y` inside the pressed key's block in the rows
+    /// as they are now). A release anywhere else is the click's cancel, and
+    /// so is keyboard input while the button is held
+    /// ([`Self::end_armed_press`]). After a lost release the recovery click
+    /// (`cancel_stale_drags`) arms the row that was painted under the
+    /// pointer and the rows snap back, so its release usually lands on
+    /// another row: it selects, and a second click opens.
     ///
     /// Over unsaved edits the open goes through the gate, so the dialog
     /// comes here, never under a drag. The open request's own row over
     /// unsaved edits opens nothing and asks nothing (#236); `leaving_unsaved`
     /// closes open inputs on the way (#75), so that is a change to draw.
+    /// A row that is broken by now needs no check here: `OpenRequest`
+    /// refuses its file and says why.
     fn open_released_row(&mut self, pressed: &RowKey, x: u16, y: u16) -> bool {
         let RowKey::Request(slug) = pressed else {
             return false;
         };
-        let on_row = self
-            .sidebar
-            .row_of_key(pressed)
-            .is_some_and(|i| matches!(self.hits.hit_at(x, y), Some(&Hit::SidebarRow(j)) if j == i));
+        let on_row = matches!(self.hits.hit_at(x, y), Some(Hit::SidebarRow(_)))
+            && self
+                .sidebar
+                .row_of_key(pressed)
+                .is_some_and(|i| self.sidebar.span_of(i).contains(&self.sidebar.row_at_y(y)));
         if !on_row || !self.modals.is_empty() {
             return false;
         }
@@ -773,6 +777,20 @@ impl App {
             return self.update(Action::Render);
         }
         self.update(Action::OpenRequest(slug.clone()))
+    }
+
+    /// Keyboard input while a row's button is held ends its armed press,
+    /// so the click neither opens its row at the release nor becomes a
+    /// drag (#247): what the input did may have changed what the press
+    /// meant. Run first by both of the app's keyboard entries, a key
+    /// (`handle_key`) and a terminal's paste (`paste_text`), whatever they
+    /// then do. A live row drag keeps its press: it owns the keys
+    /// (`route_key`), and anything that rewrites its rows cancels it
+    /// (`land`).
+    pub(super) fn end_armed_press(&mut self) {
+        if self.sidebar.drag.is_none() {
+            self.sidebar_press = None;
+        }
     }
 
     /// Ends every drag a lost button release can leave live — the two row

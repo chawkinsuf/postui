@@ -71,7 +71,8 @@ brainstorm"; this is that brainstorm.
   2026-11-05, `mine (approved)`: any key pressed while the button is
   held ends the press, so the click opens nothing at its release and no
   drag starts; Escape is such a key. A live drag keeps its own keys
-  (below).)*
+  (below). 2026-11-05, `mine`: a terminal's paste (cmd+V, ctrl+shift+V)
+  ends the press as a key does, since ctrl+v already did.)*
 - **An undo step** *(revised 2026-09-04; originally "not an undo step,
   matching space reorder")*: a dropped drag, an alt+↑/↓ press and the
   row menu's Move up/down each record one `StepKind::Reorder` (target
