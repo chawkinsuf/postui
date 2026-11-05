@@ -941,7 +941,9 @@ mod tests {
     }
 
     /// #228: the Tree tab (and so the jq bar) and jq give one answer to
-    /// "is this JSON".
+    /// "is this JSON" for the bodies servers send. The rare gaps kept on
+    /// purpose (nesting past serde's limit, serde's private number key) are
+    /// listed at `postui_core::jq`'s `strict_json`.
     #[test]
     fn the_tree_and_jq_agree_on_what_is_json() {
         use postui_core::jq::JqDocument;
@@ -957,6 +959,8 @@ mod tests {
             "data: NaN\n\ndata: 1\n\n",
             "data: NaN\n\n",
             "data: [DONE]\n\n",
+            "\"\\ud800\"",
+            "data: \"\\ud800\"\n\n",
         ] {
             assert_eq!(
                 JsonTree::parse(body).is_some(),
