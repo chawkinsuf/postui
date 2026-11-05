@@ -2756,6 +2756,14 @@ impl App {
     /// each anim's target is derived. `update` eases them (`snap` false);
     /// a change that draws at once snaps them, settled or mid-ease, and so
     /// does every new anim set, so the three are always set.
+    ///
+    /// Nothing checks that at run time: the two places a set is built
+    /// (`bare`, [`Self::reset_anims`]) are pinned by tests
+    /// (`every_app_starts_with_the_split_snapped_in`,
+    /// `a_fresh_anim_set_has_the_split_snapped_in`), and a set built some
+    /// new way without the snap would only cost the first change its ease
+    /// (`Anims::retarget` starts an unset key at its target), never draw a
+    /// wrong split.
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);
