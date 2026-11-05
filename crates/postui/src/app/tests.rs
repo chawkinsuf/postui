@@ -21396,11 +21396,14 @@ fn toggle_table_collapse_retargets_pane_collapse_instead_of_snapping() {
     let now = std::time::Instant::now();
     // Settled at the shown pole before the first toggle, as at a launch: a
     // fresh anim set comes with the split snapped in (task #113).
-    assert!(app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now));
     assert_eq!(
         app.anims.value(crate::anim::AnimKey::PaneCollapse, now),
         Some(0.0),
-        "settled, shown, before the first toggle"
+        "set, shown, before the first toggle"
+    );
+    assert!(
+        app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now),
+        "and settled there, not easing"
     );
 
     app.update(Action::ToggleTableCollapse);
