@@ -119,10 +119,11 @@ impl JqDocument {
     /// ([`crate::sse::values`], #220), and there an event whose data isn't a
     /// JSON value (`[DONE]`) is skipped rather than failing the body.
     ///
-    /// JSON is what serde reads, the reader the response's Tree tab is
-    /// built with, so the Tree, the jq bar and `postui run --jq` give one
-    /// answer (#228, strict JSON: `mine (approved)`). jaq's own reader also
-    /// takes `#` comments and NaN/Infinity, so it isn't the judge here.
+    /// A body serde refuses (`strict_json`), the reader the response's Tree
+    /// tab is built with, is not JSON here either, so the Tree, the jq bar
+    /// and `postui run --jq` agree on comments and NaN (#228, strict JSON:
+    /// `mine (approved)`). jaq's own reader also takes `#` comments and
+    /// NaN/Infinity.
     pub fn parse(body: &str) -> Result<Self, JqError> {
         let event = |d: &str| {
             strict_json(d).ok()?;
@@ -154,7 +155,16 @@ impl JqDocument {
 }
 
 /// Whether serde reads `text` as whitespace-separated JSON values, without
-/// building them.
+/// building them: a check pass beside jaq's read, about 3% of its time and
+/// no memory on a 45 MB body. It catches what jaq takes and serde doesn't,
+/// in the bodies servers send: `#` comments, NaN/Infinity. It is not a
+/// copy of the Tree's reader: a body nested past serde's limit (which
+/// `IgnoredAny` skips without) or one using serde's private number key can
+/// still differ from the Tree. Kept that way on purpose (#228): matching
+/// the Tree exactly meant reading with serde, 40–110% slower on large
+/// bodies, for cases this rare (you: "I'm not sure I want to make things as
+/// complex as this seems to be for some rare edge cases"; this shape:
+/// `mine (approved)`).
 fn strict_json(text: &str) -> Result<(), serde_json::Error> {
     serde_json::Deserializer::from_str(text)
         .into_iter::<serde::de::IgnoredAny>()
