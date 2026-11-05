@@ -755,14 +755,24 @@ impl App {
     /// so the release usually lands on another row and opens nothing; the
     /// row is selected, and one more click opens it. Matching the release
     /// to where the press landed instead would keep a copy of the press's
-    /// frame for a terminal's lost release. A dialog up by now (a key
-    /// raised it while the button was held) owns the pointer, as it does
-    /// for the drag's promote. Over unsaved edits the open goes through the
-    /// gate, so the dialog comes here, at the release, and never under a
-    /// drag. The open request's own row over unsaved edits opens nothing,
-    /// so it asks nothing (#236); clean, it reopens as any row does (a
-    /// re-read of its file). Enter and the menu's Open still reopen through
-    /// the gate: their Discard is an asked-for way back to the file.
+    /// frame for a terminal's lost release. A key pressed while the button
+    /// is held does not cancel the click, as it doesn't in a GUI list: the
+    /// press is checked here, where it acts, as the promote checks it,
+    /// rather than disarmed by each key. A key that moved the row from
+    /// under the pointer or replaced the rows (a reorder, a space switch)
+    /// leaves no matching row, and one that raised a dialog leaves the
+    /// pointer to it, as a dialog does for the drag's promote. The row
+    /// under the pointer is read from the last frame's hit map, as the
+    /// press read it (`on_hit`) and every click does: a handler that
+    /// changes the rows reports it, so the loop draws before the next event
+    /// (`main.rs`). Over unsaved edits the open goes through the gate, so
+    /// the dialog comes here, at the release, and never under a drag. The
+    /// open request's own row over unsaved edits opens nothing, so it asks
+    /// nothing (#236); clean, it reopens as any row does (a re-read of its
+    /// file). That check is `leaving_unsaved`, which closes open inputs
+    /// first (#75): a cell's typing must count here, or the open's own gate
+    /// would count it and ask. Enter and the menu's Open still reopen
+    /// through the gate: their Discard is an asked-for way back to the file.
     fn open_released_row(&mut self, slug: &str, x: u16, y: u16) -> bool {
         let on_row = match self.hits.hit_at(x, y).cloned() {
             Some(Hit::SidebarRow(i)) => matches!(
@@ -1924,6 +1934,10 @@ impl App {
                         self.sidebar_press = Some((i, RowKey::Request(slug)));
                         self.update(Action::Render)
                     }
+                    // A broken row still shows its error at the press, and
+                    // the dialog then keeps the drag from starting (spec
+                    // 2026-09-04, "Promotion yields to modals"): #247 moved
+                    // only the open of a healthy row.
                     Some(Row::Request { slug, broken: Some(_), .. }) => {
                         self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
                         self.update(Action::ShowRequestError(slug))

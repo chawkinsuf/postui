@@ -66,7 +66,8 @@ brainstorm"; this is that brainstorm.
   changes dialog comes at the release, so another row can be dragged
   over them and a drag never asks. A release off the pressed row with
   no drag opens nothing, the usual cancel of a click (`mine`). Keys and
-  the row menu's Open are unchanged.)*
+  the row menu's Open are unchanged, and so is a broken row, whose error
+  still comes at the press ("Promotion yields to modals" below).)*
 - **An undo step** *(revised 2026-09-04; originally "not an undo step,
   matching space reorder")*: a dropped drag, an alt+↑/↓ press and the
   row menu's Move up/down each record one `StepKind::Reorder` (target

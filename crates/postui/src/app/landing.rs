@@ -400,8 +400,12 @@ impl App {
              begin_op, or its undo loses the typing"
         );
         // 1. A live drag's working order names rows this may rewrite. Only
-        //    a drag in progress is cancelled: an armed press stays armed,
-        //    since a row press dispatches its own open through here.
+        //    a drag in progress is cancelled: an armed press stays armed.
+        //    It acts only at a promote or at its release, and each of them
+        //    re-finds its row by slug in the rows as they are then, so a
+        //    landing that moved or replaced the row leaves it nothing to
+        //    act on (#247). A click's own open runs through here after its
+        //    release has already taken the press.
         if self.sidebar.drag.is_some() {
             self.finish_sidebar_drag(false);
         }
