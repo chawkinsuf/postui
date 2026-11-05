@@ -8186,10 +8186,13 @@ fn rename_request_updates_disk_and_open_slug() {
 /// unchanged environment or space rename changes nothing: a hand-made
 /// file keeps its bytes (no `name` added, its comment kept), and no undo
 /// step or toast follows. A nameless file at a slug its name does not
-/// derive (`ping-`), in a folder too, and a named one.
+/// derive (`ping-`), in a folder too, and a named one. #211: a name with a
+/// `/` is a name, not a folder path (spec 2026-11-03 create folders F28),
+/// so `a/b` left as prefilled doesn't move `main/x` to `main/a/b`.
 #[test]
 fn an_unchanged_rename_changes_nothing() {
     for (slug, prefill, text) in [
+        ("main/x", "a/b", "# hand-made\nurl = \"u\"\nname = \"a/b\"\nmethod = \"GET\"\n"),
         ("main/ping-", "ping-", "# hand-made\nmethod = \"GET\"\nurl = \"https://x/a\"\n"),
         ("main/api/ping-", "ping-", "# hand-made\nurl = \"https://x/b\"\nmethod = \"GET\"\n"),
         (
