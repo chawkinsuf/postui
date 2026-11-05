@@ -118,20 +118,28 @@ pub fn spell_with(
     combo().or_else(|| colon_applies(at).then(|| super::ex::spelling(action)).flatten())
 }
 
-/// What the quit chip runs at `at`: in vim where the line opens, the verb
-/// its keycap reads, so a click meets the dirty gate as the typed one
-/// does: `:q` on the main screen, and on Manage, where `:q` closes the
-/// screen (`Action::CloseWindow`), `:qa`. Else `Quit`, whose keys are
-/// arrows' `q` and `^C` pressed twice (task #85). The chip shows only with
-/// no dialog open, where no quit runs.
+/// What the quit chip runs at `at`: [`quit_verb`]'s ex verb where there is
+/// one, else `Quit`, whose keys are arrows' `q` and `^C` pressed twice
+/// (task #85). The chip shows only with no dialog open, where no quit
+/// runs.
 pub fn quit_action(at: SpellCtx) -> Action {
-    if at.profile != KeyProfile::Vim || !colon_applies(at) {
-        Action::Quit
-    } else if table::Surfaces::MANAGE.has(at.surface) {
-        Action::GatedQuit
-    } else {
-        Action::CloseWindow { write: false, force: false }
-    }
+    quit_verb(at).unwrap_or(Action::Quit)
+}
+
+/// The ex verb the quit chip runs and its keycap reads at `at`, so a click
+/// does what the typed one does: in vim where the line opens, `:q` on the
+/// main screen (`Action::CloseWindow`), and on Manage, where `:q` closes
+/// the screen, `:qa` (`Quit`). `None` elsewhere: the chip runs `Quit` and
+/// reads its key. One answer for both, so the keycap and the click can't
+/// part.
+fn quit_verb(at: SpellCtx) -> Option<Action> {
+    (at.profile == KeyProfile::Vim && colon_applies(at)).then(|| {
+        if table::Surfaces::MANAGE.has(at.surface) {
+            Action::Quit
+        } else {
+            Action::CloseWindow { write: false, force: false }
+        }
+    })
 }
 
 /// Which of a `Key::OneOf` pair its keycap is spelled from at `at`: `a`
@@ -167,11 +175,12 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         Key::Send { .. } => glyphs(&spell(at, &Action::Send, keymap)?),
         Key::Quit { plain_q: true } if !vim => "q".to_string(),
         // `:q quit` in vim where the line opens (spec §4.6), spelled from
-        // the ex verb the chip then runs; the keymap's `^C` on a picker or
-        // a dialog.
-        Key::Quit { .. } => match quit_action(at) {
-            Action::Quit => glyphs(&spell(at, &Action::Quit, keymap)?),
-            verb => super::ex::spelling(&verb)?,
+        // the ex verb the chip then runs (`:qa` on Manage, which `Quit`'s
+        // own keys would spell `^C`); the keymap's `^C` on a picker or a
+        // dialog.
+        Key::Quit { .. } => match quit_verb(at) {
+            Some(verb) => super::ex::spelling(&verb)?,
+            None => glyphs(&spell(at, &Action::Quit, keymap)?),
         },
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::OrRow(named, a) => {
@@ -468,7 +477,7 @@ mod tests {
             Some(":qa"),
             "on Manage :q closes the screen"
         );
-        assert_eq!(quit_action(at(Vim, envs)), Action::GatedQuit);
+        assert_eq!(quit_action(at(Vim, envs)), Action::Quit);
         assert_eq!(
             quit_action(at(Vim, Surface::Sidebar)),
             Action::CloseWindow { write: false, force: false }

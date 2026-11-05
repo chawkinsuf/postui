@@ -497,7 +497,7 @@ fn the_quit_chip_runs_what_it_spells() {
 #[test]
 fn no_quit_chip_under_a_dialog() {
     let any_quit_chip = |app: &App| {
-        [Action::Quit, Action::GatedQuit, Action::CloseWindow { write: false, force: false }]
+        [Action::Quit, Action::CloseWindow { write: false, force: false }]
             .into_iter()
             .any(|a| app.hits.rect_of(&crate::hit::Hit::FooterChip(a)).is_some())
     };
@@ -527,14 +527,14 @@ fn on_manage_the_quit_chip_is_qa() {
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let r = app
         .hits
-        .rect_of(&crate::hit::Hit::FooterChip(Action::GatedQuit))
+        .rect_of(&crate::hit::Hit::FooterChip(Action::Quit))
         .expect("the quit chip runs :qa");
     let buf = terminal.backend().buffer();
     let y = r.y + r.height / 2;
     let text: String =
         (r.x..r.x + r.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect();
     assert!(text.contains(":qa"), "{text:?}");
-    click_chip(&mut app, Action::GatedQuit);
+    click_chip(&mut app, Action::Quit);
     assert!(app.should_quit);
 }
 

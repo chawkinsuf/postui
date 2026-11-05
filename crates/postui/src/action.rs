@@ -151,15 +151,17 @@ pub enum KeymapAnswer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Quit behind the unsaved-changes gate: arrows' `q`, `^C` pressed
+    /// twice, the palette's Quit row, vim's `:qa` (and `:q` off Manage,
+    /// `CloseWindow`) and the footer's quit chip. Refused while a dialog
+    /// is open (task #85, `App::quit_refused`), so a quit never discards
+    /// edits by itself; the line's way out is `:q!`. The key's quit and
+    /// the ex verb's (`GatedQuit`) were two variants until task #87 merged
+    /// them.
     Quit,
     /// Quit without the unsaved-changes gate — what the gate's own choices
     /// dispatch once the user has decided.
     ForceQuit,
-    /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate; the
-    /// line's way out is `:q!` (the final review's I-1). Since task #85
-    /// both are refused while a dialog is open, the gate included, so a
-    /// quit never discards edits by itself; the two now act alike.
-    GatedQuit,
     /// `ZZ`, `:wq`, `:x` (spec §5.9, §5.11): quit, saving first when the
     /// request has unsaved edits. A never-saved request asks for a name;
     /// a refused or cancelled save does not quit.
@@ -174,7 +176,7 @@ pub enum Action {
     },
     /// Vim's window verbs: `:q` (neither), `:q!` and `ZQ` (`force`),
     /// `:wq`, `:x` and `ZZ` (`write`), `:wq!` and `:x!` (both). On the main
-    /// screen they quit, as `GatedQuit`, `ForceQuit`, `WriteQuit` and
+    /// screen they quit, as `Quit`, `ForceQuit`, `WriteQuit` and
     /// `ForceWrite { quit: true }`. The Manage screen is drawn over the main
     /// screen as Vim's second tab page is over its first, and closing a tab
     /// page that is not the last neither quits nor touches the request
@@ -1385,7 +1387,6 @@ impl Action {
         matches!(
             self,
             Action::Quit
-                | Action::GatedQuit
                 | Action::ForceQuit
                 | Action::WriteQuit
                 | Action::ForceWrite { quit: true }

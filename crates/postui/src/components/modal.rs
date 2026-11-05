@@ -4313,7 +4313,7 @@ mod tests {
         }
         let res = m.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
-        assert_eq!(res.actions, vec![Action::GatedQuit]);
+        assert_eq!(res.actions, vec![Action::Quit]);
         // note: the STACK does not pop itself — the caller pops on close.
         assert!(!m.is_empty());
     }

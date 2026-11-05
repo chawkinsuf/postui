@@ -28689,7 +28689,7 @@ fn a_cell_left_by_a_pane_jump_commits_before_another_request_opens() {
 fn a_dirty_gate_commits_an_open_cell_and_asks() {
     let gates: [(&str, Action); 3] = [
         ("quit", Action::Quit),
-        (":q", Action::GatedQuit),
+        (":q", Action::CloseWindow { write: false, force: false }),
         ("open", Action::OpenRequest("main/beta".into())),
     ];
     for (how, action) in gates {
@@ -28700,6 +28700,22 @@ fn a_dirty_gate_commits_an_open_cell_and_asks() {
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{how}");
         assert_eq!(app.editor.params["a"].value, "19", "{how}: the cell committed");
     }
+}
+
+/// `:qa` typed on the line over the typed cell runs its row's
+/// `[CloseField, Quit]`: the close commits the cell, and the gate asks
+/// about it (review round 2 of task #87, which dropped the `GatedQuit`
+/// case above).
+#[test]
+fn colon_qa_over_a_typed_cell_commits_it_and_asks() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.update(Action::OpenExPalette);
+    type_chars(&mut app, "qa");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(unsaved_prompt_up(&app), "asks instead of losing the typing");
+    assert!(!app.should_quit);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.params["a"].value, "19", "the cell committed");
 }
 
 /// Quit picked from the palette, a modal over the typed cell, meets the
@@ -37591,7 +37607,7 @@ fn footer_keycaps_follow_the_profile() {
     // Sweep backlog item 4: on Manage `:q` closes the screen, so the quit
     // chip is `:qa`, and the way back is its own chip.
     app.update(Action::OpenManage { tab: None });
-    assert_eq!(footer_chip_text(&mut app, Action::GatedQuit).as_deref(), Some(":qa quit"));
+    assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some(":qa quit"));
     assert_eq!(footer_chip_text(&mut app, Action::CloseScreen).as_deref(), Some("esc back"));
 }
 

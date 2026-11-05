@@ -3759,7 +3759,7 @@ impl App {
             // An unsaved request gates quitting behind the same confirm as
             // opening/switching away from it. (An open input closes, saved,
             // on the way out: task #75.)
-            Action::Quit | Action::GatedQuit if self.leaving_unsaved() => {
+            Action::Quit if self.leaving_unsaved() => {
                 // A live row drag owns the keyboard (Esc and the quit combo
                 // aside), so it would swallow the question's answers and
                 // land on release under it: the quit cancels it first, as
@@ -3998,7 +3998,7 @@ impl App {
             // did when the gate above ran); a refused close never stops a
             // quit, or a bad value could hold the app open. `ForceQuit` abandons them:
             // vim's `:qa!`, and a gate's answer, which finds them closed.
-            Action::Quit | Action::GatedQuit => {
+            Action::Quit => {
                 self.close_open_inputs(true);
                 self.apply(Action::ForceQuit)
             }

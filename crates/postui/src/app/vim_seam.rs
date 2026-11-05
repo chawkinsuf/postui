@@ -1437,7 +1437,7 @@ impl App {
                 // while a dialog is open, task #85.)
                 if !table::Surfaces::MANAGE.has(self.surface()) {
                     return self.apply(match (write, force) {
-                        (false, false) => Action::GatedQuit,
+                        (false, false) => Action::Quit,
                         (false, true) => Action::ForceQuit,
                         (true, false) => Action::WriteQuit,
                         (true, true) => Action::ForceWrite { quit: true },

@@ -223,6 +223,11 @@ fn short_description(action: &Action) -> Option<&'static str> {
         // Reachable with no project open (the Manage screen is), so it
         // must not promise a project's files unconditionally.
         Action::ReloadFromDisk => "Re-read config and any open project's files from disk",
+        // Not for width: the quit chip (arrows', and vim's `:qa` on
+        // Manage) keeps the word on its `quit` label, which arrows' chip
+        // read before task #87 put the palette row ("Exit postui") on the
+        // same action; the palette keeps its own.
+        Action::Quit => "Quit postui",
         _ => return None,
     })
 }
@@ -233,11 +238,9 @@ fn short_description(action: &Action) -> Option<&'static str> {
 fn fallback_description(action: &Action) -> Option<String> {
     use crate::components::response::ViewMode;
     Some(match action {
-        Action::Quit => "Quit postui".to_string(),
-        // Vim's quit chip (`:q`, `:qa` on Manage): the dirty gate asks
-        // first. The chip runs `:q` only off Manage, and shows only with
-        // no dialog open (task #85).
-        Action::GatedQuit | Action::CloseWindow { write: false, force: false } => {
+        // Vim's quit chip off Manage (`:q`): the dirty gate asks first. The
+        // chip shows only with no dialog open (task #85).
+        Action::CloseWindow { write: false, force: false } => {
             "Quit postui, asking first about unsaved changes".to_string()
         }
         Action::OpenPalette => "Open the command palette".to_string(),
@@ -866,6 +869,28 @@ mod tests {
         assert!(hint_for(&Hit::FooterChip(Action::Quit), &keymap, &ctx()).is_some());
     }
 
+    /// The `Quit` chip reads the footer's wording, not the palette row's
+    /// "Exit postui": arrows' chip, and vim's `:qa` chip on Manage, which
+    /// read "Exit postui" before task #87.
+    #[test]
+    fn the_quit_chip_hint_is_the_footers_wording() {
+        use crate::config::KeyProfile;
+        use crate::keyroute::Surface;
+        let envs = Surface::ManageList(crate::components::manage::ManageTab::Environments);
+        for (profile, surface) in [(KeyProfile::Arrows, Surface::Sidebar), (KeyProfile::Vim, envs)]
+        {
+            let keymap = Keymap::default_bindings_for(profile);
+            let mut at = ctx();
+            at.spell.profile = profile;
+            at.spell.surface = surface;
+            assert_eq!(
+                hint_for(&Hit::FooterChip(Action::Quit), &keymap, &at).as_deref(),
+                Some("Quit postui"),
+                "{profile:?} on {surface:?}"
+            );
+        }
+    }
+
     /// A palette caveat in parentheses stays in the palette.
     #[test]
     fn palette_parentheticals_are_dropped() {
@@ -981,7 +1006,6 @@ mod tests {
             Action::OpenPalette,
             Action::OpenExPalette,
             Action::Quit,
-            Action::GatedQuit,
             Action::CloseWindow { write: false, force: false },
         ] {
             let h = hint_for(&Hit::FooterChip(action.clone()), &keymap, &ctx()).unwrap();
