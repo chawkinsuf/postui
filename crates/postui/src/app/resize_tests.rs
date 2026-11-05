@@ -461,6 +461,33 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
     }
 }
 
+/// Task #113: an `App` whose split anims were never set (straight from
+/// `bare`: no seed, no fresh set) eases its first split change from the
+/// value `ui::draw` drew while they were unset, for each of the three.
+#[test]
+fn a_first_split_change_with_the_anims_unset_eases_from_the_drawn_value() {
+    use crate::anim::AnimKey;
+    let drawn = SplitState::default();
+    for (key, next, from, to) in [
+        (AnimKey::PaneCollapse, SplitState { editor_minimized: true, ..drawn }, 0.0, 1.0),
+        (AnimKey::ResponseCollapse, SplitState { response_minimized: true, ..drawn }, 0.0, 1.0),
+        (AnimKey::SplitRatio, SplitState { ratio: 0.25, ..drawn }, drawn.ratio, 0.25),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::bare(tx, std::path::PathBuf::new());
+        app.anims.set_enabled(true);
+        assert_eq!(app.split_state(), drawn);
+        let before = std::time::Instant::now();
+        assert_eq!(app.anims.value(key, before), None, "{key:?} unset");
+        app.set_split_fields(next);
+        app.update(Action::Tick);
+        // Sampled before the ease began, the value is the ease's start.
+        assert_eq!(app.anims.value(key, before), Some(from), "{key:?} starts where it was drawn");
+        assert_eq!(app.anims.target(key), Some(to), "{key:?} heads to the new split");
+        assert!(!app.anims.is_done(key, std::time::Instant::now()), "{key:?} eases");
+    }
+}
+
 /// Task #93 (P5): with animations on, a project switch draws the next
 /// project's saved split at once, not easing out of the previous one's.
 #[test]

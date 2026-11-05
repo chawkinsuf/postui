@@ -1240,7 +1240,8 @@ impl App {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         // A fresh set, so the first frame starts with nothing in flight:
         // whatever `with_root`'s restore started (an underline, a fade) is
-        // dropped, settled.
+        // dropped, settled, and the seeded split is snapped back in, so a
+        // launch draws it at once just as a project switch does (task #93).
         self.reset_anims(ui_settings.animations);
         self.theme = theme;
         self.theme_name = theme_name;
@@ -1250,11 +1251,10 @@ impl App {
 
     /// Replaces the whole anim set with a fresh one, `enabled` or not, and
     /// snaps the split's three anims in at the split on screen, so the
-    /// next frame draws it at once (task #93) rather than through
-    /// `ui::draw`'s fallback for an anim never set. Every fresh set an
-    /// `App` takes after it is built comes through here: a launch
-    /// ([`Self::apply_ui_settings`]) and a test app's own set
-    /// ([`Self::new_for_test_with_anims`]).
+    /// next frame draws it at once (task #93) rather than unset (see
+    /// [`Self::sync_split_anims`]). A launch ([`Self::apply_ui_settings`])
+    /// and a test app's own set ([`Self::new_for_test_with_anims`]) take
+    /// their set through here.
     fn reset_anims(&mut self, enabled: bool) {
         self.anims = Anims::new(enabled);
         self.sync_split_anims(true);
@@ -2774,6 +2774,12 @@ impl App {
     /// a live drag and a project's seed snap them, settled or mid-ease
     /// ([`Self::set_split_now`]), as does a fresh anim set
     /// ([`Self::reset_anims`]).
+    ///
+    /// Until the first snap the three anims are unset. [`Self::bare`]
+    /// builds them so; a seed or a fresh set snaps them, which `App::new`
+    /// always gives and `with_root` skips when its project fails to open.
+    /// While unset, `ui::draw` draws the split fields themselves, and the
+    /// first ease starts from the value they held.
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);
