@@ -2104,7 +2104,10 @@ impl App {
             testbed_list_dir_alt: 1,
         };
         // The split's anims start snapped in at the split fields, so no
-        // app is ever without them ([`Self::sync_split_anims`]).
+        // app is ever without them ([`Self::sync_split_anims`]). This snaps
+        // the set the literal above built; `reset_anims` would build a
+        // second one. A seed and a launch's `reset_anims` snap again, each
+        // for its own reason (a switch keeps its set; a launch replaces it).
         app.sync_split_anims(true);
         if flagged {
             app.raise_edit_block(root);
@@ -2606,7 +2609,6 @@ impl App {
             return;
         }
         self.pane_collapsed_target = target;
-        let now = Instant::now();
         let target_v = if target { 1.0 } else { 0.0 };
         if snap {
             self.anims.snap(AnimKey::PaneCollapse, target_v);
@@ -2616,7 +2618,7 @@ impl App {
             AnimKey::PaneCollapse,
             target_v,
             self.ui_settings.anim_ms.pane_collapse,
-            now,
+            Instant::now(),
         );
     }
 
@@ -2631,7 +2633,6 @@ impl App {
             return;
         }
         self.response_collapsed_target = target;
-        let now = Instant::now();
         let target_v = if target { 1.0 } else { 0.0 };
         if snap {
             self.anims.snap(AnimKey::ResponseCollapse, target_v);
@@ -2641,7 +2642,7 @@ impl App {
             AnimKey::ResponseCollapse,
             target_v,
             self.ui_settings.anim_ms.pane_collapse,
-            now,
+            Instant::now(),
         );
     }
 
