@@ -61,7 +61,7 @@ the cell can still be open when it runs:
 
 | Reader | Can a cell be open? | Covered by |
 |---|---|---|
-| 14 dirty gates (`editor_holds_unsaved`): Quit, GatedQuit (merged into Quit 2026-11-05, task #87), OpenRequest, Duplicate, put request, MoveRequestToSpace, CreateRequest, SwitchProject, create project, SwitchSpace, MoveAllRequests, curl import, curl replace into another row, vim WriteQuit | yes, through a key or a palette row from the cell | R3: `leaving_unsaved` |
+| 13 dirty gates (`editor_holds_unsaved`; 14 until GatedQuit merged into Quit, 2026-11-05, task #87): Quit, OpenRequest, Duplicate, put request, MoveRequestToSpace, CreateRequest, SwitchProject, create project, SwitchSpace, MoveAllRequests, curl import, curl replace into another row, vim WriteQuit | yes, through a key or a palette row from the cell | R3: `leaving_unsaved` |
 | `view_on` (op before/after views) | yes, a palette op | R5: a delete that replaces the editor commits first; other ops never replace the editor (`land` asserts it) |
 | `land` → `open_in_editor` / scratch, `Editor::load` | only if no gate or op ran first | R5: `flush_field_session` (already called there); R8 backstop |
 | DiscardChanges, ReloadOpenRequest, curl import's scratch discard | yes | R5: `flush_field_session` (already called there) |

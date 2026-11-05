@@ -118,24 +118,28 @@ pub fn spell_with(
     combo().or_else(|| colon_applies(at).then(|| super::ex::spelling(action)).flatten())
 }
 
-/// What the quit chip runs at `at`: in vim where the line opens, the verb
-/// its keycap reads, so a click does what the typed one does: `:q` on the
-/// main screen (`Action::CloseWindow`), and on Manage, where `:q` closes
-/// the screen, `:qa` (`Quit`). Else `Quit`, whose keys are arrows' `q`
-/// and `^C` pressed twice (task #85). The chip shows only with no dialog
-/// open, where no quit runs.
+/// What the quit chip runs at `at`: [`quit_verb`]'s ex verb where there is
+/// one, else `Quit`, whose keys are arrows' `q` and `^C` pressed twice
+/// (task #85). The chip shows only with no dialog open, where no quit
+/// runs.
 pub fn quit_action(at: SpellCtx) -> Action {
-    if quit_spelled_as_verb(at) && !table::Surfaces::MANAGE.has(at.surface) {
-        Action::CloseWindow { write: false, force: false }
-    } else {
-        Action::Quit
-    }
+    quit_verb(at).unwrap_or(Action::Quit)
 }
 
-/// Whether the quit chip's keycap is the ex verb it runs (`:q`, `:qa`):
-/// in vim where the line opens. Elsewhere it is `Quit`'s key.
-fn quit_spelled_as_verb(at: SpellCtx) -> bool {
-    at.profile == KeyProfile::Vim && colon_applies(at)
+/// The ex verb the quit chip runs and its keycap reads at `at`, so a click
+/// does what the typed one does: in vim where the line opens, `:q` on the
+/// main screen (`Action::CloseWindow`), and on Manage, where `:q` closes
+/// the screen, `:qa` (`Quit`). `None` elsewhere: the chip runs `Quit` and
+/// reads its key. One answer for both, so the keycap and the click can't
+/// part.
+fn quit_verb(at: SpellCtx) -> Option<Action> {
+    (at.profile == KeyProfile::Vim && colon_applies(at)).then(|| {
+        if table::Surfaces::MANAGE.has(at.surface) {
+            Action::Quit
+        } else {
+            Action::CloseWindow { write: false, force: false }
+        }
+    })
 }
 
 /// Which of a `Key::OneOf` pair its keycap is spelled from at `at`: `a`
@@ -174,8 +178,10 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
         // the ex verb the chip then runs (`:qa` on Manage, which `Quit`'s
         // own keys would spell `^C`); the keymap's `^C` on a picker or a
         // dialog.
-        Key::Quit { .. } if quit_spelled_as_verb(at) => super::ex::spelling(&quit_action(at))?,
-        Key::Quit { .. } => glyphs(&spell(at, &Action::Quit, keymap)?),
+        Key::Quit { .. } => match quit_verb(at) {
+            Some(verb) => super::ex::spelling(&verb)?,
+            None => glyphs(&spell(at, &Action::Quit, keymap)?),
+        },
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::OrRow(named, a) => {
             row_for(at, a).map_or_else(|| (*named).to_string(), notation::display)

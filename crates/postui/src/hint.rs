@@ -223,8 +223,10 @@ fn short_description(action: &Action) -> Option<&'static str> {
         // Reachable with no project open (the Manage screen is), so it
         // must not promise a project's files unconditionally.
         Action::ReloadFromDisk => "Re-read config and any open project's files from disk",
-        // The quit chip (arrows', and vim's `:qa` on Manage), in the
-        // footer's own word for its `quit` label.
+        // Not for width: the quit chip (arrows', and vim's `:qa` on
+        // Manage) keeps the word on its `quit` label, which arrows' chip
+        // read before task #87 put the palette row ("Exit postui") on the
+        // same action; the palette keeps its own.
         Action::Quit => "Quit postui",
         _ => return None,
     })
