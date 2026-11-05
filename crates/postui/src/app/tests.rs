@@ -7565,6 +7565,7 @@ fn click_sidebar_row_opens_that_request() {
     );
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(left_up(r.x, r.y));
     assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
 }
 
@@ -7618,6 +7619,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     render_once(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(left_up(r.x, r.y));
 
     assert_eq!(app.sidebar.selected, Some(2), "the click moves the selection");
     let now = std::time::Instant::now();
@@ -7657,6 +7659,7 @@ fn right_click_on_another_row_leaves_the_open_row_unchanged() {
     render_once(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(left_up(r.x, r.y));
     // The fill at the far end of row `i`, past its text.
     let row_fill = |app: &mut App, i: usize| {
         let buf = super::field_tests::draw_buffer(app);
@@ -7983,6 +7986,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     );
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(left_up(r.x, r.y));
     assert!(
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "clicking a different request row while dirty must gate through the Confirm modal, not open silently"
@@ -29022,9 +29026,12 @@ fn a_live_drag_paints_exactly_one_selection_band() {
     app.handle_mouse(left_up(r2.x + 2, r2.y));
     assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"));
 
-    // Press beta (which itself opens beta and retargets the band toward
-    // it) and, before that animation has any chance to settle, drag it
-    // onto row 0.
+    // Click beta (which opens beta at the release and retargets the band
+    // toward it), then press it again and, before that animation has any
+    // chance to settle, drag it onto row 0.
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     app.handle_mouse(left_down(r1.x + 2, r1.y));
     app.handle_mouse(moved(r1.x + 2, r0.y));
     assert!(app.sidebar.drag.is_some(), "motion promoted the press to a drag");
@@ -29115,6 +29122,199 @@ fn a_click_on_the_open_row_keeps_its_edits_and_reopens_it_clean() {
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "gamma", "alpha"]);
+}
+
+/// #247: over unsaved edits a press on another row only selects it and
+/// arms the drag, so the row drags with no dialog and the open request
+/// keeps its edits.
+#[test]
+fn a_drag_of_another_row_over_unsaved_edits_moves_it_without_a_dialog() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+    let edited = app.editor.url.text().to_string();
+    assert!(app.editor.is_dirty());
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    assert!(app.modals.is_empty(), "the press asks nothing");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"), "the press selects");
+    app.handle_mouse(moved(r1.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some(), "motion promotes it");
+    app.handle_mouse(left_up(r1.x + 2, r2.y));
+    assert!(app.modals.is_empty(), "the drop asks nothing");
+    assert_eq!(saved_order(&dir), ["alpha", "gamma", "beta"]);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the drop opens nothing");
+    assert_eq!(app.editor.url.text(), edited, "the edits stay");
+    assert!(app.editor.is_dirty());
+}
+
+/// #247: a click on another row opens it at the release, not the press.
+#[test]
+fn a_click_on_another_row_opens_it_on_release() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the press opens nothing");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"), "the press selects");
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "the release opens");
+}
+
+/// #247: a release off the pressed row, with no drag, opens nothing:
+/// neither the pressed row nor the row under the release.
+#[test]
+fn a_release_off_the_pressed_row_opens_nothing() {
+    for off_pane in [true, false] {
+        let (mut app, _dir) = three_row_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        let r1 = row_rect(&mut app, 1);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r1.x + 2, r1.y));
+        if off_pane {
+            app.handle_mouse(left_up(110, 30)); // over the response pane
+        } else {
+            // No motion in between, as a terminal that reports none sends
+            // it: nothing promoted, and the release is on gamma.
+            app.handle_mouse(left_up(r2.x + 2, r2.y));
+        }
+        assert!(app.sidebar.drag.is_none());
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "off_pane={off_pane}");
+        assert!(app.modals.is_empty());
+    }
+}
+
+/// #247: a press that became a drag stays one when it comes back onto its
+/// own row, so its release there drops it and opens nothing.
+#[test]
+fn a_drag_back_onto_its_own_row_opens_nothing() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_mouse(moved(r1.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    app.handle_mouse(moved(r1.x + 2, r1.y));
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the drop opens nothing");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing moved");
+}
+
+/// #247: any key while the button is held ends the press, whatever the
+/// key does (F12 does nothing, Down moves the selection): its release
+/// opens nothing, and the pointer reaching another row starts no drag.
+#[test]
+fn a_key_mid_press_cancels_the_click() {
+    for ev in [
+        KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    ] {
+        let (mut app, dir) = three_row_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        let r1 = row_rect(&mut app, 1);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r1.x + 2, r1.y));
+        app.handle_key(ev);
+        assert!(app.sidebar_press.is_none(), "{ev:?}: the key ends the press");
+        app.handle_mouse(moved(r1.x + 2, r2.y));
+        assert!(app.sidebar.drag.is_none(), "{ev:?}: no drag starts");
+        app.handle_mouse(moved(r1.x + 2, r1.y));
+        app.handle_mouse(left_up(r1.x + 2, r1.y));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{ev:?}: nothing opens");
+        assert!(app.modals.is_empty(), "{ev:?}");
+        assert_eq!(saved_order(&dir), THREE_ROWS, "{ev:?}: nothing moved");
+    }
+}
+
+/// #247: a terminal's paste (cmd+V, ctrl+shift+V) ends the press as a key
+/// does, ctrl+v included: the paste is keyboard input too, whatever it
+/// does (a paste that holds no curl only says so).
+#[test]
+fn a_paste_mid_press_cancels_the_click() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_paste("hello");
+    assert!(app.sidebar_press.is_none(), "the paste ends the press");
+    app.handle_mouse(moved(r1.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none(), "no drag starts");
+    app.handle_mouse(moved(r1.x + 2, r1.y));
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "nothing opens");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing moved");
+}
+
+/// #247: the release opens the row as it is then. One whose file broke
+/// while the button was held (a reload on focus) is refused by the open
+/// itself, which says why: the release needs no check of its own.
+#[test]
+fn a_release_on_a_row_that_broke_mid_press_is_refused_by_the_open() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    std::fs::write(dir.path().join("requests/main/beta.toml"), "url = [").unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    assert!(
+        matches!(app.sidebar.rows.get(1), Some(Row::Request { slug, broken: Some(_), .. }) if slug == "main/beta"),
+        "beta broke under the held press"
+    );
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "alpha stays open");
+    let said = app.toasts.last_message().unwrap_or_default();
+    assert!(said.starts_with("could not open main/beta"), "{said}");
+}
+
+/// #247: Escape while the button is held cancels the click too, over
+/// unsaved edits as anywhere: the release asks nothing and opens nothing.
+#[test]
+fn escape_mid_press_cancels_the_click() {
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert!(app.modals.is_empty(), "the release asks nothing");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "and opens nothing");
+    assert_eq!(app.editor.url.text(), "https://x/edited");
+}
+
+/// #247 (#236's open row): a release on the open request's own row over
+/// unsaved edits opens nothing, but the gate's check closes an open input
+/// on the way (`leaving_unsaved`), so the release reports a change to
+/// draw. The cell is opened directly, as any open input the release finds.
+#[test]
+fn a_release_on_the_dirty_open_row_that_commits_a_cell_redraws() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let (mut app, _dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    let input = crate::components::line_input::LineInput::new("page");
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
+    assert!(app.handle_mouse(left_up(r0.x + 2, r0.y)), "the closed cell is a change to draw");
+    assert!(app.editor.table.editing.is_none(), "the release closed the cell");
+    assert!(app.modals.is_empty(), "nothing asks");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.url.text(), "https://x/edited", "the edits stay");
 }
 
 #[test]
@@ -29241,14 +29441,14 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     // eventually arrives (the physical click that follows). It cannot
     // arrive while a drag is genuinely live, so it means the same thing:
     // the release was lost. Treat it as an in-band cancel, then handle
-    // the press normally — it arms (and, on its matching release, opens)
-    // the row under it.
+    // the press normally — it selects and arms the row under it.
     //
-    // The row it opens is the one the user saw: the frame under the
+    // The row it arms is the one the user saw: the frame under the
     // pointer was painted in the drag's preview order, and the cancel
     // snaps the rows back without a redraw, so the click is resolved
     // against what was painted, not against the restored index.
     let (mut app, dir) = three_row_app();
+    let open = app.editor.slug.clone();
     let r0 = row_rect(&mut app, 0);
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
@@ -29262,15 +29462,20 @@ fn a_left_press_during_a_live_drag_cancels_it() {
 
     assert!(app.sidebar.drag.is_none());
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
-    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
     assert_eq!(
         app.sidebar_press.clone(),
-        Some((1, RowKey::Request("main/beta".into()))),
-        "the press re-arms on the row it opened, at its restored index"
+        Some(RowKey::Request("main/beta".into())),
+        "the press re-arms on the row it selected"
     );
+    assert_eq!(app.sidebar.selected, Some(1), "at its restored index");
 
+    // The snapped-back rows put alpha under the pointer, so the release
+    // is off the pressed row and opens nothing (#247): the click's cancel.
+    render_once(&mut app);
     app.handle_mouse(left_up(r0.x + 2, r0.y));
     assert!(app.sidebar.drag.is_none());
+    assert_eq!(app.editor.slug, open, "nothing opened");
     assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
 }
 
@@ -29283,10 +29488,7 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     let (mut app, _dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert_eq!(
-        app.sidebar_press.as_ref().map(|(_, k)| k.clone()),
-        Some(RowKey::Request("main/alpha".into()))
-    );
+    assert_eq!(app.sidebar_press.clone(), Some(RowKey::Request("main/alpha".into())));
     app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
     app.text_drag = Some(TextDrag::Field(crate::keyroute::FieldId::Body));
 
@@ -29998,6 +30200,10 @@ fn every_other_key_is_swallowed_during_a_sidebar_drag() {
         assert_eq!(app.sidebar.selected_slug(), selected, "{ev:?}");
         assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
         assert_eq!(saved_order(&dir), THREE_ROWS, "{ev:?}: nothing written");
+        // The key leaves the live drag whole (a key ends only an armed
+        // press, #247), so it still drops where it shows.
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+        assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{ev:?}: the drop writes");
     }
 }
 

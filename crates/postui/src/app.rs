@@ -467,11 +467,15 @@ pub struct App {
     /// one before it reads the next event, so a key or click never sees a
     /// stale size. `None` before the first frame.
     pub(crate) term_area: Option<ratatui::layout::Rect>,
-    /// A left press on a sidebar request or folder row: `(row index, the
-    /// row)`. Armed by `on_hit`, cleared on release; becomes a live row
+    /// A left press on a sidebar request or folder row, by its key: the
+    /// promote and the release each look it up in the rows as they are
+    /// then, since a reload or a landing can move it while the button is
+    /// held. Armed by `on_hit`, cleared on release and, outside a live
+    /// drag, by any key or paste (`end_armed_press`); becomes a live row
     /// drag the moment the pointer moves onto another row (see
-    /// `mouse.rs`).
-    pub sidebar_press: Option<(usize, RowKey)>,
+    /// `mouse.rs`). A request row's press that is still armed at its
+    /// release, on the same row, was a click: the release opens it (#247).
+    pub sidebar_press: Option<RowKey>,
     /// A left press on a Manage screen list row (Environments or Spaces
     /// tab): `(row index, item)`. The Manage-screen twin of
     /// `sidebar_press` — armed by `on_hit` on either tab, cleared on
@@ -11750,6 +11754,18 @@ impl App {
         self.modals.is_empty() && self.screen == Screen::Main && self.focus == PaneId::Sidebar
     }
 
+    /// A terminal's bracketed paste (`Event::Paste`), from the event loop:
+    /// it ends an armed row press first ([`Self::end_armed_press`], #247),
+    /// as [`Self::handle_key`] does for a key, then routes the text
+    /// ([`Self::paste_text`], which keeps its own check for the edit
+    /// flag's waiting screen). That is all it shares with `handle_key`:
+    /// the key path's other steps (the quit disarm, the event-end
+    /// bookkeeping) do not run for a paste, as they did not before #247.
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        self.end_armed_press();
+        self.paste_text(text)
+    }
+
     /// Routes pasted text — read from the OS clipboard by `Action::Paste`
     /// (ctrl+v), or delivered whole by a terminal bracketed paste
     /// (`Event::Paste`: cmd+V on macOS, ctrl+shift+V on Linux) — to
@@ -12434,6 +12450,7 @@ impl App {
     /// The edit flag's waiting screen takes keys before all of it, unless a
     /// dialog is over it (`edit_block.rs`).
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        self.end_armed_press();
         if self.edit_block.is_some() && self.modals.is_empty() {
             return self.blocked_key(ev);
         }

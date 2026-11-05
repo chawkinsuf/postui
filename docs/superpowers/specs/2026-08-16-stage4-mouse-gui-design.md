@@ -42,6 +42,9 @@ trailing `▾`; hover underlines the hovered name.
 ### Sidebar
 
 - Single click on a request row opens it (existing open path, dirty-gate included).
+  *(Amended 2026-11-04, task #247, `mine (approved)`: the click opens at its
+  release, unless the press became a row drag; see the request reordering
+  spec, "Click behaviour".)*
 - Folder rows: clicking the `▸`/`▾` arrow cell toggles expansion; clicking the name
   selects the row; double-click on the name toggles expansion.
 - `+ New request` button pinned at the top of the pane, always visible (empty sidebar

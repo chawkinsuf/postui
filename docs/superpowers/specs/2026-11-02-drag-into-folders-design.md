@@ -110,6 +110,11 @@ follow the same rules.
   unsaved edits now opens nothing and asks nothing, so it drags like any
   row. A press on another row still raises the dialog, so another row
   can't be dragged while the open one has unsaved edits.
+  2026-11-04, #247 (`mine (approved)`): a press on a request row no
+  longer opens it; the release does, unless the press became a drag
+  (request reordering spec, "Click behaviour"). Over unsaved edits the
+  dialog comes at a click's release, and any row drags over them. This
+  limit is gone.
 - An op or refresh made while request files are missing (a git branch
   switch in progress) drops their entries (D7); when they come back they
   land at the end of their levels.

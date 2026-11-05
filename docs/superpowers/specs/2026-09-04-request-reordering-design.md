@@ -60,6 +60,19 @@ brainstorm"; this is that brainstorm.
   focuses, selects and opens it. The press also arms a *possible* drag;
   nothing further happens unless the pointer moves onto another row
   while the button is held.
+  *(Amended 2026-11-04, task #247, `mine (approved)`: a press on a
+  request row focuses, selects it and arms the drag; the release opens
+  it, unless the press became a drag. Over unsaved edits the Unsaved
+  changes dialog comes at the release, so another row can be dragged
+  over them and a drag never asks. A release off the pressed row with
+  no drag opens nothing, the usual cancel of a click (`mine`). Keys and
+  the row menu's Open are unchanged, and so is a broken row, whose error
+  still comes at the press ("Promotion yields to modals" below).
+  2026-11-05, `mine (approved)`: any key pressed while the button is
+  held ends the press, so the click opens nothing at its release and no
+  drag starts; Escape is such a key. A live drag keeps its own keys
+  (below). 2026-11-05, `mine`: a terminal's paste (cmd+V, ctrl+shift+V)
+  ends the press as a key does, since ctrl+v already did.)*
 - **An undo step** *(revised 2026-09-04; originally "not an undo step,
   matching space reorder")*: a dropped drag, an alt+↑/↓ press and the
   row menu's Move up/down each record one `StepKind::Reorder` (target

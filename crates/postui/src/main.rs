@@ -291,7 +291,7 @@ async fn run(
                             // A terminal-level paste (bracketed): the whole
                             // text in one event, routed to the live caret.
                             Event::Paste(text) => {
-                                redraw |= app.paste_text(&text);
+                                redraw |= app.handle_paste(&text);
                                 // A paste into the sidebar imports, which
                                 // can raise a prompt.
                                 app.vim_catch_up();
