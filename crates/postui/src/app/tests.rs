@@ -5224,16 +5224,23 @@ fn apply_gated_cases() -> Vec<(Action, Applied)> {
         (Action::MoveAllRequests { from: "main".into(), to: "auth".into() }, |_, dir| {
             ["alpha", "beta"].iter().all(|n| dir.join(format!("requests/auth/{n}.toml")).exists())
         }),
+        (Action::ReplaceWithCurl(Some("main/beta".into())), |app, _| {
+            opened(app, "main/beta") && app.editor.url.text() == "https://x/new"
+        }),
     ]
 }
 
 /// A [`spaced_app`] with `main/alpha` open, under the sidebar's cursor and
-/// in the row register, for [`apply_gated_cases`].
+/// in the row register, and a curl command on the clipboard, for
+/// [`apply_gated_cases`].
 fn gate_case_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.sidebar.select_slug("main/alpha");
     app.yank = crate::yank::Register::Request("main/alpha".into());
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("curl https://x/new");
+    app.set_clipboard_for_test(clip);
     (app, dir)
 }
 
@@ -5277,8 +5284,12 @@ fn a_gate_that_asks_reports_a_change() {
     }
 }
 
-/// The same gates over a clean editor ask nothing: each applies at once
-/// and passes its own answer on.
+/// The same gates over a clean editor ask nothing: each applies at once.
+///
+/// `apply_gated` passes `then`'s answer on here, but every `Force*` these
+/// reach answers `true`, so the `true` below cannot tell a pass-through
+/// from a hard-coded one; no real action through the gate answers `false`
+/// to tell them apart with.
 #[test]
 fn a_gate_over_a_clean_editor_applies_at_once() {
     for (action, applied) in apply_gated_cases() {
@@ -5287,6 +5298,34 @@ fn a_gate_over_a_clean_editor_applies_at_once() {
         assert!(app.update(action), "{what} reports a change");
         assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "{what} asks nothing");
         assert!(applied(&app, dir.path()), "{what} applied");
+    }
+}
+
+/// A move that leaves the open request where it is does not gate, over
+/// unsaved edits too: it applies at once, and the open request stays open
+/// with its edits and its open field.
+#[test]
+fn a_move_that_leaves_the_open_request_asks_nothing() {
+    let cases: Vec<(Action, &str)> = vec![
+        (
+            Action::MoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() },
+            "requests/auth/beta.toml",
+        ),
+        (
+            Action::MoveAllRequests { from: "auth".into(), to: "main".into() },
+            "requests/main/login.toml",
+        ),
+    ];
+    for (action, moved) in cases {
+        let (mut app, dir) = gate_case_app();
+        dirty_the_editor(&mut app);
+        let what = format!("{action:?}");
+        assert!(app.update(action), "{what} reports a change");
+        assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "{what} asks nothing");
+        assert!(dir.path().join(moved).exists(), "{what} applied");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{what} keeps the open request");
+        assert!(app.editor.is_dirty(), "{what} keeps its edits");
+        assert!(app.editor.url_open(), "{what} leaves its field open");
     }
 }
 

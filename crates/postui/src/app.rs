@@ -5751,8 +5751,7 @@ impl App {
                 if self.is_open_project(&target) {
                     return false;
                 }
-                self.apply_gated_or_stop("switch", Action::ForceSwitchProject(target));
-                true
+                self.apply_gated_or_stop("switch", Action::ForceSwitchProject(target))
             }
             Action::ForceSwitchProject(target) => {
                 // The open project, by whatever spelling, is already open,
@@ -5922,8 +5921,7 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                self.apply_gated_or_stop("create", Action::ForceCreateProject { path, name: None });
-                true
+                self.apply_gated_or_stop("create", Action::ForceCreateProject { path, name: None })
             }
             Action::ForceCreateProject { path, name } => {
                 // This runs after the dirty gate was answered, so a Cancel
@@ -5979,8 +5977,7 @@ impl App {
                 self.apply_gated_or_stop(
                     "create",
                     Action::ForceCreateProject { path, name: Some(name) },
-                );
-                true
+                )
             }
             Action::OpenEnvChooser => {
                 use crate::components::modal::{DropdownState, MenuItem};
@@ -11372,14 +11369,15 @@ impl App {
     /// request's edits away for a switch that then does not happen
     /// (`a_refused_input_stops_a_project_switch_before_its_gate`).
     ///
-    /// It answers nothing: its callers report a change whatever happens. A
-    /// refusal toasted, and a create's init can toast warnings before its
-    /// switch answers `false` (a create at the open project's own path),
-    /// so passing `then`'s answer on would leave those undrawn.
-    fn apply_gated_or_stop(&mut self, verb: &str, then: Action) {
+    /// It answers `true` whatever happens, not `then`'s answer: a refusal
+    /// toasted, and a create's init can toast warnings before its switch
+    /// answers `false` (a create at the open project's own path), so
+    /// passing `then`'s answer on would leave those undrawn.
+    fn apply_gated_or_stop(&mut self, verb: &str, then: Action) -> bool {
         if self.close_inputs_or_stop(true) {
             self.apply_gated(verb, then);
         }
+        true
     }
 
     /// Push the standard unsaved-changes confirm. A slugged request's

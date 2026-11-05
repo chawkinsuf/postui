@@ -432,8 +432,8 @@ impl App {
         let replace = CurlReplace { import, notes, vars, rename };
         match other {
             // Opening another request leaves this one: it is gated like an
-            // open, through the gate every other uses, so none can forget
-            // the cell; its close is a no-op after the one above.
+            // open, through `apply_gated` as OpenRequest is, so it cannot
+            // forget the cell; its close is a no-op after the one above.
             Some(slug) => {
                 let replace = Box::new(replace);
                 self.apply_gated("open", Action::ForceReplaceWithCurl { slug, replace })
