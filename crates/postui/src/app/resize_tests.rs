@@ -490,11 +490,13 @@ fn a_first_split_change_eases_from_the_drawn_value() {
 }
 
 /// Task #252: with debug assertions, easing one of the split's anims while
-/// its key is unset panics, for each of the three (the tests below). An
-/// unset key never matches the split, so the next `update` eases it even
-/// with nothing changed (task #251), and a set built without the snap is
-/// caught on its first update. A snap on an unset key needs no test of its
-/// own: every app's first set is snapped in that way (`reset_anims`).
+/// its key is unset panics, for each of the three (the tests below). The
+/// check runs on every eased sync, before the no-change return, so the
+/// next `update` panics even with nothing changed (task #251), and a set
+/// built without the snap is caught on its first update. A change to the
+/// split takes the same path, an unset key never matching it, so these
+/// tests leave the split as it is. A snap on an unset key needs no test of
+/// its own: every app's first set is snapped in that way (`reset_anims`).
 #[cfg(debug_assertions)]
 fn ease_with_unset(key: crate::anim::AnimKey) {
     let mut app = App::new_for_test();

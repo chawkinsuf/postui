@@ -2697,8 +2697,9 @@ impl App {
     /// Builds with debug assertions check that on each ease, with a
     /// `debug_assert!` that the key is set, made before the sync writes
     /// anything ([`Self::sync_split_anim`]); a snap needs none, since it is
-    /// what sets it. An unset key never matches its field, so a set built
-    /// without the snap is caught on its first `update`, change or none.
+    /// what sets it. The check runs on every eased sync, before the
+    /// no-change return, so a set built without the snap is caught on its
+    /// first `update`, change or none.
     /// It checks with animations off too, where an unset key only jumps as
     /// a set one would: the rule is how a set is built, and a set built
     /// without the snap would ease wrong once animations are turned on.
@@ -2719,19 +2720,19 @@ impl App {
     }
 
     /// Brings one of the split's anims to `target_v` for
-    /// [`Self::sync_split_anims`]: easing, nothing when it already heads
-    /// there (`Anims::target`, which a glide keeps until it lands), else a
-    /// retarget from wherever it sits; snapping, a jump there.
+    /// [`Self::sync_split_anims`]: snapping, a jump there; easing, nothing
+    /// when it already heads there, else a retarget from wherever it sits.
+    /// "Heads there" is `Anims::target`, which keeps the target through the
+    /// glide and after it lands, so a settled anim at `target_v` is left
+    /// alone and the comparison needs no copy of its own.
     fn sync_split_anim(&mut self, key: AnimKey, target_v: f32, snap: bool) {
-        if !snap && self.anims.target(key) == Some(target_v) {
-            return;
-        }
-        debug_assert!(
-            snap || self.anims.target(key).is_some(),
-            "{key:?} eased while unset (see `sync_split_anims`)"
-        );
         if snap {
             self.anims.snap(key, target_v);
+            return;
+        }
+        let cur = self.anims.target(key);
+        debug_assert!(cur.is_some(), "{key:?} eased while unset (see `sync_split_anims`)");
+        if cur == Some(target_v) {
             return;
         }
         self.anims.retarget(key, target_v, self.ui_settings.anim_ms.pane_collapse, Instant::now());
@@ -4400,10 +4401,9 @@ impl App {
                 true
             }
             Action::ToggleResponseCollapse => {
-                // `sync_split_anims` (run on every `update`) retargets
-                // the anim — here as well as when `sync_open`
-                // swaps in another request's response with a different
-                // collapsed state.
+                // `sync_split_anims` (run on every `update`) retargets the
+                // anim — here as well as when `sync_open` swaps in another
+                // request's response with a different collapsed state.
                 self.session.response.collapsed = !self.session.response.collapsed;
                 // Hiding the only expanded panel would leave the screen
                 // blank: swap instead — the editor expands as the response
