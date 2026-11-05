@@ -28921,6 +28921,29 @@ fn a_press_on_the_dirty_open_row_arms_a_drag_without_a_gate() {
     assert!(app.editor.is_dirty());
 }
 
+/// #236: a plain click (no motion) on the dirty open row leaves the
+/// edits; clean, it reopens the row's file as a click on any row does.
+#[test]
+fn a_click_on_the_open_row_keeps_its_edits_and_reopens_it_clean() {
+    let (mut app, dir) = three_row_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(left_up(r0.x + 2, r0.y));
+    assert!(app.modals.is_empty(), "nothing asks");
+    assert_eq!(app.editor.url.text(), "https://x/edited");
+    assert!(app.editor.is_dirty());
+
+    app.update(Action::SaveRequest);
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/outside"))
+        .unwrap();
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(left_up(r0.x + 2, r0.y));
+    assert_eq!(app.editor.url.text(), "https://x/outside", "clean, the click re-reads the file");
+}
+
 #[test]
 fn press_move_release_reorders_and_persists() {
     let (mut app, dir) = three_row_app();
@@ -38537,16 +38560,16 @@ fn a_request_dropped_in_a_folder_moves_there_and_stays_open() {
     let (mut app, dir) = auth_folder_app();
     // rows: alpha, beta, auth/, x
     app.update(Action::ForceOpenRequest("main/alpha".into()));
+    // The press on the dirty open row asks nothing (#236).
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    assert!(app.editor.is_dirty());
     let steps = app.history.undo_len();
     let r0 = row_rect(&mut app, 0);
     let r3 = row_rect(&mut app, 3);
     app.handle_mouse(left_down(names_x(r0), r0.y));
     app.handle_mouse(moved(names_x(r0), r3.y));
     assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
-    // Made directly: a press on a dirty open request raises the Unsaved
-    // changes dialog instead of a drag (the spec's known limits, #236).
-    app.editor.url.set_text("https://x/edited");
-    assert!(app.editor.is_dirty());
     app.handle_mouse(left_up(names_x(r0), r3.y));
 
     assert!(app.sidebar.drag.is_none());
@@ -38562,8 +38585,7 @@ fn a_request_dropped_in_a_folder_moves_there_and_stays_open() {
     assert!(!app.op_in_flight);
     assert_eq!(app.history.undo_len(), steps + 1, "one step");
 
-    // Undo the move itself, not the edit made by hand above.
-    app.editor.url.set_text("https://x/1");
+    // The edit is its own step before the move, so one undo is the move's.
     app.update(Action::Undo);
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
     assert!(!dir.path().join("requests/main/auth/alpha.toml").exists());
