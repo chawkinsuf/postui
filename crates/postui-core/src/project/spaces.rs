@@ -284,11 +284,7 @@ impl Project {
 
     /// Writes a [`Self::level_change`]'s list.
     fn write_change(&mut self, space: &str, change: &ListChange) -> Result<(), Error> {
-        self.order_edit(space, |order| {
-            *order = change.after.clone();
-            Vec::new()
-        })
-        .map(|_| ())
+        self.order_edit(space, |order| *order = change.after.clone())
     }
 
     /// alt+↑/↓: the entry `rel` (a request slug or a folder entry, spec
