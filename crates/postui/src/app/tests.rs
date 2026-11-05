@@ -5196,6 +5196,36 @@ fn switching_spaces_goes_through_the_dirty_gate() {
     assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
 }
 
+/// Each gate that goes through `apply_gated` over unsaved edits asks and
+/// reports a change, so the dialog draws, and applies nothing yet.
+#[test]
+fn a_gate_that_asks_reports_a_change() {
+    let actions = [
+        Action::OpenRequest("main/beta".into()),
+        Action::DuplicateRequest,
+        Action::PutRequest { anchor: None, above: false, count: 1 },
+        Action::CreateRequest("fresh".into()),
+        Action::SwitchSpace("auth".into()),
+    ];
+    for action in actions {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.sidebar.select_slug("main/alpha");
+        app.yank = crate::yank::Register::Request("main/alpha".into());
+        dirty_the_editor(&mut app);
+        let what = format!("{action:?}");
+        assert!(app.update(action), "{what} reports a change");
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes"),
+            "{what} asks"
+        );
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{what} opens nothing yet");
+        assert_eq!(app.proj().local().active_space, "main", "{what} switches nothing yet");
+        let main = std::fs::read_dir(dir.path().join("requests/main")).unwrap().count();
+        assert_eq!(main, 2, "{what} writes nothing yet");
+    }
+}
+
 #[test]
 fn jump_and_cycle_resolve_by_position_and_wrap() {
     let (mut app, _dir) = spaced_app();

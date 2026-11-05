@@ -4574,14 +4574,7 @@ impl App {
                 self.pending_terminal_action = Some(Action::OpenResponseInEditor);
                 true
             }
-            Action::OpenRequest(slug) => {
-                if self.leaving_unsaved() {
-                    self.dirty_gate("open", Action::ForceOpenRequest(slug));
-                    true
-                } else {
-                    self.apply(Action::ForceOpenRequest(slug))
-                }
-            }
+            Action::OpenRequest(slug) => self.apply_gated("open", Action::ForceOpenRequest(slug)),
             Action::ForceOpenRequest(slug) => {
                 // The outgoing request's open field closes as its own step
                 // (land flushes it) before the buffer is replaced; a slug
@@ -4733,12 +4726,7 @@ impl App {
                 // anything is written (spec §4.3: the gate runs before the op).
                 let force =
                     Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
-                if self.leaving_unsaved() {
-                    self.dirty_gate("duplicate", force);
-                    true
-                } else {
-                    self.apply(force)
-                }
+                self.apply_gated("duplicate", force)
             }
             Action::ForceDuplicateRequest { slug, anchor, above, count } => {
                 let t = self.begin_op();
@@ -5014,12 +5002,7 @@ impl App {
                 // The copy opens, so unsaved edits are gated first, as
                 // Duplicate's are: once, the count riding with the
                 // deferred put.
-                if self.leaving_unsaved() {
-                    self.dirty_gate("duplicate", force);
-                    true
-                } else {
-                    self.apply(force)
-                }
+                self.apply_gated("duplicate", force)
             }
             Action::PutTableRow { at, count } => {
                 let (tab, key, entry) = match self.yank.clone() {
@@ -5177,12 +5160,7 @@ impl App {
                     }
                     _ => unreachable!("matched above"),
                 };
-                if self.leaving_unsaved() {
-                    self.dirty_gate("create", force);
-                    true
-                } else {
-                    self.apply(force)
-                }
+                self.apply_gated("create", force)
             }
             Action::ForceCreateRequestAt { level, after, name } => {
                 if self.refuse_without_project() {
@@ -5775,7 +5753,7 @@ impl App {
                 if self.is_open_project(&target) {
                     return false;
                 }
-                self.apply_gated("switch", Action::ForceSwitchProject(target));
+                self.apply_gated_or_stop("switch", Action::ForceSwitchProject(target));
                 true
             }
             Action::ForceSwitchProject(target) => {
@@ -5946,7 +5924,7 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                self.apply_gated("create", Action::ForceCreateProject { path, name: None });
+                self.apply_gated_or_stop("create", Action::ForceCreateProject { path, name: None });
                 true
             }
             Action::ForceCreateProject { path, name } => {
@@ -6000,7 +5978,10 @@ impl App {
                     return true;
                 }
                 let path = crate::config::expand_tilde(&path);
-                self.apply_gated("create", Action::ForceCreateProject { path, name: Some(name) });
+                self.apply_gated_or_stop(
+                    "create",
+                    Action::ForceCreateProject { path, name: Some(name) },
+                );
                 true
             }
             Action::OpenEnvChooser => {
@@ -7923,12 +7904,7 @@ impl App {
                 if name == self.active_space() {
                     return true;
                 }
-                if self.leaving_unsaved() {
-                    self.dirty_gate("switch", Action::ForceSwitchSpace(name));
-                    true
-                } else {
-                    self.apply(Action::ForceSwitchSpace(name))
-                }
+                self.apply_gated("switch", Action::ForceSwitchSpace(name))
             }
             Action::ForceSwitchSpace(name) => {
                 if !self.spaces().contains(&name) {
@@ -11372,18 +11348,28 @@ impl App {
     /// edits. The gate asks before `then` does anything, so a Cancel
     /// leaves no trace of it: creating a project writes nothing until
     /// Save or Discard (task #69).
-    fn apply_gated(&mut self, verb: &str, then: Action) {
-        // `then` (a project switch or create) stops on an input that
-        // refuses to close; stopping here instead keeps the gate from
-        // asking first, so a Discard never throws the request's edits away
-        // for a switch that then does not happen.
-        if !self.close_inputs_or_stop(true) {
-            return;
-        }
+    ///
+    /// `then`'s own answer when it runs; `true` when the gate asks, since
+    /// its dialog is a change to draw. An input that refuses to close does
+    /// not stop it (`leaving_unsaved` goes on past a refusal): a `then`
+    /// that stops on one goes through [`Self::apply_gated_or_stop`].
+    fn apply_gated(&mut self, verb: &str, then: Action) -> bool {
         if self.leaving_unsaved() {
             self.dirty_gate(verb, then);
+            true
         } else {
-            self.apply(then);
+            self.apply(then)
+        }
+    }
+
+    /// [`Self::apply_gated`] for a `then` (a project switch or create) that
+    /// stops on an input that refuses to close. Stopping before the gate
+    /// instead keeps it from asking first, so a Discard never throws the
+    /// request's edits away for a switch that then does not happen
+    /// (`a_refused_input_stops_a_project_switch_before_its_gate`).
+    fn apply_gated_or_stop(&mut self, verb: &str, then: Action) {
+        if self.close_inputs_or_stop(true) {
+            self.apply_gated(verb, then);
         }
     }
 
