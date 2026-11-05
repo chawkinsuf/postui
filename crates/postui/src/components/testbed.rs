@@ -265,24 +265,23 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
     }
     if fits(area, y, 1) {
         let mut sx = x0;
-        for (label, hovered) in [("rest", None), ("hover", Some(0)), ("hover delete", Some(1))] {
-            safe_text(buf, area, sx, y, label, theme.text_muted, theme.page, false);
+        let (copy, trash) = (crate::hit::Hit::TableCopy(0), crate::hit::Hit::TableDelete(0));
+        for (label, hovered) in
+            [("rest", None), ("hover", Some(&copy)), ("hover delete", Some(&trash))]
+        {
             let run_x = sx + crate::ui::cells(label) as u16 + 1;
             let run = Rect::new(run_x, y, 2 * crate::glyph::PILL_W, 1);
+            // A specimen that would cross the area's right edge is left
+            // out whole, label and all.
+            if run.right() > area.right() {
+                break;
+            }
+            safe_text(buf, area, sx, y, label, theme.text_muted, theme.page, false);
             let pills = [
-                IconPill {
-                    pill: crate::glyph::COPY_PILL,
-                    destructive: false,
-                    hovered: hovered == Some(0),
-                },
-                IconPill {
-                    pill: crate::glyph::DELETE_PILL,
-                    destructive: true,
-                    hovered: hovered == Some(1),
-                },
+                IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: copy.clone() },
+                IconPill { pill: crate::glyph::DELETE_PILL, destructive: true, hit: trash.clone() },
             ];
-            // Nothing here is interactive, so the hit rects go unused.
-            let _ = icon_pill_run(buf, run, 0, pills, theme.page, theme);
+            icon_pill_run(buf, &mut hits, run, 0, pills, hovered, theme.page, theme);
             sx = run.right() + 3;
         }
     }

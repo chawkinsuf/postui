@@ -893,9 +893,10 @@ impl TableEditorState {
         }
     }
 
-    /// Scrubs the strikethrough off a button zone before its glyph lands
-    /// there: `text` patches styles, so a disabled row's struck name or
-    /// value would otherwise bleed onto the glyphs painted over it.
+    /// Scrubs the strikethrough off a button zone: `text` patches styles,
+    /// so a disabled row's struck name or value would otherwise bleed onto
+    /// the glyphs painted over it. Before or after the glyphs land, the
+    /// zone ends up the same.
     fn clear_strike(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: u16) {
         for x in x..x.saturating_add(w) {
             if let Some(cell) = buf.cell_mut((x, y)) {
@@ -932,8 +933,9 @@ impl TableEditorState {
 
     /// Paints the row's right-edge actions — copy then delete, an icon
     /// pill run ([`crate::paint::icon_pill_run`]) at `row`'s right edge
-    /// with [`ACTIONS_MARGIN`]. A directly-hovered button inverts onto
-    /// accent (error red for the trash).
+    /// with [`ACTIONS_MARGIN`], then the row's strike scrubbed off the
+    /// zone the run answers it claims. A directly-hovered button inverts
+    /// onto accent (error red for the trash).
     #[allow(clippy::too_many_arguments)]
     fn draw_row_actions(
         buf: &mut ratatui::buffer::Buffer,
@@ -944,24 +946,16 @@ impl TableEditorState {
         hovered: Option<&Hit>,
         theme: &Theme,
     ) {
-        Self::clear_strike(buf, row.right().saturating_sub(ACTIONS_W), row.y, ACTIONS_W);
-        let (copy, trash) = (Hit::TableCopy(i), Hit::TableDelete(i));
         let pills = [
-            IconPill {
-                pill: crate::glyph::COPY_PILL,
-                destructive: false,
-                hovered: hovered == Some(&copy),
-            },
+            IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: Hit::TableCopy(i) },
             IconPill {
                 pill: crate::glyph::DELETE_PILL,
                 destructive: true,
-                hovered: hovered == Some(&trash),
+                hit: Hit::TableDelete(i),
             },
         ];
-        let rects = icon_pill_run(buf, row, ACTIONS_MARGIN, pills, bg, theme);
-        for (rect, hit) in rects.zip([copy, trash]) {
-            hits.register(rect, hit);
-        }
+        let zone = icon_pill_run(buf, hits, row, ACTIONS_MARGIN, pills, hovered, bg, theme);
+        Self::clear_strike(buf, zone.x, zone.y, zone.width);
     }
 
     /// Strikes through `len` cells starting at `(x, y)` — the disabled

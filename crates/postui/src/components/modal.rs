@@ -3904,16 +3904,12 @@ fn draw_row_buttons(
     row_area: Rect,
     row_fill: ratatui::style::Color,
 ) {
-    let hit = |button: &RowButton| crate::hit::Hit::DropdownRowButton { row: i, verb: button.verb };
     let pills = item.buttons.iter().map(|button| paint::IconPill {
         pill: button.pill,
         destructive: button.destructive,
-        hovered: hovered == Some(&hit(button)),
+        hit: crate::hit::Hit::DropdownRowButton { row: i, verb: button.verb },
     });
-    let rects = paint::icon_pill_run(frame.buffer_mut(), row_area, 0, pills, row_fill, theme);
-    for (rect, button) in rects.zip(&item.buttons) {
-        hits.register(rect, hit(button));
-    }
+    paint::icon_pill_run(frame.buffer_mut(), hits, row_area, 0, pills, hovered, row_fill, theme);
 }
 
 /// The total width a right-aligned row of buttons needs: each button's

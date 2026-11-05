@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
+use crate::hit::{Hit, HitMap};
 use crate::paint::text;
 use crate::theme::Theme;
 
@@ -60,12 +61,12 @@ impl Chip<'_> {
 }
 
 /// One button of an [`icon_pill_run`]: its `glyph::*_PILL`, whether it
-/// removes something, and whether the pointer is on it.
+/// removes something, and the hit a click on it is.
 pub struct IconPill<'a> {
     pub pill: &'a str,
     /// A removal: its hover fill is error red rather than accent.
     pub destructive: bool,
-    pub hovered: bool,
+    pub hit: Hit,
 }
 
 /// Paints a run of icon pill buttons on row `area.y`, side by side in the
@@ -74,34 +75,53 @@ pub struct IconPill<'a> {
 /// (margin 1), a dropdown row's own buttons (margin 0).
 ///
 /// A pill rests muted on `rest`, the row's own fill, and inverts onto
-/// accent under the pointer (error red for a destructive one), padding
-/// included: the whole pill is the button.
+/// accent while `hovered` is its hit (error red for a destructive one),
+/// padding included: the whole pill is the button, and its
+/// [`crate::glyph::PILL_W`] cells are registered as its hit. Each pill
+/// carries its own hit, so the cell a pill paints and the action a click
+/// there takes can't be paired up wrong.
 ///
-/// Answers each pill's hit rect, in the order given, for the caller to
-/// register: the run knows where its pills are, the caller what they do.
+/// The run stays inside `area`: a pill that would start left of it is
+/// dropped, leftmost first (every caller gates the run on room for it, so
+/// this only keeps a short area from painting over its neighbour).
+///
+/// Answers the cells the run claims, its pills and the margin after them,
+/// for a caller that treats that zone as one (the table editor scrubs its
+/// row's strike off it).
+#[allow(clippy::too_many_arguments)]
 pub fn icon_pill_run<'p, I>(
     buf: &mut Buffer,
+    hits: &mut HitMap,
     area: Rect,
     margin: u16,
     pills: I,
+    hovered: Option<&Hit>,
     rest: Color,
     theme: &Theme,
-) -> impl Iterator<Item = Rect> + use<I>
+) -> Rect
 where
     I: IntoIterator<Item = IconPill<'p>>,
     I::IntoIter: ExactSizeIterator,
 {
     let pills = pills.into_iter();
     let w = crate::glyph::PILL_W;
-    let count = pills.len() as u16;
-    let first_x = area.right().saturating_sub(margin + w * count);
-    let y = area.y;
-    for (k, pill) in (0..).zip(pills) {
+    let end = area.right().saturating_sub(margin).max(area.left());
+    let room = if area.height == 0 { 0 } else { (end - area.left()) / w };
+    let count = pills.len().min(usize::from(u16::MAX)) as u16;
+    let dropped = count.saturating_sub(room);
+    let first_x = end - w * (count - dropped);
+    for (k, pill) in (0..).zip(pills.skip(usize::from(dropped))) {
+        let x = first_x + w * k;
         let hot = if pill.destructive { theme.error } else { theme.accent };
-        let (fg, bg) = if pill.hovered { (theme.on_accent, hot) } else { (theme.text_muted, rest) };
-        text(buf, first_x + w * k, y, pill.pill, fg, bg, false);
+        let (fg, bg) = if hovered == Some(&pill.hit) {
+            (theme.on_accent, hot)
+        } else {
+            (theme.text_muted, rest)
+        };
+        text(buf, x, area.y, pill.pill, fg, bg, false);
+        hits.register(Rect::new(x, area.y, w, 1), pill.hit);
     }
-    (0..count).map(move |k| Rect::new(first_x + w * k, y, w, 1))
+    Rect::new(first_x, area.y, area.right() - first_x, area.height.min(1))
 }
 
 /// Where a [`TabStrip`]'s accent segment goes.
@@ -315,33 +335,59 @@ mod tests {
         term.backend().buffer().cell((x, y)).unwrap()
     }
 
+    /// The three pills the run tests paint: copy, edit, and a destructive
+    /// delete, each with its own hit.
+    fn three_pills() -> [IconPill<'static>; 3] {
+        [
+            IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: Hit::TableCopy(0) },
+            IconPill {
+                pill: crate::glyph::PENCIL_PILL,
+                destructive: false,
+                hit: Hit::TableCheckbox(0),
+            },
+            IconPill {
+                pill: crate::glyph::DELETE_PILL,
+                destructive: true,
+                hit: Hit::TableDelete(0),
+            },
+        ]
+    }
+
     /// An icon pill run ends `margin` columns short of its area's right
-    /// edge, a `PILL_W`-cell pill each in the order given, and answers
-    /// those cells as its hit rects. A pill rests muted on the row's fill;
+    /// edge, a `PILL_W`-cell pill each in the order given, each registered
+    /// over exactly its cells as its own hit, and answers the zone it
+    /// claims (pills and margin). A pill rests muted on the row's fill;
     /// under the pointer the whole pill, padding included, inverts onto
-    /// accent, or error red for a destructive one.
+    /// accent, or error red for a destructive one. Nothing outside the
+    /// pills is painted.
     #[test]
     fn an_icon_pill_run_right_aligns_its_pills_and_inverts_the_hovered_one() {
         let theme = Theme::dark();
         let rest = theme.control;
-        let pill = |pill, destructive, hovered| IconPill { pill, destructive, hovered };
+        let glyphs = [crate::glyph::COPY, crate::glyph::PENCIL, crate::glyph::DELETE];
+        let w = crate::glyph::PILL_W;
         for margin in [0, 1] {
             for hovered in [None, Some(0), Some(1), Some(2)] {
                 let area = Rect::new(2, 1, 16, 1);
                 let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
-                let pills = [
-                    pill(crate::glyph::COPY_PILL, false, hovered == Some(0)),
-                    pill(crate::glyph::PENCIL_PILL, false, hovered == Some(1)),
-                    pill(crate::glyph::DELETE_PILL, true, hovered == Some(2)),
-                ];
-                let rects: Vec<Rect> =
-                    icon_pill_run(&mut buf, area, margin, pills, rest, &theme).collect();
-                let first = area.right() - margin - 3 * crate::glyph::PILL_W;
-                let expected: Vec<Rect> =
-                    (0..3).map(|k| Rect::new(first + 3 * k, 1, 3, 1)).collect();
-                assert_eq!(rects, expected, "margin {margin}");
-                let glyphs = [crate::glyph::COPY, crate::glyph::PENCIL, crate::glyph::DELETE];
-                for (k, rect) in rects.iter().enumerate() {
+                let mut hits = HitMap::default();
+                let hits_of = three_pills().map(|p| p.hit);
+                let hover = hovered.map(|k: usize| &hits_of[k]);
+                let zone = icon_pill_run(
+                    &mut buf,
+                    &mut hits,
+                    area,
+                    margin,
+                    three_pills(),
+                    hover,
+                    rest,
+                    &theme,
+                );
+                let first = area.right() - margin - 3 * w;
+                assert_eq!(zone, Rect::new(first, 1, 3 * w + margin, 1), "margin {margin}");
+                for (k, hit) in hits_of.iter().enumerate() {
+                    let rect = Rect::new(first + w * k as u16, 1, w, 1);
+                    assert_eq!(hits.rects_of(hit), vec![rect], "pill {k}'s hit");
                     let (fg, bg) = match hovered {
                         Some(h) if h == k && k == 2 => (theme.on_accent, theme.error),
                         Some(h) if h == k => (theme.on_accent, theme.accent),
@@ -353,9 +399,54 @@ mod tests {
                     }
                     assert_eq!(buf[(rect.x + 1, 1)].symbol(), glyphs[k], "pill {k}'s glyph");
                 }
-                // Nothing past the run: the margin stays the row's own.
-                for x in area.right() - margin..area.right() {
-                    assert_eq!(buf[(x, 1)].bg, Color::Reset, "margin cell {x}");
+                // Nothing outside the pills: the cells left of the run and
+                // the margin after it stay the row's own.
+                for x in (area.left()..first).chain(area.right() - margin..area.right()) {
+                    assert_eq!(buf[(x, 1)].bg, Color::Reset, "cell {x} outside the run");
+                }
+            }
+        }
+    }
+
+    /// An area too narrow for the whole run keeps the run inside it: the
+    /// pills that would start left of the area are dropped, leftmost
+    /// first, and register nothing, so nothing is painted or clickable
+    /// over the area's left neighbour.
+    #[test]
+    fn an_icon_pill_run_drops_the_pills_its_area_has_no_room_for() {
+        let theme = Theme::dark();
+        let w = crate::glyph::PILL_W;
+        // (area width, margin, pills that fit): two pills' room plus a
+        // cell, then less than one pill's, then a margin wider than the
+        // area.
+        for (width, margin, kept) in [(2 * w + 2, 1, 2), (w, 1, 0), (2, 5, 0)] {
+            let area = Rect::new(4, 0, width, 1);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+            let mut hits = HitMap::default();
+            let zone = icon_pill_run(
+                &mut buf,
+                &mut hits,
+                area,
+                margin,
+                three_pills(),
+                None,
+                theme.control,
+                &theme,
+            );
+            assert!(zone.left() >= area.left() && zone.right() == area.right(), "{zone:?}");
+            for x in 0..area.left() {
+                assert_eq!(buf[(x, 0)].bg, Color::Reset, "cell {x} left of the area");
+                assert_eq!(hits.hit_at(x, 0), None, "cell {x} left of the area");
+            }
+            let pills = three_pills();
+            for (k, pill) in pills.iter().enumerate() {
+                let registered = hits.rects_of(&pill.hit);
+                if k < 3 - kept {
+                    assert!(registered.is_empty(), "pill {k} dropped, width {width}");
+                } else {
+                    let rect = registered[0];
+                    assert!(rect.left() >= area.left(), "pill {k} inside, width {width}");
+                    assert!(rect.right() <= area.right() - margin, "pill {k} before the margin");
                 }
             }
         }

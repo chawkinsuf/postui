@@ -2568,23 +2568,19 @@ impl VarManager {
             let editing_row = self.grid.editing.as_ref().is_some_and(|e| e.row == i);
             if let Some(zone_x) = cols.actions_x.filter(|_| !ghost && !editing_row) {
                 let zone = Rect::new(zone_x, ry, ROW_ACTIONS_ZONE_W, 1);
-                let (copy, trash) = (Hit::VmEntryCopy(i), Hit::VmEntryDelete(i));
                 let pills = [
                     IconPill {
                         pill: crate::glyph::COPY_PILL,
                         destructive: false,
-                        hovered: hovered == Some(&copy),
+                        hit: Hit::VmEntryCopy(i),
                     },
                     IconPill {
                         pill: crate::glyph::DELETE_PILL,
                         destructive: true,
-                        hovered: hovered == Some(&trash),
+                        hit: Hit::VmEntryDelete(i),
                     },
                 ];
-                let rects = icon_pill_run(buf, zone, ROW_ACTIONS_MARGIN, pills, bg, theme);
-                for (rect, hit) in rects.zip([copy, trash]) {
-                    hits.register(rect, hit);
-                }
+                icon_pill_run(buf, hits, zone, ROW_ACTIONS_MARGIN, pills, hovered, bg, theme);
             }
         }
 
