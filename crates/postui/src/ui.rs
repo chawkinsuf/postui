@@ -33,7 +33,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.anims.begin_frame(app.ui_settings.anim_ms.tab_slide);
     // Hide collapses the editor to its strip on every tab — the Body tab's
     // buffer hides just like the Params/Headers/Vars table does.
-    // `App::sync_pane_collapse_anim` (run on every `update`) keeps
+    // `App::sync_split_anims` (run on every `update`) keeps
     // `AnimKey::PaneCollapse` chasing this same condition, so its eased
     // value at `now` is what actually drives the row split. The settled
     // fields are only `value_or`'s default: every app starts with the
