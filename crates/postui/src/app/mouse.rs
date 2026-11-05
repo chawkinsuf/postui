@@ -660,20 +660,10 @@ impl App {
                 // selection, only the sweep state ends. All of them are
                 // taken before the row drags are settled so that none can
                 // outlive the release, whichever kind ends it.
-                // A request row's press that never became a drag is a
-                // click, and its release opens the row (#247). The press
-                // ended every other drag (`cancel_stale_drags`), so there
-                // is nothing else for this release to settle.
-                let clicked = match self.sidebar_press.take() {
-                    Some((_, RowKey::Request(slug))) if self.sidebar.drag.is_none() => Some(slug),
-                    _ => None,
-                };
+                let pressed = self.sidebar_press.take();
                 self.manage_press = None;
                 let had_text = self.text_drag.take().is_some();
                 let ended = self.drag.take().is_some() || had_text;
-                if let Some(slug) = clicked {
-                    return self.open_released_row(&slug, m.column, m.row) | ended;
-                }
                 // A resize ends where it got to, saved if it moved. The
                 // strip's click already happened at the press (spec E2a),
                 // so the release adds nothing to it. Hover was frozen on
@@ -698,7 +688,14 @@ impl App {
                     let inside = self.manage_drag_inside(m.column, m.row);
                     return self.finish_manage_drag(inside) | ended;
                 }
-                ended
+                // A request row's press that ends with no row drag settled
+                // above was a click, and its release opens the row (#247).
+                match pressed {
+                    Some((_, RowKey::Request(slug))) => {
+                        self.open_released_row(&slug, m.column, m.row) | ended
+                    }
+                    _ => ended,
+                }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
@@ -752,7 +749,13 @@ impl App {
     /// reordering, "Click behaviour"): the row the press armed opens when
     /// the release lands on that same row, re-found by its slug since the
     /// rows can be rebuilt under a held button. A release anywhere else is
-    /// the click's usual cancel and opens nothing. A dialog up by now (a key
+    /// the click's usual cancel and opens nothing. That takes in the click
+    /// that recovers a lost release (`cancel_stale_drags`): its press arms
+    /// the row painted under the pointer, then the rows snap back under it,
+    /// so the release usually lands on another row and opens nothing; the
+    /// row is selected, and one more click opens it. Matching the release
+    /// to where the press landed instead would keep a copy of the press's
+    /// frame for a terminal's lost release. A dialog up by now (a key
     /// raised it while the button was held) owns the pointer, as it does
     /// for the drag's promote. Over unsaved edits the open goes through the
     /// gate, so the dialog comes here, at the release, and never under a
