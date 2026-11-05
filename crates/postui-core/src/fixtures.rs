@@ -617,11 +617,13 @@ pub fn delete_request(root: &Path, slug: &str) -> Result<Trashed, StorageError> 
 
 /// Reads the list, hands it to `f`, and writes back only if `f` changed
 /// it — so every cascade is a no-op write when there is nothing to do.
+/// Reports the whole list before and after when it wrote (`None` when
+/// `f` left it as it was).
 fn edit_order(
     root: &Path,
     space: &str,
     f: impl FnOnce(&mut Vec<String>),
-) -> Result<(), ProjectError> {
+) -> Result<Option<ListChange>, ProjectError> {
     // A list belongs to a space that exists. Writing one for a space
     // that does not (an undo step recorded before the space was renamed
     // or deleted, say) would plant an orphan `[space.<slug>]` table that
@@ -634,9 +636,10 @@ fn edit_order(
     let mut after = before.clone();
     f(&mut after);
     if after == before {
-        return Ok(());
+        return Ok(None);
     }
-    edit_project_toml(root, |doc| write_order(doc, space, &after))
+    edit_project_toml(root, |doc| write_order(doc, space, &after))?;
+    Ok(Some(ListChange { before, after }))
 }
 
 /// Rewrites one level of `space`'s order to exactly `slugs` (relative
@@ -653,13 +656,7 @@ pub fn set_level_order(
         slugs.iter().all(|s| entry_level(s) == level),
         "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
     );
-    let mut change = None;
-    edit_order(root, space, |order| {
-        let before = order.clone();
-        *order = merge_level(order, level, slugs);
-        change = Some(ListChange { before, after: order.clone() });
-    })?;
-    Ok(change.filter(|c| c.before != c.after))
+    edit_order(root, space, |order| *order = merge_level(order, level, slugs))
 }
 
 #[cfg(test)]
