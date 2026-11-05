@@ -489,54 +489,38 @@ fn a_first_split_change_eases_from_the_drawn_value() {
     }
 }
 
-/// Task #252: with debug assertions, easing one of the split's anims while
-/// its key is unset panics, for each of the three (the tests below, each
-/// easing a change to its own key). A snap on an unset key needs no test
-/// of its own: every app's first set is snapped in that way
-/// (`reset_anims`).
+/// Task #251: with debug assertions, an update with one of the split's
+/// keys unset panics, for each of the three (the tests below). Nothing
+/// changes, so each pins that the check runs before the no-change return
+/// and a set built without the snap is caught on its first update. A snap
+/// on an unset key needs no test of its own: every app's first set is
+/// snapped in that way (`reset_anims`).
 #[cfg(debug_assertions)]
-fn ease_with_unset(key: crate::anim::AnimKey, next: SplitState) {
+fn update_with_unset(key: crate::anim::AnimKey) {
     let mut app = App::new_for_test();
     app.anims.clear(key);
-    app.set_split_fields(next);
     app.update(Action::Tick);
 }
 
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "PaneCollapse eased while unset")]
-fn easing_an_unset_pane_collapse_panics_in_debug() {
-    let next = SplitState { editor_minimized: true, ..SplitState::default() };
-    ease_with_unset(crate::anim::AnimKey::PaneCollapse, next);
+fn an_update_with_an_unset_pane_collapse_panics_in_debug() {
+    update_with_unset(crate::anim::AnimKey::PaneCollapse);
 }
 
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "ResponseCollapse eased while unset")]
-fn easing_an_unset_response_collapse_panics_in_debug() {
-    let next = SplitState { response_minimized: true, ..SplitState::default() };
-    ease_with_unset(crate::anim::AnimKey::ResponseCollapse, next);
+fn an_update_with_an_unset_response_collapse_panics_in_debug() {
+    update_with_unset(crate::anim::AnimKey::ResponseCollapse);
 }
 
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "SplitRatio eased while unset")]
-fn easing_an_unset_split_ratio_panics_in_debug() {
-    let next = SplitState { ratio: 0.25, ..SplitState::default() };
-    ease_with_unset(crate::anim::AnimKey::SplitRatio, next);
-}
-
-/// Task #251: the check runs before the no-change return, so an update
-/// with nothing changed panics too, and a set built without the snap is
-/// caught on its first update. One key stands for the three: they share
-/// `App::sync_split_anim`.
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "SplitRatio eased while unset")]
-fn an_update_with_an_unset_split_key_and_no_change_panics_in_debug() {
-    let mut app = App::new_for_test();
-    app.anims.clear(crate::anim::AnimKey::SplitRatio);
-    app.update(Action::Tick);
+fn an_update_with_an_unset_split_ratio_panics_in_debug() {
+    update_with_unset(crate::anim::AnimKey::SplitRatio);
 }
 
 /// Task #93 (P5): with animations on, a project switch draws the next

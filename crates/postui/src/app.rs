@@ -2683,8 +2683,8 @@ impl App {
         self.sync_split_anims(true);
     }
 
-    /// Brings the split's three anims to the split fields, the three keys'
-    /// only writer: `AnimKey::PaneCollapse` chases
+    /// Brings the split's three anims to the split fields, the only setter
+    /// of the three keys' targets: `AnimKey::PaneCollapse` chases
     /// `table_collapsed` (the editor's hide, on every tab, the Body buffer
     /// included), `AnimKey::ResponseCollapse` the response's `collapsed`
     /// (a sticky layout preference `session.sync_open` carries across
