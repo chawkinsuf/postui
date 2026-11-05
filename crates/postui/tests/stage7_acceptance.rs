@@ -224,8 +224,10 @@ fn click_away_closes_the_menu_without_activating_what_is_under_it() {
             app.hits.rect_of(&Hit::SidebarRow(*i)).is_some_and(|r| r.y >= menu.y + menu.height)
         })
         .expect("a sidebar row below the menu");
-    press(&mut app, Hit::SidebarRow(under), left_down);
+    // A whole click, since a row opens at its release.
+    let r = press(&mut app, Hit::SidebarRow(under), left_down);
     assert!(app.modals.top().is_none(), "click-away closed the menu");
+    app.handle_mouse(left_up(r.x + 2, r.y));
     assert_eq!(app.editor.slug, None, "and was swallowed — the row under it did not open");
 }
 
@@ -395,10 +397,12 @@ fn app_in_project(files: &[(&str, &str)]) -> TestApp {
     (app, dir, rx)
 }
 
-/// Clicks a request's sidebar row, which is how a mouse-only user opens it.
+/// Clicks a request's sidebar row, which is how a mouse-only user opens it:
+/// the press selects the row and the release on it opens it.
 fn open_request(app: &mut App, slug: &str) {
     let row = row_index_of(app, slug);
-    press(app, Hit::SidebarRow(row), left_down);
+    let r = press(app, Hit::SidebarRow(row), left_down);
+    app.handle_mouse(left_up(r.x + 2, r.y));
 }
 
 fn type_text(app: &mut App, text: &str) {
