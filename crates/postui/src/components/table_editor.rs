@@ -107,11 +107,11 @@ pub(crate) const TOGGLE_W: u16 = 3;
 /// The column of margin outside a row's right-edge actions.
 const ACTIONS_MARGIN: u16 = 1;
 
-/// The columns a row's right-edge actions claim: copy, delete (a
-/// [`crate::glyph::PILL_W`]-cell pill each), and [`ACTIONS_MARGIN`]
-/// outside them. A cell edit's input stops short of this so a long value
-/// never runs under the buttons.
-const ACTIONS_W: u16 = crate::glyph::PILL_W * 2 + ACTIONS_MARGIN;
+/// The columns a row's right-edge actions claim: the copy and delete
+/// pills' run and [`ACTIONS_MARGIN`] outside them. A cell edit's input
+/// stops short of this so a long value never runs under the buttons, and
+/// a row shows its actions only with room for this beside the toggle.
+const ACTIONS_W: u16 = crate::paint::icon_pill_run_width(2, ACTIONS_MARGIN);
 
 /// Column x-offsets, relative to the drawn area's own left edge. Every
 /// row — plain, hovered or active — lays out from the same offsets, so
@@ -1027,7 +1027,7 @@ impl TableEditorState {
         // The actions crowd the value's right end, so the value — plain
         // text or live input — stops short of them instead of running
         // underneath. The ghost row has no actions, so it keeps the width.
-        let show_actions = real && (lit || cursor) && area.width >= 10;
+        let show_actions = real && (lit || cursor) && area.width >= TOGGLE_W + ACTIONS_W;
         let value_right =
             if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
         let value_w = value_right.saturating_sub(cols.value_x);

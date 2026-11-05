@@ -81,9 +81,12 @@ pub struct IconPill<'a> {
 /// carries its own hit, so the cell a pill paints and the action a click
 /// there takes can't be paired up wrong.
 ///
-/// The run stays inside `area`: a pill that would start left of it is
-/// dropped, leftmost first (every caller gates the run on room for it, so
-/// this only keeps a short area from painting over its neighbour).
+/// The run is all or nothing: an `area` with no room for the whole run
+/// paints and registers none of it and answers an empty zone. Every caller
+/// gates the run on [`icon_pill_run_width`], so this only keeps a short
+/// area from painting over its neighbour. A partial run would keep pills
+/// nobody aimed at, and in every run the rightmost pill is the destructive
+/// one.
 ///
 /// Answers the cells the run claims, its pills and the margin after them,
 /// for a caller that treats that zone as one (the table editor scrubs its
@@ -104,14 +107,15 @@ where
     I::IntoIter: ExactSizeIterator,
 {
     let pills = pills.into_iter();
-    let w = crate::glyph::PILL_W;
-    let end = area.right().saturating_sub(margin).max(area.left());
-    let room = if area.height == 0 { 0 } else { (end - area.left()) / w };
-    let count = pills.len().min(usize::from(u16::MAX)) as u16;
-    let dropped = count.saturating_sub(room);
-    let first_x = end - w * (count - dropped);
-    for (k, pill) in (0..).zip(pills.skip(usize::from(dropped))) {
-        let x = first_x + w * k;
+    let w = icon_pill_run_width(u16::try_from(pills.len()).unwrap_or(u16::MAX), margin);
+    if area.height == 0 || w > area.width {
+        return Rect::new(area.right(), area.y, 0, 0);
+    }
+    let first_x = area.right() - w;
+    // Each pill's x from a range that ends at the margin, so the run can't
+    // step past it.
+    let xs = (first_x..area.right() - margin).step_by(usize::from(crate::glyph::PILL_W));
+    for (pill, x) in pills.zip(xs) {
         let hot = if pill.destructive { theme.error } else { theme.accent };
         let (fg, bg) = if hovered == Some(&pill.hit) {
             (theme.on_accent, hot)
@@ -119,9 +123,18 @@ where
             (theme.text_muted, rest)
         };
         text(buf, x, area.y, pill.pill, fg, bg, false);
-        hits.register(Rect::new(x, area.y, w, 1), pill.hit);
+        hits.register(Rect::new(x, area.y, crate::glyph::PILL_W, 1), pill.hit);
     }
-    Rect::new(first_x, area.y, area.right() - first_x, area.height.min(1))
+    Rect::new(first_x, area.y, w, 1)
+}
+
+/// The cells an [`icon_pill_run`] of `count` pills with `margin` after
+/// them claims: what a caller gates the run on and reserves room for, and
+/// what the run itself checks its area against. Saturates rather than
+/// wraps; the run places its pills from a range bounded by its area, so
+/// even a saturated width never paints past it.
+pub const fn icon_pill_run_width(count: u16, margin: u16) -> u16 {
+    crate::glyph::PILL_W.saturating_mul(count).saturating_add(margin)
 }
 
 /// Where a [`TabStrip`]'s accent segment goes.
@@ -384,6 +397,7 @@ mod tests {
                     &theme,
                 );
                 let first = area.right() - margin - 3 * w;
+                assert_eq!(icon_pill_run_width(3, margin), 3 * w + margin);
                 assert_eq!(zone, Rect::new(first, 1, 3 * w + margin, 1), "margin {margin}");
                 for (k, hit) in hits_of.iter().enumerate() {
                     let rect = Rect::new(first + w * k as u16, 1, w, 1);
@@ -408,19 +422,19 @@ mod tests {
         }
     }
 
-    /// An area too narrow for the whole run keeps the run inside it: the
-    /// pills that would start left of the area are dropped, leftmost
-    /// first, and register nothing, so nothing is painted or clickable
-    /// over the area's left neighbour.
+    /// A run is all or nothing: an area one cell short of the whole run,
+    /// a margin wider than the area, or no rows at all paints and
+    /// registers no pill and answers an empty zone, while an area exactly
+    /// the run's width takes every pill.
     #[test]
-    fn an_icon_pill_run_drops_the_pills_its_area_has_no_room_for() {
+    fn an_icon_pill_run_its_area_has_no_room_for_paints_nothing() {
         let theme = Theme::dark();
-        let w = crate::glyph::PILL_W;
-        // (area width, margin, pills that fit): two pills' room plus a
-        // cell, then less than one pill's, then a margin wider than the
-        // area.
-        for (width, margin, kept) in [(2 * w + 2, 1, 2), (w, 1, 0), (2, 5, 0)] {
-            let area = Rect::new(4, 0, width, 1);
+        let full = icon_pill_run_width(3, 1);
+        // (area width, height, margin, whether the run fits).
+        for (width, height, margin, fits) in
+            [(full, 1, 1, true), (full - 1, 1, 1, false), (2, 1, 5, false), (full, 0, 1, false)]
+        {
+            let area = Rect::new(4, 0, width, height);
             let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
             let mut hits = HitMap::default();
             let zone = icon_pill_run(
@@ -433,20 +447,16 @@ mod tests {
                 theme.control,
                 &theme,
             );
-            assert!(zone.left() >= area.left() && zone.right() == area.right(), "{zone:?}");
-            for x in 0..area.left() {
-                assert_eq!(buf[(x, 0)].bg, Color::Reset, "cell {x} left of the area");
-                assert_eq!(hits.hit_at(x, 0), None, "cell {x} left of the area");
-            }
-            let pills = three_pills();
-            for (k, pill) in pills.iter().enumerate() {
-                let registered = hits.rects_of(&pill.hit);
-                if k < 3 - kept {
-                    assert!(registered.is_empty(), "pill {k} dropped, width {width}");
-                } else {
-                    let rect = registered[0];
-                    assert!(rect.left() >= area.left(), "pill {k} inside, width {width}");
-                    assert!(rect.right() <= area.right() - margin, "pill {k} before the margin");
+            let case = format!("width {width}, height {height}, margin {margin}");
+            let registered = three_pills().map(|p| hits.rects_of(&p.hit).len());
+            if fits {
+                assert_eq!(zone, Rect::new(area.left(), 0, full, 1), "{case}");
+                assert_eq!(registered, [1, 1, 1], "{case}");
+            } else {
+                assert_eq!((zone.x, zone.width), (area.right(), 0), "{case}");
+                assert_eq!(registered, [0, 0, 0], "{case}");
+                for x in 0..20 {
+                    assert_eq!(buf[(x, 0)].bg, Color::Reset, "cell {x}, {case}");
                 }
             }
         }

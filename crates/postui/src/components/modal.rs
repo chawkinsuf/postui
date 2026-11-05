@@ -700,10 +700,10 @@ impl MenuItem {
         self.buttons.iter().find(|b| b.verb.kind() == verb.kind())
     }
 
-    /// The cells the row's own buttons take: a [`crate::glyph::PILL_W`]-cell
-    /// pill each.
+    /// The cells the row's own buttons take: their icon pill run, with no
+    /// margin ([`draw_row_buttons`]).
     fn buttons_width(&self) -> u16 {
-        crate::glyph::PILL_W * self.buttons.len() as u16
+        paint::icon_pill_run_width(self.buttons.len() as u16, 0)
     }
 }
 

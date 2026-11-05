@@ -608,10 +608,10 @@ const GROUP_GAP: u16 = 3;
 /// The column of margin after the option row's buttons.
 const ROW_ACTIONS_MARGIN: u16 = 1;
 /// The row buttons' zone at the grid's right edge: the `󰆏` copy and `󰆴`
-/// delete pills ([`crate::glyph::PILL_W`] cells each) and
-/// [`ROW_ACTIONS_MARGIN`] after them — the table editor's row actions
-/// exactly.
-const ROW_ACTIONS_ZONE_W: u16 = crate::glyph::PILL_W * 2 + ROW_ACTIONS_MARGIN;
+/// delete pills' run and [`ROW_ACTIONS_MARGIN`] after them — the table
+/// editor's row actions exactly. The grid reserves it and the run is
+/// painted in it, so both read this one width.
+const ROW_ACTIONS_ZONE_W: u16 = crate::paint::icon_pill_run_width(2, ROW_ACTIONS_MARGIN);
 
 /// The fewest cells a grid column is drawn in: one that would get fewer is
 /// dropped, with every column after it.

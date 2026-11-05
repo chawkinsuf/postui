@@ -15,7 +15,7 @@ use crate::components::DrawCtx;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, IconPill, ListRow,
     Pill, PropertyRow, RowHighlight, TabStrip, TextField, Toggle, Underline, Well, floating_panel,
-    frac_vspan, icon_pill_run, label_column, pill_min_width,
+    frac_vspan, icon_pill_run, icon_pill_run_width, label_column, pill_min_width,
 };
 
 /// One column each side of `area`, and a left column reserved for the
@@ -269,18 +269,18 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         for (label, hovered) in
             [("rest", None), ("hover", Some(&copy)), ("hover delete", Some(&trash))]
         {
+            let pills = [
+                IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: copy.clone() },
+                IconPill { pill: crate::glyph::DELETE_PILL, destructive: true, hit: trash.clone() },
+            ];
             let run_x = sx + crate::ui::cells(label) as u16 + 1;
-            let run = Rect::new(run_x, y, 2 * crate::glyph::PILL_W, 1);
+            let run = Rect::new(run_x, y, icon_pill_run_width(pills.len() as u16, 0), 1);
             // A specimen that would cross the area's right edge is left
             // out whole, label and all.
             if run.right() > area.right() {
                 break;
             }
             safe_text(buf, area, sx, y, label, theme.text_muted, theme.page, false);
-            let pills = [
-                IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: copy.clone() },
-                IconPill { pill: crate::glyph::DELETE_PILL, destructive: true, hit: trash.clone() },
-            ];
             icon_pill_run(buf, &mut hits, run, 0, pills, hovered, theme.page, theme);
             sx = run.right() + 3;
         }

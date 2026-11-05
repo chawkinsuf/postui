@@ -600,7 +600,9 @@ fn draw_var_tooltip(
     // The panel first: later registrations win a hit lookup, so the
     // pills painted next sit on top of it.
     hits.register(area, Hit::TipPanel(tip.name.clone()));
-    // The pills, flush with the panel's right padding.
+    // The pills, flush with the panel's right padding. Not an
+    // `icon_pill_run`: these are `paint::action`s, accent at rest and bold
+    // on hover, with no destructive one, not muted row buttons.
     let mut cx = x + width - 2 - pills_w as u16;
     for (label, hit) in pills {
         let rect = Rect::new(cx, y + 1, pill_w, 1);
