@@ -20,7 +20,7 @@
 use super::*;
 use crate::journal::Op;
 use crate::model::HttpRequest;
-use crate::order::{self, OrderEdit};
+use crate::order;
 
 /// `(from_slug, to_slug)` pairs of a batch move.
 pub type Moves = Vec<(String, String)>;
@@ -637,20 +637,13 @@ impl Project {
 /// made, so nothing is guessed from the list: a folder already there keeps
 /// its place, empty or not, and one the list misses (its completion
 /// couldn't run) draws by D6 until a completion writes it in.
-fn arrive_with_folders(
-    space: &str,
-    order: &mut Vec<String>,
-    rel: &str,
-    made: &[String],
-) -> Vec<OrderEdit> {
-    let mut edits = Vec::new();
+fn arrive_with_folders(space: &str, order: &mut Vec<String>, rel: &str, made: &[String]) {
     for folder in order::ancestors(rel) {
         if made.iter().any(|m| m == &format!("{space}/{folder}")) {
-            edits.extend(order::arrive(space, order, &order::folder_entry(folder)));
+            order::arrive(order, &order::folder_entry(folder));
         }
     }
-    edits.extend(order::arrive(space, order, rel));
-    edits
+    order::arrive(order, rel);
 }
 
 /// Where a new item's `entry` goes (spec 2026-11-03 create folders F14,
@@ -658,15 +651,14 @@ fn arrive_with_folders(
 /// else by `arrive` (last in its level, D4). The one placement rule a new
 /// request and a new folder share.
 fn place_new(
-    space: &str,
     order: &mut Vec<String>,
     entry: &str,
     anchor: Option<&str>,
-    arrive: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
-) -> Vec<OrderEdit> {
+    arrive: impl FnOnce(&mut Vec<String>),
+) {
     match anchor {
         Some(a) if order.iter().any(|e| e == a) => {
-            order::insert_beside(space, order, entry, Some(a), true)
+            order::insert_beside(order, entry, Some(a), true)
         }
         _ => arrive(order),
     }
@@ -721,24 +713,24 @@ impl Project {
     /// space that does not exist on disk (no orphan tables). Every order
     /// write goes through here.
     ///
-    /// In a directory with no `project.toml` it writes nothing and returns
-    /// no edits, so no op ever creates one: a create, a rename, a move, a
-    /// put or a drop does its file part and the items draw by D6 (spec
-    /// 2026-11-02 drag into folders §3, `Project`). The two reorders, which
-    /// write nothing else, refuse first ([`Self::require_project_toml`]).
+    /// In a directory with no `project.toml` it writes nothing, so no op
+    /// ever creates one: a create, a rename, a move, a put or a drop does
+    /// its file part and the items draw by D6 (spec 2026-11-02 drag into
+    /// folders §3, `Project`). The two reorders, which write nothing else,
+    /// refuse first ([`Self::require_project_toml`]).
     pub(super) fn order_edit(
         &mut self,
         space: &str,
-        f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
-    ) -> Result<Vec<OrderEdit>, Error> {
+        f: impl FnOnce(&mut Vec<String>),
+    ) -> Result<(), Error> {
         if !self.has_project_toml() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let before = order::space_order(&self.meta, space).to_vec();
         let mut after = before.clone();
-        let edits = f(&mut after);
+        f(&mut after);
         if after == before {
-            return Ok(Vec::new());
+            return Ok(());
         }
         // Only a real edit needs the space's directory to exist (an
         // orphan table would otherwise be written for it); a no-op edit
@@ -747,8 +739,7 @@ impl Project {
         if !self.disk.is_dir(&space_rel(space)?) {
             return Err(Error::NotFound(space.to_string()));
         }
-        self.edit_project_toml(|doc| order::write_order(doc, space, &after))?;
-        Ok(edits)
+        self.edit_project_toml(|doc| order::write_order(doc, space, &after))
     }
 
     /// Whether the project's directory has a `project.toml`.
@@ -777,34 +768,24 @@ impl Project {
         space: &str,
         rel: &str,
         made: &[String],
-    ) -> Result<Vec<OrderEdit>, Error> {
+    ) -> Result<(), Error> {
         self.order_edit(space, |order| arrive_with_folders(space, order, rel, made))
     }
 
     /// The request at `rel` has just left: its entry. The folders it sat
     /// in stay, entries and all (spec 2026-11-03 create folders F2).
-    pub(super) fn order_remove(&mut self, space: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
-        self.order_edit(space, |order| order::remove(space, order, rel))
+    pub(super) fn order_remove(&mut self, space: &str, rel: &str) -> Result<(), Error> {
+        self.order_edit(space, |order| order::remove(order, rel))
     }
 
     /// A request renamed in its own level: its entry, in place.
-    pub(super) fn order_rename(
-        &mut self,
-        space: &str,
-        from: &str,
-        to: &str,
-    ) -> Result<Vec<OrderEdit>, Error> {
+    pub(super) fn order_rename(&mut self, space: &str, from: &str, to: &str) -> Result<(), Error> {
         self.order_edit(space, |order| {
             for e in order.iter_mut() {
                 if e == from {
                     *e = to.to_string();
                 }
             }
-            vec![OrderEdit::Renamed {
-                space: space.to_string(),
-                from: from.to_string(),
-                to: to.to_string(),
-            }]
         })
     }
 
@@ -813,7 +794,7 @@ impl Project {
         space: &str,
         anchor: &str,
         rel: &str,
-    ) -> Result<Vec<OrderEdit>, Error> {
+    ) -> Result<(), Error> {
         self.order_insert_beside(space, anchor, rel, true)
     }
 
@@ -824,7 +805,7 @@ impl Project {
         space: &str,
         anchor: &str,
         rel: &str,
-    ) -> Result<Vec<OrderEdit>, Error> {
+    ) -> Result<(), Error> {
         self.order_insert_beside(space, anchor, rel, false)
     }
 
@@ -838,12 +819,11 @@ impl Project {
         anchor: &str,
         rel: &str,
         below: bool,
-    ) -> Result<Vec<OrderEdit>, Error> {
+    ) -> Result<(), Error> {
         self.order_edit(space, |order| {
-            if !order.iter().any(|e| e == anchor) {
-                return Vec::new();
+            if order.iter().any(|e| e == anchor) {
+                order::insert_beside(order, rel, Some(anchor), below);
             }
-            order::insert_beside(space, order, rel, Some(anchor), below)
         })
     }
 
@@ -1009,26 +989,25 @@ impl Project {
         emptied: &[String],
     ) -> Result<(), Error> {
         self.order_edit(from, |order| {
-            let gone = moves.iter().map(|(f, _)| f).chain(emptied);
-            gone.flat_map(|e| order::remove(from, order, e)).collect()
+            for e in moves.iter().map(|(f, _)| f).chain(emptied) {
+                order::remove(order, e);
+            }
         })?;
         // The destination side only adds arrivals.
         let carried: std::collections::HashSet<&str> = carried.iter().map(String::as_str).collect();
         let moved: std::collections::HashMap<&str, &str> =
             moves.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
         self.order_edit(to, |order| {
-            let mut edits = Vec::new();
             for e in drawn {
                 if order::is_folder_entry(e) {
                     if carried.contains(e.as_str()) && !order.contains(e) {
-                        edits.extend(order::arrive(to, order, e));
+                        order::arrive(order, e);
                     }
                 } else if let Some(t) = moved.get(e.as_str()) {
                     // Its folders arrived above, at their own places.
-                    edits.extend(arrive_with_folders(to, order, t, &[]));
+                    arrive_with_folders(to, order, t, &[]);
                 }
             }
-            edits
         })?;
         Ok(())
     }
@@ -1112,7 +1091,7 @@ impl Project {
             p.fs_create_file(&request_rel(&slug)?, &req.to_toml_string())?;
             p.relist();
             p.order_edit(&space, |order| {
-                place_new(&space, order, &rel, anchor.as_deref(), |order| {
+                place_new(order, &rel, anchor.as_deref(), |order| {
                     arrive_with_folders(&space, order, &rel, &made)
                 })
             })?;
@@ -1378,13 +1357,11 @@ impl Project {
                 p.open_requests.insert(new_slug.clone(), held);
             }
             p.relist();
-            // The edit list stays empty: no caller of `order_edit` reads it.
             // The folder the request left stays (spec 2026-11-03 create
             // folders F2).
             p.order_edit(space, |order| {
-                order::remove(space, order, rel);
-                order::insert_before(space, order, &new_rel, anchor.as_deref());
-                Vec::new()
+                order::remove(order, rel);
+                order::insert_before(order, &new_rel, anchor.as_deref());
             })?;
             Ok(())
         })?;
@@ -1433,12 +1410,10 @@ impl Project {
         self.order_transaction("move folder to folder", meta, |p| {
             p.shift_folder(&from_dir, &to_dir, &moves)?;
             let entry = order::folder_entry(&new_rel);
-            // The edit list stays empty: no caller of `order_edit` reads it.
             p.order_edit(space, |order| {
                 // Nothing was on disk at the new path (D18 refused it).
                 order::rename_folder_entries(order, rel, &new_rel);
-                order::insert_before(space, order, &entry, anchor.as_deref());
-                Vec::new()
+                order::insert_before(order, &entry, anchor.as_deref());
             })?;
             Ok(())
         })?;
@@ -1711,9 +1686,7 @@ impl Project {
             p.make_folders(&[(path.clone(), folder_file_text(name))])?;
             p.relist();
             p.order_edit(&space, |order| {
-                place_new(&space, order, &entry, anchor.as_deref(), |order| {
-                    order::arrive(&space, order, &entry)
-                })
+                place_new(order, &entry, anchor.as_deref(), |order| order::arrive(order, &entry))
             })?;
             Ok(())
         })?;
@@ -1782,8 +1755,7 @@ impl Project {
             if new_path != path {
                 // Nothing was on disk at the new path (refused above).
                 p.order_edit(&space, |order| {
-                    order::rename_folder_entries(order, &from_rel, &to_rel);
-                    Vec::new()
+                    order::rename_folder_entries(order, &from_rel, &to_rel)
                 })?;
             }
             Ok(())
@@ -1812,7 +1784,7 @@ impl Project {
                 p.open_requests.shift_remove(slug);
             }
             p.relist();
-            p.order_edit(&space, |order| order::remove_under(&space, order, &entry))?;
+            p.order_edit(&space, |order| order::remove_under(order, &entry))?;
             Ok(())
         })?;
         Ok(gone)

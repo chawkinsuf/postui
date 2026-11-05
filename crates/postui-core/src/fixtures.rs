@@ -6,7 +6,7 @@
 #![cfg(any(test, feature = "test-util"))]
 
 use crate::model::HttpRequest;
-use crate::order::{OrderEdit, entry_level, merge_level, space_order, write_order};
+use crate::order::{entry_level, merge_level, space_order, write_order};
 use crate::project::{
     DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, LAYOUT_TOML, LOCAL_DIR, LayoutState, ListChange,
     LocalState, Project, ProjectError, ProjectMeta, SECRETS_TOML, STATE_TOML, TRASH_DIR,
@@ -617,13 +617,11 @@ pub fn delete_request(root: &Path, slug: &str) -> Result<Trashed, StorageError> 
 
 /// Reads the list, hands it to `f`, and writes back only if `f` changed
 /// it — so every cascade is a no-op write when there is nothing to do.
-/// `f` returns the edits it made; they come back only when something was
-/// actually written.
 fn edit_order(
     root: &Path,
     space: &str,
-    f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
-) -> Result<Vec<OrderEdit>, ProjectError> {
+    f: impl FnOnce(&mut Vec<String>),
+) -> Result<(), ProjectError> {
     // A list belongs to a space that exists. Writing one for a space
     // that does not (an undo step recorded before the space was renamed
     // or deleted, say) would plant an orphan `[space.<slug>]` table that
@@ -634,12 +632,11 @@ fn edit_order(
     let meta = load_meta(root)?;
     let before = space_order(&meta, space).to_vec();
     let mut after = before.clone();
-    let edits = f(&mut after);
+    f(&mut after);
     if after == before {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    edit_project_toml(root, |doc| write_order(doc, space, &after))?;
-    Ok(edits)
+    edit_project_toml(root, |doc| write_order(doc, space, &after))
 }
 
 /// Rewrites one level of `space`'s order to exactly `slugs` (relative
@@ -661,7 +658,6 @@ pub fn set_level_order(
         let before = order.clone();
         *order = merge_level(order, level, slugs);
         change = Some(ListChange { before, after: order.clone() });
-        Vec::new()
     })?;
     Ok(change.filter(|c| c.before != c.after))
 }

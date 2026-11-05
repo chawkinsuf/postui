@@ -235,75 +235,37 @@ pub(crate) fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: 
     it["order"] = toml_edit::value(arr);
 }
 
-/// One change a cascade made to a space's list, precise enough to be
-/// reversed: the undo of the file op that caused the cascade replays
-/// these backwards, so the list ends up exactly as it was — and an
-/// unrelated reorder made in between survives, which a whole-list
-/// snapshot could not manage.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OrderEdit {
-    /// `rel` was inserted at index `at`.
-    Inserted { space: String, rel: String, at: usize },
-    /// `rel` was removed from index `at`.
-    Removed { space: String, rel: String, at: usize },
-    /// Every entry `from` became `to`.
-    Renamed { space: String, from: String, to: String },
-}
-
-impl OrderEdit {
-    /// Re-keys the edit after its space was renamed `from` -> `to`, so a
-    /// recorded undo step keeps pointing at the space it was made in.
-    pub fn rename_space(&mut self, from: &str, to: &str) {
-        let space = match self {
-            OrderEdit::Inserted { space, .. }
-            | OrderEdit::Removed { space, .. }
-            | OrderEdit::Renamed { space, .. } => space,
-        };
-        if space == from {
-            *space = to.to_string();
-        }
-    }
-}
-
 /// The arrival rule for a list entry of either kind (a request slug or a
 /// folder entry, spec 2026-11-02 drag into folders D4): it is appended,
 /// so it lands last in its level. An entry already naming it (a folder's
 /// leftover, emptied where no cascade saw it) goes first, so the list
 /// never holds it twice.
-pub(crate) fn arrive(space: &str, order: &mut Vec<String>, entry: &str) -> Vec<OrderEdit> {
-    insert_before(space, order, entry, None)
+pub(crate) fn arrive(order: &mut Vec<String>, entry: &str) {
+    insert_before(order, entry, None);
 }
 
 /// `entry` placed right above `anchor` (an entry of its level), or last
 /// when there is no anchor or the list doesn't name it: the slot a move
 /// to another level takes (D17). An entry already naming it goes first,
 /// as in [`arrive`].
-pub(crate) fn insert_before(
-    space: &str,
-    order: &mut Vec<String>,
-    entry: &str,
-    anchor: Option<&str>,
-) -> Vec<OrderEdit> {
-    insert_beside(space, order, entry, anchor, false)
+pub(crate) fn insert_before(order: &mut Vec<String>, entry: &str, anchor: Option<&str>) {
+    insert_beside(order, entry, anchor, false);
 }
 
 /// [`insert_before`], or right below `anchor` when `below` (a put below
 /// its anchor, D4): an entry already naming `entry` goes first, so it
 /// lands beside the anchor, never in the old entry's slot.
 pub(crate) fn insert_beside(
-    space: &str,
     order: &mut Vec<String>,
     entry: &str,
     anchor: Option<&str>,
     below: bool,
-) -> Vec<OrderEdit> {
-    let mut edits = remove(space, order, entry);
+) {
+    remove(order, entry);
     let at = anchor
         .and_then(|a| order.iter().position(|e| e == a))
         .map_or(order.len(), |i| i + usize::from(below));
     order.insert(at, entry.to_string());
-    edits.push(OrderEdit::Inserted { space: space.to_string(), rel: entry.to_string(), at });
-    edits
 }
 
 /// Every entry under the folder at relative path `from` (its own entry
@@ -331,16 +293,9 @@ pub(crate) fn rename_folder_entries(order: &mut Vec<String>, from: &str, to: &st
 }
 
 /// [`remove`] for a folder: `entry` (a folder entry, `"a/"`) and every
-/// entry under it, recorded last index first as `remove` records them.
-pub(crate) fn remove_under(space: &str, order: &mut Vec<String>, entry: &str) -> Vec<OrderEdit> {
-    let mut edits = Vec::new();
-    for at in (0..order.len()).rev() {
-        if order[at].starts_with(entry) {
-            let rel = order.remove(at);
-            edits.push(OrderEdit::Removed { space: space.to_string(), rel, at });
-        }
-    }
-    edits
+/// entry under it.
+pub(crate) fn remove_under(order: &mut Vec<String>, entry: &str) {
+    order.retain(|e| !e.starts_with(entry));
 }
 
 /// Every folder `rel` sits in, outermost first: `"a/b/c"` gives `"a"`,
@@ -349,18 +304,9 @@ pub(crate) fn ancestors(rel: &str) -> Vec<&str> {
     rel.match_indices('/').map(|(i, _)| &rel[..i]).collect()
 }
 
-/// [`order_remove`]'s edit, on a list already in hand: every occurrence,
-/// recorded last index first so that replaying the inverses backwards
-/// re-inserts first index first.
-pub(crate) fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
-    let mut edits = Vec::new();
-    for at in (0..order.len()).rev() {
-        if order[at] == rel {
-            order.remove(at);
-            edits.push(OrderEdit::Removed { space: space.to_string(), rel: rel.to_string(), at });
-        }
-    }
-    edits
+/// Every occurrence of `rel` taken out of the list.
+pub(crate) fn remove(order: &mut Vec<String>, rel: &str) {
+    order.retain(|e| e != rel);
 }
 
 /// The list after one level is rewritten to `slugs` (the level's
@@ -785,9 +731,9 @@ mod tests {
     #[test]
     fn arrive_appends_whatever_the_level_lists() {
         let mut order = v(&["x"]);
-        arrive("main", &mut order, "c/");
-        arrive("main", &mut order, "c/new");
-        arrive("main", &mut order, "r");
+        arrive(&mut order, "c/");
+        arrive(&mut order, "c/new");
+        arrive(&mut order, "r");
         assert_eq!(order, v(&["x", "c/", "c/new", "r"]));
     }
 
@@ -797,7 +743,7 @@ mod tests {
     #[test]
     fn arrive_never_lists_an_entry_twice() {
         let mut order = v(&["c/", "b/", "c/", "a/"]);
-        arrive("main", &mut order, "c/");
+        arrive(&mut order, "c/");
         assert_eq!(order, v(&["b/", "a/", "c/"]));
     }
 
