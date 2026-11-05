@@ -118,8 +118,16 @@ impl JqDocument {
     /// A server-sent events body is the stream of its events' data instead
     /// ([`crate::sse::values`], #220), and there an event whose data isn't a
     /// JSON value (`[DONE]`) is skipped rather than failing the body.
+    ///
+    /// JSON is what serde reads, the reader the response's Tree tab is
+    /// built with, so the Tree, the jq bar and `postui run --jq` give one
+    /// answer (#228, strict JSON: `mine (approved)`). jaq's own reader also
+    /// takes `#` comments and NaN/Infinity, so it isn't the judge here.
     pub fn parse(body: &str) -> Result<Self, JqError> {
-        let event = |d: &str| jaq_json::read::parse_single(d.as_bytes()).ok();
+        let event = |d: &str| {
+            strict_json(d).ok()?;
+            jaq_json::read::parse_single(d.as_bytes()).ok()
+        };
         if let Some(values) = crate::sse::values(body, event) {
             let values: Vec<Val> = values.collect();
             if values.is_empty() {
@@ -129,15 +137,28 @@ impl JqDocument {
             }
             return Ok(JqDocument(values.into()));
         }
-        let not_json = |e| JqError::Runtime { message: format!("not JSON: {e}") };
+        fn not_json(e: impl std::fmt::Display) -> JqError {
+            JqError::Runtime { message: format!("not JSON: {e}") }
+        }
         let values: Vec<Val> = jaq_json::read::parse_many(body.as_bytes())
             .collect::<Result<_, _>>()
             .map_err(not_json)?;
         if values.is_empty() {
             return Err(JqError::Runtime { message: "not JSON: the body holds no value".into() });
         }
+        // After jaq's read, so a body neither reader takes keeps jaq's
+        // message.
+        strict_json(body).map_err(not_json)?;
         Ok(JqDocument(values.into()))
     }
+}
+
+/// Whether serde reads `text` as whitespace-separated JSON values, without
+/// building them.
+fn strict_json(text: &str) -> Result<(), serde_json::Error> {
+    serde_json::Deserializer::from_str(text)
+        .into_iter::<serde::de::IgnoredAny>()
+        .try_for_each(|value| value.map(drop))
 }
 
 /// The byte range of `token` inside `code`, when `token` is a sub-slice of
@@ -559,6 +580,18 @@ mod tests {
         for empty in ["", " \n"] {
             assert!(JqDocument::parse(empty).is_err(), "{empty:?} has no value");
         }
+    }
+
+    /// #228: what isn't JSON to serde (the Tree tab's reader) isn't JSON to
+    /// jq either, though jaq's own reader takes `#` comments and NaN.
+    #[test]
+    fn comments_and_non_finite_numbers_are_not_json() {
+        for body in ["{\"a\":1} # note", "NaN", "nan", "[1, Infinity]", "-Infinity", "1\n# c\n2"] {
+            let err = JqDocument::parse(body).unwrap_err();
+            assert!(err.message().starts_with("not JSON: "), "{body:?}: {err:?}");
+        }
+        let doc = JqDocument::parse("data: NaN\n\ndata: 1\n\n").expect("one event is JSON");
+        assert_eq!(outputs(".", &doc), vec!["1"], "the NaN event is skipped, as the Tree skips it");
     }
 
     #[test]
