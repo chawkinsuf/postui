@@ -116,13 +116,15 @@ impl App {
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
     ///
-    /// The edit flag's waiting screen takes the event before all of it,
-    /// unless a dialog is over it (`edit_block.rs`).
+    /// The edit flag's waiting screen takes the event after the
+    /// held-drag latch (`reports_held_drags`) and before the rest, unless
+    /// a dialog is over it (`edit_block.rs`).
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        use ratatui::crossterm::event::MouseEventKind;
+        self.reports_held_drags |= matches!(m.kind, MouseEventKind::Drag(_));
         if self.edit_block.is_some() && self.modals.is_empty() {
             return self.blocked_mouse(m);
         }
-        use ratatui::crossterm::event::MouseEventKind;
         // Where the keyboard is before this event, as `handle_key` learns
         // it: a click's focus change counts for `<C-w>l` and `p` (plan M4a
         // Deviation 6).
@@ -175,7 +177,6 @@ impl App {
         // drops on the first event landing elsewhere. (The tip hits in
         // the map all belong to `drawn_tip` — one tip per frame.)
         self.tip_held = under.as_ref().and_then(Hit::tip_name).is_some();
-        self.reports_held_drags |= matches!(m.kind, MouseEventKind::Drag(_));
 
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
@@ -366,14 +367,17 @@ impl App {
                 // live is cleared too: the scrollbar thumb would otherwise
                 // keep tracking bare pointer motion, and a stale press
                 // (its release lost the same way) would promote a row drag
-                // out from under whatever this press starts. `on_hit`
-                // arms a press when the pointer is still on this click's
-                // row block after the snap-back.
+                // out from under whatever this press starts.
+                // A press that ends a row drag selects but arms nothing
+                // (#250): the snap-back can move the row it selects away
+                // from the pointer, and armed, that row would be dragged by
+                // the press's first motion.
                 // `{{token}}` overlays are skipped: a click on one is a
                 // click on the text it sits in (caret placement, cell
                 // edit), never a dialog — the tooltip's edit pill is the
                 // route to the variable itself.
                 let hit = self.hits.hit_at_ignoring_var_tokens(m.column, m.row).cloned();
+                let snapped = self.sidebar.drag.is_some() || self.manage.list.drag.is_some();
                 let hit = self.cancel_stale_drags(hit);
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
@@ -484,6 +488,10 @@ impl App {
                 let was_content =
                     self.editor.sub_focus == crate::components::editor::SubFocus::Content;
                 let changed = self.on_hit(hit, clicks, m) | jq_blurred;
+                if snapped {
+                    self.sidebar_press = None;
+                    self.manage_press = None;
+                }
                 if !was_content
                     && self.editor.sub_focus == crate::components::editor::SubFocus::Content
                 {
@@ -759,10 +767,10 @@ impl App {
     /// Whether the pointer at `(x, y)` is on row `i`'s own block: on a row
     /// in the hit map, with `row_at_y` inside `i`'s span (a request's row,
     /// or a folder's row and its open subtree), in the rows as they are
-    /// now. An armed press uses it at each step: the press arms only on
-    /// it, the promote starts a drag once the pointer is off the block (on
-    /// another row, or in the empty area below the rows), and the release
-    /// opens the pressed request when it lands on it.
+    /// now. The two ends of an armed press share it: the promote starts a
+    /// drag once the pointer is off the block (on another row, or in the
+    /// empty area below the rows), and the release opens the pressed
+    /// request when it lands on it.
     ///
     /// `hit_at` here and the press's `hit_at_ignoring_var_tokens` differ
     /// only on `{{token}}` spans, which are clipped to the editor control
@@ -791,9 +799,9 @@ impl App {
     /// press whose release never arrives opens nothing; it has selected
     /// the row. The next press, a focus loss, or a bare `Moved` from a
     /// terminal that reports held drags ends what it left armed
-    /// (`cancel_stale_drags`). That recovery click selects the row that was
-    /// painted under the pointer, and arms it only if the snap-back left it
-    /// there (`on_hit`, #250); otherwise a second click opens.
+    /// (`cancel_stale_drags`). A recovery click that ends a row drag
+    /// selects the row that was painted under the pointer and arms nothing
+    /// (#250), so a second click opens.
     ///
     /// Over unsaved edits the open goes through the gate, so the dialog
     /// comes here, never under a drag. The open request's own row over
@@ -1974,15 +1982,6 @@ impl App {
             Hit::SidebarRow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);
-                // The press arms its row only when the pointer is on the
-                // row's block (`on_row_block`) in the rows as they are now.
-                // A press that ended a stale row drag (`cancel_stale_drags`)
-                // selects the row that was painted there, and the snap-back
-                // can move its block away: an armed press then becomes a
-                // drag at the first motion, and its release drops it there
-                // (#250). Such a press selects only.
-                let armed = self.on_row_block(i, m.column, m.row);
-                let arm = |key| armed.then_some(key);
                 match self.sidebar.rows.get(i).cloned() {
                     // A press on a request row selects it and arms a
                     // possible row drag; it opens nothing. The release
@@ -1991,7 +1990,7 @@ impl App {
                     // start of a drag, and over unsaved edits a dialog
                     // raised here would stop the drag from starting.
                     Some(Row::Request { slug, broken: None, .. }) => {
-                        self.sidebar_press = arm(RowKey::Request(slug));
+                        self.sidebar_press = Some(RowKey::Request(slug));
                         self.update(Action::Render)
                     }
                     // A broken row still shows its error at the press, and
@@ -1999,14 +1998,14 @@ impl App {
                     // 2026-09-04, "Promotion yields to modals"): #247 moved
                     // only the open of a healthy row.
                     Some(Row::Request { slug, broken: Some(_), .. }) => {
-                        self.sidebar_press = arm(RowKey::Request(slug.clone()));
+                        self.sidebar_press = Some(RowKey::Request(slug.clone()));
                         self.update(Action::ShowRequestError(slug))
                     }
                     // A folder row arms a drag of the folder (spec
                     // 2026-11-01 reorder folders R2); the click itself
                     // still only selects, and a double click toggles.
                     Some(Row::Folder { path, .. }) => {
-                        self.sidebar_press = arm(RowKey::Folder(path));
+                        self.sidebar_press = Some(RowKey::Folder(path));
                         if clicks.list == 2 {
                             self.update(Action::ToggleSelectedFolder)
                         } else {

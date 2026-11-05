@@ -543,13 +543,12 @@ cope:
   row underneath rather than letting its eventual release commit the
   stale reorder.
 
-*Amended 2026-11-05 (task #250, `mine`):* a press arms its row only
-when the pointer is on the row's block (`on_row_block`) in the rows as
-they are after the press. The recovery press above selects the row that
-was painted under the pointer, and the snap-back usually moves that row
-away; armed, the first held motion promoted a drag of it and the
-release dropped it there. It now selects only, and a second click opens
-or drags. And once the terminal has sent a `Drag` (any button) this
+*Amended 2026-11-05 (task #250, `mine`):* the recovery press above, a
+press that ends a row drag (the sidebar's or the Manage list's), selects
+the row that was painted under the pointer and arms nothing. The
+snap-back usually moves that row away; armed, the first held motion
+promoted a drag of it and the release dropped it there. A second click
+opens or drags. And once the terminal has sent a `Drag` (any button) this
 session, a bare `Moved` ends whatever the button held, as the next
 press would (`cancel_stale_drags`), and is a hover: such a terminal
 reports held motion as a drag, so its bare `Moved` means the release

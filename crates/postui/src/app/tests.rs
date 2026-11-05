@@ -29168,9 +29168,8 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     // The row it selects is the one the user saw: the frame under the
     // pointer was painted in the drag's preview order, and the cancel
     // snaps the rows back without a redraw, so the click is resolved
-    // against what was painted, not against the restored index. The
-    // snap-back moves that row away from the pointer, so the press arms
-    // nothing (#250).
+    // against what was painted, not against the restored index. A press
+    // that ends a row drag arms nothing (#250).
     let (mut app, dir) = three_row_app();
     let open = app.editor.slug.clone();
     let r0 = row_rect(&mut app, 0);
@@ -29187,7 +29186,7 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     assert!(app.sidebar.drag.is_none());
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
-    assert_eq!(app.sidebar_press, None, "beta left the pointer: nothing is armed");
+    assert_eq!(app.sidebar_press, None, "nothing is armed");
     assert_eq!(app.sidebar.selected, Some(1), "at its restored index");
 
     // The snapped-back rows put alpha under the pointer, and the release
@@ -29223,11 +29222,12 @@ fn a_recovery_press_held_along_its_painted_row_drags_nothing() {
 }
 
 #[test]
-fn a_recovery_press_on_a_row_the_drag_left_in_place_arms_it() {
+fn a_recovery_press_on_a_row_the_drag_left_in_place_selects_it_only() {
     // Alpha dragged onto row 1 paints beta, alpha, gamma: gamma never
-    // moved, so the recovery press on it still has its row under the
-    // pointer, and it is a click like any other.
+    // moved. The recovery press on it still selects it and arms nothing,
+    // so its release opens nothing (#250).
     let (mut app, dir) = three_row_app();
+    let open = app.editor.slug.clone();
     let r0 = row_rect(&mut app, 0);
     let r1 = row_rect(&mut app, 1);
     let r2 = row_rect(&mut app, 2);
@@ -29237,11 +29237,12 @@ fn a_recovery_press_on_a_row_the_drag_left_in_place_arms_it() {
     assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"]);
 
     app.handle_mouse(left_down(r2.x + 2, r2.y));
-    assert_eq!(app.sidebar_press.clone(), Some(RowKey::Request("main/gamma".into())));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+    assert_eq!(app.sidebar_press, None);
     render_once(&mut app);
     app.handle_mouse(left_up(r2.x + 2, r2.y));
 
-    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"), "the release opens it");
+    assert_eq!(app.editor.slug, open, "nothing opened");
     assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
 }
 
@@ -29414,7 +29415,7 @@ fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
         Some("auth"),
         "the click selects the space that was painted under it"
     );
-    assert_eq!(app.manage_press.as_ref().map(|(i, n)| (*i, n.as_str())), Some((1, "auth")));
+    assert!(app.manage_press.is_none(), "a press that ends a row drag arms nothing (#250)");
     app.handle_mouse(left_up(r0.x + 2, r0.y));
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "nothing written");
 }
@@ -29907,6 +29908,32 @@ fn bare_motion_after_a_lost_release_ends_a_space_press_or_drag_where_the_termina
         assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "live {live}");
         assert_eq!(app.proj().spaces(), ["main", "auth", "billing"], "live {live}");
     }
+}
+
+#[test]
+fn a_recovery_press_held_along_its_painted_space_row_drags_nothing() {
+    // #250 on the Manage list: main dragged onto row 2 paints auth,
+    // billing, main, and the release is lost. The recovery press on row 2
+    // selects main, back at row 0, and arms nothing, so a held wobble on
+    // that screen row is no drag of main.
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.manage.list.drag.is_some());
+    render_once(&mut app);
+
+    app.handle_mouse(left_down(r2.x + 2, r2.y));
+    assert!(app.manage.list.drag.is_none(), "the press ended the drag");
+    assert!(app.manage_press.is_none(), "it arms nothing");
+    render_once(&mut app);
+    app.handle_mouse(dragged(r2.x + 3, r2.y));
+    assert!(app.manage.list.drag.is_none(), "no drag of main");
+    app.handle_mouse(left_up(r2.x + 3, r2.y));
+
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "nothing written");
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
 }
 
 #[test]

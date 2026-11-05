@@ -213,6 +213,22 @@ fn the_screens_keys_switch_and_quit() {
     assert!(app.should_quit);
 }
 
+/// A held drag on the screen still shows the terminal reports held drags
+/// (#250).
+#[test]
+fn a_held_drag_on_the_screen_is_learned() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let other = other_project("Other");
+    let mut app = waiting_on(other.path());
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 3,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.reports_held_drags);
+}
+
 /// Override asks, then takes the flag down and opens the project.
 #[test]
 fn override_asks_then_removes_the_flag_and_opens() {
