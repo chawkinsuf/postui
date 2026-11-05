@@ -470,7 +470,8 @@ pub struct App {
     /// A left press on a sidebar request or folder row: `(row index, the
     /// row)`. Armed by `on_hit`, cleared on release; becomes a live row
     /// drag the moment the pointer moves onto another row (see
-    /// `mouse.rs`).
+    /// `mouse.rs`). A request row's press that is still armed at its
+    /// release, on the same row, was a click: the release opens it (#247).
     pub sidebar_press: Option<(usize, RowKey)>,
     /// A left press on a Manage screen list row (Environments or Spaces
     /// tab): `(row index, item)`. The Manage-screen twin of

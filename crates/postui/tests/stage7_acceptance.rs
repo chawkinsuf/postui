@@ -34,6 +34,15 @@ fn left_down(x: u16, y: u16) -> MouseEvent {
     }
 }
 
+fn left_up(x: u16, y: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 fn right_down(x: u16, y: u16) -> MouseEvent {
     MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
@@ -422,8 +431,9 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     seed(&mut app, &["ping"]);
     let row = row_index_of(&app, "ping");
 
-    // Open it: one click on its sidebar row.
-    press(&mut app, Hit::SidebarRow(row), left_down);
+    // Open it: one click on its sidebar row, which opens at the release.
+    let r = press(&mut app, Hit::SidebarRow(row), left_down);
+    app.handle_mouse(left_up(r.x + 2, r.y));
     assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
     assert!(!app.editor.is_dirty());
 

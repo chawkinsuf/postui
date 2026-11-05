@@ -112,7 +112,8 @@ impl App {
     ///   updates); the same hit twice in a row is a no-op.
     /// - `Down(Left)` resolves the hit, tracks single vs. double click (same
     ///   hit within 400ms), and dispatches through `on_hit`.
-    /// - `Up(Left)` clears any in-progress drag.
+    /// - `Up(Left)` clears any in-progress drag, and opens a request row
+    ///   whose press it ends without one (#247).
     /// - Wheel events scroll the body editor when over it, else scroll the
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
@@ -659,10 +660,20 @@ impl App {
                 // selection, only the sweep state ends. All of them are
                 // taken before the row drags are settled so that none can
                 // outlive the release, whichever kind ends it.
-                self.sidebar_press = None;
+                // A request row's press that never became a drag is a
+                // click, and its release opens the row (#247). The press
+                // ended every other drag (`cancel_stale_drags`), so there
+                // is nothing else for this release to settle.
+                let clicked = match self.sidebar_press.take() {
+                    Some((_, RowKey::Request(slug))) if self.sidebar.drag.is_none() => Some(slug),
+                    _ => None,
+                };
                 self.manage_press = None;
                 let had_text = self.text_drag.take().is_some();
                 let ended = self.drag.take().is_some() || had_text;
+                if let Some(slug) = clicked {
+                    return self.open_released_row(&slug, m.column, m.row) | ended;
+                }
                 // A resize ends where it got to, saved if it moved. The
                 // strip's click already happened at the press (spec E2a),
                 // so the release adds nothing to it. Hover was frozen on
@@ -735,6 +746,35 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// A click's release on a request row (#247, spec 2026-09-04 request
+    /// reordering, "Click behaviour"): the row the press armed opens when
+    /// the release lands on that same row, re-found by its slug since the
+    /// rows can be rebuilt under a held button. A release anywhere else is
+    /// the click's usual cancel and opens nothing. A dialog up by now (a key
+    /// raised it while the button was held) owns the pointer, as it does
+    /// for the drag's promote. Over unsaved edits the open goes through the
+    /// gate, so the dialog comes here, at the release, and never under a
+    /// drag. The open request's own row over unsaved edits opens nothing,
+    /// so it asks nothing (#236); clean, it reopens as any row does (a
+    /// re-read of its file). Enter and the menu's Open still reopen through
+    /// the gate: their Discard is an asked-for way back to the file.
+    fn open_released_row(&mut self, slug: &str, x: u16, y: u16) -> bool {
+        let on_row = match self.hits.hit_at(x, y).cloned() {
+            Some(Hit::SidebarRow(i)) => matches!(
+                self.sidebar.rows.get(i),
+                Some(Row::Request { slug: row, broken: None, .. }) if row == slug
+            ),
+            _ => false,
+        };
+        if !on_row || !self.modals.is_empty() {
+            return false;
+        }
+        if self.editor.slug.as_deref() == Some(slug) && self.leaving_unsaved() {
+            return false;
+        }
+        self.update(Action::OpenRequest(slug.to_string()))
     }
 
     /// Ends every drag a lost button release can leave live — the two row
@@ -1871,25 +1911,15 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);
                 match self.sidebar.rows.get(i).cloned() {
-                    // A press on a request row also arms a possible row
-                    // drag; the click itself still opens the request (the
-                    // drag only starts once the pointer leaves the row).
-                    // A press on the open request's own row over unsaved
-                    // edits opens nothing, so it asks nothing and the drag
-                    // can start over them (#236); clean, it reopens as any
-                    // row does (a re-read of its file). Enter and the menu's
-                    // Open still reopen through the gate: their Discard is
-                    // an asked-for way back to the file, while a press may
-                    // only be the start of a drag.
+                    // A press on a request row selects it and arms a
+                    // possible row drag; it opens nothing. The release
+                    // opens it, unless the press became a drag
+                    // (`open_released_row`, #247): a press may only be the
+                    // start of a drag, and over unsaved edits a dialog
+                    // raised here would stop the drag from starting.
                     Some(Row::Request { slug, broken: None, .. }) => {
-                        self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
-                        if self.editor.slug.as_deref() == Some(slug.as_str())
-                            && self.leaving_unsaved()
-                        {
-                            self.update(Action::Render)
-                        } else {
-                            self.update(Action::OpenRequest(slug))
-                        }
+                        self.sidebar_press = Some((i, RowKey::Request(slug)));
+                        self.update(Action::Render)
                     }
                     Some(Row::Request { slug, broken: Some(_), .. }) => {
                         self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
