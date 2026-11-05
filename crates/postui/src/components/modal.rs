@@ -644,8 +644,8 @@ impl RowButton {
         tip: &'static str,
         action: Action,
     ) -> Self {
-        // The painter strides and registers hits by `ROW_BUTTON_W`.
-        debug_assert_eq!(crate::ui::cells(pill), usize::from(ROW_BUTTON_W), "a glyph::*_PILL");
+        // The painter strides and registers hits by `glyph::PILL_W`.
+        debug_assert_eq!(crate::ui::cells(pill), usize::from(crate::glyph::PILL_W), "a *_PILL");
         Self { verb, word, pill, tip, action, destructive: false }
     }
 
@@ -700,9 +700,10 @@ impl MenuItem {
         self.buttons.iter().find(|b| b.verb.kind() == verb.kind())
     }
 
-    /// The cells the row's own buttons take: a three-cell pill each.
+    /// The cells the row's own buttons take: their icon pill run, with no
+    /// margin ([`draw_row_buttons`]).
     fn buttons_width(&self) -> u16 {
-        ROW_BUTTON_W * self.buttons.len() as u16
+        paint::icon_pill_run_width(self.buttons.len() as u16, 0)
     }
 }
 
@@ -3885,17 +3886,13 @@ fn draw_dropdown(
     }
 }
 
-/// The cells each of a dropdown row's own buttons takes: its
-/// `glyph::*_PILL`, the glyph with a cell of padding each side, all of it
-/// the button's (#126: a one-cell glyph alone was a small target and its
-/// hover fill a lone block).
-const ROW_BUTTON_W: u16 = 3;
-
-/// Row `i`'s own buttons (jq views spec 17, amendment B9), right-aligned in
-/// `row_area` side by side in their listed order, each registered over
-/// the row's own hit so a click on any of its cells is the button's. A
+/// Row `i`'s own buttons (jq views spec 17, amendment B9), an icon pill
+/// run ([`paint::icon_pill_run`]) flush with `row_area`'s right edge, no
+/// margin, side by side in their listed order, each registered over the
+/// row's own hit so a click on any of its cells is the button's. A
 /// directly-hovered button inverts onto accent (error red for a
-/// destructive one), padding included.
+/// destructive one), padding included (#126: a one-cell glyph alone was a
+/// small target and its hover fill a lone block).
 #[allow(clippy::too_many_arguments)]
 fn draw_row_buttons(
     frame: &mut Frame,
@@ -3907,19 +3904,12 @@ fn draw_row_buttons(
     row_area: Rect,
     row_fill: ratatui::style::Color,
 ) {
-    let first_x = row_area.right() - item.buttons_width();
-    for (k, button) in item.buttons.iter().enumerate() {
-        let x = first_x + ROW_BUTTON_W * k as u16;
-        let hit = crate::hit::Hit::DropdownRowButton { row: i, verb: button.verb };
-        let hot = if button.destructive { theme.error } else { theme.accent };
-        let (fg, bg) = if hovered == Some(&hit) {
-            (theme.on_accent, hot)
-        } else {
-            (theme.text_muted, row_fill)
-        };
-        paint::text(frame.buffer_mut(), x, row_area.y, button.pill, fg, bg, false);
-        hits.register(Rect::new(x, row_area.y, ROW_BUTTON_W, 1), hit);
-    }
+    let pills = item.buttons.iter().map(|button| paint::IconPill {
+        pill: button.pill,
+        destructive: button.destructive,
+        hit: crate::hit::Hit::DropdownRowButton { row: i, verb: button.verb },
+    });
+    paint::icon_pill_run(frame.buffer_mut(), hits, row_area, 0, pills, hovered, row_fill, theme);
 }
 
 /// The total width a right-aligned row of buttons needs: each button's

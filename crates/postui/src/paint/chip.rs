@@ -1,10 +1,12 @@
-//! Painted chips (small tinted pills used for method/status/count badges)
-//! and the tab strip (labels row + underline row under the active tab).
+//! Painted chips (small tinted pills used for method/status/count badges),
+//! runs of icon pill buttons, and the tab strip (labels row + underline
+//! row under the active tab).
 
 use std::time::Instant;
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
+use crate::hit::{Hit, HitMap};
 use crate::paint::text;
 use crate::theme::Theme;
 
@@ -56,6 +58,83 @@ impl Chip<'_> {
         text(buf, x, y, &s, fg, bg, true);
         width
     }
+}
+
+/// One button of an [`icon_pill_run`]: its `glyph::*_PILL`, whether it
+/// removes something, and the hit a click on it is.
+pub struct IconPill<'a> {
+    pub pill: &'a str,
+    /// A removal: its hover fill is error red rather than accent.
+    pub destructive: bool,
+    pub hit: Hit,
+}
+
+/// Paints a run of icon pill buttons on row `area.y`, side by side in the
+/// order given, right-aligned to end `margin` columns before
+/// `area.right()`: a table row's actions and the Variable Manager grid's
+/// (margin 1), a dropdown row's own buttons (margin 0).
+///
+/// A pill rests muted on `rest`, the row's own fill, and inverts onto
+/// accent while `hovered` is its hit (error red for a destructive one),
+/// padding included: the whole pill is the button, and its
+/// [`crate::glyph::PILL_W`] cells are registered as its hit. Each pill
+/// carries its own hit, so the cell a pill paints and the action a click
+/// there takes can't be paired up wrong.
+///
+/// The run is all or nothing: an `area` with no room for the whole run
+/// paints and registers none of it and answers an empty zone. Every caller
+/// gates the run on [`icon_pill_run_width`], so this only keeps a short
+/// area from painting over its neighbour. A partial run would keep pills
+/// nobody aimed at, and in every run the rightmost pill is the destructive
+/// one.
+///
+/// Answers the cells the run claims, its pills and the margin after them,
+/// for a caller that treats that zone as one (the table editor scrubs its
+/// row's strike off it).
+#[allow(clippy::too_many_arguments)]
+pub fn icon_pill_run<'p, I>(
+    buf: &mut Buffer,
+    hits: &mut HitMap,
+    area: Rect,
+    margin: u16,
+    pills: I,
+    hovered: Option<&Hit>,
+    rest: Color,
+    theme: &Theme,
+) -> Rect
+where
+    I: IntoIterator<Item = IconPill<'p>>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let pills = pills.into_iter();
+    let w = icon_pill_run_width(u16::try_from(pills.len()).unwrap_or(u16::MAX), margin);
+    if area.height == 0 || w > area.width {
+        return Rect::new(area.right(), area.y, 0, 0);
+    }
+    let first_x = area.right() - w;
+    // Each pill's x from a range that ends at the margin, so the run can't
+    // step past it.
+    let xs = (first_x..area.right() - margin).step_by(usize::from(crate::glyph::PILL_W));
+    for (pill, x) in pills.zip(xs) {
+        let hot = if pill.destructive { theme.error } else { theme.accent };
+        let (fg, bg) = if hovered == Some(&pill.hit) {
+            (theme.on_accent, hot)
+        } else {
+            (theme.text_muted, rest)
+        };
+        text(buf, x, area.y, pill.pill, fg, bg, false);
+        hits.register(Rect::new(x, area.y, crate::glyph::PILL_W, 1), pill.hit);
+    }
+    Rect::new(first_x, area.y, w, 1)
+}
+
+/// The cells an [`icon_pill_run`] of `count` pills with `margin` after
+/// them claims: what a caller gates the run on and reserves room for, and
+/// what the run itself checks its area against. Saturates rather than
+/// wraps; the run places its pills from a range bounded by its area, so
+/// even a saturated width never paints past it.
+pub const fn icon_pill_run_width(count: u16, margin: u16) -> u16 {
+    crate::glyph::PILL_W.saturating_mul(count).saturating_add(margin)
 }
 
 /// Where a [`TabStrip`]'s accent segment goes.
@@ -267,6 +346,120 @@ mod tests {
 
     fn buf_cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> &ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap()
+    }
+
+    /// The three pills the run tests paint: copy, edit, and a destructive
+    /// delete, each with its own hit.
+    fn three_pills() -> [IconPill<'static>; 3] {
+        [
+            IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: Hit::TableCopy(0) },
+            IconPill {
+                pill: crate::glyph::PENCIL_PILL,
+                destructive: false,
+                hit: Hit::TableCheckbox(0),
+            },
+            IconPill {
+                pill: crate::glyph::DELETE_PILL,
+                destructive: true,
+                hit: Hit::TableDelete(0),
+            },
+        ]
+    }
+
+    /// An icon pill run ends `margin` columns short of its area's right
+    /// edge, a `PILL_W`-cell pill each in the order given, each registered
+    /// over exactly its cells as its own hit, and answers the zone it
+    /// claims (pills and margin). A pill rests muted on the row's fill;
+    /// under the pointer the whole pill, padding included, inverts onto
+    /// accent, or error red for a destructive one. Nothing outside the
+    /// pills is painted.
+    #[test]
+    fn an_icon_pill_run_right_aligns_its_pills_and_inverts_the_hovered_one() {
+        let theme = Theme::dark();
+        let rest = theme.control;
+        let glyphs = [crate::glyph::COPY, crate::glyph::PENCIL, crate::glyph::DELETE];
+        let w = crate::glyph::PILL_W;
+        for margin in [0, 1] {
+            for hovered in [None, Some(0), Some(1), Some(2)] {
+                let area = Rect::new(2, 1, 16, 1);
+                let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+                let mut hits = HitMap::default();
+                let hits_of = three_pills().map(|p| p.hit);
+                let hover = hovered.map(|k: usize| &hits_of[k]);
+                let zone = icon_pill_run(
+                    &mut buf,
+                    &mut hits,
+                    area,
+                    margin,
+                    three_pills(),
+                    hover,
+                    rest,
+                    &theme,
+                );
+                let first = area.right() - margin - 3 * w;
+                assert_eq!(icon_pill_run_width(3, margin), 3 * w + margin);
+                assert_eq!(zone, Rect::new(first, 1, 3 * w + margin, 1), "margin {margin}");
+                for (k, hit) in hits_of.iter().enumerate() {
+                    let rect = Rect::new(first + w * k as u16, 1, w, 1);
+                    assert_eq!(hits.rects_of(hit), vec![rect], "pill {k}'s hit");
+                    let (fg, bg) = match hovered {
+                        Some(h) if h == k && k == 2 => (theme.on_accent, theme.error),
+                        Some(h) if h == k => (theme.on_accent, theme.accent),
+                        _ => (theme.text_muted, rest),
+                    };
+                    for x in rect.left()..rect.right() {
+                        let cell = &buf[(x, 1)];
+                        assert_eq!((cell.fg, cell.bg), (fg, bg), "pill {k}, hover {hovered:?}");
+                    }
+                    assert_eq!(buf[(rect.x + 1, 1)].symbol(), glyphs[k], "pill {k}'s glyph");
+                }
+                // Nothing outside the pills: the cells left of the run and
+                // the margin after it stay the row's own.
+                for x in (area.left()..first).chain(area.right() - margin..area.right()) {
+                    assert_eq!(buf[(x, 1)].bg, Color::Reset, "cell {x} outside the run");
+                }
+            }
+        }
+    }
+
+    /// A run is all or nothing: an area one cell short of the whole run,
+    /// a margin wider than the area, or no rows at all paints and
+    /// registers no pill and answers an empty zone, while an area exactly
+    /// the run's width takes every pill.
+    #[test]
+    fn an_icon_pill_run_its_area_has_no_room_for_paints_nothing() {
+        let theme = Theme::dark();
+        let full = icon_pill_run_width(3, 1);
+        // (area width, height, margin, whether the run fits).
+        for (width, height, margin, fits) in
+            [(full, 1, 1, true), (full - 1, 1, 1, false), (2, 1, 5, false), (full, 0, 1, false)]
+        {
+            let area = Rect::new(4, 0, width, height);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+            let mut hits = HitMap::default();
+            let zone = icon_pill_run(
+                &mut buf,
+                &mut hits,
+                area,
+                margin,
+                three_pills(),
+                None,
+                theme.control,
+                &theme,
+            );
+            let case = format!("width {width}, height {height}, margin {margin}");
+            let registered = three_pills().map(|p| hits.rects_of(&p.hit).len());
+            if fits {
+                assert_eq!(zone, Rect::new(area.left(), 0, full, 1), "{case}");
+                assert_eq!(registered, [1, 1, 1], "{case}");
+            } else {
+                assert_eq!((zone.x, zone.width), (area.right(), 0), "{case}");
+                assert_eq!(registered, [0, 0, 0], "{case}");
+                for x in 0..20 {
+                    assert_eq!(buf[(x, 0)].bg, Color::Reset, "cell {x}, {case}");
+                }
+            }
+        }
     }
 
     /// Regression for the checkpoint-2 report: `theme.accent` in the

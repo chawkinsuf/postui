@@ -10,6 +10,11 @@
 //! ` 󰆏 ` pill, the shape every hoverable icon control is painted in —
 //! derived by `concat!`, so per-frame painters need no allocation.
 
+/// The cells every `*_PILL` takes: the one-cell glyph and a cell of
+/// padding each side. Layouts that stride or reserve room by pills read
+/// it here.
+pub const PILL_W: u16 = 3;
+
 macro_rules! icons {
     ($($name:ident / $pill:ident = $glyph:literal, $doc:literal;)*) => {
         $(
@@ -21,6 +26,9 @@ macro_rules! icons {
         /// Every icon, for the width check.
         #[cfg(test)]
         const ALL: &[&str] = &[$($name),*];
+        /// Every pill, for the width check.
+        #[cfg(test)]
+        const ALL_PILLS: &[&str] = &[$($pill),*];
     };
 }
 
@@ -55,6 +63,14 @@ mod tests {
             let cp = icon.chars().next().unwrap() as u32;
             assert_eq!(icon.chars().count(), 1, "{icon:?} is a single scalar");
             assert_eq!(icon.width(), 1, "{icon:?} ({cp:#X}) is one cell");
+        }
+    }
+
+    /// Every pill is [`super::PILL_W`] cells, the width layouts stride by.
+    #[test]
+    fn every_pill_is_pill_w_cells_wide() {
+        for pill in super::ALL_PILLS {
+            assert_eq!(pill.width(), usize::from(super::PILL_W), "{pill:?}");
         }
     }
 }

@@ -18,9 +18,9 @@ use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keyroute::spell::Key;
 use crate::layout::PaneId;
 use crate::paint::{
-    Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
-    RowHighlight, TALL_PILL_H, TitleButtons, Toggle, TrailingPill, Well, button_min_width, fill,
-    label_column, pill_min_width, text,
+    Button, ButtonKind, ControlSlot, ControlState, IconPill, ListRow, PROPERTY_MAX_W, Pill,
+    PropertyRow, RowHighlight, TALL_PILL_H, TitleButtons, Toggle, TrailingPill, Well,
+    button_min_width, fill, icon_pill_run, label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 use indexmap::IndexMap;
@@ -605,13 +605,13 @@ const RADIO_W: u16 = 3;
 /// the whole point: it is what makes them read as two groups.
 const GROUP_GAP: u16 = 3;
 
-/// The option row's `󰆴` zone: space + glyph + space. The `󰆏` copy zone
-/// beside it is the same width — the table editor's row actions exactly.
-const TRASH_W: u16 = 3;
-const COPY_W: u16 = TRASH_W;
-/// The row buttons' zone at the grid's right edge: both buttons and the
-/// one-column margin after them.
-const ROW_ACTIONS_ZONE_W: u16 = COPY_W + TRASH_W + 1;
+/// The column of margin after the option row's buttons.
+const ROW_ACTIONS_MARGIN: u16 = 1;
+/// The row buttons' zone at the grid's right edge: the `󰆏` copy and `󰆴`
+/// delete pills' run and [`ROW_ACTIONS_MARGIN`] after them — the table
+/// editor's row actions exactly. The grid reserves it and the run is
+/// painted in it, so both read this one width.
+const ROW_ACTIONS_ZONE_W: u16 = crate::paint::icon_pill_run_width(2, ROW_ACTIONS_MARGIN);
 
 /// The fewest cells a grid column is drawn in: one that would get fewer is
 /// dropped, with every column after it.
@@ -2566,27 +2566,21 @@ impl VarManager {
             // stray click mid-edit can't read as copy or delete; the zone
             // stays, so nothing on the row moves.
             let editing_row = self.grid.editing.as_ref().is_some_and(|e| e.row == i);
-            if let Some(copy_x) = cols.actions_x.filter(|_| !ghost && !editing_row) {
-                let trash_x = copy_x + COPY_W;
-                let copy_hit = Hit::VmEntryCopy(i);
-                let (cfg, cbg) = if hovered == Some(&copy_hit) {
-                    (theme.on_accent, theme.accent)
-                } else {
-                    (theme.text_muted, bg)
-                };
-                // Nerd Font Material glyphs (one cell everywhere), each
-                // centred in its own three-cell zone.
-                text(buf, copy_x, ry, crate::glyph::COPY_PILL, cfg, cbg, false);
-                hits.register(Rect::new(copy_x, ry, COPY_W, 1), copy_hit);
-
-                let trash_hit = Hit::VmEntryDelete(i);
-                let (dfg, dbg) = if hovered == Some(&trash_hit) {
-                    (theme.on_accent, theme.error)
-                } else {
-                    (theme.text_muted, bg)
-                };
-                text(buf, trash_x, ry, crate::glyph::DELETE_PILL, dfg, dbg, false);
-                hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
+            if let Some(zone_x) = cols.actions_x.filter(|_| !ghost && !editing_row) {
+                let zone = Rect::new(zone_x, ry, ROW_ACTIONS_ZONE_W, 1);
+                let pills = [
+                    IconPill {
+                        pill: crate::glyph::COPY_PILL,
+                        destructive: false,
+                        hit: Hit::VmEntryCopy(i),
+                    },
+                    IconPill {
+                        pill: crate::glyph::DELETE_PILL,
+                        destructive: true,
+                        hit: Hit::VmEntryDelete(i),
+                    },
+                ];
+                icon_pill_run(buf, hits, zone, ROW_ACTIONS_MARGIN, pills, hovered, bg, theme);
             }
         }
 
