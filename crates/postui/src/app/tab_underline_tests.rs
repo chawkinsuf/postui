@@ -424,7 +424,8 @@ fn a_parse_concluding_not_json_glides_to_raw() {
 }
 
 /// A request switch swaps in that request's response, on whatever tab it
-/// was left on: another tab, so the underline glides there.
+/// was left on: another tab, so the underline glides there (R9, where main
+/// snapped: "yes, if the tab underline needs to move, it should slide").
 #[test]
 fn a_request_switch_to_a_response_on_another_tab_glides() {
     let mut app = app();

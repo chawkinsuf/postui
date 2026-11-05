@@ -11986,6 +11986,14 @@ impl App {
     /// now. Drives `Action::Tick`'s redraw decision and the main loop's
     /// adaptive tick period — both sample `Instant::now()` themselves so
     /// `Anims` stays deterministic and this stays cheap to call every frame.
+    ///
+    /// A tab strip's underline glide starts at paint (#119), so it counts
+    /// here only once a draw has shown the switch: right after the `update`
+    /// that switched, before any draw, this misses it. The main loop asks
+    /// only after drawing every update that asked for a redraw, so it never
+    /// misses one there; an update that asked for none changed nothing on
+    /// screen yet, and the draw that first shows its tab starts the glide.
+    /// A test that settles by ticking until this is false draws first.
     pub fn animating(&self) -> bool {
         self.anims.active(Instant::now())
     }

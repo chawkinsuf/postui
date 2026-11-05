@@ -6151,10 +6151,6 @@ mod tests {
         key(KeyCode::Char(c))
     }
 
-    fn test_anims() -> &'static crate::anim::Anims {
-        crate::anim::Anims::for_tests()
-    }
-
     fn data(body: &str) -> crate::http::ResponseData {
         crate::http::ResponseData {
             status: 200,
@@ -6256,7 +6252,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now,
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -6280,7 +6276,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -6980,7 +6976,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7130,7 +7126,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(w, 20)).unwrap();
@@ -7167,7 +7163,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
@@ -7242,7 +7238,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7275,7 +7271,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7313,7 +7309,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7358,7 +7354,7 @@ mod tests {
             hovered: Some(&hovered),
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7505,7 +7501,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7537,7 +7533,7 @@ mod tests {
             hovered: Some(&hovered),
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7575,7 +7571,7 @@ mod tests {
             hovered: Some(&hovered),
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7625,7 +7621,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7654,7 +7650,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -7887,7 +7883,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
@@ -8794,7 +8790,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let draw = |r: &mut Response| {
@@ -9591,7 +9587,7 @@ mod tests {
             hovered,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -9612,7 +9608,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -9714,7 +9710,7 @@ mod tests {
                     hovered: None,
                     pointer: None,
                     dragging: false,
-                    anims: test_anims(),
+                    anims: crate::anim::Anims::for_tests(),
                     now: std::time::Instant::now(),
                 };
                 let mut hits = crate::hit::HitMap::default();
@@ -9840,7 +9836,7 @@ mod tests {
                 hovered,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -9878,7 +9874,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
@@ -9917,7 +9913,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
@@ -9962,7 +9958,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();

@@ -35,11 +35,12 @@ draw's layout. Only the paint knows the real area and spans.
 | R6 | At paint: same tab, new columns, so each moved edge goes on from where it is drawn to its new column over what is left of its glide: at once when it has landed (R3), and with no jump when a glide toward this tab is under way. | mine (for veto) |
 | R7 | At paint: the strip was not painted last frame (Manage just opened, a pane expanded, the first frame), so place it with no glide. | mine (for veto) |
 | R8 | `animations = false` places every move: a glide has zero duration, and turning animations off lands one in flight. | mine (the app's existing rule for every animation) |
+| R9 | A change that moves the active tab with no switch action behind it (a request swap, a new response that lands on another tab) slides there too, where main snapped. | you, 2026-11-05 (review round 2, relayed by the main session): "yes, if the tab underline needs to move, it should slide" (was mine) |
 
 Consequences of R5-R7 worth naming:
 
 - A request switch that brings in a response on another tab glides there
-  (main snapped it, through `reset_response_tab_underline`). A new response
+  (main snapped it, through `reset_response_tab_underline`; R9). A new response
   that drops the Tree tab glides to the tab it lands on (R1, R5). The strip
   is right-aligned, so dropping Tree narrows it from the left: where Tree's
   underline was drawn is now outside the strip, so the glide starts there
@@ -79,6 +80,19 @@ converted when the strip's origin moves: it is where the user last saw
 the segment, and a strip-relative frame would not suit the Response strip,
 whose origin moves when Tree comes and goes while its other labels stay.
 
+Amended 2026-11-05 (#119 review round 2, mine): R6's in-flight case no
+longer restarts the in-out curve from the drawn segment over the time
+left. Restarted on every frame (a live resize or a sidebar drag while a
+glide runs, so the target moves each frame), each restart eased in again,
+so the segment crawled and then covered most of the distance on the last
+frame: a pop. Now a glide's end moves on the glide's own curve
+(`Anim::bend`): its start time and duration stay, and its start is solved
+so the value at that moment is the drawn one. Position and pace carry
+over by construction, each frame covers the share of what is left that
+the glide would have, and it lands when it was due to. A glide with under
+a thousandth of its curve left lands at once (solving for the start
+divides by what is left).
+
 Each strip's underline state lives in `Anims`, keyed by `StripId`: the tab
 it is aimed at, its two edges (the same eased value an `AnimKey` holds, in
 in-out cubic), and the frame that last painted it. `Anims` is where it
@@ -96,8 +110,7 @@ belongs:
   they settle the underlines too (R8).
 
 The paint has only `&Anims`, so the underline map sits in a `RefCell`
-(the component tests' shared `Anims`, `Anims::for_tests`, is one per test
-thread). `ui::draw` calls `Anims::begin_frame(tab_slide)`
+(the component tests' `Anims::for_tests` gives each call a fresh one). `ui::draw` calls `Anims::begin_frame(tab_slide)`
 first in every frame, with `&mut App`: it counts the frame (R7's "last
 frame") and records the glide's duration from
 `ui_settings.anim_ms.tab_slide`.
@@ -144,8 +157,7 @@ Tests that checked the anim right after `update` now draw first.
 ## Mine, for veto
 
 - R5-R7, and that the state lives in `Anims`, in a `RefCell`.
-- R6's in-flight case goes on from the drawn segment over the glide's
-  remaining time, restarting the in-out curve there (a brief ease, never a
-  jump).
+- R6's in-flight case goes on from the drawn segment on the rest of the
+  glide's own curve (`Anim::bend`, round 2), never restarting it.
 - A glide's start clamped into the strip, so the tab-drop glide grows
   from the strip's left edge (above).

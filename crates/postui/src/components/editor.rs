@@ -5048,10 +5048,6 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
-    fn test_anims() -> &'static crate::anim::Anims {
-        crate::anim::Anims::for_tests()
-    }
-
     #[test]
     fn typing_into_url_marks_dirty_and_updates_request() {
         let mut e = Editor::default();
@@ -5775,7 +5771,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(120, rows)).unwrap();
@@ -6255,7 +6251,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let backend = TestBackend::new(120, 24);
@@ -6360,7 +6356,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let backend = TestBackend::new(120, 20);
@@ -6872,7 +6868,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(120, 14);
@@ -6892,7 +6888,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let backend = TestBackend::new(120, 14);
@@ -6970,7 +6966,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(w, h);
@@ -6993,7 +6989,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(120, COLLAPSED_HEIGHT)).unwrap();
@@ -7677,7 +7673,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let backend = TestBackend::new(60, 10);
@@ -7717,7 +7713,7 @@ mod tests {
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
@@ -7759,7 +7755,7 @@ x-a = "1"
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
@@ -7790,7 +7786,7 @@ x-a = "1"
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         // A couple of rows taller than the other 60x10 body-tab tests: the
@@ -7825,7 +7821,7 @@ x-a = "1"
                 hovered: None,
                 pointer: None,
                 dragging: false,
-                anims: test_anims(),
+                anims: crate::anim::Anims::for_tests(),
                 now: std::time::Instant::now(),
             };
             let backend = TestBackend::new(60, 12);
@@ -7876,7 +7872,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         // Wide enough that the fused bar's URL segment (bar width minus the
@@ -7905,7 +7901,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(60, 10);
@@ -8030,7 +8026,7 @@ url = "https://api.example.com/users""#,
     }
 
     /// Draws the address bar with an explicit `anims`/`now` (rather than
-    /// `test_anims()`'s permanently-settled clock), so a fade can be
+    /// `crate::anim::Anims::for_tests()`'s permanently-settled clock), so a fade can be
     /// sampled mid-flight.
     fn draw_for_bar_test_at(
         e: &mut Editor,
@@ -8187,7 +8183,7 @@ url = "https://api.example.com/users""#,
             hovered: Some(&crate::hit::Hit::SendButton),
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(60, 10);
@@ -8795,7 +8791,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
@@ -8828,7 +8824,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 20);
@@ -8885,7 +8881,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 20);
@@ -8940,7 +8936,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 20);
@@ -8999,7 +8995,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
@@ -9038,7 +9034,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
@@ -9304,7 +9300,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
@@ -9443,7 +9439,7 @@ url = "https://api.example.com/users""#,
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();

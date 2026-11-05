@@ -4199,14 +4199,6 @@ mod tests {
         );
     }
 
-    /// A disabled `Anims`, so a dropdown's open-settle animation never
-    /// intrudes on geometry/behavior assertions that don't care about it —
-    /// untracked keys (never `retarget`ed here) read as fully settled via
-    /// `value_or`'s default.
-    fn test_anims() -> &'static crate::anim::Anims {
-        crate::anim::Anims::for_tests()
-    }
-
     #[test]
     fn centered_rect_is_centered_and_clamped() {
         let screen = Rect::new(0, 0, 100, 40);
@@ -4249,7 +4241,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4355,7 +4347,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4438,7 +4430,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4461,7 +4453,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4715,7 +4707,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4751,7 +4743,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4862,7 +4854,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4895,7 +4887,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -4979,7 +4971,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })
@@ -5039,7 +5031,7 @@ mod tests {
                     &mut hits,
                     None,
                     &keymap,
-                    test_anims(),
+                    crate::anim::Anims::for_tests(),
                     std::time::Instant::now(),
                 )
             })

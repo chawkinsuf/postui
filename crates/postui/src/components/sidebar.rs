@@ -2303,10 +2303,6 @@ mod tests {
         assert_eq!(s.first_request_in_space("main", &[]).as_deref(), Some("main/top"));
     }
 
-    fn test_anims() -> &'static crate::anim::Anims {
-        crate::anim::Anims::for_tests()
-    }
-
     fn draw_ctx<'a>(theme: &'a Theme, hovered: Option<&'a Hit>) -> DrawCtx<'a> {
         DrawCtx {
             theme,
@@ -2314,7 +2310,7 @@ mod tests {
             hovered,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         }
     }

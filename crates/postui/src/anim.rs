@@ -96,16 +96,47 @@ struct Anim {
 }
 
 impl Anim {
-    /// Sits at `value`, with nothing in flight.
-    fn at(value: f32) -> Self {
+    /// Sits at `value`, with nothing in flight: a zero duration is done at
+    /// any instant, so `started` is only a placeholder.
+    fn at(value: f32, now: Instant) -> Self {
         Anim {
             start: value,
             target: value,
-            started: Instant::now() - Duration::from_secs(1),
+            started: now,
             dur: Duration::ZERO,
             easing: Easing::OutCubic,
         }
     }
+
+    /// Moves the end of a glide to `to` mid-flight, on the glide's own
+    /// curve: the same start time and duration, with the start solved so
+    /// that the value at `now` is `from` (`from + (to - from) * k` reads
+    /// the same at `k`, the curve's eased progress). The glide keeps its
+    /// pace and lands when it was due to, however often its end moves: each
+    /// frame covers the share of what is left that the glide would have
+    /// covered anyway. Restarting the curve from `from` instead would ease
+    /// in again on every move, so an end that moves each frame (a live
+    /// resize) would crawl and then jump on the last frame (#119).
+    ///
+    /// A glide that has landed is placed at `to`, which is how a settled
+    /// underline follows its label at once. So is the last sliver of one
+    /// (under [`Self::BEND_TAIL`] of its curve left): solving for the
+    /// start divides by what is left, and there is nothing visible left
+    /// to move.
+    fn bend(self, from: f32, to: f32, now: Instant) -> Anim {
+        if self.done(now) {
+            return Anim::at(to, now);
+        }
+        let t = now.saturating_duration_since(self.started).as_secs_f32() / self.dur.as_secs_f32();
+        let k = self.easing.apply(t);
+        if 1.0 - k < Self::BEND_TAIL {
+            return Anim::at(to, now);
+        }
+        Anim { start: (from - to * k) / (1.0 - k), target: to, ..self }
+    }
+
+    /// The share of a curve left below which [`Self::bend`] lands at once.
+    const BEND_TAIL: f32 = 1e-3;
 
     /// Lands at once on its target, as if it had finished.
     fn land(&mut self) {
@@ -114,7 +145,9 @@ impl Anim {
     }
 
     fn value(&self, now: Instant) -> f32 {
-        if self.dur.is_zero() {
+        // Exactly the target once done, whatever rounding the curve's last
+        // step would add (a bent glide's solved start can sit far away).
+        if self.done(now) {
             return self.target;
         }
         let t = now.saturating_duration_since(self.started).as_secs_f32() / self.dur.as_secs_f32();
@@ -122,10 +155,6 @@ impl Anim {
     }
     fn done(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.started) >= self.dur
-    }
-    /// How long it has left to run at `now`: zero once done.
-    fn remaining(&self, now: Instant) -> Duration {
-        (self.started + self.dur).saturating_duration_since(now)
     }
 }
 
@@ -190,10 +219,12 @@ impl Anims {
     ///
     /// - the glide duration, in-out cubic, for another tab than last
     ///   frame's (zero while animations are off);
-    /// - what is left of its glide, for the same tab at new columns (a
-    ///   badge, a count, a resize). That is zero once the glide has landed,
-    ///   so a settled underline follows its label at once (R3), and a glide
-    ///   still running toward it bends to the new columns with no jump.
+    /// - what is left of its glide, on the glide's own curve, for the same
+    ///   tab at new columns (a badge, a count, a resize; `Anim::bend`).
+    ///   That is nothing once the glide has landed, so a settled underline
+    ///   follows its label at once (R3), and a glide still running toward
+    ///   it bends to the new columns with no jump and at its own pace, even
+    ///   when they move every frame.
     ///
     /// That one start, the segment as drawn, is what keeps it from ever
     /// popping (R1). It is in absolute screen columns, the place the user
@@ -216,7 +247,9 @@ impl Anims {
         let painted = self.frame;
         let last = underlines.get(&strip).filter(|u| u.painted + 1 >= painted);
         let next = match last {
-            None => Underline { tab, left: Anim::at(left), right: Anim::at(right), painted },
+            None => {
+                Underline { tab, left: Anim::at(left, now), right: Anim::at(right, now), painted }
+            }
             Some(u) => {
                 let switched = u.tab != tab;
                 let glide = if self.enabled { self.tab_slide } else { Duration::ZERO };
@@ -224,11 +257,15 @@ impl Anims {
                     if !switched && edge.target == to {
                         return edge;
                     }
+                    let from = edge.value(now).clamp(lo, hi);
+                    if !switched {
+                        return edge.bend(from, to, now);
+                    }
                     Anim {
-                        start: edge.value(now).clamp(lo, hi),
+                        start: from,
                         target: to,
                         started: now,
-                        dur: if switched { glide } else { edge.remaining(now) },
+                        dur: glide,
                         easing: Easing::InOutCubic,
                     }
                 };
@@ -260,7 +297,7 @@ impl Anims {
     /// Sets `key`'s value instantly, with no transition. Used for
     /// first-frame init and overlay close.
     pub fn snap(&mut self, key: AnimKey, value: f32) {
-        self.entries.insert(key, Anim::at(value));
+        self.entries.insert(key, Anim::at(value, Instant::now()));
     }
 
     /// Starts `key` easing toward `target` over `dur`, beginning from its
@@ -349,16 +386,13 @@ impl Anims {
         }
     }
 
-    /// A disabled (instantly-jumping) `Anims` for the component tests'
-    /// `DrawCtx`, so they stay deterministic without threading an owned one
-    /// through each call site. One per test thread, since the underlines'
-    /// `RefCell` keeps `Anims` from being shared across threads.
+    /// A fresh, disabled (instantly-jumping) `Anims` for a component test's
+    /// `DrawCtx`, so it stays deterministic without threading an owned one
+    /// through each call site. Each call gets its own (leaked, a few bytes
+    /// per test), so no underline state crosses from one test to another.
     #[cfg(test)]
     pub fn for_tests() -> &'static Anims {
-        thread_local! {
-            static ANIMS: &'static Anims = Box::leak(Box::new(Anims::new(false)));
-        }
-        ANIMS.with(|a| *a)
+        Box::leak(Box::new(Anims::new(false)))
     }
 }
 
@@ -500,6 +534,47 @@ mod tests {
         a.begin_frame(dur);
         assert_eq!(a.aim_underline(strip, 1, (12.0, 17.0), WIDE, t0 + dur), (12.0, 17.0));
         assert!(!a.active(t0 + dur), "landed when it was due to");
+    }
+
+    /// #119 R1, R6: a glide whose target moves on every frame (a live
+    /// resize or a sidebar drag mid-glide) keeps its own pace: no frame
+    /// covers much of the distance, so it never crawls and then jumps, and
+    /// it lands on the last target when it was due to.
+    #[test]
+    fn a_glide_whose_target_moves_every_frame_never_jumps() {
+        let t0 = Instant::now();
+        let dur = Duration::from_millis(240);
+        let frame = Duration::from_millis(16);
+        let mut a = Anims::new(true);
+        let strip = StripId::ManageTabs;
+        a.begin_frame(dur);
+        a.aim_underline(strip, 0, (0.0, 4.0), WIDE, t0);
+        // From column 0 to Settings at 40, which moves a column a frame for
+        // the glide's 15 frames: 54 columns in all. A glide that restarted
+        // its curve each frame covered about 13 of them in 14 frames, then
+        // 20 in each of the last two.
+        let travel = 54.0;
+        let mut target = 40.0;
+        let mut steps = Vec::new();
+        let mut drawn = 0.0;
+        for i in 1..=15 {
+            let now = t0 + frame * (i - 1);
+            a.begin_frame(dur);
+            let (l, _) = a.aim_underline(strip, 1, (target, target + 4.0), WIDE, now);
+            steps.push(l - drawn);
+            drawn = l;
+            target += 1.0;
+        }
+        target -= 1.0;
+        a.begin_frame(dur);
+        let (l, r) = a.aim_underline(strip, 1, (target, target + 4.0), WIDE, t0 + dur);
+        steps.push(l - drawn);
+        assert_eq!((l, r), (target, target + 4.0), "landed on the last target");
+        assert!(!a.active(t0 + dur), "landed when it was due to");
+        let biggest = steps.iter().copied().fold(0.0, f32::max);
+        assert!(biggest < travel / 5.0, "no frame covers a fifth of the way: {steps:?}");
+        let last = steps[steps.len() - 1];
+        assert!(last < biggest / 4.0, "it eases out rather than jumping at the end: {steps:?}");
     }
 
     /// #119 R3: a settled underline follows its label's move at once.
