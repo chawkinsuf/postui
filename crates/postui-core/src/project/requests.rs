@@ -1008,8 +1008,7 @@ impl Project {
                     arrive_with_folders(to, order, t, &[]);
                 }
             }
-        })?;
-        Ok(())
+        })
     }
 
     /// A slug's `(space, rel)` halves, or `None` for a loose slug.
@@ -1094,8 +1093,7 @@ impl Project {
                 place_new(order, &rel, anchor.as_deref(), |order| {
                     arrive_with_folders(&space, order, &rel, &made)
                 })
-            })?;
-            Ok(())
+            })
         })?;
         Ok((slug, leaf))
     }
@@ -1240,8 +1238,7 @@ impl Project {
             let (from_space, from_rel) = Self::split_space(&slug).expect("validated");
             let (to_space, to_rel) = Self::split_space(&new_slug).expect("validated");
             p.order_remove(from_space, from_rel)?;
-            p.order_arrive(to_space, to_rel, &made)?;
-            Ok(())
+            p.order_arrive(to_space, to_rel, &made)
         })?;
         Ok(new_slug)
     }
@@ -1362,8 +1359,7 @@ impl Project {
             p.order_edit(space, |order| {
                 order::remove(order, rel);
                 order::insert_before(order, &new_rel, anchor.as_deref());
-            })?;
-            Ok(())
+            })
         })?;
         Ok((new_slug, moves))
     }
@@ -1414,8 +1410,7 @@ impl Project {
                 // Nothing was on disk at the new path (D18 refused it).
                 order::rename_folder_entries(order, rel, &new_rel);
                 order::insert_before(order, &entry, anchor.as_deref());
-            })?;
-            Ok(())
+            })
         })?;
         Ok((new_path, moves))
     }
@@ -1687,8 +1682,7 @@ impl Project {
             p.relist();
             p.order_edit(&space, |order| {
                 place_new(order, &entry, anchor.as_deref(), |order| order::arrive(order, &entry))
-            })?;
-            Ok(())
+            })
         })?;
         Ok(path)
     }
@@ -1784,8 +1778,7 @@ impl Project {
                 p.open_requests.shift_remove(slug);
             }
             p.relist();
-            p.order_edit(&space, |order| order::remove_under(order, &entry))?;
-            Ok(())
+            p.order_edit(&space, |order| order::remove_under(order, &entry))
         })?;
         Ok(gone)
     }
