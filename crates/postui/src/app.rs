@@ -140,15 +140,10 @@ pub struct Drag {
 /// not where the drag ends, decides whether the end saves: a drag that
 /// never moved anything was a click and has nothing to save, while one
 /// that moved saves even back where it began.
-///
-/// `tracked` records whether the drag has had `Drag(Left)` motion, which
-/// proves the terminal tracks the button: a bare `Moved` after it means
-/// the button is up and its release was lost.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResizeDrag {
     pub kind: ResizeHandle,
     pub moved: bool,
-    pub tracked: bool,
 }
 
 /// Which handle a [`ResizeDrag`] is moving.
@@ -473,6 +468,10 @@ pub struct App {
     /// release, promoted to a live row drag the moment the pointer moves
     /// onto another row (see `mouse.rs`).
     pub manage_press: Option<(usize, String)>,
+    /// Whether the terminal has sent a `Drag` this session: it
+    /// reports motion with the button held as a drag, so a bare `Moved`
+    /// from it comes with the button up (#250).
+    pub(crate) reports_held_drags: bool,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
     /// hidden): the split's editor-minimized end, saved with the split
@@ -2067,6 +2066,7 @@ impl App {
             term_area: None,
             sidebar_press: None,
             manage_press: None,
+            reports_held_drags: false,
             table_collapsed: false,
             split_ratio: crate::split::SplitState::default().ratio,
             sidebar_width: None,

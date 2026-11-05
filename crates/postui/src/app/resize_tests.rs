@@ -279,6 +279,20 @@ fn a_bare_move_after_drag_motion_ends_the_resize() {
     assert_eq!(app.hovered, app.hits.hit_at_ignoring_var_tokens(40, y).cloned(), "a hover");
 }
 
+/// #250: the terminal shows it tracks the button once per session, so a
+/// resize pressed after an earlier `Drag` ends at its first bare `Moved`.
+#[test]
+fn a_bare_move_ends_a_resize_once_the_session_has_had_drag_motion() {
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_drag(60, 20));
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(moved(40, y));
+    assert!(app.resize.is_none(), "the bare move ended the resize");
+    assert_eq!(app.sidebar_width, None, "it moved nothing");
+}
+
 /// Review round 8 N4 (P2a): a key that takes the Main screen away while the
 /// gutter is held (`alt+r` to Manage, `ctrl+p` to the palette) leaves the
 /// resize live until the next motion, which ends it where it got to, saved,

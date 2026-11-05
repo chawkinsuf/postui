@@ -543,6 +543,18 @@ cope:
   row underneath rather than letting its eventual release commit the
   stale reorder.
 
+*Amended 2026-11-05 (task #250, `mine`):* the recovery press above, a
+press that ends a row drag (the sidebar's or the Manage list's), selects
+the row that was painted under the pointer and arms nothing. The
+snap-back usually moves that row away; armed, the first held motion
+promoted a drag of it and the release dropped it there. A second click
+opens or drags. And once the terminal has sent a `Drag` (any button) this
+session, a bare `Moved` ends whatever the button held, as the next
+press would (`cancel_stale_drags`), and is a hover: such a terminal
+reports held motion as a drag, so its bare `Moved` means the release
+was lost. From a terminal that has sent none, a `Moved` still promotes
+and drives a drag (the "Move" rule above).
+
 **`rebuild_sidebar` snaps `AnimKey::ListTravel(Sidebar)` too.** The
 per-motion drag path (`App::rebuild_sidebar`) originally omitted the
 snap that `refresh_sidebar` does after every rebuild, on the theory
