@@ -490,12 +490,9 @@ fn a_first_split_change_eases_from_the_drawn_value() {
 }
 
 /// Tasks #252 and #251: with debug assertions, an update with one of the
-/// split's keys unset panics, for each of the three (the tests below).
-/// Nothing changes, so each pins that the check runs before the no-change
-/// return and a set built without the snap is caught on its first update.
-/// A change needs no test of its own: it passes the same check first. A
-/// snap on an unset key needs none either: every app's first set is
-/// snapped in that way (`reset_anims`).
+/// split's keys unset panics, for each of the three (the tests below). A
+/// snap on an unset key needs no test: every app's first set is snapped
+/// in that way (`reset_anims`).
 #[cfg(debug_assertions)]
 fn update_with_unset(key: crate::anim::AnimKey) {
     let mut app = App::new_for_test();

@@ -2689,52 +2689,36 @@ impl App {
     /// included), `AnimKey::ResponseCollapse` the response's `collapsed`
     /// (a sticky layout preference `session.sync_open` carries across
     /// request switches), and `AnimKey::SplitRatio` `split_ratio`.
-    /// `update` eases them (`snap` false) over `anim_ms.pane_collapse`;
-    /// a change that draws at once snaps them, settled or mid-ease, and so
-    /// does [`Self::reset_anims`], where every anim set is built, so the
-    /// three are always set and a first ease starts from the split drawn.
+    /// `update` eases them (`snap` false) over `anim_ms.pane_collapse`,
+    /// leaving one alone when its `Anims::target` (kept after the glide
+    /// lands) is already the field's value; a change that draws at once
+    /// snaps them, settled or mid-ease, and so does [`Self::reset_anims`],
+    /// where every anim set is built, so the three are always set and a
+    /// first ease starts from the split drawn.
     ///
-    /// Builds with debug assertions check that on every eased sync, with a
-    /// `debug_assert!` that the key is set, made before the no-change
-    /// return ([`Self::sync_split_anim`]), so a set built without the snap
-    /// is caught on its first `update`, change or none; a snap needs none,
-    /// since it is what sets it.
-    /// It checks with animations off too, where an unset key only jumps as
-    /// a set one would: the rule is how a set is built, and a set built
-    /// without the snap would ease wrong once animations are turned on.
-    /// Other builds check nothing: a set built anywhere else would still
-    /// draw the right split, but its first `update` would set the key with
-    /// no ease (`Anims::retarget` starts an unset key at its target), so a
-    /// change made by then jumps, and the loop keeps redrawing, with nothing
-    /// moving, for one ease's length.
+    /// An eased sync debug-asserts that the key is set, animations on or
+    /// off, since it checks how the set was built, not how it moves. Other
+    /// builds don't check; there an unset key's first sync sets it at its
+    /// target with no ease (`Anims::retarget`).
     fn sync_split_anims(&mut self, snap: bool) {
         let flag = |on: bool| if on { 1.0 } else { 0.0 };
-        self.sync_split_anim(AnimKey::PaneCollapse, flag(self.table_collapsed), snap);
-        self.sync_split_anim(
-            AnimKey::ResponseCollapse,
-            flag(self.session.response.collapsed),
-            snap,
-        );
-        self.sync_split_anim(AnimKey::SplitRatio, self.split_ratio, snap);
-    }
-
-    /// Brings one of the split's anims to `target_v` for
-    /// [`Self::sync_split_anims`]: snapping, a jump there; easing, nothing
-    /// when it already heads there, else a retarget from wherever it sits.
-    /// "Heads there" is `Anims::target`, which keeps the target through the
-    /// glide and after it lands, so a settled anim at `target_v` is left
-    /// alone and the comparison needs no copy of its own.
-    fn sync_split_anim(&mut self, key: AnimKey, target_v: f32, snap: bool) {
-        if snap {
-            self.anims.snap(key, target_v);
-            return;
+        let targets = [
+            (AnimKey::PaneCollapse, flag(self.table_collapsed)),
+            (AnimKey::ResponseCollapse, flag(self.session.response.collapsed)),
+            (AnimKey::SplitRatio, self.split_ratio),
+        ];
+        for (key, target_v) in targets {
+            if snap {
+                self.anims.snap(key, target_v);
+                continue;
+            }
+            let cur = self.anims.target(key);
+            debug_assert!(cur.is_some(), "{key:?} is unset (see `sync_split_anims`)");
+            if cur != Some(target_v) {
+                let dur = self.ui_settings.anim_ms.pane_collapse;
+                self.anims.retarget(key, target_v, dur, Instant::now());
+            }
         }
-        let cur = self.anims.target(key);
-        debug_assert!(cur.is_some(), "{key:?} is unset (see `sync_split_anims`)");
-        if cur == Some(target_v) {
-            return;
-        }
-        self.anims.retarget(key, target_v, self.ui_settings.anim_ms.pane_collapse, Instant::now());
     }
 
     /// The layout the sizes put on screen at the terminal's size, with
