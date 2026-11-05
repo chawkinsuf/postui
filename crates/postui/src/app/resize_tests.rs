@@ -451,8 +451,7 @@ fn a_launch_restoring_a_request_starts_with_nothing_in_flight() {
 
 /// Task #113: a fresh anim set is built with the split's three anims
 /// snapped in, animations on or off, so a test app with its own set draws
-/// the split the way a launch does, not through `ui::draw`'s fallback for
-/// an anim never set.
+/// the split the way a launch does.
 #[test]
 fn a_fresh_anim_set_has_the_split_snapped_in() {
     for enabled in [true, false] {
@@ -461,11 +460,12 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
     }
 }
 
-/// Task #113: an `App` whose split anims were never set (straight from
-/// `bare`: no seed, no fresh set) eases its first split change from the
-/// value `ui::draw` drew while they were unset, for each of the three.
+/// Task #249: `bare`, which every constructor starts from, builds its anim
+/// set through `reset_anims`, so the split's three anims start snapped in
+/// at the split it draws, and with animations on a first split change
+/// eases from that drawn value, for each of the three.
 #[test]
-fn a_first_split_change_with_the_anims_unset_eases_from_the_drawn_value() {
+fn a_first_split_change_eases_from_the_drawn_value() {
     use crate::anim::AnimKey;
     let drawn = SplitState::default();
     for (key, next, from, to) in [
@@ -475,10 +475,11 @@ fn a_first_split_change_with_the_anims_unset_eases_from_the_drawn_value() {
     ] {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::bare(tx, std::path::PathBuf::new());
-        app.anims.set_enabled(true);
         assert_eq!(app.split_state(), drawn);
+        assert_split_drawn_settled(&app);
+        // On whatever `UiSettings::default()` says, so the change eases.
+        app.anims.set_enabled(true);
         let before = std::time::Instant::now();
-        assert_eq!(app.anims.value(key, before), None, "{key:?} unset");
         app.set_split_fields(next);
         app.update(Action::Tick);
         // Sampled before the ease began, the value is the ease's start.

@@ -35,9 +35,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // buffer hides just like the Params/Headers/Vars table does.
     // `App::sync_pane_collapse_anim` (run on every `update`) keeps
     // `AnimKey::PaneCollapse` chasing this same condition, so its eased
-    // value at `now` is what actually drives the row split — falling back
-    // to the settled bool (as a plain 0.0/1.0) only while the anim was
-    // never set (`App::sync_split_anims` says when that is).
+    // value at `now` is what actually drives the row split. The settled
+    // fields are only `value_or`'s default: every app starts with the
+    // split's anims set (`App::sync_split_anims`).
     let collapse_t = app.anims.value_or(
         crate::anim::AnimKey::PaneCollapse,
         now,
