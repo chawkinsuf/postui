@@ -29086,7 +29086,7 @@ fn a_paste_mid_press_cancels_the_click() {
     let r1 = row_rect(&mut app, 1);
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r1.x + 2, r1.y));
-    app.paste_text("hello");
+    app.handle_paste("hello");
     assert!(app.sidebar_press.is_none(), "the paste ends the press");
     app.handle_mouse(moved(r1.x + 2, r2.y));
     assert!(app.sidebar.drag.is_none(), "no drag starts");
@@ -29309,9 +29309,10 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
     assert_eq!(
         app.sidebar_press.clone(),
-        Some((1, RowKey::Request("main/beta".into()))),
-        "the press re-arms on the row it selected, at its restored index"
+        Some(RowKey::Request("main/beta".into())),
+        "the press re-arms on the row it selected"
     );
+    assert_eq!(app.sidebar.selected, Some(1), "at its restored index");
 
     // The snapped-back rows put alpha under the pointer, so the release
     // is off the pressed row and opens nothing (#247): the click's cancel.
@@ -29331,10 +29332,7 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     let (mut app, _dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert_eq!(
-        app.sidebar_press.as_ref().map(|(_, k)| k.clone()),
-        Some(RowKey::Request("main/alpha".into()))
-    );
+    assert_eq!(app.sidebar_press.clone(), Some(RowKey::Request("main/alpha".into())));
     app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
     app.text_drag = Some(TextDrag::Field(crate::keyroute::FieldId::Body));
 

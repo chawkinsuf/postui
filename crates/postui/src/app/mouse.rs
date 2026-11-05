@@ -238,23 +238,17 @@ impl App {
                 let below = !on_row
                     && self.sidebar_drag_inside(m.column, m.row)
                     && self.sidebar.below_rows(m.row);
-                if let Some((_, pressed)) = self.sidebar_press.clone()
+                if let Some(pressed) = self.sidebar_press.clone()
                     && self.modals.is_empty()
                     && !other_drag
                     && (on_row || below)
                 {
                     match self.sidebar.row_of_key(&pressed) {
                         None => self.sidebar_press = None,
-                        // Off the pressed row's own block: a row for a
-                        // request, a folder's row and its open subtree,
-                        // where no motion can move anything.
-                        Some(i)
-                            if below
-                                || !self
-                                    .sidebar
-                                    .span_of(i)
-                                    .contains(&self.sidebar.row_at_y(m.row)) =>
-                        {
+                        // Off the pressed row's own block, where no motion
+                        // can move anything (`on_row_block`, the test the
+                        // release turns round).
+                        Some(i) if !self.on_row_block(i, m.column, m.row) => {
                             let space = self.active_space();
                             if self.sidebar.begin_drag(i, &space) {
                                 self.hovered = None;
@@ -691,7 +685,7 @@ impl App {
                 // A request row's press that ends with no row drag settled
                 // above was a click, and its release opens the row (#247).
                 match pressed {
-                    Some((_, key)) => self.open_released_row(&key, m.column, m.row) | ended,
+                    Some(key) => self.open_released_row(&key, m.column, m.row) | ended,
                     None => ended,
                 }
             }
@@ -743,33 +737,50 @@ impl App {
         }
     }
 
+    /// Whether the pointer at `(x, y)` is on row `i`'s own block: on a row
+    /// in the hit map, with `row_at_y` inside `i`'s span (a request's row,
+    /// or a folder's row and its open subtree), in the rows as they are
+    /// now. The two ends of an armed press share it: the promote starts a
+    /// drag once the pointer is off the block (on another row, or in the
+    /// empty area below the rows), and the release opens the pressed
+    /// request when it lands on it.
+    fn on_row_block(&self, i: usize, x: u16, y: u16) -> bool {
+        matches!(self.hits.hit_at(x, y), Some(Hit::SidebarRow(_)))
+            && self.sidebar.span_of(i).contains(&self.sidebar.row_at_y(y))
+    }
+
     /// A click's release on a request row (#247, spec 2026-09-04 request
     /// reordering, "Click behaviour"; a folder's press opens nothing at
-    /// its release): the pressed row opens when the release lands on it,
-    /// by the promote's own test turned round (the pointer on a row in the
-    /// hit map, and `row_at_y` inside the pressed key's block in the rows
-    /// as they are now). A release anywhere else is the click's cancel, and
-    /// so is keyboard input while the button is held
-    /// ([`Self::end_armed_press`]). After a lost release the recovery click
-    /// (`cancel_stale_drags`) arms the row that was painted under the
-    /// pointer and the rows snap back, so its release usually lands on
-    /// another row: it selects, and a second click opens.
+    /// its release): the pressed row opens when the release lands on its
+    /// block ([`Self::on_row_block`], the promote's test turned round). A
+    /// release anywhere else is the click's cancel, and so is keyboard
+    /// input while the button is held ([`Self::end_armed_press`]).
+    ///
+    /// Only the release knows that the press did not become a drag, so a
+    /// press whose release never arrives opens nothing; it has selected
+    /// the row. The next press, or a focus loss, ends what it left armed
+    /// (`cancel_stale_drags`). That recovery click arms the row that was
+    /// painted under the pointer and the rows snap back, so its release
+    /// usually lands on another row: it selects, and a second click opens.
     ///
     /// Over unsaved edits the open goes through the gate, so the dialog
     /// comes here, never under a drag. The open request's own row over
     /// unsaved edits opens nothing and asks nothing (#236); `leaving_unsaved`
     /// closes open inputs on the way (#75), so that is a change to draw.
-    /// A row that is broken by now needs no check here: `OpenRequest`
-    /// refuses its file and says why.
+    /// Only a Manage-screen input (a Variable Manager or Settings edit) can
+    /// refuse that close, and the sidebar's rows are on the Main screen; a
+    /// key that changes screens mid-press ends the press. `OpenRequest`
+    /// closes them the same way.
+    ///
+    /// A row that broke while the button was held (a reload) needs no
+    /// check here: `OpenRequest` refuses its file and says why in a toast.
+    /// The broken row's dialog is the press's, for a row already broken
+    /// when it was pressed.
     fn open_released_row(&mut self, pressed: &RowKey, x: u16, y: u16) -> bool {
         let RowKey::Request(slug) = pressed else {
             return false;
         };
-        let on_row = matches!(self.hits.hit_at(x, y), Some(Hit::SidebarRow(_)))
-            && self
-                .sidebar
-                .row_of_key(pressed)
-                .is_some_and(|i| self.sidebar.span_of(i).contains(&self.sidebar.row_at_y(y)));
+        let on_row = self.sidebar.row_of_key(pressed).is_some_and(|i| self.on_row_block(i, x, y));
         if !on_row || !self.modals.is_empty() {
             return false;
         }
@@ -782,11 +793,13 @@ impl App {
     /// Keyboard input while a row's button is held ends its armed press,
     /// so the click neither opens its row at the release nor becomes a
     /// drag (#247): what the input did may have changed what the press
-    /// meant. Run first by both of the app's keyboard entries, a key
-    /// (`handle_key`) and a terminal's paste (`paste_text`), whatever they
-    /// then do. A live row drag keeps its press: it owns the keys
-    /// (`route_key`), and anything that rewrites its rows cancels it
-    /// (`land`).
+    /// meant, and the release would open a row on a stale meaning. Run
+    /// first by both of the app's keyboard entries, a key (`handle_key`)
+    /// and a terminal's paste (`handle_paste`), whatever they then do. A
+    /// live row drag keeps its press: it owns the keys (`route_key`), and
+    /// anything that rewrites its rows cancels it (`land`). The Manage
+    /// list's press is left as it was: its release opens nothing, and a
+    /// key mid-press there drags the pressed item by name as before.
     pub(super) fn end_armed_press(&mut self) {
         if self.sidebar.drag.is_none() {
             self.sidebar_press = None;
@@ -1934,7 +1947,7 @@ impl App {
                     // start of a drag, and over unsaved edits a dialog
                     // raised here would stop the drag from starting.
                     Some(Row::Request { slug, broken: None, .. }) => {
-                        self.sidebar_press = Some((i, RowKey::Request(slug)));
+                        self.sidebar_press = Some(RowKey::Request(slug));
                         self.update(Action::Render)
                     }
                     // A broken row still shows its error at the press, and
@@ -1942,14 +1955,14 @@ impl App {
                     // 2026-09-04, "Promotion yields to modals"): #247 moved
                     // only the open of a healthy row.
                     Some(Row::Request { slug, broken: Some(_), .. }) => {
-                        self.sidebar_press = Some((i, RowKey::Request(slug.clone())));
+                        self.sidebar_press = Some(RowKey::Request(slug.clone()));
                         self.update(Action::ShowRequestError(slug))
                     }
                     // A folder row arms a drag of the folder (spec
                     // 2026-11-01 reorder folders R2); the click itself
                     // still only selects, and a double click toggles.
                     Some(Row::Folder { path, .. }) => {
-                        self.sidebar_press = Some((i, RowKey::Folder(path)));
+                        self.sidebar_press = Some(RowKey::Folder(path));
                         if clicks.list == 2 {
                             self.update(Action::ToggleSelectedFolder)
                         } else {
