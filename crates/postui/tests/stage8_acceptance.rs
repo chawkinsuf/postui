@@ -204,9 +204,9 @@ fn animations_disabled_renders_identically_at_rest() {
     // At-rest equality alone doesn't prove the kill switch actually kills
     // motion -- `render`'s own `finish_all()` settles the animated side
     // too, so the comparison above never observes it mid-flight. Drive a
-    // real transition (switching the active editor tab, which retargets
-    // `AnimKey::TabUnderline`/`TabUnderlineWidth`) on each app, then
-    // compare the very next frame WITHOUT settling first.
+    // real transition (switching the active editor tab, which glides the
+    // strip's underline from the next paint) on each app, then compare the
+    // very next frame WITHOUT settling first.
     use postui::components::editor::EditorTab;
     animated.update(Action::EditorTabSelect(EditorTab::Params.index()));
     still.update(Action::EditorTabSelect(EditorTab::Params.index()));

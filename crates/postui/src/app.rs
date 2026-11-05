@@ -1,9 +1,9 @@
 use crate::action::{Action, CopyTarget, ExtractSource, TabTo};
-use crate::anim::{AnimKey, Anims, Easing, ListId, StripId};
+use crate::anim::{AnimKey, Anims, ListId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
-use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES, ViewMode};
+use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::{Row, RowKey};
 use crate::components::table_editor::Stop;
 use crate::components::toast::{ToastKind, Toasts};
@@ -376,15 +376,6 @@ pub struct App {
     /// Rebuilt every frame by `ui::draw`: maps screen regions to typed
     /// [`Hit`]s for mouse routing.
     pub hits: HitMap,
-    /// The Manage screen's *tab strip* width from the last draw, set by
-    /// `ui::draw` alongside `hits` from `manage::strip_area` — the same
-    /// function `draw_manage_bar` lays the strip out with, so the two can
-    /// not drift. `retarget_manage_tab_underline` reads it to compute the
-    /// right-anchored Settings tab's target span — the only reason the
-    /// strip's geometry depends on width at all. `0` before the first
-    /// draw degrades to the same contiguous position the floor case does
-    /// (see `TabStrip::spans_in`), never a stale target.
-    pub manage_strip_width: u16,
     /// The `Hit` currently under the pointer, if any, updated by
     /// `handle_mouse` on `Moved`. Read by `ui::draw` to style hovered
     /// buttons/chips. `Hit::VarToken` overlays are deliberately skipped
@@ -2069,7 +2060,6 @@ impl App {
             pending_terminal_action: None,
             resumed_config_edit: None,
             hits: HitMap::default(),
-            manage_strip_width: 0,
             hovered: None,
             shift_enter_send: false,
             hovered_token: None,
@@ -2160,8 +2150,8 @@ impl App {
 
     /// Like [`Self::new_for_test`], but with a fresh anim set, `enabled`
     /// or not ([`Self::reset_anims`]) — needed by tests that exercise an
-    /// animated retarget (e.g. the tab-underline slide, Task 10) with
-    /// animations deliberately on, regardless of
+    /// animation (e.g. the tab-underline slide) with animations
+    /// deliberately on, regardless of
     /// `UiSettings::default().animations`.
     pub fn new_for_test_with_anims(enabled: bool) -> Self {
         let mut app = Self::new_for_test();
@@ -2563,11 +2553,7 @@ impl App {
         // collapse flag rides along (a layout preference, not response
         // state), so a swap can't break the no-blank-screen rule.
         let swapped = self.session.sync_open(&self.editor.slug);
-        // The swapped-in response's active tab is whatever it was when the
-        // request was left (or a fresh default) — no `ResponseViewMode`
-        // ran, so the underline glide from the outgoing response is stale.
         if swapped {
-            self.reset_response_tab_underline();
             // A response that shed its tree while cached (see
             // `Session::KEEP_WARM`) gets the same background parse a
             // fresh arrival does.
@@ -2598,7 +2584,6 @@ impl App {
         // authority, the editor only lights a chip from it.
         self.editor.split = self.split_state();
         self.sync_split_anims(false);
-        self.sync_editor_tab_underline();
         // Any toast pushed by `apply(action)` above gets its slide-in
         // started here rather than inside `Toasts::push` itself — `push`
         // is called from ~100 sites across this file, none of which
@@ -4190,9 +4175,7 @@ impl App {
                 true
             }
             Action::ResponseViewMode(mode) => {
-                let prev_mode = self.session.response.view().map(|v| v.mode);
                 self.session.response.set_view_mode(mode);
-                self.retarget_response_tab_underline(prev_mode);
                 true
             }
             // Every tab key takes one path (`App::go_tab`): the target
@@ -4411,8 +4394,6 @@ impl App {
                 self.editor.active_tab = target;
                 self.editor.preferred_tab = target;
                 self.editor.table.reset();
-                // The underline follows in this dispatch's tail
-                // (`sync_editor_tab_underline`), as every tab move does.
                 true
             }
             // Cycles the on-screen order over the enabled tabs (the Body tab
@@ -5481,36 +5462,14 @@ impl App {
                 // `PrettyParsed`. The clone happens before delivery so the
                 // response itself still moves into the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
-                // Whether this result lands on screen (its request is the
-                // open one) — checked before delivery consumes the entry.
-                let on_screen = self
-                    .session
-                    .in_flight
-                    .iter()
-                    .any(|f| f.generation == generation && f.slug == self.editor.slug);
                 let delivered = self.session.arrived(generation, data);
-                // The fresh view picked its own mode (Pretty for JSON, Raw
-                // otherwise) with no `ResponseViewMode` action, so the
-                // previous response's underline glide is stale.
-                if delivered && on_screen {
-                    self.reset_response_tab_underline();
-                }
                 if delivered && let Some(body) = big {
                     self.spawn_pretty_parse(generation, body);
                 }
                 delivered
             }
             Action::PrettyParsed { generation, tree } => {
-                let on_screen = self.session.response.awaits_tree(generation);
-                // "Not JSON after all" removes the Tree tab and forces the
-                // mode to Raw — a tab-set change with no `ResponseViewMode`
-                // action behind it.
-                let removed_tree_tab = tree.is_none();
-                let delivered = self.session.tree_arrived(generation, tree.map(|t| *t));
-                if delivered && on_screen && removed_tree_tab {
-                    self.reset_response_tab_underline();
-                }
-                delivered
+                self.session.tree_arrived(generation, tree.map(|t| *t))
             }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
@@ -7178,7 +7137,6 @@ impl App {
                 if self.manage.tab != target && !self.switch_manage_tab_state(target) {
                     return true;
                 }
-                let prev = self.manage.tab;
                 self.manage.tab = target;
                 self.settings.clamp_to_live(self.ui_settings_are_editable());
                 // The Settings tab holds the keyboard cursor exactly
@@ -7196,11 +7154,6 @@ impl App {
                     self.settle_list(target);
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
-                    // A freshly opened screen snaps its underline onto
-                    // the active tab: a glide from wherever the strip
-                    // last was would read as a switch that never happened.
-                    self.anims.clear(AnimKey::TabUnderline(StripId::ManageTabs));
-                    self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
                     // Most refresh sites (reloads, undo's landing, env
                     // switches) sync the Variable Manager only while the
                     // screen is up, so whatever changed while it was closed
@@ -7224,8 +7177,6 @@ impl App {
                     // wheel-scrolled away from its selection reopens
                     // showing the selection again.
                     self.sync_varmanager();
-                } else if prev != target {
-                    self.retarget_manage_tab_underline(prev);
                 }
                 true
             }
@@ -7243,13 +7194,11 @@ impl App {
                     if !self.switch_manage_tab_state(tab) {
                         return true;
                     }
-                    let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.settings.clamp_to_live(self.ui_settings_are_editable());
                     // As in `OpenManage`: the cursor belongs to the
                     // Settings tab only while it is the one on screen.
                     self.settings.focused = tab == crate::components::manage::ManageTab::Settings;
-                    self.retarget_manage_tab_underline(prev);
                 }
                 true
             }
@@ -12037,6 +11986,14 @@ impl App {
     /// now. Drives `Action::Tick`'s redraw decision and the main loop's
     /// adaptive tick period — both sample `Instant::now()` themselves so
     /// `Anims` stays deterministic and this stays cheap to call every frame.
+    ///
+    /// A tab strip's underline glide starts at paint (#119), so it counts
+    /// here only once a draw has shown the switch: right after the `update`
+    /// that switched, before any draw, this misses it. The main loop asks
+    /// only after drawing every update that asked for a redraw, so it never
+    /// misses one there; an update that asked for none changed nothing on
+    /// screen yet, and the draw that first shows its tab starts the glide.
+    /// A test that settles by ticking until this is false draws first.
     pub fn animating(&self) -> bool {
         self.anims.active(Instant::now())
     }
@@ -12185,8 +12142,7 @@ impl App {
     /// fairly is to hold every other variable (including "when did it
     /// start moving") fixed.
     ///
-    /// The reused `AnimKey`s here (`TabUnderline`/`TabUnderlineWidth` on
-    /// `EditorTabs`/`ResponseTabs`, `Hover`, `SendBreathe`,
+    /// The reused `AnimKey`s here (`Hover`, `SendBreathe`,
     /// `ListTravel(Sidebar|Palette)`, and `ToastFade` borrowed with demo-
     /// only integer ids for the duration-comparison rows — real toasts
     /// never reach ids in the 70-500 range, and none of these keys are
@@ -13420,11 +13376,10 @@ impl App {
     /// request never permanently loses the user's place
     /// (`Editor::preferred_tab`).
     ///
-    /// It moves only the tab, not the underline:
-    /// [`Self::sync_editor_tab_underline`], in the tail of every dispatch,
-    /// glides it to wherever the tab is when the dispatch ends, so a tab a
-    /// dispatch passes through on its way (a project switch's empty GET
-    /// between two POSTs, #117) starts no glide.
+    /// It moves only the tab: the strip aims its underline as it paints
+    /// (#119), so a tab a dispatch passes through on its way (a project
+    /// switch's empty GET between two POSTs, #117) is never painted and
+    /// starts no glide.
     fn sync_active_tab(&mut self) {
         let preferred = self.editor.preferred_tab;
         let target = if !self.editor.tab_enabled(preferred) {
@@ -13446,54 +13401,6 @@ impl App {
         }
     }
 
-    /// The one mover of the editor tab underline
-    /// (`AnimKey::TabUnderline`/`TabUnderlineWidth(EditorTabs)`, the strip's
-    /// independent left/right edges — see the reinterpretation note on
-    /// `AnimKey::TabUnderline`): it glides both edges to the ACTIVE tab's
-    /// current span over `ui_settings.anim_ms.tab_slide` (250ms by default)
-    /// with in-out-cubic easing. Every move comes through here: a tab the
-    /// user picks (`Action::EditorTabSelect`, which `EditorTabCycle` and the
-    /// clicks in `app/mouse.rs` funnel into), a tab
-    /// [`Self::sync_active_tab`] moved (a method change off Body), and
-    /// spans that shift with no switch at all — the Headers/Params/Vars
-    /// counts differ per request and change as rows are added, and the Body
-    /// badge comes and goes — which used to leave the underline parked at
-    /// the previous request's geometry after a request switch.
-    ///
-    /// Runs in the tail of every `dispatch`, so it sees only the tab a
-    /// dispatch ends on: a tab one passes through (a project switch's
-    /// empty GET between two POSTs, #117) starts no glide. Each dispatch
-    /// gets its own pass, so a key the router runs as several actions (a
-    /// vim count, `2u`) glides once per action, and so would an arm that
-    /// moved the tab and then dispatched again before setting it. A glide
-    /// already headed to the right place is left alone, and an untracked
-    /// pair snaps, in a branch of its own (see below).
-    fn sync_editor_tab_underline(&mut self) {
-        let spans = self.editor.tab_strip_spans();
-        let Some(&(x, w)) = spans.get(self.editor.active_tab.draw_position()) else {
-            return;
-        };
-        let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
-        let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
-        let (left, right) = (x as f32, (x + w) as f32);
-        if self.anims.target(left_key) == Some(left) && self.anims.target(right_key) == Some(right)
-        {
-            return;
-        }
-        // An untracked pair (nothing has moved the underline yet this
-        // session) just snaps into place — a target→target "glide" would
-        // read as active for its whole duration and keep forcing redraws.
-        if self.anims.target(left_key).is_none() {
-            self.anims.snap(left_key, left);
-            self.anims.snap(right_key, right);
-            return;
-        }
-        let now = Instant::now();
-        let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims.retarget_with(left_key, left, dur, now, Easing::InOutCubic);
-        self.anims.retarget_with(right_key, right, dur, now, Easing::InOutCubic);
-    }
-
     /// The "move to space" choosers' rows: every space but `except`, in
     /// `project.spaces` order, each dispatching `action(space)` on pick.
     fn other_space_items(
@@ -13511,85 +13418,6 @@ impl App {
                 ..Default::default()
             })
             .collect()
-    }
-
-    /// Glides the Manage screen's tab strip underline
-    /// (`AnimKey::TabUnderline`/`TabUnderlineWidth(ManageTabs)`) from
-    /// `prev`'s span to the active tab's, seeding an untracked pair at
-    /// `prev` first: called from `Action::SelectManageTab` (clicks and
-    /// alt+arrows both funnel through it) and from `OpenManage` when it
-    /// switches tabs on an already-open screen, after `manage.tab` has
-    /// moved. (The editor strip has no such call: its per-dispatch pass,
-    /// [`Self::sync_editor_tab_underline`], moves it.)
-    fn retarget_manage_tab_underline(&mut self, prev: crate::components::manage::ManageTab) {
-        let spans = crate::components::manage::ManageTab::strip_spans(self.manage_strip_width);
-        let now = Instant::now();
-        let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
-        let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);
-        if self.anims.value(left_key, now).is_none()
-            && let Some((x, w)) = spans.get(prev.index())
-        {
-            self.anims.snap(left_key, *x as f32);
-            self.anims.snap(right_key, (*x + *w) as f32);
-        }
-        let Some((x, w)) = spans.get(self.manage.tab.index()) else {
-            return;
-        };
-        let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims.retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
-        self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
-    }
-
-    /// Forgets the response tab strip's underline animation, so the next
-    /// draw snaps the underline to the active tab's own static span — for
-    /// the places the active tab changes *programmatically* (a response
-    /// arriving, a background parse concluding not-JSON, a request switch
-    /// swapping the pane) where no `Action::ResponseViewMode` runs to
-    /// retarget the glide; a stale tracked value would otherwise leave the
-    /// underline under the previous response's tab.
-    fn reset_response_tab_underline(&mut self) {
-        self.anims.clear(AnimKey::TabUnderline(StripId::ResponseTabs));
-        self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ResponseTabs));
-    }
-
-    /// Glides `AnimKey::TabUnderline`/`TabUnderlineWidth(ResponseTabs)`
-    /// from `prev_mode`'s span to the active tab's, as
-    /// [`Self::retarget_manage_tab_underline`] does for Manage; called from
-    /// `Action::ResponseViewMode` (the single action both keyboard
-    /// switching and `app/mouse.rs`'s click dispatch on `Hit::ResponseTab`
-    /// funnel through). `prev_mode` is `None` either pre-response (nothing
-    /// to glide from) or on the very first response of a session; either
-    /// way the untracked-pair seed below falls back to the newly active
-    /// tab's own span, so the strip simply snaps rather than sliding from
-    /// nowhere.
-    fn retarget_response_tab_underline(&mut self, prev_mode: Option<ViewMode>) {
-        let Some(view) = self.session.response.view() else {
-            return;
-        };
-        let (tabs, modes) = crate::components::response::response_tab_defs(
-            view,
-            self.session.response.jq_bar(),
-            &self.theme,
-        );
-        let spans = crate::paint::TabStrip::spans(&tabs);
-        let active_idx = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
-        let now = Instant::now();
-        let left_key = AnimKey::TabUnderline(StripId::ResponseTabs);
-        let right_key = AnimKey::TabUnderlineWidth(StripId::ResponseTabs);
-        if self.anims.value(left_key, now).is_none() {
-            let prev_idx =
-                prev_mode.and_then(|m| modes.iter().position(|mm| *mm == m)).unwrap_or(active_idx);
-            if let Some((x, w)) = spans.get(prev_idx) {
-                self.anims.snap(left_key, *x as f32);
-                self.anims.snap(right_key, (*x + *w) as f32);
-            }
-        }
-        let Some((x, w)) = spans.get(active_idx) else {
-            return;
-        };
-        let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims.retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
-        self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
     /// Sets `sidebar.selected` (the keyboard cursor / menu target) to row
@@ -14112,6 +13940,8 @@ mod resize_tests;
 #[cfg(test)]
 mod response_conformance_tests;
 mod router;
+#[cfg(test)]
+mod tab_underline_tests;
 #[cfg(test)]
 mod tests;
 mod verbs;

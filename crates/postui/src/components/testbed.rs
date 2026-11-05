@@ -14,8 +14,8 @@ use crate::anim::{AnimKey, ListId};
 use crate::components::DrawCtx;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, ListRow, Pill,
-    PropertyRow, RowHighlight, TabStrip, TextField, Toggle, Well, floating_panel, frac_vspan,
-    label_column, pill_min_width,
+    PropertyRow, RowHighlight, TabStrip, TextField, Toggle, Underline, Well, floating_panel,
+    frac_vspan, label_column, pill_min_width,
 };
 
 /// One column each side of `area`, and a left column reserved for the
@@ -211,7 +211,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         tabs: &tabs,
         active: 0,
         hovered: None,
-        underline: (spans[0].0 as f32, spans[0].1 as f32),
+        underline: Underline::At(spans[0].0 as f32, spans[0].1 as f32),
         disabled: None,
         right_anchored: 0,
     }
@@ -233,7 +233,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         tabs: &tabs,
         active: 0,
         hovered: None,
-        underline: (mid_left, spans[0].1 as f32),
+        underline: Underline::At(mid_left, spans[0].1 as f32),
         disabled: None,
         right_anchored: 0,
     }
@@ -358,7 +358,10 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
             active: 0,
             hovered: None,
             disabled: None,
-            underline: (lerp(spans[0].0, spans[1].0, t), lerp(spans[0].1, spans[1].1, t)),
+            underline: Underline::At(
+                lerp(spans[0].0, spans[1].0, t),
+                lerp(spans[0].1, spans[1].1, t),
+            ),
             right_anchored: 0,
         }
         .paint(buf, Rect::new(x0 + MOTION_LABEL_COL, *y, strip_w, 2), theme.page, theme);

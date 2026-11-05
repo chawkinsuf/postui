@@ -4,7 +4,7 @@
 //! Variables, `ManageList` for Environments and Spaces.
 
 use crate::hit::{Hit, HitMap};
-use crate::paint::{BUTTON_HEIGHT, TabStrip, fill};
+use crate::paint::{BUTTON_HEIGHT, TabStrip, Underline, fill};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -46,15 +46,6 @@ impl ManageTab {
 
     pub fn from_index(i: usize) -> Self {
         Self::ALL[i.min(Self::ALL.len() - 1)]
-    }
-
-    /// Each tab's `(x, width)` span relative to the strip's origin, at
-    /// strip `width` — the geometry `draw_manage_bar` lays the strip out
-    /// with, exposed so the app can glide the underline between them.
-    pub fn strip_spans(width: u16) -> Vec<(u16, u16)> {
-        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> =
-            Self::ALL.iter().map(|t| (t.label().to_string(), None)).collect();
-        TabStrip::spans_in(&tabs, Self::RIGHT_ANCHORED, width)
     }
 }
 
@@ -137,14 +128,8 @@ impl Manage {
 pub const BAR_HEIGHT: u16 = BUTTON_HEIGHT;
 
 /// The tab strip's rect inside the Manage `bar` — the *one* place the
-/// strip's geometry is decided.
-///
-/// Three callers need it and they must agree exactly: `draw_manage_bar`
-/// lays the strip out here, `ui.rs` records this width on the app, and
-/// `App::retarget_manage_tab_underline` glides the underline along
-/// `ManageTab::strip_spans` at that same width. Computing it three ways
-/// is how the right-anchored Settings tab ended up painting contiguously
-/// while the underline aimed at the bar's right edge.
+/// strip's geometry is decided. `draw_manage_bar` lays the strip out here,
+/// and `TabStrip::paint` aims the underline from the same rect (#119).
 ///
 /// Nothing else shares the bar, so the strip gets the bar's full width
 /// less its two-column left inset, running out to the bar's right edge.
@@ -158,10 +143,8 @@ pub fn strip_area(bar: Rect) -> Rect {
 }
 
 /// Paints the top bar: nothing but the tab strip, registering
-/// `Hit::ManageTab(i)` for each tab. `underline` is the accent segment's
-/// `(left, width)` in fractional columns relative to the strip's origin —
-/// the app's eased edges mid-glide — or `None` for the active tab's own
-/// static span.
+/// `Hit::ManageTab(i)` for each tab, with its accent segment where
+/// `underline` says (`ui.rs` aims it at `tab`).
 ///
 /// Close and Reload All used to share this bar with the strip. Close was
 /// redundant — `OpenManage` toggles, so the header's Manage chip is
@@ -174,7 +157,7 @@ pub fn draw_manage_bar(
     bar: Rect,
     theme: &Theme,
     tab: ManageTab,
-    underline: Option<(f32, f32)>,
+    underline: Underline,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -194,21 +177,11 @@ pub fn draw_manage_bar(
         .find(|(i, _)| hovered == Some(&Hit::ManageTab(*i)))
         .map(|(i, _)| i);
     let strip_area = strip_area(bar);
-    // The static fallback must agree with what `TabStrip::paint` below
-    // will actually lay out (including the right-anchored Settings tab)
-    // — otherwise an untracked underline would land under the contiguous
-    // position while the labels themselves sit right-anchored.
-    let (ul_x, ul_w) = underline.unwrap_or_else(|| {
-        TabStrip::spans_in(&tabs, ManageTab::RIGHT_ANCHORED, strip_area.width)
-            .get(tab.index())
-            .map(|(x, w)| (*x as f32, *w as f32))
-            .unwrap_or((0.0, 0.0))
-    });
     let rects = TabStrip {
         tabs: &tabs,
         active: tab.index(),
         hovered: hovered_tab,
-        underline: (ul_x, ul_w),
+        underline,
         disabled: None,
         right_anchored: ManageTab::RIGHT_ANCHORED,
     }
@@ -242,8 +215,15 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
         let mut hits = HitMap::default();
+        let anims = crate::anim::Anims::new(false);
+        let underline = Underline::Aimed {
+            anims: &anims,
+            strip: crate::anim::StripId::ManageTabs,
+            tab: tab.index(),
+            now: std::time::Instant::now(),
+        };
         terminal
-            .draw(|f| draw_manage_bar(f, f.area(), &theme, tab, None, &mut hits, None))
+            .draw(|f| draw_manage_bar(f, f.area(), &theme, tab, underline, &mut hits, None))
             .unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
@@ -308,10 +288,11 @@ mod tests {
     #[test]
     fn bar_paints_the_underline_where_it_is_told_to() {
         let theme = Theme::dark();
-        let spans = ManageTab::strip_spans(100);
-        let (x0, _) = spans[0];
-        let (x2, w2) = spans[2];
-        let mid = ((x0 + x2) / 2) as f32;
+        let (_, placed) = render_at(ManageTab::Spaces, 100);
+        let at = |i: usize| placed.rect_of(&Hit::ManageTab(i)).unwrap();
+        // Relative to the strip's origin, where the first tab sits.
+        let (x2, w2) = (at(2).x - at(0).x, at(2).width);
+        let mid = (x2 / 2) as f32;
         let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
         let mut hits = HitMap::default();
         terminal
@@ -321,7 +302,7 @@ mod tests {
                     f.area(),
                     &theme,
                     ManageTab::Spaces,
-                    Some((mid, w2 as f32)),
+                    Underline::At(mid, w2 as f32),
                     &mut hits,
                     None,
                 )

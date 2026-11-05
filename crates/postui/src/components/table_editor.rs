@@ -2357,14 +2357,6 @@ mod tests {
 
     // --- drawing ------------------------------------------------------------
 
-    /// A disabled (instantly-jumping) `Anims` shared by every test's
-    /// `DrawCtx`, so tests stay deterministic without threading an owned
-    /// `Anims` through each call site.
-    fn test_anims() -> &'static crate::anim::Anims {
-        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
-        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
-    }
-
     fn ctx<'a>(theme: &'a Theme, hovered: Option<&'a Hit>) -> DrawCtx<'a> {
         DrawCtx {
             theme,
@@ -2372,7 +2364,7 @@ mod tests {
             hovered,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         }
     }
@@ -2873,7 +2865,7 @@ mod tests {
             hovered: None,
             pointer: None,
             dragging: false,
-            anims: test_anims(),
+            anims: crate::anim::Anims::for_tests(),
             now: std::time::Instant::now(),
         };
 

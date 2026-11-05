@@ -27,7 +27,7 @@ pub mod split_control;
 
 pub use button::{BUTTON_HEIGHT, Button, ButtonKind, TitleButtons, button_min_width};
 pub use cap::{CAP_H, capped};
-pub use chip::{Chip, TabStrip};
+pub use chip::{Chip, TabStrip, Underline};
 pub use field::{FIELD_HEIGHT, FIELD_PAD, TextField};
 pub use frac::frac_vspan;
 pub use panel::{

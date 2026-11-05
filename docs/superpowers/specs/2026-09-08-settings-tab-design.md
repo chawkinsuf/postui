@@ -174,6 +174,13 @@ the session. That is current behaviour and stays as-is.
   and width already animate as separate keys, `AnimKey::TabUnderline`
   and `AnimKey::TabUnderlineWidth`).
 
+  Amended 2026-11-05 (#119): the underline is aimed by `TabStrip::paint`
+  itself, from the area and spans it paints, so `ManageTab::strip_spans`,
+  the recorded strip width, the open-screen clear and both `AnimKey`s are
+  gone. A screen that was not painted last frame places the underline; a
+  switch glides; a resize keeps it under its label at once. See
+  `2026-11-05-tabstrip-owns-underline-design.md`.
+
 ### Narrow bars
 
 Settings keeps a **minimum 2-column gap** after Spaces. Because
