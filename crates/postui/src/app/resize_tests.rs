@@ -489,11 +489,12 @@ fn a_first_split_change_eases_from_the_drawn_value() {
     }
 }
 
-/// Task #251: with debug assertions, an update with one of the split's
-/// keys unset panics, for each of the three (the tests below). Nothing
-/// changes, so each pins that the check runs before the no-change return
-/// and a set built without the snap is caught on its first update. A snap
-/// on an unset key needs no test of its own: every app's first set is
+/// Tasks #252 and #251: with debug assertions, an update with one of the
+/// split's keys unset panics, for each of the three (the tests below).
+/// Nothing changes, so each pins that the check runs before the no-change
+/// return and a set built without the snap is caught on its first update.
+/// A change needs no test of its own: it passes the same check first. A
+/// snap on an unset key needs none either: every app's first set is
 /// snapped in that way (`reset_anims`).
 #[cfg(debug_assertions)]
 fn update_with_unset(key: crate::anim::AnimKey) {
@@ -504,21 +505,21 @@ fn update_with_unset(key: crate::anim::AnimKey) {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "PaneCollapse eased while unset")]
+#[should_panic(expected = "PaneCollapse is unset")]
 fn an_update_with_an_unset_pane_collapse_panics_in_debug() {
     update_with_unset(crate::anim::AnimKey::PaneCollapse);
 }
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "ResponseCollapse eased while unset")]
+#[should_panic(expected = "ResponseCollapse is unset")]
 fn an_update_with_an_unset_response_collapse_panics_in_debug() {
     update_with_unset(crate::anim::AnimKey::ResponseCollapse);
 }
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "SplitRatio eased while unset")]
+#[should_panic(expected = "SplitRatio is unset")]
 fn an_update_with_an_unset_split_ratio_panics_in_debug() {
     update_with_unset(crate::anim::AnimKey::SplitRatio);
 }

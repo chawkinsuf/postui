@@ -2694,12 +2694,11 @@ impl App {
     /// does [`Self::reset_anims`], where every anim set is built, so the
     /// three are always set and a first ease starts from the split drawn.
     ///
-    /// Builds with debug assertions check that on each ease, with a
-    /// `debug_assert!` that the key is set, made before the sync writes
-    /// anything ([`Self::sync_split_anim`]); a snap needs none, since it is
-    /// what sets it. The check runs on every eased sync, before the
-    /// no-change return, so a set built without the snap is caught on its
-    /// first `update`, change or none.
+    /// Builds with debug assertions check that on every eased sync, with a
+    /// `debug_assert!` that the key is set, made before the no-change
+    /// return ([`Self::sync_split_anim`]), so a set built without the snap
+    /// is caught on its first `update`, change or none; a snap needs none,
+    /// since it is what sets it.
     /// It checks with animations off too, where an unset key only jumps as
     /// a set one would: the rule is how a set is built, and a set built
     /// without the snap would ease wrong once animations are turned on.
@@ -2731,7 +2730,7 @@ impl App {
             return;
         }
         let cur = self.anims.target(key);
-        debug_assert!(cur.is_some(), "{key:?} eased while unset (see `sync_split_anims`)");
+        debug_assert!(cur.is_some(), "{key:?} is unset (see `sync_split_anims`)");
         if cur == Some(target_v) {
             return;
         }
