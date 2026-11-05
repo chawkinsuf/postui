@@ -29272,6 +29272,70 @@ fn bare_motion_after_a_lost_release_promotes_nothing_where_the_terminal_reports_
 }
 
 #[test]
+fn bare_motion_after_a_lost_release_ends_a_live_row_drag_where_the_terminal_reports_held_drags() {
+    // #250: a row drag driven by `Drag(Left)` whose release is lost ends
+    // at the first bare `Moved`, as the next press would end it: the rows
+    // snap back, nothing is written, and the `Moved` is a hover.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(dragged(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    render_once(&mut app);
+
+    assert!(app.handle_mouse(moved(r0.x + 2, r1.y)), "the end repaints");
+    assert!(app.sidebar.drag.is_none(), "the drag is over");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    assert_eq!(app.hovered, Some(Hit::SidebarRow(1)));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none(), "hover moves nothing");
+    assert_eq!(saved_order(&dir), THREE_ROWS, "nothing written");
+}
+
+#[test]
+fn a_held_drag_of_any_button_shows_the_terminal_reports_held_drags() {
+    // A right or middle button's `Drag` proves the terminal tracks buttons
+    // as a left one's does, so a bare `Moved` after it is a hover too.
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    for button in [MouseButton::Right, MouseButton::Middle] {
+        let (mut app, dir) = three_row_app();
+        let r0 = row_rect(&mut app, 0);
+        let r2 = row_rect(&mut app, 2);
+        let held = MouseEventKind::Drag(button);
+        app.handle_mouse(MouseEvent {
+            kind: held,
+            column: r0.x + 2,
+            row: r0.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        // Its release is lost.
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        assert!(app.sidebar.drag.is_none(), "{button:?}: no drag under no button");
+        assert_eq!(app.sidebar_press, None, "{button:?}: the press is over");
+        assert_eq!(saved_order(&dir), THREE_ROWS, "{button:?}");
+    }
+}
+
+#[test]
+fn bare_motion_after_a_lost_release_ends_a_thumb_drag_and_a_text_sweep() {
+    // The same rule for the other drag kinds the button holds.
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(dragged(r0.x + 2, r0.y));
+    app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
+    app.text_drag = Some(TextDrag::Field(crate::keyroute::FieldId::Body));
+
+    assert!(app.handle_mouse(moved(r0.x + 2, r2.y)), "the end repaints");
+    assert!(app.drag.is_none(), "the thumb drag ended");
+    assert!(app.text_drag.is_none(), "the text sweep ended");
+    assert_eq!(app.hovered, Some(Hit::SidebarRow(2)), "a hover");
+}
+
+#[test]
 fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     // The same lost release leaves every other drag kind live too. A real
     // press proves the button is up: the thumb drag and the text sweep
@@ -29819,6 +29883,29 @@ fn a_space_drag_snaps_back_on_a_release_outside_escape_or_a_right_click() {
         if cancel == "right-click" {
             assert!(app.modals.top().is_none(), "no context menu opened");
         }
+    }
+}
+
+#[test]
+fn bare_motion_after_a_lost_release_ends_a_space_press_or_drag_where_the_terminal_reports_held_drags()
+ {
+    // #250's rule on the Manage list: once the terminal has sent a held
+    // drag, a bare `Moved` means the button is up. An armed press promotes
+    // nothing, and a live drag snaps back, writing nothing.
+    for live in [false, true] {
+        let (mut app, dir) = manage_spaces_app();
+        let r0 = manage_row(&mut app, 0);
+        let r2 = manage_row(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(dragged(r0.x + 3, if live { r2.y } else { r0.y }));
+        assert_eq!(app.manage.list.drag.is_some(), live, "live {live}");
+        render_once(&mut app);
+
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        assert!(app.manage.list.drag.is_none(), "live {live}: no drag under no button");
+        assert!(app.manage_press.is_none(), "live {live}: the press is over");
+        assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "live {live}");
+        assert_eq!(app.proj().spaces(), ["main", "auth", "billing"], "live {live}");
     }
 }
 

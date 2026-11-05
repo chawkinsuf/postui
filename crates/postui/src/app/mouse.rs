@@ -175,13 +175,22 @@ impl App {
         // drops on the first event landing elsewhere. (The tip hits in
         // the map all belong to `drawn_tip` — one tip per frame.)
         self.tip_held = under.as_ref().and_then(Hit::tip_name).is_some();
+        self.reports_held_drags |= matches!(m.kind, MouseEventKind::Drag(_));
 
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
             // not `Moved`, so a thumb drag arrives as either depending on
             // whether the terminal tracks button state; both drive the drag.
             MouseEventKind::Moved | MouseEventKind::Drag(MouseButton::Left) => {
-                self.reports_held_drags |= m.kind != MouseEventKind::Moved;
+                // A terminal that has sent a `Drag` sends a bare `Moved`
+                // only with the button up, so whatever the button held lost
+                // its release: it ends here as the next press would end it
+                // (#250), and the `Moved` is a hover.
+                let mut ended = false;
+                if m.kind == MouseEventKind::Moved && self.reports_held_drags {
+                    ended = self.drag_live();
+                    self.cancel_stale_drags(None);
+                }
                 // A live sidebar row drag owns every motion event until the
                 // button comes up, whichever pane the pointer wanders over.
                 if self.sidebar.drag.is_some() {
@@ -192,21 +201,14 @@ impl App {
                 // handle (it stays lit) until the release. It follows
                 // `Moved` too, for the reason this arm's header gives:
                 // terminals that don't track button state report a held
-                // drag as `Moved`. Once this drag has had a `Drag(Left)`,
-                // though, the terminal does track it, so a bare `Moved`
-                // means the button is up and the release was lost (review
-                // round 7 M5): the resize ends there, as a release would,
-                // and the `Moved` is a hover. Any other lost release is
-                // caught by the next press or a focus loss. Every end keeps
-                // the size where it got to and saves it (spec P2a).
+                // drag as `Moved`. Every end keeps the size where it got to
+                // and saves it (spec P2a).
                 // A key can also take the Main screen away mid-drag (`alt+r`
                 // to Manage, a dialog such as the palette): the resize ends
                 // at the next motion too, which then sizes nothing it can't
                 // show (review round 8 N4).
-                if let Some(drag) = &mut self.resize {
-                    let lost = m.kind == MouseEventKind::Moved && drag.tracked;
-                    drag.tracked |= m.kind != MouseEventKind::Moved;
-                    if lost || self.screen != Screen::Main || !self.modals.is_empty() {
+                if self.resize.is_some() {
+                    if self.screen != Screen::Main || !self.modals.is_empty() {
                         self.finish_resize();
                         self.resync_hover();
                         return true;
@@ -243,14 +245,6 @@ impl App {
                 // (spec 2026-11-02 D13), so reaching it promotes like a row
                 // does: a press on the last row can be dragged straight
                 // down and out of its folder.
-                // A terminal that has sent a `Drag(Left)` sends a bare
-                // `Moved` only with the button up, so an armed press seeing
-                // one lost its release: it is over, and opens nothing
-                // (#250). From a terminal that has sent none, a `Moved` may
-                // be a held drag, and it still promotes.
-                if m.kind == MouseEventKind::Moved && self.reports_held_drags {
-                    self.sidebar_press = None;
-                }
                 let other_drag = self.drag.is_some() || self.text_drag.is_some();
                 let on_row = matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)));
                 let below = !on_row
@@ -352,7 +346,7 @@ impl App {
                 if hit_changed {
                     self.begin_hover_fade();
                 }
-                changed
+                changed || ended
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 // A real left press cannot arrive while a sidebar drag is
@@ -373,8 +367,8 @@ impl App {
                 // keep tracking bare pointer motion, and a stale press
                 // (its release lost the same way) would promote a row drag
                 // out from under whatever this press starts. `on_hit`
-                // arms a press when this click's row is still under the
-                // pointer after the snap-back.
+                // arms a press when the pointer is still on this click's
+                // row block after the snap-back.
                 // `{{token}}` overlays are skipped: a click on one is a
                 // click on the text it sits in (caret placement, cell
                 // edit), never a dialog — the tooltip's edit pill is the
@@ -795,7 +789,8 @@ impl App {
     ///
     /// Only the release knows that the press did not become a drag, so a
     /// press whose release never arrives opens nothing; it has selected
-    /// the row. The next press, or a focus loss, ends what it left armed
+    /// the row. The next press, a focus loss, or a bare `Moved` from a
+    /// terminal that reports held drags ends what it left armed
     /// (`cancel_stale_drags`). That recovery click selects the row that was
     /// painted under the pointer, and arms it only if the snap-back left it
     /// there (`on_hit`, #250); otherwise a second click opens.
@@ -845,8 +840,9 @@ impl App {
 
     /// Ends every drag a lost button release can leave live — the two row
     /// drags, a scrollbar thumb drag, a text sweep, a pane resize — and
-    /// disarms both row presses, because a fresh button press (or a focus
-    /// loss) proves the button that started them is no longer held.
+    /// disarms both row presses, because a fresh button press, a focus
+    /// loss, or a bare `Moved` from a terminal that reports held drags
+    /// proves the button that started them is no longer held.
     /// Nothing is written but a resize's size, which is kept and saved.
     ///
     /// `hit` is the click being handled, resolved against the last frame.
@@ -891,6 +887,17 @@ impl App {
         // saved, like a thumb drag and unlike a row reorder (spec P2a).
         self.finish_resize();
         hit
+    }
+
+    /// Whether a drag is live: a row drag, a scrollbar thumb drag, a text
+    /// sweep or a pane resize. An armed press that has not become a drag
+    /// is not one.
+    fn drag_live(&self) -> bool {
+        self.sidebar.drag.is_some()
+            || self.manage.list.drag.is_some()
+            || self.drag.is_some()
+            || self.text_drag.is_some()
+            || self.resize.is_some()
     }
 
     /// Terminal focus left the window. A button held at that moment is
@@ -941,11 +948,7 @@ impl App {
     ///
     /// Returns whether a repaint is needed.
     pub fn on_focus_lost(&mut self) -> bool {
-        let live = self.sidebar.drag.is_some()
-            || self.manage.list.drag.is_some()
-            || self.drag.is_some()
-            || self.text_drag.is_some()
-            || self.resize.is_some();
+        let live = self.drag_live();
         let lit = self.hovered.is_some() || self.hovered_token.is_some();
         self.cancel_stale_drags(None);
         self.hovered = None;
@@ -988,12 +991,7 @@ impl App {
 
     /// [`Self::resync_hover`]'s styling half: `hovered`/`hovered_token`.
     fn resync_hover_styling(&mut self) -> bool {
-        if self.drag.is_some()
-            || self.text_drag.is_some()
-            || self.resize.is_some()
-            || self.sidebar.drag.is_some()
-            || self.manage.list.drag.is_some()
-        {
+        if self.drag_live() {
             return false;
         }
         let Some((x, y)) = self.pointer else {
@@ -1976,13 +1974,13 @@ impl App {
             Hit::SidebarRow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);
-                // The press arms its row only when the row is under the
-                // pointer in the rows as they are now. A press that ended a
-                // stale row drag (`cancel_stale_drags`) selects the row that
-                // was painted there, and the snap-back can move it away: an
-                // armed press then becomes a drag at the first motion, and
-                // its release drops it there (#250). Such a press selects
-                // only.
+                // The press arms its row only when the pointer is on the
+                // row's block (`on_row_block`) in the rows as they are now.
+                // A press that ended a stale row drag (`cancel_stale_drags`)
+                // selects the row that was painted there, and the snap-back
+                // can move its block away: an armed press then becomes a
+                // drag at the first motion, and its release drops it there
+                // (#250). Such a press selects only.
                 let armed = self.on_row_block(i, m.column, m.row);
                 let arm = |key| armed.then_some(key);
                 match self.sidebar.rows.get(i).cloned() {
@@ -2170,7 +2168,7 @@ impl App {
                         start: self.split_state(),
                     }
                 };
-                self.resize = Some(ResizeDrag { kind, moved: false, tracked: false });
+                self.resize = Some(ResizeDrag { kind, moved: false });
                 if self.hovered.as_ref() != Some(&hit) {
                     self.hovered = Some(hit);
                     self.begin_hover_fade();
