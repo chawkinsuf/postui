@@ -5095,13 +5095,11 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
+                // Only a move of the open request leaves it, so only that
+                // one is gated; any other leaves an open cell alone.
                 let moving_open = self.editor.slug.as_deref() == Some(slug.as_str());
-                if moving_open && self.leaving_unsaved() {
-                    self.dirty_gate("move", Action::ForceMoveRequestToSpace { slug, space });
-                } else {
-                    self.apply(Action::ForceMoveRequestToSpace { slug, space });
-                }
-                true
+                let force = Action::ForceMoveRequestToSpace { slug, space };
+                if moving_open { self.apply_gated("move", force) } else { self.apply(force) }
             }
             Action::ForceMoveRequestToSpace { slug, space } => {
                 let display_before = self.request_display(&slug);
@@ -8422,12 +8420,9 @@ impl App {
                 // reloads the editor from disk — so unsaved edits to a
                 // request living in `from` are gated exactly like a space
                 // switch.
-                if self.open_in_space(&from) && self.leaving_unsaved() {
-                    self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
-                } else {
-                    self.apply(Action::ForceMoveAllRequests { from, to });
-                }
-                true
+                let gated = self.open_in_space(&from);
+                let force = Action::ForceMoveAllRequests { from, to };
+                if gated { self.apply_gated("move", force) } else { self.apply(force) }
             }
             Action::ForceMoveAllRequests { from, to } => {
                 let open = self.editor.slug.clone();
@@ -11330,9 +11325,9 @@ impl App {
     /// save could not keep it (a row needs a name), so it stays outside
     /// the request and goes with the request, as on main (task #68).
     ///
-    /// It commits, so a guard puts it last: `moving_open &&
-    /// leaving_unsaved()` commits only when the gate applies, and a move
-    /// that does not touch the open request leaves its cell alone.
+    /// It commits, so a guard comes first: a move gates through
+    /// [`Self::apply_gated`] only when it moves the open request, and one
+    /// that does not touch it leaves its cell alone.
     ///
     /// The other open inputs close with the cell (`close_open_inputs`,
     /// task #75): what follows the gate changes the app state, and the
@@ -11350,9 +11345,18 @@ impl App {
     /// Save or Discard (task #69).
     ///
     /// `then`'s own answer when it runs; `true` when the gate asks, since
-    /// its dialog is a change to draw. An input that refuses to close does
-    /// not stop it (`leaving_unsaved` goes on past a refusal): a `then`
-    /// that stops on one goes through [`Self::apply_gated_or_stop`].
+    /// its dialog is a change to draw.
+    ///
+    /// An input that refuses to close does not stop it (`leaving_unsaved`
+    /// goes on past a refusal, task #75's "the dirty gate's check"): a
+    /// request's open, create, duplicate or move, or a space switch, writes
+    /// nothing a Manager or Settings input belongs to, so the refused
+    /// typing can stay open across it
+    /// (`a_refused_close_in_the_dirty_gate_check_fails_no_action`). A
+    /// change that does touch that state stops first: a project switch or
+    /// create through [`Self::apply_gated_or_stop`], whose name keeps the
+    /// choice in sight at each call site, and a Replace with curl before it
+    /// gets here (`replace_with_curl`).
     fn apply_gated(&mut self, verb: &str, then: Action) -> bool {
         if self.leaving_unsaved() {
             self.dirty_gate(verb, then);
@@ -11367,6 +11371,11 @@ impl App {
     /// instead keeps it from asking first, so a Discard never throws the
     /// request's edits away for a switch that then does not happen
     /// (`a_refused_input_stops_a_project_switch_before_its_gate`).
+    ///
+    /// It answers nothing: its callers report a change whatever happens. A
+    /// refusal toasted, and a create's init can toast warnings before its
+    /// switch answers `false` (a create at the open project's own path),
+    /// so passing `then`'s answer on would leave those undrawn.
     fn apply_gated_or_stop(&mut self, verb: &str, then: Action) {
         if self.close_inputs_or_stop(true) {
             self.apply_gated(verb, then);
