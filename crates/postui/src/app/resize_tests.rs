@@ -489,33 +489,41 @@ fn a_first_split_change_eases_from_the_drawn_value() {
     }
 }
 
-/// Task #252: in a debug build, easing one of the split's anims while its
-/// key is unset panics, for each of the three, so a set built without the
-/// snap is caught by the first test that changes the split.
+/// Task #252: with debug assertions, easing one of the split's anims while
+/// its key is unset panics, for each of the three (the tests below), so a
+/// set built without the snap is caught by the first test that changes the
+/// split. A snap on an unset key needs no test of its own: every app's
+/// first set is snapped in that way (`reset_anims`).
+#[cfg(debug_assertions)]
+fn ease_with_unset(key: crate::anim::AnimKey, next: SplitState) {
+    let mut app = App::new_for_test();
+    app.anims.clear(key);
+    app.set_split_fields(next);
+    app.update(Action::Tick);
+}
+
 #[cfg(debug_assertions)]
 #[test]
-fn easing_an_unset_split_anim_panics_in_debug() {
-    use crate::anim::AnimKey;
-    let drawn = SplitState::default();
-    for (key, next) in [
-        (AnimKey::PaneCollapse, SplitState { editor_minimized: true, ..drawn }),
-        (AnimKey::ResponseCollapse, SplitState { response_minimized: true, ..drawn }),
-        (AnimKey::SplitRatio, SplitState { ratio: 0.25, ..drawn }),
-    ] {
-        let mut app = App::new_for_test();
-        app.anims.clear(key);
-        app.set_split_fields(next);
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app.update(Action::Tick);
-        }))
-        .expect_err("easing an unset key panics");
-        let message = panic
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or_default();
-        assert!(message.contains(&format!("{key:?} eased while unset")), "{key:?}: {message}");
-    }
+#[should_panic(expected = "PaneCollapse eased while unset")]
+fn easing_an_unset_pane_collapse_panics_in_debug() {
+    let next = SplitState { editor_minimized: true, ..SplitState::default() };
+    ease_with_unset(crate::anim::AnimKey::PaneCollapse, next);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "ResponseCollapse eased while unset")]
+fn easing_an_unset_response_collapse_panics_in_debug() {
+    let next = SplitState { response_minimized: true, ..SplitState::default() };
+    ease_with_unset(crate::anim::AnimKey::ResponseCollapse, next);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "SplitRatio eased while unset")]
+fn easing_an_unset_split_ratio_panics_in_debug() {
+    let next = SplitState { ratio: 0.25, ..SplitState::default() };
+    ease_with_unset(crate::anim::AnimKey::SplitRatio, next);
 }
 
 /// Task #93 (P5): with animations on, a project switch draws the next

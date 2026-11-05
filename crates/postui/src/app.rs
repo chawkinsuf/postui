@@ -2605,16 +2605,16 @@ impl App {
         if target == self.pane_collapsed_target && !snap {
             return;
         }
+        debug_assert!(
+            snap || self.anims.target(AnimKey::PaneCollapse).is_some(),
+            "PaneCollapse eased while unset (see `sync_split_anims`)"
+        );
         self.pane_collapsed_target = target;
         let target_v = if target { 1.0 } else { 0.0 };
         if snap {
             self.anims.snap(AnimKey::PaneCollapse, target_v);
             return;
         }
-        debug_assert!(
-            self.anims.target(AnimKey::PaneCollapse).is_some(),
-            "PaneCollapse eased while unset (see `sync_split_anims`)"
-        );
         self.anims.retarget(
             AnimKey::PaneCollapse,
             target_v,
@@ -2633,16 +2633,16 @@ impl App {
         if target == self.response_collapsed_target && !snap {
             return;
         }
+        debug_assert!(
+            snap || self.anims.target(AnimKey::ResponseCollapse).is_some(),
+            "ResponseCollapse eased while unset (see `sync_split_anims`)"
+        );
         self.response_collapsed_target = target;
         let target_v = if target { 1.0 } else { 0.0 };
         if snap {
             self.anims.snap(AnimKey::ResponseCollapse, target_v);
             return;
         }
-        debug_assert!(
-            self.anims.target(AnimKey::ResponseCollapse).is_some(),
-            "ResponseCollapse eased while unset (see `sync_split_anims`)"
-        );
         self.anims.retarget(
             AnimKey::ResponseCollapse,
             target_v,
@@ -2763,12 +2763,13 @@ impl App {
     /// does [`Self::reset_anims`], where every anim set is built, so the
     /// three are always set and a first ease starts from the split drawn.
     ///
-    /// Debug and test builds check that on each ease, with a `debug_assert!`
-    /// that the key is set; a snap needs none, since it is what sets it.
-    /// It checks with animations off too, where an unset key only jumps as
-    /// a set one would: the rule is how a set is built, and a set built
-    /// without the snap would ease wrong once animations are turned on.
-    /// A release build checks nothing: a set built anywhere else would still
+    /// Builds with debug assertions check that on each ease, with a
+    /// `debug_assert!` that the key is set, made before the sync writes
+    /// anything; a snap needs none, since it is what sets it. It checks
+    /// with animations off too, where an unset key only jumps as a set one
+    /// would: the rule is how a set is built, and a set built without the
+    /// snap would ease wrong once animations are turned on.
+    /// Other builds check nothing: a set built anywhere else would still
     /// draw the right split, but its first change would jump instead of easing
     /// (`Anims::retarget` starts an unset key at its target) and keep the
     /// loop redrawing, with nothing moving, for one ease's length.
@@ -3060,15 +3061,15 @@ impl App {
         if target == self.split_ratio_target && !snap {
             return;
         }
+        debug_assert!(
+            snap || self.anims.target(AnimKey::SplitRatio).is_some(),
+            "SplitRatio eased while unset (see `sync_split_anims`)"
+        );
         self.split_ratio_target = target;
         if snap {
             self.anims.snap(AnimKey::SplitRatio, target);
             return;
         }
-        debug_assert!(
-            self.anims.target(AnimKey::SplitRatio).is_some(),
-            "SplitRatio eased while unset (see `sync_split_anims`)"
-        );
         self.anims.retarget(
             AnimKey::SplitRatio,
             target,
