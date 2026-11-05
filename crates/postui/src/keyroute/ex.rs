@@ -578,6 +578,10 @@ mod tests {
             spelling(&Action::CloseWindow { write: false, force: false }).as_deref(),
             Some(":q")
         );
+        // The quit chip on Manage reads this (task #87). `spell` asks the
+        // ex verb only after the keymap's combo, and `^C` is always
+        // `Quit`'s (`Keymap::rebind`), so the palette's Quit row keeps `^C`
+        // (palette's `vim_rows_name_the_keys_the_footer_names`).
         assert_eq!(spelling(&Action::Quit).as_deref(), Some(":qa"));
         assert_eq!(spelling(&Action::CycleSplit).as_deref(), Some(":split"));
         assert_eq!(spelling(&Action::CycleSplitBack).as_deref(), Some(":splitback"));

@@ -114,8 +114,10 @@ Amended 2026-11-05 (task #87, `mine`): with the two acting alike,
 `GatedQuit` is gone. `:qa`, `:q` off Manage and the palette's Quit row run
 `Quit`. The quit chip's keycap is decided by the surface (vim where the
 `:` line opens: the ex verb the chip runs, `:q` or `:qa`; else `Quit`'s
-key), not by the variant, and its hover reads "Quit postui" in both
-profiles (vim's `:qa` chip on Manage read the palette row's "Exit postui").
+key), not by the variant. The chips that run `Quit` hover "Quit postui":
+arrows' chip, and vim's `:qa` chip on Manage, which read the palette
+row's "Exit postui". Vim's `:q` chip off Manage runs `CloseWindow` and
+keeps its own "Quit postui, asking first about unsaved changes".
 
 ## 4. Tests
 

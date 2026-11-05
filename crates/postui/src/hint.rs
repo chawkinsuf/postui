@@ -867,15 +867,26 @@ mod tests {
         assert!(hint_for(&Hit::FooterChip(Action::Quit), &keymap, &ctx()).is_some());
     }
 
-    /// The quit chip reads the footer's wording, not the palette row's
-    /// "Exit postui", whichever surface it quits from (task #87).
+    /// The `Quit` chip reads the footer's wording, not the palette row's
+    /// "Exit postui": arrows' chip, and vim's `:qa` chip on Manage, which
+    /// read "Exit postui" before task #87.
     #[test]
     fn the_quit_chip_hint_is_the_footers_wording() {
-        let keymap = Keymap::default_bindings();
-        assert_eq!(
-            hint_for(&Hit::FooterChip(Action::Quit), &keymap, &ctx()).as_deref(),
-            Some("Quit postui")
-        );
+        use crate::config::KeyProfile;
+        use crate::keyroute::Surface;
+        let envs = Surface::ManageList(crate::components::manage::ManageTab::Environments);
+        for (profile, surface) in [(KeyProfile::Arrows, Surface::Sidebar), (KeyProfile::Vim, envs)]
+        {
+            let keymap = Keymap::default_bindings_for(profile);
+            let mut at = ctx();
+            at.spell.profile = profile;
+            at.spell.surface = surface;
+            assert_eq!(
+                hint_for(&Hit::FooterChip(Action::Quit), &keymap, &at).as_deref(),
+                Some("Quit postui"),
+                "{profile:?} on {surface:?}"
+            );
+        }
     }
 
     /// A palette caveat in parentheses stays in the palette.

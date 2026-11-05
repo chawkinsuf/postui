@@ -155,8 +155,9 @@ pub enum Action {
     /// twice, the palette's Quit row, vim's `:qa` (and `:q` off Manage,
     /// `CloseWindow`) and the footer's quit chip. Refused while a dialog
     /// is open (task #85, `App::quit_refused`), so a quit never discards
-    /// edits by itself; the line's way out is `:q!`. Once one variant for
-    /// the key and the ex verb, merged by task #87.
+    /// edits by itself; the line's way out is `:q!`. The key's quit and
+    /// the ex verb's (`GatedQuit`) were two variants until task #87 merged
+    /// them.
     Quit,
     /// Quit without the unsaved-changes gate — what the gate's own choices
     /// dispatch once the user has decided.

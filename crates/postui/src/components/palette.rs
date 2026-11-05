@@ -1285,7 +1285,7 @@ mod tests {
 
     /// Task #105: a row shows the key bound to its own action, so the
     /// eight rows a hand-kept name table missed show theirs, in both
-    /// profiles; Quit keeps `^C` through its one exception; and "Manage:
+    /// profiles; Quit keeps `^C`; and "Manage:
     /// variables" shows none: `alt+r` opens the tab Manage last had, not
     /// Variables.
     #[test]
