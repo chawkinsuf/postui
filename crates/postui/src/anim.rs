@@ -72,6 +72,11 @@ pub enum AnimKey {
     UrlWellHover,
     FocusFade,
     ModalOpen,
+    /// The editor pane's hide/show collapse (0.0 shown → 1.0 hidden).
+    /// This key, [`AnimKey::ResponseCollapse`] and [`AnimKey::SplitRatio`]
+    /// are written only by `App::sync_split_anims`, which compares each
+    /// with its own target on every update, so a write from anywhere else
+    /// is undone on the next one.
     PaneCollapse,
     /// The Response pane's hide/show collapse (0.0 shown → 1.0 hidden),
     /// driven by `Action::ToggleResponseCollapse` with the same easing and
