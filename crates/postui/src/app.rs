@@ -5168,13 +5168,6 @@ impl App {
                     self.apply(force)
                 }
             }
-            Action::ForceCreateRequest(name) => {
-                if self.refuse_without_project() {
-                    return true;
-                }
-                self.create_or_save_as(&name, NewAt::Cursor, blank_request);
-                true
-            }
             Action::ForceCreateRequestAt { level, after, name } => {
                 if self.refuse_without_project() {
                     return true;

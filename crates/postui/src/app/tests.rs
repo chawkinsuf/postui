@@ -23990,7 +23990,8 @@ mod undo_tests {
         let clean_url = "https://x/1".to_string();
         assert_ne!(dirty_url, clean_url);
         app.update(Action::DeleteRequest("main/beta".into()));
-        app.update(Action::ForceCreateRequest("fresh".into()));
+        app.update(Action::CreateRequest("fresh".into()));
+        app.handle_key(plain('d')); // Discard changes: alpha's z edit is unsaved
         assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
         app.update(Action::Undo);
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
@@ -24014,7 +24015,8 @@ mod undo_tests {
         app.update(Action::ForceOpenRequest("main/alpha".into()));
         assert!(!app.editor.is_dirty(), "alpha reopened clean off disk");
         let clean_url = app.editor.url.text().to_string();
-        app.update(Action::ForceCreateRequest("fresh".into()));
+        app.update(Action::CreateRequest("fresh".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"), "no dirty gate to stop it");
         app.update(Action::Undo);
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
         assert_eq!(app.editor.url.text(), clean_url);
@@ -24344,7 +24346,7 @@ mod undo_tests {
         let steps: Vec<(&str, Action)> = vec![
             ("open", Action::ForceOpenRequest("main/alpha".into())),
             ("open foldered", Action::ForceOpenRequest("main/sub/inner".into())),
-            ("create", Action::ForceCreateRequest("fresh".into())),
+            ("create", Action::CreateRequest("fresh".into())),
             ("undo create", Action::Undo),
             ("redo create", Action::Redo),
             ("duplicate", Action::DuplicateRequest),
@@ -24380,6 +24382,9 @@ mod undo_tests {
         ];
         for (name, action) in steps {
             app.update(action);
+            // A step stopped at a dialog (an unsaved-changes gate on the
+            // create, say) would leave the rows after it testing nothing.
+            assert!(app.modals.is_empty(), "a dialog opened at: {name}");
             check(&app, name);
         }
 
@@ -27604,7 +27609,7 @@ fn the_scratch_follows_its_request_through_rename_and_delete() {
     assert_eq!((moved.jq.as_deref(), moved.jq_current.as_deref()), (Some(".s"), Some("names")));
 
     app.update(Action::DeleteRequest("main/q".into()));
-    app.update(Action::ForceCreateRequest("q".into()));
+    app.update(Action::CreateRequest("q".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/q"));
     assert_eq!(app.editor.jq, "", "a new request starts bare");
     assert!(app.editor.jq_views.is_empty());
