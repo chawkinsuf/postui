@@ -64,6 +64,9 @@ pub enum FieldSpell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Surface {
     Sidebar,
+    /// A live keyboard move on the sidebar (spec 2026-11-03 create folders
+    /// F31): it owns the keyboard, so only its own keys bind.
+    SidebarMove,
     /// The URL line, selected or open, and the editor pane with nothing
     /// selected (plan M1 Deviation 14).
     UrlLine,
@@ -199,8 +202,9 @@ pub struct EngineView {
 impl Surface {
     /// One surface of every kind, for tests that walk the table.
     #[cfg(test)]
-    pub(crate) const SAMPLES: [Surface; 19] = [
+    pub(crate) const SAMPLES: [Surface; 20] = [
         Surface::Sidebar,
+        Surface::SidebarMove,
         Surface::UrlLine,
         Surface::Method,
         Surface::Table(EditorTab::Params),

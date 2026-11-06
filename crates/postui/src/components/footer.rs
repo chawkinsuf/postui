@@ -191,14 +191,10 @@ pub(crate) fn footer_chips(
                 "delete",
                 Some(Action::OnSelection(Verb::Delete { count: 1 })),
             ),
-            // Space *switching* is the header's job (its space pill and
-            // cycle pill); the sidebar's own space action is moving the
-            // selected request into another one.
-            (
-                Key::Of(Action::OnSelection(Verb::Move)),
-                "move",
-                Some(Action::PromptMoveSelectedRequestToSpace),
-            ),
+            // The keyboard move (spec 2026-11-03 create folders F31, F32).
+            // Move to space (`M`) has no chip: the row has no room, and it
+            // stays in the row menu and the palette.
+            (Key::Of(Action::OnSelection(Verb::Move)), "move", Some(Action::StartKeyMove)),
             (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
             // The sidebar takes no text: a paste there imports its curl
             // (spec 2026-10-15 curl import visibility V9).

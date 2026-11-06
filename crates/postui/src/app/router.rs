@@ -120,6 +120,7 @@ impl App {
     /// sideways steps too (`{N}l`), never 0 (a plain `j` is one step):
     /// - the sidebar: two per row (an `h` collapses a folder, the next
     ///   steps to its parent);
+    /// - a keyboard move: its places;
     /// - a table: its rows and the add row, and at least its two columns;
     /// - the response: its lines, or its widest line as last drawn (the
     ///   whole count while that is unmeasured);
@@ -131,6 +132,8 @@ impl App {
         use crate::keyroute::MAX_COUNT;
         let most = match surface {
             Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
+            // A keyboard move's places (spec 2026-11-03 create folders F31).
+            Surface::SidebarMove => self.sidebar.key_move_reach(),
             // Every stop: the rows, `+ Add`, and the section's rows under
             // it (task #56). A move out of an open cell never goes past
             // `+ Add`, so the section (a scan of every field on Vars) is
@@ -243,6 +246,11 @@ impl App {
 
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
+        // A live keyboard move owns the keyboard as a mouse drag does, ahead
+        // of anything over it (spec 2026-11-03 create folders F31).
+        if self.sidebar.key_move() {
+            return Surface::SidebarMove;
+        }
         match self.modals.top() {
             Some(Modal::Prompt { .. }) => Surface::Prompt,
             Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => {

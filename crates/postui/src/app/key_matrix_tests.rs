@@ -468,7 +468,15 @@ const CASES: &[Case] = &[
     // are the same in both profiles (the user's rule).
     vim("L.verbs", SidebarThree, "a", &[PromptOpen]),
     vim("L.verbs", SidebarThree, "r", &[PromptOpen]),
-    vim("L.verbs", SidebarThree, "m", &[Toast("Only one space")]),
+    // Spec 2026-11-03 create folders F31, F32: `m` is the keyboard move,
+    // `M` Move to space, in both profiles. Other keys are ignored while
+    // moving, Esc puts the row back, Enter drops as one undo step.
+    vim("L.verbs", SidebarThree, "M", &[Toast("Only one space")]),
+    arrows("L.verbs", SidebarThree, "M", &[Toast("Only one space")]),
+    vim_u("L.verbs", SidebarThree, "mj<CR>", &[Requests(&["main/alpha", "main/gamma", "main/beta"]), SidebarSel("main/beta")]),
+    arrows_u("L.verbs", SidebarThree, "m<Down><CR>", &[Requests(&["main/alpha", "main/gamma", "main/beta"]), SidebarSel("main/beta")]),
+    vim("L.verbs", SidebarThree, "mjdd:u<Esc>", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarSel("main/beta"), NoModal, NoToast]),
+    arrows("L.verbs", SidebarThree, "m<Down>d<Esc>", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarSel("main/beta"), NoModal]),
     vim("L.verbs", TableThreeHeaders, "a", &[FieldLive(true)]),
     vim("L.verbs", ManageEnvs, "a", &[PromptOpen]),
     vim("L.verbs", ManageEnvs, "r", &[PromptOpen]),

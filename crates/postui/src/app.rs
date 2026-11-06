@@ -4987,6 +4987,7 @@ impl App {
                 }
                 true
             }
+            Action::StartKeyMove => self.start_key_move(),
             Action::MoveRequestToSpace { slug, space } => {
                 if space == self.active_space() {
                     self.toasts.push(format!("already in {space}"), ToastKind::Warning);
@@ -7853,8 +7854,8 @@ impl App {
                 });
                 if items.is_empty() {
                     // A warning, not an Info note: the user pressed a key
-                    // the footer advertises and nothing happened, so this
-                    // answers "why didn't `m` work" — and it names the
+                    // and nothing happened, so this answers "why didn't `M`
+                    // work" — and it names the
                     // remedy, because "no other space" reads like a
                     // failure rather than a project with one space in it.
                     self.toasts.push(
@@ -10298,14 +10299,68 @@ impl App {
         {
             return false;
         }
+        self.spring_open(&path);
+        true
+    }
+
+    /// Opens the closed folder at `path` for a live drag and puts the block
+    /// in it first: the pointer's spring (D9) and a keyboard move's →
+    /// (spec 2026-11-03 create folders F31). The folder opens as a user
+    /// open does: persisted, and left open after the drop or a cancel
+    /// (D16).
+    fn spring_open(&mut self, path: &str) {
         if let Some(p) = self.project.as_mut() {
             let mut expanded = p.local().expanded.clone();
-            expanded.insert(path.clone());
+            expanded.insert(path.to_string());
             p.set_expanded(expanded);
         }
-        self.sidebar.drag_into(&path);
+        self.sidebar.drag_into(path);
         self.rebuild_sidebar();
-        true
+    }
+
+    /// `m` on a sidebar row (spec 2026-11-03 create folders F31, F32):
+    /// picks the cursor's row up for the keyboard move. An open input
+    /// closes first, as before any change (task #75); the move's drop is
+    /// one.
+    fn start_key_move(&mut self) -> bool {
+        if !self.close_inputs_or_stop(true) {
+            return true;
+        }
+        let space = self.active_space();
+        match self.sidebar.selected {
+            Some(i) => self.sidebar.begin_key_move(i, &space),
+            None => false,
+        }
+    }
+
+    /// A key while a keyboard move is live (F31): ↑/↓ step the block
+    /// through the drag's places, ←/→ pick the level where several end on
+    /// its row, → on a closed folder beside it opens it and puts the block
+    /// in first, Enter drops as a mouse release does. Esc's cancel is
+    /// `route_key`'s, as for a mouse drag. Every other key does nothing.
+    fn key_move_key(&mut self, ev: KeyEvent) -> bool {
+        if !ev.modifiers.is_empty() {
+            return false;
+        }
+        let changed = match ev.code {
+            KeyCode::Enter => return self.finish_sidebar_drag(true),
+            KeyCode::Up => self.sidebar.drag_step(-1),
+            KeyCode::Down => self.sidebar.drag_step(1),
+            KeyCode::Left => self.sidebar.drag_out(),
+            KeyCode::Right if self.sidebar.drag_in() => true,
+            KeyCode::Right => match self.sidebar.closed_beside() {
+                Some(path) => {
+                    self.spring_open(&path);
+                    return true;
+                }
+                None => false,
+            },
+            _ => false,
+        };
+        if changed {
+            self.rebuild_sidebar();
+        }
+        changed
     }
 
     /// Whether `(x, y)` is over the sidebar pane: where a row drag may be
@@ -12460,7 +12515,8 @@ impl App {
             return router::Ran::routed(self.press_quit_combo(combo, armed));
         }
 
-        // A live row drag owns Escape: it cancels the drag, nothing else.
+        // A live row drag owns Escape: it cancels the drag, nothing else. A
+        // keyboard move's too (spec 2026-11-03 create folders F31).
         if ev.code == KeyCode::Esc && self.sidebar.drag.is_some() {
             return router::Ran::routed(self.finish_sidebar_drag(false));
         }
@@ -12475,7 +12531,10 @@ impl App {
         // modified quit combo, Escape) is swallowed here — before modals
         // and before the per-screen routes. The footer says as much: while
         // a drag is live its chips are the cancel keys and nothing else.
-        if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
+        // A keyboard move goes on to the router, whose surface for it
+        // binds only its own keys (`Surface::SidebarMove`), and then to
+        // `key_move_key`.
+        if self.sidebar.mouse_drag() || self.manage.list.drag.is_some() {
             return router::Ran::routed(false);
         }
 
@@ -12512,6 +12571,11 @@ impl App {
     /// router declines takes, and every named key a table row replays
     /// (`j` is Down). It never re-enters the router.
     fn handle_key_routed(&mut self, ev: KeyEvent) -> bool {
+        // A live keyboard move owns the keyboard as a mouse drag does
+        // (spec 2026-11-03 create folders F31).
+        if self.sidebar.key_move() {
+            return self.key_move_key(ev);
+        }
         let combo = KeyCombo::from_event(&ev);
         // A replayed key reads the keymap again: the keymap is only ever
         // swapped by an action, never mid-lookup, so this is the same

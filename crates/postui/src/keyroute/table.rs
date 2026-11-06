@@ -176,6 +176,10 @@ impl Surfaces {
     /// copy keys bind (spec 2026-10-26 H4, H8), so the body views route
     /// those keys as they always have.
     pub const RESPONSE_HEADERS: Self = Self(1 << 24);
+    /// A live keyboard move on the sidebar (spec 2026-11-03 create folders
+    /// F31): no navigation surface, so no other row and no `keys.toml`
+    /// letter reaches it.
+    pub const SIDEBAR_MOVE: Self = Self(1 << 25);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -196,6 +200,9 @@ impl Surfaces {
     /// Where vim builds counts and swallows a bare char no row names (spec
     /// §3.4): the navigation surfaces and the response's V.
     pub const KEYED: Self = Self::NAV.or(Self::RESPONSE_LINES);
+    /// Where vim builds a count: the keyed surfaces and a keyboard move,
+    /// whose steps take one (spec 2026-11-03 create folders F31: `3j`).
+    pub const COUNTED: Self = Self::KEYED.or(Self::SIDEBAR_MOVE);
     /// The navigation surfaces but the response, whose motions are its own
     /// `Motion` rows.
     pub const LISTS: Self = Self::NAV.minus(Self::RESPONSE);
@@ -238,6 +245,7 @@ impl Surfaces {
     pub const fn of(s: Surface) -> Self {
         match s {
             Surface::Sidebar => Self::SIDEBAR,
+            Surface::SidebarMove => Self::SIDEBAR_MOVE,
             Surface::UrlLine => Self::URL_LINE,
             Surface::Method => Self::METHOD,
             Surface::Table(_) => Self::TABLE,
@@ -338,6 +346,10 @@ fn force_quit() -> Action {
 
 fn new_option() -> Action {
     Action::StartNewOptionEdit
+}
+
+fn move_to_space() -> Action {
+    Action::PromptMoveSelectedRequestToSpace
 }
 
 const DOWN: Named = Named::key(KeyCode::Down);
@@ -625,11 +637,13 @@ fn m_percent(n: Option<usize>) -> ResponseMotion {
 /// another on a shared surface (`no_two_rows_collide`).
 #[rustfmt::skip]
 pub static TABLE: &[Binding] = &[
-    // Key list §6 and §7: moving.
-    row("j", Surfaces::LISTS, Intent::Key(DOWN), CountRule::Repeat),
-    row("k", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
-    row("h", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
-    row("l", Surfaces::LISTS, Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
+    // Key list §6 and §7: moving. A keyboard move's block steps on the same
+    // four, counted (spec 2026-11-03 create folders F31: `3j`); they are the
+    // only rows it has.
+    row("j", Surfaces::LISTS.or(Surfaces::SIDEBAR_MOVE), Intent::Key(DOWN), CountRule::Repeat),
+    row("k", Surfaces::LISTS.or(Surfaces::SIDEBAR_MOVE), Intent::Key(Named::key(KeyCode::Up)), CountRule::Repeat),
+    row("h", Surfaces::LISTS.or(Surfaces::SIDEBAR_MOVE), Intent::Key(Named::key(KeyCode::Left)), CountRule::Repeat),
+    row("l", Surfaces::LISTS.or(Surfaces::SIDEBAR_MOVE), Intent::Key(Named::key(KeyCode::Right)), CountRule::Repeat),
     row("gg", Surfaces::LISTS, Intent::Edge { bare: HOME, home: HOME }, CountRule::Pass),
     row("G", Surfaces::LISTS, Intent::Edge { bare: Named::key(KeyCode::End), home: HOME }, CountRule::Pass),
     // The response's moves along a line (the user's decision, 2026-10-10:
@@ -843,7 +857,10 @@ pub static TABLE: &[Binding] = &[
     both("r", Surfaces::SIDEBAR.or(Surfaces::MANAGE_LIST).or(Surfaces::VAR_LIST), Intent::Verb(Verb::Rename)),
     arrows("r", Surfaces::MANAGE_DETAIL.or(Surfaces::VAR_GRID), Intent::Verb(Verb::Rename)),
     arrows("r", Surfaces::VAR_FORM, Intent::Verb(Verb::Reveal)),
+    // Spec 2026-11-03 create folders F32: on the sidebar `m` is the
+    // keyboard move and `M` Move to space.
     both("m", Surfaces::SIDEBAR.or(Surfaces::MANAGE_LIST), Intent::Verb(Verb::Move)),
+    both("M", Surfaces::SIDEBAR, Intent::Act(move_to_space)),
     arrows("m", Surfaces::MANAGE_DETAIL, Intent::Verb(Verb::Move)),
     arrows("m", Surfaces::VAR_LIST.or(Surfaces::VAR_GRID), Intent::Verb(Verb::Fields)),
     row("dd", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Delete { count: 1 }), CountRule::Pass),
@@ -1087,14 +1104,14 @@ pub fn vim_first_chars() -> Vec<char> {
 }
 
 /// Whether a digit builds a count on `surface` in the vim profile: a
-/// navigation surface (lists and panes) or the response's V, where some
-/// row repeats or reads one (plan M1 Deviation 22). The app-wide `u` and
-/// `ctrl+r` rows repeat on every surface, so the navigation filter keeps
-/// prompts, forms, the body and the testbed out. Which navigation
-/// surfaces qualify is derived from [`TABLE`], so it cannot drift from
-/// the rows.
+/// navigation surface (lists and panes), the response's V, or a keyboard
+/// move ([`Surfaces::COUNTED`]), where some row repeats or reads one (plan
+/// M1 Deviation 22). The app-wide `u` and `ctrl+r` rows repeat on every
+/// surface, so the navigation filter keeps prompts, forms, the body and
+/// the testbed out. Which navigation surfaces qualify is derived from
+/// [`TABLE`], so it cannot drift from the rows.
 pub fn takes_count(surface: Surface) -> bool {
-    Surfaces::KEYED.has(surface)
+    Surfaces::COUNTED.has(surface)
         && TABLE.iter().any(|b| {
             b.profile.has(KeyProfile::Vim)
                 && b.on.has(surface)

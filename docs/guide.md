@@ -26,8 +26,8 @@ The header's project chip switches between the projects you've opened.
 Requests are grouped into **spaces**: top-level folders under `requests/`.
 One space shows at a time, and each remembers the request you had open; the
 header's space chip switches between them. Inside a space, requests can sit in
-folders, which fold. Requests and folders can be reordered, by key or by
-dragging, and requests moved to another space.
+folders, which fold. Requests and folders can be moved, into and out of
+folders too, by key or by dragging, and requests moved to another space.
 
 The **Manage** screen (`alt+r`) edits a project's variables, environments and
 spaces, and has a Settings tab for postui itself.

@@ -5644,7 +5644,7 @@ fn an_invalid_listed_environment_name_warns_once_and_survives_the_next_env_op() 
 }
 
 #[test]
-fn sidebar_footer_advertises_move_to_space_not_the_space_cycle() {
+fn sidebar_footer_advertises_the_keyboard_move_not_the_space_cycle() {
     let (mut app, _dir) = spaced_app();
     app.focus = PaneId::Sidebar;
     // Wide enough that the chip strip isn't truncated before the last
@@ -5656,15 +5656,16 @@ fn sidebar_footer_advertises_move_to_space_not_the_space_cycle() {
     assert!(!text.contains(&*crate::keys::display_keycap("alt+]")), "{text}");
 }
 
-/// `m` on a selected sidebar request opens the "Move to space" chooser —
-/// the keyboard twin of the row menu's "Move to space…" — and the footer
-/// chip / palette dispatch the same slug-less action.
+/// `M` on a selected sidebar request opens the "Move to space" chooser —
+/// the keyboard twin of the row menu's "Move to space…" — and the palette
+/// dispatches the same slug-less action (spec 2026-11-03 create folders
+/// F32: `m` is the keyboard move).
 #[test]
-fn m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
+fn shift_m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
     let (mut app, _dir) = spaced_app();
     app.focus = PaneId::Sidebar;
     app.sidebar.select_slug("main/alpha");
-    app.handle_key(plain('m'));
+    app.handle_key(plain('M'));
     let Some(Modal::Chooser(c)) = app.modals.top() else {
         panic!("expected the Move to space chooser");
     };
@@ -7147,12 +7148,12 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
     );
 }
 
-/// `m` on a request in a project with only one space: there is nowhere
-/// to move it. An Info "no other space" note read as the key doing
-/// nothing; it warns and says what the project is missing, and opens no
-/// modal.
+/// `M` (Move to space, spec 2026-11-03 create folders F32) on a request in
+/// a project with only one space: there is nowhere to move it. An Info "no
+/// other space" note read as the key doing nothing; it warns and says what
+/// the project is missing, and opens no modal.
 #[test]
-fn m_with_only_one_space_says_so_instead_of_doing_nothing() {
+fn shift_m_with_only_one_space_says_so_instead_of_doing_nothing() {
     let mut app = App::new_for_test();
     postui_core::fixtures::save_request(app.proj().root(), "main/alpha", &req("https://x/1"))
         .unwrap();
@@ -7162,7 +7163,7 @@ fn m_with_only_one_space_says_so_instead_of_doing_nothing() {
     app.sidebar.select_slug("main/alpha");
     app.toasts = Default::default();
 
-    press(&mut app, 'm');
+    press(&mut app, 'M');
     assert!(app.modals.is_empty(), "nowhere to move to, so no picker");
     let said = app.toasts.messages().join(" | ");
     assert!(said.contains("Only one space"), "the key must say why it did nothing: {said:?}");
@@ -38367,7 +38368,8 @@ fn selection_action_on_the_sidebar() {
     let at = |app: &App, v| app.selection_action(Surface::Sidebar, v);
     assert_eq!(at(&app, Verb::Add), Some(Action::PromptNewRequest));
     assert_eq!(at(&app, Verb::Rename), Some(Action::PromptRenameRequest));
-    assert_eq!(at(&app, Verb::Move), Some(Action::PromptMoveSelectedRequestToSpace));
+    // Spec 2026-11-03 create folders F32: the keyboard move.
+    assert_eq!(at(&app, Verb::Move), Some(Action::StartKeyMove));
     assert_eq!(at(&app, Verb::Delete { count: 1 }), Some(Action::DeleteSelectedRequest));
     assert_eq!(
         at(&app, Verb::Delete { count: 2 }),
@@ -38959,6 +38961,163 @@ fn a_folder_dropped_at_the_top_level_names_it() {
     let text = rendered_text(&mut app);
     assert!(text.contains("Undid move of folder v1 to the top level"), "{text}");
     assert!(dir.path().join("requests/main/users/v1/get.toml").is_file());
+}
+
+// --- the keyboard move (spec 2026-11-03 create folders F31, F32) ---
+
+/// The sidebar focused on `slug`'s row, in `profile`.
+fn key_move_ready(app: &mut App, slug: &str, profile: crate::config::KeyProfile) {
+    app.use_profile(profile);
+    app.focus = PaneId::Sidebar;
+    app.sidebar.select_slug(slug);
+    render_once(app);
+}
+
+/// F31: `m` picks a request up and the arrows step it through the drag's
+/// places: past beta, onto the open auth/ (its first item, D10), past x
+/// to auth/'s end (D12). Nothing is written while it moves. Enter drops
+/// it as the mouse drop does
+/// (`a_request_dropped_in_a_folder_moves_there_and_stays_open`): the file
+/// moves, the open request stays open with its edit, one undo step.
+#[test]
+fn m_and_the_arrows_move_a_request_into_a_folder_and_enter_drops_it() {
+    let (mut app, dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.url.set_text("https://x/edited");
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down><Down>");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 0));
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/auth/x"]);
+    key_matrix_tests::feed(&mut app, "<Down>");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "auth/", "auth/x"], "nothing written yet");
+    key_matrix_tests::feed(&mut app, "<CR>");
+
+    assert!(app.sidebar.drag.is_none());
+    assert!(dir.path().join("requests/main/auth/alpha.toml").is_file(), "the file moved");
+    assert!(!dir.path().join("requests/main/alpha.toml").exists());
+    assert_eq!(saved_order(&dir), ["beta", "auth/", "auth/x", "auth/alpha"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Request("main/auth/alpha".into())));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/alpha"), "still open");
+    assert_eq!(app.editor.url.text(), "https://x/edited", "the unsaved edit stays");
+    assert_eq!(app.history.undo_len(), steps + 1, "one step");
+
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "auth/", "auth/x"]);
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Undid move of alpha to auth"), "{text}");
+}
+
+/// F31: → beside a closed folder opens it and puts the block in first
+/// (D9's dwell); the folder stays open after the drop (D16).
+#[test]
+fn right_beside_a_closed_folder_opens_it_and_puts_the_block_first() {
+    let (mut app, dir) = folder_app();
+    // rows: alpha, beta, a/, b/, c/, all closed
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down><Down>");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, (String::new(), 2), "past a/");
+    key_matrix_tests::feed(&mut app, "<Right>");
+    assert!(app.expanded().contains("main/b"), "open, as a user open is");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("b".to_string(), 0));
+    key_matrix_tests::feed(&mut app, "<CR>");
+    assert!(dir.path().join("requests/main/b/alpha.toml").is_file());
+    assert_eq!(level_order(&dir, "b"), ["b/alpha", "b/y"]);
+    assert!(app.expanded().contains("main/b"), "still open after the drop");
+}
+
+/// F31 in vim: `3j` steps three places, `h` takes the block out of auth/
+/// at its end (D12), and Enter drops it there: the result of the mouse
+/// drop by column (`a_drag_over_a_folders_last_row_picks_the_level_by_column`).
+#[test]
+fn a_counted_step_and_h_at_a_folders_end_in_vim() {
+    let (mut app, dir) = auth_folder_app();
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Vim);
+    key_matrix_tests::feed(&mut app, "m3j");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
+    key_matrix_tests::feed(&mut app, "h");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, (String::new(), 2));
+    key_matrix_tests::feed(&mut app, "l");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 1));
+    key_matrix_tests::feed(&mut app, "h<CR>");
+    assert_eq!(level_order(&dir, ""), ["beta", "auth/", "alpha"]);
+}
+
+/// F31: a folder moves the same way, whole.
+#[test]
+fn m_moves_a_folder_into_a_folder() {
+    let (mut app, dir) = two_folder_app();
+    // rows: alpha, beta, auth/, x, box/, y
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    app.sidebar.select_key(&RowKey::Folder("main/auth".into()));
+    key_matrix_tests::feed(&mut app, "m<Down><CR>");
+    assert!(dir.path().join("requests/main/box/auth/x.toml").is_file(), "the directory moved");
+    assert_eq!(level_order(&dir, "box"), ["box/auth/", "box/y"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/box/auth".into())));
+}
+
+/// F31: while moving every other key is ignored, and Esc puts the rows
+/// back with nothing written; a folder → opened stays open (D16).
+#[test]
+fn esc_cancels_a_key_move_and_other_keys_do_nothing() {
+    let (mut app, dir) = folder_app();
+    let before = saved_order(&dir);
+    let steps = app.history.undo_len();
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down><Down><Right>darq");
+    assert!(app.sidebar.key_move(), "still moving");
+    assert!(app.modals.is_empty(), "no prompt, no picker");
+    assert!(!app.should_quit);
+    key_matrix_tests::feed(&mut app, "<Esc>");
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(request_rows(&app)[..2], ["main/alpha", "main/beta"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Request("main/alpha".into())));
+    assert_eq!(saved_order(&dir), before, "nothing written");
+    assert_eq!(app.history.undo_len(), steps);
+    assert!(app.expanded().contains("main/b"), "the opened folder stays open");
+}
+
+/// F31: a click cancels a keyboard move, then acts as the click it is on
+/// the rows put back. The pointer's motion moves nothing and cancels
+/// nothing, even from a terminal whose bare motion ends a lost mouse drag.
+#[test]
+fn a_click_cancels_a_key_move_and_motion_leaves_it_alone() {
+    let (mut app, dir) = folder_app();
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down>");
+    // rows: beta, alpha (the block), a/, b/, c/
+    let target = app.sidebar.drag.as_ref().unwrap().target.clone();
+    app.reports_held_drags = true;
+    let r4 = row_rect(&mut app, 4);
+    app.handle_mouse(moved(names_x(r4), r4.y));
+    assert_eq!(app.sidebar.drag.as_ref().map(|d| d.target.clone()), Some(target));
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    assert!(app.sidebar.drag.is_none(), "the click cancels");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"]);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"), "the row clicked");
+    app.handle_mouse(left_up(names_x(r0), r0.y));
+    assert_eq!(saved_order(&dir)[..2], ["alpha", "beta"], "nothing written");
+}
+
+/// F31: while moving, the footer shows the move's own keys.
+#[test]
+fn the_footer_shows_the_key_moves_keys() {
+    let (mut app, _dir) = folder_app();
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m");
+    let labels: Vec<String> =
+        crate::ui::footer_chips_of(&app).into_iter().map(|(_, l, _)| l).collect();
+    assert_eq!(labels, ["move", "level", "drop", "cancel"]);
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("↑↓ move     ←→ level     enter drop     esc cancel"), "{text}");
+    app.use_profile(crate::config::KeyProfile::Vim);
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("j/k move     h/l level"), "{text}");
 }
 
 /// D9: dragged onto closed `b/` (rows alpha, beta, a/, b/, c/), `alpha`
