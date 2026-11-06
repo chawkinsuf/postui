@@ -287,12 +287,12 @@ impl Project {
         self.order_edit(space, |order| *order = change.after.clone())
     }
 
-    /// alt+↑/↓: the entry `rel` (a request slug or a folder entry, spec
-    /// 2026-11-01 reorder folders) moves by `delta` among `shown`, the
-    /// level's entries of both kinds as the sidebar draws them (spec
-    /// 2026-11-02 drag into folders D21); a burst merges. With no
-    /// `project.toml` a move that would change the order is refused, as
-    /// [`Self::set_request_order`].
+    /// The row menu's Move up/down: the entry `rel` (a request slug or a
+    /// folder entry, spec 2026-11-01 reorder folders) moves by `delta`
+    /// among `shown`, the level's entries of both kinds as the sidebar
+    /// draws them (spec 2026-11-02 drag into folders D21); a burst merges.
+    /// With no `project.toml` a move that would change the order is
+    /// refused, as [`Self::set_request_order`].
     pub fn move_request_shown(
         &mut self,
         space: &str,
@@ -311,10 +311,9 @@ impl Project {
         let mut shown = shown.to_vec();
         let moved = shown.remove(pos);
         shown.insert(target, moved);
-        // Not completed first, as `set_request_order`: `shown` is the
-        // level as drawn, and completing would re-walk the request tree
-        // on every step of a held alt+↓, which the app's
-        // `move_sidebar_row` relies on not doing.
+        // Not completed first, as `set_request_order` (spec 2026-11-02
+        // drag into folders §3, `Project`): `shown` is the whole level as
+        // drawn.
         let Some(change) = self.level_change(space, level, &shown) else {
             return Ok(None);
         };
@@ -505,11 +504,10 @@ mod tests {
 
     /// The reorders don't complete the list (spec 2026-11-02 drag into
     /// folders §3, `Project`): they write their level as the sidebar drew
-    /// it, so a held alt+↓ never re-walks the request tree, and its burst
-    /// stays one undo step. A request added outside (here in another
-    /// space) is left to the refresh write.
+    /// it, and a burst of steps stays one undo step. A request added
+    /// outside (here in another space) is left to the refresh write.
     #[test]
-    fn a_held_keyboard_move_stays_one_step_and_completes_nothing() {
+    fn a_burst_of_steps_stays_one_step_and_completes_nothing() {
         let (dir, mut p) = fixture();
         for n in ["a", "b"] {
             std::fs::write(

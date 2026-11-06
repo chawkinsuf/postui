@@ -86,7 +86,7 @@ impl App {
     /// Records a marker for the journal entry the op produced, if it
     /// produced a new one, with the view as the op left it. Called at the
     /// end of every journaled arm's success path, after its landing. A
-    /// merged burst (a held alt+↓) leaves the top id unchanged and records
+    /// merged burst (quick Move downs) leaves the top id unchanged and records
     /// nothing, so it stays one undo step; a burst that netted to nothing
     /// is popped by the journal and the marker already recorded for it is
     /// skipped as stale on undo.

@@ -15,7 +15,9 @@ nothing are dropped on that write instead of preserved (D7).
 Let the user put the requests in a space in any order, not just
 alphabetical, and let them do it by dragging rows in the sidebar with
 the mouse. A keyboard route (alt+up / alt+down, context-menu items)
-exists for every move the mouse can make.
+exists for every move the mouse can make. *(Amended 2026-11-05, #258:
+the sidebar's alt+up / alt+down are removed; `m`, the keyboard move, and
+the context-menu items are the route. See "App: keyboard and menu".)*
 
 The spaces spec (2026-09-01) parked this as "its own follow-on
 brainstorm"; this is that brainstorm.
@@ -85,7 +87,9 @@ brainstorm"; this is that brainstorm.
   the list, reloads `meta`, refreshes the sidebar and puts the selection
   back on the moved request, with an "Undid/Redid reorder of X" toast. A
   move that writes nothing records nothing. The Manage screen's space
-  reorder follows the same rules (see §Space drag below).
+  reorder follows the same rules (see §Space drag below). *(Amended
+  2026-11-05, #258: the sidebar has no alt+↑/↓ now, so the burst comes
+  from quick repeated Move up/down picks in the row menu.)*
 
 ## Architecture
 
@@ -253,6 +257,15 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   neither is bound in that context; `keys.rs` currently has no
   alt+arrow bindings.) The footer's context-key strip for the sidebar
   advertises them (keyboard-context-actions).
+  *Removed 2026-11-05 (#258):* the sidebar's alt+↑/↓ and its
+  `alt+↑↓ reorder` chip are gone. The user: "Now that we have m for move
+  for requests and folders in the request panel, i don't think we need
+  the alt-arrows to move the requests as well." The keyboard route is
+  now `m`, the keyboard move (spec 2026-11-03 create folders F31, F32),
+  with the row menu's Move up/Move down. In the sidebar alt+↑/↓ do
+  nothing, as any chord it doesn't name. Mine: the row menu's Move
+  up/down stay, as do the Manage lists' alt+↑/↓ (the user named only
+  the request panel's).
 - Request context menu (`context_menu_for`): "Move up" and "Move down"
   after "Duplicate", dispatching the same action. Both are disabled
   (drawn dim, no-op) when the row is already first / last in its
@@ -321,7 +334,8 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
 - Press without movement still just opens the request.
 - Auto-scroll at the edges on `Tick`.
 - `alt+up` / `alt+down` and the menu items move and keep the selection
-  on the moved slug; disabled at the ends.
+  on the moved slug; disabled at the ends. *(2026-11-05, #258: the menu
+  items only; alt+↑/↓ move nothing in the sidebar, in both profiles.)*
 - Pointer shape is `Grabbing` during a drag, restored after.
 
 **Manual (tmux, Ghostty):** grip glyph is one cell; `grabbing` cursor
@@ -482,7 +496,7 @@ response pane shares the sidebar list's bottom row, so the `Tick`
 handler first requires `hits.pane_at(x, y) == Some(PaneId::Sidebar)`.
 
 **`move_request` writes nothing when nothing moves.** The clamp can land
-the request where it already is (alt+↑ on the first row); it returns
+the request where it already is (a move up from the first row); it returns
 early there rather than materialising the level into `project.toml` for
 a move that had no effect.
 
@@ -580,7 +594,8 @@ project. All checks passed:
 3. Press, drag, Escape — rows snap back and `project.toml` is byte
    identical. A following stray motion event does not restart the drag.
 4. `alt+↓` twice walks the row down two slots and the selection follows
-   it; the sidebar footer carries the `alt+↑↓ reorder` chip.
+   it; the sidebar footer carries the `alt+↑↓ reorder` chip. (Both
+   removed 2026-11-05, #258.)
 5. Right-clicking the first request row renders "Move up" in the muted
    foreground and inert (clicking it leaves the menu open and the order
    unchanged) while "Move down" reorders.

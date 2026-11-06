@@ -570,8 +570,8 @@ pub enum Action {
     /// F31, F32): picks the selected row up for the keyboard move.
     StartKeyMove,
     /// Move the request `slug` `delta` positions among its siblings
-    /// (clamped) — alt+up/alt+down and the row menu's Move up/down. Writes
-    /// `[space.<slug>] order`; an undo step, a quick burst one step.
+    /// (clamped) — the row menu's Move up/down. Writes `[space.<slug>]
+    /// order`; an undo step, a quick burst one step.
     MoveRequest {
         slug: String,
         delta: i32,
@@ -582,9 +582,6 @@ pub enum Action {
         path: String,
         delta: i32,
     },
-    /// `MoveRequest` or `MoveFolder` for the selected sidebar row, as
-    /// alt+↑/↓ does; a no-op when nothing is selected.
-    MoveSelectedRequest(i32),
     /// The Spaces tab's "Move all requests…" button: opens the chooser of
     /// the other spaces for the space `from`; picking one dispatches
     /// `MoveAllRequests`.

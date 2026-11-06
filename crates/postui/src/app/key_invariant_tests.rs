@@ -344,23 +344,26 @@ fn on_the_response(start: &Start) -> bool {
     matches!(start.fixture, Fixture::ResponseLines | Fixture::ResponseWide)
 }
 
+/// The Manage lists' starts, where alt+↑/↓ are named (see below). The
+/// env detail is one: its pane passes alt+↑/↓ to the list's reorder.
+fn on_a_manage_list(start: &Start) -> bool {
+    use Fixture::*;
+    matches!(start.fixture, ManageEnvs | ManageEnvDetail | ManageSpaces | VarList)
+}
+
 /// Plan Decision 4: on every surface (no field live), in both profiles, a
 /// chord that no keymap binds and no component names does nothing: it no
-/// longer acts as the bare key. alt+↑/↓ are named on purpose (they move a
-/// row in the sidebar and the Manage lists), and so are ctrl+Home/End
-/// (first/last row on a list, document jumps on the response; the user's
-/// ruling 2026-10-07). The response also names shift+↑/↓ (extend a line
-/// selection) on purpose, spec'd by its own tests, so those are exempt
-/// there only.
+/// longer acts as the bare key. alt+↑/↓ are named on purpose on the
+/// Manage lists (they move a row), so they are exempt there only; so are
+/// ctrl+Home/End everywhere (first/last row on a list, document jumps on
+/// the response; the user's ruling 2026-10-07). The response also names
+/// shift+↑/↓ (extend a line selection) on purpose, spec'd by its own
+/// tests, so those are exempt there only.
 #[test]
 fn an_unbound_chord_on_a_list_does_nothing() {
     use KeyCode::*;
-    let named = [
-        (Up, KeyModifiers::ALT),
-        (Down, KeyModifiers::ALT),
-        (Home, KeyModifiers::CONTROL),
-        (End, KeyModifiers::CONTROL),
-    ];
+    let named = [(Home, KeyModifiers::CONTROL), (End, KeyModifiers::CONTROL)];
+    let reorder = [(Up, KeyModifiers::ALT), (Down, KeyModifiers::ALT)];
     let response_named = [(Up, KeyModifiers::SHIFT), (Down, KeyModifiers::SHIFT)];
     let codes = [Up, Down, Left, Right, Home, End, PageUp, PageDown, Enter];
     let mods = [
@@ -376,6 +379,7 @@ fn an_unbound_chord_on_a_list_does_nothing() {
         for code in codes {
             for m in mods {
                 if named.contains(&(code, m))
+                    || (on_a_manage_list(&start) && reorder.contains(&(code, m)))
                     || (on_the_response(&start) && response_named.contains(&(code, m)))
                 {
                     continue;

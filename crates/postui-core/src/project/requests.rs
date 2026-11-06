@@ -4193,7 +4193,7 @@ mod tests {
         // main's top level draws `f/`, `new` (D6).
         let shown: Vec<String> = ["new", "f/"].iter().map(|s| s.to_string()).collect();
         assert!(refused(p.set_request_order("main", "", &shown)), "a drag reorder");
-        assert!(refused(p.move_request_shown("main", "", &shown, "new", 1)), "alt+↓");
+        assert!(refused(p.move_request_shown("main", "", &shown, "new", 1)), "Move down");
         assert!(none(&dir), "a refused reorder writes nothing");
         assert_eq!(p.journal_len(), steps, "and records no step");
         assert!(main_order(&p).is_empty());

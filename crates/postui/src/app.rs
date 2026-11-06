@@ -8268,12 +8268,6 @@ impl App {
                 self.move_sidebar_row(RowKey::Folder(path), delta);
                 true
             }
-            Action::MoveSelectedRequest(delta) => {
-                if let Some(key) = self.sidebar.selected_key() {
-                    self.move_sidebar_row(key, delta);
-                }
-                true
-            }
             Action::MoveAllRequests { from, to } => {
                 if from == to {
                     self.toasts.push(format!("already in {to}"), ToastKind::Warning);
@@ -10385,8 +10379,8 @@ impl App {
         self.hits.pane_at(x, y) == Some(PaneId::Sidebar)
     }
 
-    /// alt+↑/↓ and the row menu's Move up/down for a sidebar row, a request
-    /// or a folder: moves it `delta` places among its siblings.
+    /// The row menu's Move up/down for a sidebar row, a request or a
+    /// folder: moves it `delta` places among its siblings.
     ///
     /// The sidebar already holds the sibling group's displayed order (the
     /// rows it painted), so a visible row moves without re-walking the
@@ -10404,8 +10398,7 @@ impl App {
             .and_then(|_| self.sidebar.row_of_key(&key))
             .and_then(|i| self.sidebar.level_group(i, &space).map(|g| (i, g)));
         let Some((i, (level, shown))) = shown else {
-            // Every route here (alt+↑/↓ on the selection, the row menu)
-            // names a visible row of the active space.
+            // The row menu names a visible row of the active space.
             self.toasts
                 .push(format!("cannot move {noun}: {full} is not shown"), ToastKind::Warning);
             return;
@@ -10419,9 +10412,8 @@ impl App {
         };
         match p.move_request_shown(&space, &level, &shown, &own, delta) {
             Ok(_) => {
-                // Not a landing: nothing open or active changes, and a
-                // held alt+↓ must not re-walk the tree per step. The cursor
-                // stays on the moved row.
+                // Not a landing: nothing open or active changes. The
+                // cursor stays on the moved row.
                 self.rebuild_sidebar();
                 self.sidebar.select_key(&key);
                 // A burst merges in core: the journal's top id stays the

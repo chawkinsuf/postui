@@ -6094,13 +6094,36 @@ fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
     assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/gamma"));
 }
 
+/// #258: the sidebar has no alt+↑/↓ reorder (`m` moves a row): in both
+/// profiles they move no request or folder, write nothing and leave the
+/// cursor, and the footer offers the `m  move` chip and no `reorder`. Each
+/// key gets a fresh app, so one press can't undo another's move.
 #[test]
-fn move_selected_request_resolves_the_selection() {
-    let (mut app, _dir) = spaced_app();
-    render_once(&mut app);
-    app.sidebar.select_slug("main/beta");
-    app.update(Action::MoveSelectedRequest(-1));
-    assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/beta"));
+fn alt_arrows_reorder_nothing_in_the_sidebar() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        for key in [RowKey::Request("main/beta".into()), RowKey::Folder("main/b".into())] {
+            for code in [KeyCode::Up, KeyCode::Down] {
+                let (mut app, dir) = folder_app();
+                app.use_profile(profile);
+                app.sidebar.select_key(&key);
+                app.update(Action::FocusPane(PaneId::Sidebar));
+                let order = saved_order(&dir);
+                let steps = app.history.undo_len();
+                app.handle_key(KeyEvent::new(code, KeyModifiers::ALT));
+                app.capture_undo();
+                let what = format!("{profile:?} {key:?} alt+{code:?}");
+                assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "{what}");
+                assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"], "{what}");
+                assert_eq!(saved_order(&dir), order, "{what}: nothing written");
+                assert_eq!(app.history.undo_len(), steps, "{what}: no step");
+                assert_eq!(app.sidebar.selected_key(), Some(key.clone()), "{what}");
+                let text = footer_text(&mut app);
+                assert!(text.contains("m  move"), "{what}: {text}");
+                assert!(!text.contains("reorder"), "{what}: {text}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -6293,23 +6316,24 @@ fn a_click_on_a_folder_still_selects_and_a_double_click_toggles() {
     assert_eq!(saved_order(&dir), before);
 }
 
-/// alt+↑ steps a folder past its siblings of either kind, up to the top
-/// of its level (spec 2026-11-02 drag into folders D21).
+/// The row menu's Move up steps a folder past its siblings of either
+/// kind, up to the top of its level (spec 2026-11-02 drag into folders
+/// D21).
 #[test]
-fn quick_keyboard_folder_moves_roll_up_and_keep_the_cursor() {
+fn quick_folder_moves_roll_up_and_keep_the_cursor() {
     let (mut app, dir) = folder_app();
     app.sidebar.select_key(&RowKey::Folder("main/c".into()));
     app.update(Action::FocusPane(PaneId::Sidebar));
     let steps = app.history.undo_len();
-    let alt_up = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+    let up = || Action::MoveFolder { path: "main/c".into(), delta: -1 };
     for _ in 0..4 {
-        app.handle_key(alt_up);
+        app.update(up());
     }
     let moved = ["c/", "alpha", "beta", "a/", "b/"];
     assert_eq!(level_order(&dir, ""), moved, "past the requests too");
     assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
     assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
-    app.handle_key(alt_up);
+    app.update(up());
     assert_eq!(app.history.undo_len(), steps + 1, "a no-op move records nothing");
 
     app.update(Action::Undo);
@@ -6566,9 +6590,8 @@ fn undo_of_a_move_to_space_restores_both_lists() {
 }
 
 #[test]
-fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
+fn quick_moves_of_one_request_roll_up_into_one_undo_step() {
     let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
-    // The real UI moves the cursor's row (alt+↑/↓ on the selection).
     app.sidebar.select_slug("main/gamma");
     let steps = app.history.undo_len();
     for _ in 0..2 {
@@ -6702,10 +6725,10 @@ fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
 }
 
 /// In a directory with no `project.toml` (a registered project that lost
-/// it opens as-is) nothing writes an order, so a drag reorder and alt+↓
-/// are refused with a toast saying why, and the rows snap back: no
-/// `project.toml` is made, no step recorded, no op left in flight (spec
-/// 2026-11-02 drag into folders §3, `Project`).
+/// it opens as-is) nothing writes an order, so a drag reorder and the row
+/// menu's Move down are refused with a toast saying why, and the rows
+/// snap back: no `project.toml` is made, no step recorded, no op left in
+/// flight (spec 2026-11-02 drag into folders §3, `Project`).
 #[test]
 fn a_reorder_with_no_project_toml_toasts_and_snaps_back() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6749,11 +6772,11 @@ fn a_reorder_with_no_project_toml_toasts_and_snaps_back() {
     assert!(!dir.path().join("project.toml").exists());
 }
 
-/// alt+↓ whose write fails, and one with no project, clear the op-in-flight
-/// mark themselves, as the drop does, rather than leaning on `dispatch`'s
-/// safety net.
+/// The row menu's Move up whose write fails, and one with no project,
+/// clear the op-in-flight mark themselves, as the drop does, rather than
+/// leaning on `dispatch`'s safety net.
 #[test]
-fn a_keyboard_move_that_fails_leaves_no_op_in_flight() {
+fn a_row_menu_move_that_fails_leaves_no_op_in_flight() {
     let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
     let meta_path = dir.path().join("project.toml");
     std::fs::write(&meta_path, "spaces = [\n").unwrap();
@@ -30191,14 +30214,14 @@ fn the_footer_advertises_only_the_cancel_keys_during_a_drag() {
     assert!(text.contains("cancel drag"), "{text}");
     assert!(text.contains("esc"), "{text}");
     assert!(text.contains("right-click"), "{text}");
-    for gone in ["reorder", "commands", "rename"] {
+    for gone in ["delete", "commands", "rename"] {
         assert!(!text.contains(gone), "{gone} is gone: {text}");
     }
 
     app.handle_mouse(left_up(110, 30)); // cancel
     let text = footer_text(&mut app);
     assert!(!text.contains("cancel drag"), "{text}");
-    assert!(text.contains("reorder"), "{text}");
+    assert!(text.contains("delete"), "{text}");
     assert!(text.contains("commands"), "{text}");
 }
 
@@ -33053,7 +33076,7 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
     hover_manage(&mut app);
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
     let at = row.find(MANAGE_HINT).unwrap_or_else(|| panic!("hint shown: {row:?}"));
-    let chips_end = row.find("reorder").unwrap() + "reorder".len();
+    let chips_end = row.find("import curl").unwrap() + "import curl".len();
     let palette = row.find("^P").unwrap();
     assert!(chips_end < at && at + MANAGE_HINT.len() < palette, "{row:?}");
 
@@ -33071,15 +33094,15 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
 fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    // 153 columns: the sidebar chips (`import curl` last) + commands/quit
+    // 134 columns: the sidebar chips (`import curl` last) + commands/quit
     // leave ~26 cells.
-    let row = rendered_row(&mut app, 153, FOOTER_ROW);
+    let row = rendered_row(&mut app, 134, FOOTER_ROW);
     assert!(row.contains("Switch to another en"), "head shown: {row:?}");
     assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
-    assert!(row.contains("reorder"), "chips stay: {row:?}");
+    assert!(row.contains("import curl"), "chips stay: {row:?}");
 
-    // 120 columns: ~12 cells — too few, so no hint at all.
-    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    // 101 columns: ~12 cells — too few, so no hint at all.
+    let row = rendered_row(&mut app, 101, FOOTER_ROW);
     assert!(!row.contains("Switch to"), "hint left out: {row:?}");
     assert!(row.contains("rename"), "chips keep the row: {row:?}");
     assert!(row.contains("^P") && row.contains("quit"), "right pair stays: {row:?}");
@@ -33128,7 +33151,7 @@ fn hover_hints_can_be_turned_off_in_config() {
     hover_manage(&mut app);
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
     assert!(!row.contains(MANAGE_HINT), "no hint: {row:?}");
-    assert!(row.contains("reorder"), "chips unchanged: {row:?}");
+    assert!(row.contains("import curl"), "chips unchanged: {row:?}");
 }
 
 /// The ellipsized hint keeps two blank columns before the commands chip:
@@ -33138,7 +33161,7 @@ fn hover_hints_can_be_turned_off_in_config() {
 fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    let row = rendered_row(&mut app, 153, FOOTER_ROW);
+    let row = rendered_row(&mut app, 134, FOOTER_ROW);
     let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
     let palette = row.find("^P").unwrap();
     assert!(
@@ -33161,10 +33184,10 @@ fn a_hovered_footer_chip_keeps_the_chip_row() {
         .unwrap();
     app.handle_mouse(moved(rename.x, rename.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
-    assert!(row.contains("rename") && row.contains("reorder"), "chips stay: {row:?}");
+    assert!(row.contains("rename") && row.contains("import curl"), "chips stay: {row:?}");
     assert!(row.contains("Rename the"), "hint in the middle: {row:?}");
 
-    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    let row = rendered_row(&mut app, 101, FOOTER_ROW);
     assert!(
         row.contains("rename") && !row.contains("Rename the"),
         "no room, so no hint — but the chips are untouched: {row:?}"

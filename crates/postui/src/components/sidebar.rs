@@ -989,12 +989,13 @@ impl Sidebar {
         }
     }
 
-    /// Row `i`'s sibling group, the move group of alt+↑/↓, in row order:
-    /// every row at its depth under the same parent, of either kind (spec
-    /// 2026-11-02 drag into folders D21), each with the rows it covers: a
-    /// request its own row, a folder its row and its open subtree (spec
-    /// 2026-11-01 reorder folders R3). The group runs between the
-    /// parent's row (a shallower row) and the next shallower row.
+    /// Row `i`'s sibling group, the move group of the row menu's Move
+    /// up/down, in row order: every row at its depth under the same
+    /// parent, of either kind (spec 2026-11-02 drag into folders D21), each
+    /// with the rows it covers: a request its own row, a folder its row and
+    /// its open subtree (spec 2026-11-01 reorder folders R3). The group
+    /// runs between the parent's row (a shallower row) and the next
+    /// shallower row.
     pub fn siblings(&self, i: usize) -> Option<Vec<(RowKey, std::ops::Range<usize>)>> {
         let depth = self.rows.get(i)?.depth();
         let mut first = i;
@@ -1499,25 +1500,11 @@ impl Sidebar {
 impl Component for Sidebar {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
         // Each navigation arm takes exactly the chord it names: a bare named
-        // key, alt+↑/↓ (move the row), ctrl+Home/End (first/last row) or
-        // ctrl+d/u/f/b. Any other chord does nothing rather than act as the
-        // bare key (piece 4 spec §5.1).
+        // key, ctrl+Home/End (first/last row) or ctrl+d/u/f/b. Any other
+        // chord does nothing rather than act as the bare key (piece 4 spec
+        // §5.1); alt+↑/↓ among them, since `m` moves a row (#258).
         let plain = ev.modifiers.is_empty();
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
-        if ev.modifiers == KeyModifiers::ALT
-            && let Some(delta) = match ev.code {
-                KeyCode::Up => Some(-1),
-                KeyCode::Down => Some(1),
-                _ => None,
-            }
-        {
-            return match self.selected_row()? {
-                Row::Request { slug, .. } => {
-                    Some(Action::MoveRequest { slug: slug.clone(), delta })
-                }
-                Row::Folder { path, .. } => Some(Action::MoveFolder { path: path.clone(), delta }),
-            };
-        }
         match ev.code {
             KeyCode::Down if plain => {
                 self.move_selection(1);
@@ -3626,13 +3613,16 @@ mod tests {
         assert_eq!(t.drawn(), ["d", "a", "c"]);
     }
 
+    /// alt+↑/↓ move nothing on a folder row either (#258).
     #[test]
-    fn alt_up_and_down_on_a_folder_row_dispatch_move_folder() {
+    fn alt_up_and_down_on_a_folder_row_do_nothing() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["a/x", "b/y"]), "main", &expanded(&[]), &[]);
         s.selected = Some(1);
-        let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
-        assert_eq!(s.handle_key(ev), Some(Action::MoveFolder { path: "main/b".into(), delta: -1 }));
+        for code in [KeyCode::Up, KeyCode::Down] {
+            assert_eq!(s.handle_key(KeyEvent::new(code, KeyModifiers::ALT)), None, "{code:?}");
+            assert_eq!(s.selected, Some(1), "{code:?}");
+        }
     }
 
     #[test]
@@ -3727,18 +3717,17 @@ mod tests {
         );
     }
 
+    /// alt+↑/↓ are not the sidebar's (#258: `m`, the keyboard move, moves
+    /// a row): they move neither the row nor the cursor.
     #[test]
-    fn alt_up_and_down_dispatch_move_request_for_the_selected_row() {
+    fn alt_up_and_down_do_nothing_on_a_request_row() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["a", "b"]), "main", &expanded(&[]), &[]);
         s.selected = Some(1);
-        let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
-        assert_eq!(
-            s.handle_key(ev),
-            Some(Action::MoveRequest { slug: "main/b".into(), delta: -1 })
-        );
-        let ev = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
-        assert_eq!(s.handle_key(ev), Some(Action::MoveRequest { slug: "main/b".into(), delta: 1 }));
+        for code in [KeyCode::Up, KeyCode::Down] {
+            assert_eq!(s.handle_key(KeyEvent::new(code, KeyModifiers::ALT)), None, "{code:?}");
+            assert_eq!(s.selected, Some(1), "{code:?}");
+        }
         // Plain Up still just moves the cursor.
         assert_eq!(
             s.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
