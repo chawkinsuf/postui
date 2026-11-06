@@ -525,26 +525,12 @@ impl Project {
     /// back (spec 2026-11-03 create folders F5, F17). Runs inside its
     /// caller's transaction, before the file op that needs the folder.
     /// Returns the paths it made.
-    ///
-    /// Refuses a path the listing shows only in another case (a hand-made
-    /// `Users/` for `users`, #244): a case-insensitive disk would answer
-    /// `is_dir` for it, and the op would file into a folder no op can
-    /// change (F33). A case-sensitive one would get a case-only twin
-    /// (F19, D18).
     pub(super) fn make_folders(
         &mut self,
         folders: &[(String, String)],
     ) -> Result<Vec<String>, Error> {
         let mut made = Vec::new();
         for (path, text) in folders {
-            if !self.folder_listing.iter().any(|f| &f.path == path)
-                && let Some(twin) = folder_ignoring_case(&self.folder_listing, path)
-            {
-                return Err(Error::Conflict(format!(
-                    "requests/{}/ is already there in another case; rename it outside postui",
-                    twin.path
-                )));
-            }
             if self.disk.is_dir(&rel(&format!("{REQUESTS_DIR}/{path}"))?) {
                 continue;
             }
@@ -563,6 +549,28 @@ impl Project {
             made.push(path.clone());
         }
         Ok(made)
+    }
+
+    /// A move's pre-flight for the folders at full paths `paths` it will
+    /// make or merge into: refuses one the listing shows only in another
+    /// case (a hand-made `Users/` where the move makes `users/`, #244). A
+    /// case-insensitive disk would file the move into it, a name no op can
+    /// change (F33). A folder listed at the exact path is merged into
+    /// (F27). A move keeps each folder's path, so it refuses where a
+    /// create (`folder_slot`) numbers, and the toast names the directory,
+    /// since only a rename outside postui clears it.
+    fn refuse_case_twins(&self, paths: &[String]) -> Result<(), Error> {
+        for path in paths {
+            if !self.folder_listing.iter().any(|f| &f.path == path)
+                && let Some(twin) = folder_ignoring_case(&self.folder_listing, path)
+            {
+                return Err(Error::Conflict(format!(
+                    "{REQUESTS_DIR}/{}/ is already there in another case; rename it outside postui",
+                    twin.path
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// The folders `to` (a request's slug in another space, at the same
@@ -695,7 +703,9 @@ fn named(along: &[(String, String)]) -> Vec<(String, String)> {
 
 /// The folder `folders` lists at full path `path` spelled in any case. A
 /// folder move refuses a destination this finds (spec 2026-11-02 drag
-/// into folders D18), whatever the filesystem's case rule.
+/// into folders D18), whatever the filesystem's case rule. It compares
+/// Unicode lowercase, not ASCII case: a case-insensitive disk folds
+/// non-ASCII letters too.
 fn folder_ignoring_case<'a>(
     folders: &'a [crate::storage::FolderListing],
     path: &str,
@@ -1231,6 +1241,12 @@ impl Project {
         space_rel(space)?;
         let new_slug = self.move_target(slug, space, &[])?;
         let to_path = request_rel(&new_slug)?;
+        // The target's folders as the disk has them now.
+        self.relist();
+        let (to_space, to_rel) = Self::split_space(&new_slug).expect("validated");
+        let folders: Vec<String> =
+            order::ancestors(to_rel).iter().map(|sub| format!("{to_space}/{sub}")).collect();
+        self.refuse_case_twins(&folders)?;
         let meta = self.meta_for_moves(vec![(slug.to_string(), new_slug.clone())]);
         let slug = slug.to_string();
         self.order_transaction("move request", meta, |p| {
@@ -1542,6 +1558,11 @@ impl Project {
         if pairs.is_empty() && folders.is_empty() {
             return Ok((pairs, left_behind));
         }
+        // The target's folders as the disk has them now.
+        self.relist();
+        let targets: Vec<String> =
+            folders.iter().map(|path| format!("{to}/{}", &path[prefix.len()..])).collect();
+        self.refuse_case_twins(&targets)?;
         let meta = self.meta_for_moves(pairs.clone());
         let rel_pairs: Vec<(String, String)> = pairs
             .iter()
@@ -5089,16 +5110,16 @@ mod tests {
 
     // --- #244: a folder listed in another case ---
 
-    /// The target space lists a hand-made `Users/` where a move would make
+    /// The target space has a hand-made `Users/` where a move would make
     /// `users/`: on a case-insensitive disk the copy would land in it, a
     /// name no op can change (F33). Move to space refuses, naming it, with
-    /// nothing written.
+    /// nothing written, though the folder was made since the last relist.
     #[test]
     fn move_to_space_refuses_a_folder_listed_in_another_case() {
         let (dir, mut p) = folder_project(&[], &["main/users/x"]);
         std::fs::create_dir_all(dir.path().join("requests/auth/Users")).unwrap();
-        p.relist();
         let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
         let r = p.move_request("main/users/x", "auth");
         assert!(
             matches!(&r, Err(Error::Conflict(m))
@@ -5106,6 +5127,8 @@ mod tests {
             "{r:?}"
         );
         assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(p.journal_len(), 0);
     }
 
     /// Move all refuses the same way, whole, at any depth.
@@ -5115,27 +5138,35 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("requests/auth/users/V1")).unwrap();
         p.relist();
         let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
+        let folders_before = folder_paths(&p);
         let r = p.move_all_requests("main", "auth");
         assert!(
             matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/auth/users/V1/")),
             "{r:?}"
         );
         assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(folder_paths(&p), folders_before);
+        assert_eq!(p.journal_len(), 0);
     }
 
-    /// A folder listed at the exact path is merged into (F27), even beside
-    /// a twin in another case. Only a case-sensitive disk holds both, so
-    /// the test does nothing on one that ignores case (macOS CI).
+    /// A folder listed at the exact path is merged into (F27), keeping its
+    /// own `.folder.toml`, even beside a twin in another case, which is
+    /// left alone. Only a case-sensitive disk holds both.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_move_merges_into_the_exact_path_beside_a_twin() {
         let (dir, mut p) = folder_project(&[], &["main/users/x"]);
         std::fs::create_dir_all(dir.path().join("requests/auth/Users")).unwrap();
-        if dir.path().join("requests/auth/users").exists() {
-            return;
-        }
         std::fs::create_dir_all(dir.path().join("requests/auth/users")).unwrap();
+        let file = dir.path().join("requests/auth/users/.folder.toml");
+        std::fs::write(&file, "name = \"Accounts\"\n").unwrap();
         p.relist();
         assert_eq!(p.move_request("main/users/x", "auth").unwrap(), "auth/users/x");
         assert!(dir.path().join("requests/auth/users/x.toml").is_file());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "name = \"Accounts\"\n");
+        let twin = std::fs::read_dir(dir.path().join("requests/auth/Users")).unwrap();
+        assert_eq!(twin.count(), 0);
     }
 }
