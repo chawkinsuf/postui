@@ -1837,12 +1837,13 @@ fn the_notices_import_imports_the_curl_it_reported() {
     assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
 }
 
-/// The notice floats over the panes as the variable tooltip does: a click
-/// on it is no click away, so the URL line being typed in stays open, and
-/// a right click goes past it to what is under it.
+/// The notice floats over the panes: a click on it is no click away, so
+/// the URL line being typed in stays open. A right click stops at it and
+/// opens no menu for what is under it.
 #[test]
 fn a_click_on_the_notice_is_no_click_away() {
     use crate::components::toast::NoticePart;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = watching("curl https://x/users");
     app.update(Action::FocusUrl);
     let open = app.editor.sub_focus;
@@ -1852,7 +1853,15 @@ fn a_click_on_the_notice_is_no_click_away() {
     assert_eq!(app.editor.sub_focus, open, "the panel");
     let close = app.hits.rect_of(&notice_part(NoticePart::Close)).unwrap();
     let under = app.hits.hit_at_ignoring_overlays(close.x + 1, close.y);
-    assert!(!matches!(under, Some(Hit::CurlNotice(_))), "a right click: {under:?}");
+    assert_eq!(under, Some(&notice_part(NoticePart::Close)), "a right click lands on it");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: close.x + 1,
+        row: close.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.modals.is_empty(), "no menu");
+    assert!(app.toasts.curl_notice().is_some());
     click(&mut app, notice_part(NoticePart::Close));
     assert_eq!(app.editor.sub_focus, open, "the \u{d7}");
     assert!(app.toasts.curl_notice().is_none());
@@ -1879,6 +1888,7 @@ fn the_notice_waits_for_the_dialog_to_close() {
     draw(&mut app);
     assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), None, "not drawn");
     let now = Instant::now();
+    app.tick_toasts(now);
     app.tick_toasts(now + Duration::from_secs(60));
     assert!(app.toasts.curl_notice().is_some(), "held");
     app.update(Action::CancelTopModal);
@@ -1889,18 +1899,50 @@ fn the_notice_waits_for_the_dialog_to_close() {
     assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
 }
 
-/// With no project open the import refuses as it always does, before it
-/// reads the clipboard.
+/// With no project open the import refuses as it always does, and the
+/// notice stays up: once a project is open, its Import imports.
 #[test]
 fn the_notices_import_with_no_project_says_so() {
     use crate::components::toast::NoticePart;
     let mut app = watching("curl https://x/users");
-    app.project.take();
+    let project = app.project.take();
     assert!(app.check_clipboard());
     click(&mut app, notice_part(NoticePart::Import));
     assert!(app.modals.is_empty());
-    assert!(app.toasts.last_message().unwrap().starts_with("no project is open"));
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("no project is open")));
+    assert!(app.toasts.curl_notice().is_some());
+    app.project = project;
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
     assert!(app.toasts.curl_notice().is_none());
+}
+
+/// Focus coming back behind the edit flag's waiting screen checks too:
+/// the notice waits there and shows once the screen goes.
+#[test]
+fn the_notice_is_checked_behind_the_waiting_screen() {
+    let mut app = watching("hello");
+    app.check_clipboard();
+    let root = app.proj().root().to_path_buf();
+    app.edit_block = Some(super::edit_block::EditBlock { root, name: "p".into(), flag: None });
+    app.clipboard.set_read_for_test("curl https://x/u");
+    app.on_focus_gained();
+    assert_eq!(notices(&app), 1);
+}
+
+/// At launch the notice is pushed outside any input path: its first frame
+/// already slides it in rather than drawing it settled.
+#[test]
+fn the_notice_slides_in_from_its_first_frame() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = watching("curl https://x/u");
+    app.reset_anims(true);
+    app.ui_settings.anim_ms.toast = std::time::Duration::from_secs(60);
+    assert!(app.check_clipboard());
+    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(!screen.contains("Clipboard holds"), "off screen at the start of its slide");
 }
 
 /// The edit flag's waiting screen hides the notice as a dialog does; it
@@ -1981,6 +2023,7 @@ fn the_notice_never_repeats_for_the_same_curl() {
 fn the_sidebar_row_keeps_its_two_buttons_while_the_notice_shows() {
     use ratatui::{Terminal, backend::TestBackend};
     let mut app = watching("curl https://x/u");
+    app.reset_anims(false);
     app.check_clipboard();
     let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
@@ -2118,6 +2161,7 @@ fn a_sidebar_ctrl_v_after_the_notice_imports_into_the_cursor_rows_folder() {
     assert!(app.check_clipboard());
     app.update(Action::Paste);
     assert_eq!(prompt(&app).1, "api/GET users");
+    assert!(app.toasts.curl_notice().is_none(), "the notice goes: no second import");
 }
 
 #[test]
@@ -2130,6 +2174,7 @@ fn a_ctrl_v_on_curl_gone_from_the_clipboard_says_why() {
     app.update(Action::Paste);
     assert!(app.modals.is_empty());
     assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    assert!(app.toasts.curl_notice().is_none(), "the notice spoke of a clipboard now gone");
 }
 
 #[test]

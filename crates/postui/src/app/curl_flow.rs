@@ -38,13 +38,15 @@ impl App {
             self.key_spelled(at, &Action::Paste).map(|key| format!("or {key} in the sidebar"));
         let message = "Clipboard holds a curl command";
         self.toasts.push_curl_notice(message, hint.unwrap_or_default(), text, &mut self.anims);
+        self.arm_pending_toasts();
         true
     }
 
     /// A click on the curl import notice (V3, #240). Import imports the
     /// text the notice reported, as the sidebar's ctrl+v would: into the
-    /// cursor row's folder (V2), refused with no project open. The notice
-    /// goes either way. The × takes it down.
+    /// cursor row's folder (V2). The notice goes when the import reads its
+    /// text, so a refusal with no project open leaves it up. The × takes
+    /// it down.
     pub(super) fn press_curl_notice(&mut self, part: crate::components::toast::NoticePart) -> bool {
         use crate::components::toast::NoticePart;
         match part {
@@ -54,21 +56,21 @@ impl App {
                 true
             }
             NoticePart::Import => {
-                let Some(text) = self.toasts.take_curl_notice(&mut self.anims) else {
-                    return true;
-                };
                 let folder = self.sidebar_import_folder();
-                self.import_with(folder, |_| {
-                    postui_core::curl::parse(&text).map_err(|e| e.to_string())
+                self.import_with(folder, |app| {
+                    let text = app.toasts.take_curl_notice(&mut app.anims).unwrap_or_default();
+                    app.parse_clipboard_curl(&text).map_err(|e| e.to_string())
                 })
             }
         }
     }
 
     /// The clipboard's curl commands, read as every import reads them (a
-    /// clipboard that can't be read is empty, which holds none).
+    /// clipboard that can't be read is empty, which holds none). The curl
+    /// import notice goes: it spoke of the clipboard, read afresh here.
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
+        self.toasts.take_curl_notice(&mut self.anims);
         self.parse_clipboard_curl(&text)
     }
 

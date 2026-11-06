@@ -1006,10 +1006,10 @@ impl App {
     /// The edit flag's waiting screen looks at the flag at once, rather
     /// than at its next poll.
     pub fn on_focus_gained(&mut self) -> bool {
-        if self.edit_block.is_some() {
-            return self.poll_edit_flag(Instant::now(), true);
-        }
         let clipboard = self.check_clipboard();
+        if self.edit_block.is_some() {
+            return self.poll_edit_flag(Instant::now(), true) | clipboard;
+        }
         self.update(Action::ReloadProjectFiles) | clipboard
     }
 
@@ -1733,6 +1733,9 @@ impl App {
                     // keeps the cell open too (#135); committing it first
                     // would take the caret's tooltip down before it acts.
                     | Hit::FooterChip(Action::TipPill(_))
+                    // The curl import notice floats over the panes, part of
+                    // none of them (#240).
+                    | Hit::CurlNotice(_)
             )
             // The tooltip floats over the rows: clicking one of its pills
             // must neither commit the cell under edit nor drop the selection.

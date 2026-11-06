@@ -59,7 +59,9 @@ pub enum NoticePart {
     Close,
 }
 
-/// What stops the curl import notice's clock on a tick (#240).
+/// What stops the curl import notice's clock on a tick (#240). The app
+/// works it out from its own state on each call, rather than `Toasts`
+/// keeping a copy of that state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeHold {
     /// Nothing: it runs.
@@ -388,9 +390,10 @@ impl Toasts {
     /// rather than snapping to full color mid-slide.
     ///
     /// `notice` is `None` while the curl import notice is hidden
-    /// ([`NoticeHold::Hidden`]): it is left out of the stack. Otherwise
-    /// the notice paints its controls ([`paint_notice`]), registering them
-    /// in the map and lighting the one the pointer is on.
+    /// ([`NoticeHold::Hidden`]): it is left out of the stack, as it is on
+    /// a screen too narrow for its controls. Otherwise the notice paints
+    /// its controls ([`paint_notice`]), registering them in the map and
+    /// lighting the one the pointer is on.
     pub fn draw(
         &self,
         frame: &mut Frame,
@@ -400,8 +403,12 @@ impl Toasts {
         now: Instant,
         mut notice: Option<(&mut HitMap, Option<&Hit>)>,
     ) {
-        let entries: Vec<&Toast> =
-            self.entries.iter().filter(|t| t.notice.is_none() || notice.is_some()).collect();
+        let notice_fits = usize::from(screen.width) >= notice_width("", "");
+        let entries: Vec<&Toast> = self
+            .entries
+            .iter()
+            .filter(|t| t.notice.is_none() || (notice.is_some() && notice_fits))
+            .collect();
         // Bottom-right of `screen` (the caller keeps the footer out of that
         // rect), one breathing row off its bottom edge; oldest on top,
         // newest at the bottom. When more toasts are alive than fit, the
@@ -911,6 +918,21 @@ mod tests {
         assert!(!mid.contains("sidebar"), "{mid:?}");
         assert!(mid.contains("Import") && mid.contains('\u{d7}'), "{mid:?}");
         assert!(hits.rect_of(&Hit::CurlNotice(NoticePart::Import)).is_some());
+    }
+
+    /// A screen too narrow for the Import button and the × leaves the
+    /// notice out: no control is painted or registered past the toast.
+    #[test]
+    fn a_screen_too_narrow_for_the_controls_leaves_the_notice_out() {
+        let min = notice_width("", "") as u16;
+        let (_, hits) = draw_notice(min - 1, "or ^V in the sidebar", None);
+        for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
+            assert_eq!(hits.rect_of(&Hit::CurlNotice(part)), None, "{part:?}");
+        }
+        let (_, hits) = draw_notice(min, "or ^V in the sidebar", None);
+        let panel = hits.rect_of(&Hit::CurlNotice(NoticePart::Panel)).unwrap();
+        let import = hits.rect_of(&Hit::CurlNotice(NoticePart::Import)).unwrap();
+        assert!(panel.x < import.x, "{panel:?} {import:?}");
     }
 
     /// The hovered Import lifts as every button does.

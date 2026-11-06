@@ -496,16 +496,15 @@ impl Hit {
         }
     }
 
-    /// Overlays that float over the panes: `{{token}}` spans, the
-    /// variable tooltip's hits and the curl import notice's (#240). A
-    /// click on a tip pill or the notice is never a "click away": it must
-    /// not commit a table cell under edit, blur the URL line, or drop the
-    /// row selection beneath (a token span is never a click target at all —
-    /// left clicks resolve past it) — and a right click belongs to the
-    /// row/cell under it and its context menu, so right-click resolution
-    /// skips them (`HitMap::hit_at_ignoring_overlays`).
+    /// Overlays that float over the panes: `{{token}}` spans and the
+    /// variable tooltip's hits. A click on a tip pill is never a "click
+    /// away": it must not commit a table cell under edit, blur the URL
+    /// line, or drop the row selection beneath (a token span is never a
+    /// click target at all — left clicks resolve past it) — and a right
+    /// click belongs to the row/cell under it and its context menu, so
+    /// right-click resolution skips them (`HitMap::hit_at_ignoring_overlays`).
     pub fn is_float_overlay(&self) -> bool {
-        matches!(self, Hit::VarToken(_) | Hit::CurlNotice(_)) || self.tip_name().is_some()
+        matches!(self, Hit::VarToken(_)) || self.tip_name().is_some()
     }
 }
 
