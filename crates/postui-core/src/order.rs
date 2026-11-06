@@ -292,6 +292,20 @@ pub(crate) fn rename_folder_entries(order: &mut Vec<String>, from: &str, to: &st
     rename_prefix(order, from, to);
 }
 
+/// The request at relative slug `from` renamed to `to` in its own level:
+/// an entry already naming `to` goes first (nothing was on disk there; left
+/// in, one a partial walk kept (D7) would take the request's slot), then
+/// `from`'s entry is renamed in place, as [`rename_folder_entries`] does
+/// for a folder.
+pub(crate) fn rename(order: &mut Vec<String>, from: &str, to: &str) {
+    remove(order, to);
+    for e in order.iter_mut() {
+        if e == from {
+            *e = to.to_string();
+        }
+    }
+}
+
 /// [`remove`] for a folder: `entry` (a folder entry, `"a/"`) and every
 /// entry under it.
 pub(crate) fn remove_under(order: &mut Vec<String>, entry: &str) {
