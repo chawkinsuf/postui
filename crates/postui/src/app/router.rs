@@ -246,8 +246,9 @@ impl App {
 
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
-        // A live keyboard move owns the keyboard as a mouse drag does, ahead
-        // of anything over it (spec 2026-11-03 create folders F31).
+        // A live keyboard move owns the keyboard as a mouse drag does (spec
+        // 2026-11-03 create folders F31). A dialog opening cancels it
+        // (`App::push_modal`).
         if self.sidebar.key_move() {
             return Surface::SidebarMove;
         }

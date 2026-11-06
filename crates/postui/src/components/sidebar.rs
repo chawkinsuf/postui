@@ -1232,7 +1232,9 @@ impl Sidebar {
         let text_x = self.last_list_x + 1;
         let picked = (column.saturating_sub(text_x) / 2) as usize;
         let depth = picked.clamp(*depths.start(), *depths.end());
-        self.place_in(rest, pos, &inner, depth, space)
+        let level = Self::level_in(&inner, depth);
+        let at = rest[..pos].iter().filter(|&&j| self.level_of_row(j, space) == level).count();
+        (level, at)
     }
 
     /// D12's levels at `pos` among `rest`: the innermost level (P's, or
@@ -1257,19 +1259,10 @@ impl Sidebar {
         (inner, outer_depth..=inner_depth)
     }
 
-    /// The place at `pos` among `rest` in `inner`'s level at `depth` (it
-    /// or one of its folders): the number of that level's items above.
-    fn place_in(
-        &self,
-        rest: &[usize],
-        pos: usize,
-        inner: &str,
-        depth: usize,
-        space: &str,
-    ) -> (String, usize) {
-        let level = inner.split('/').take(depth).collect::<Vec<_>>().join("/");
-        let at = rest[..pos].iter().filter(|&&j| self.level_of_row(j, space) == level).count();
-        (level, at)
+    /// The level `depth` deep along `inner`: `inner` itself or one of the
+    /// folders it is in.
+    fn level_in(inner: &str, depth: usize) -> String {
+        inner.split('/').take(depth).collect::<Vec<_>>().join("/")
     }
 
     /// The places a keyboard move steps through (spec 2026-11-03 create
@@ -1285,14 +1278,18 @@ impl Sidebar {
             return Vec::new();
         };
         let rest = self.rest_rows(&block);
+        // Each level's items above the gap, counted on the way down.
+        let mut above: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         let mut out = Vec::new();
         for pos in 0..=rest.len() {
             let (inner, depths) = self.levels_at(&rest, pos, &d.space);
             for depth in depths.rev() {
-                out.push(KeyPlace {
-                    pos,
-                    place: self.place_in(&rest, pos, &inner, depth, &d.space),
-                });
+                let level = Self::level_in(&inner, depth);
+                let at = above.get(&level).copied().unwrap_or(0);
+                out.push(KeyPlace { pos, place: (level, at) });
+            }
+            if let Some(&j) = rest.get(pos) {
+                *above.entry(self.level_of_row(j, &d.space)).or_default() += 1;
             }
         }
         out
@@ -1326,27 +1323,17 @@ impl Sidebar {
         self.set_drag(places[to].place.clone(), None)
     }
 
-    /// ← in a keyboard move (F31): out one level where several end on the
-    /// block's row (D12). `true` when the place changed.
-    pub fn drag_out(&mut self) -> bool {
+    /// ← (`out`) or → in a keyboard move (F31): one level out or in where
+    /// several end on the block's row (D12). `true` when the place
+    /// changed; → at the innermost level changes nothing, and
+    /// [`Self::closed_beside`] names the folder → opens instead.
+    pub fn drag_level(&mut self, out: bool) -> bool {
         let Some((places, now)) = self.key_place_now() else {
             return false;
         };
-        match places.get(now + 1) {
-            Some(p) if p.pos == places[now].pos => self.set_drag(p.place.clone(), None),
-            _ => false,
-        }
-    }
-
-    /// → in a keyboard move (F31): in one level where several end on the
-    /// block's row (D12). `true` when the place changed; at the innermost
-    /// level it changes nothing, and [`Self::closed_beside`] names the
-    /// folder → opens instead.
-    pub fn drag_in(&mut self) -> bool {
-        let Some((places, now)) = self.key_place_now() else {
-            return false;
-        };
-        match now.checked_sub(1).map(|i| &places[i]) {
+        // A gap's levels are listed innermost first.
+        let next = if out { now.checked_add(1) } else { now.checked_sub(1) };
+        match next.and_then(|i| places.get(i)) {
             Some(p) if p.pos == places[now].pos => self.set_drag(p.place.clone(), None),
             _ => false,
         }
@@ -3205,12 +3192,12 @@ mod tests {
         }
 
         fn out(&mut self) -> bool {
-            let changed = self.s.drag_out();
+            let changed = self.s.drag_level(true);
             self.rebuilt(changed)
         }
 
         fn inward(&mut self) -> bool {
-            let changed = self.s.drag_in();
+            let changed = self.s.drag_level(false);
             self.rebuilt(changed)
         }
 

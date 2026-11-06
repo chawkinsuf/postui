@@ -942,8 +942,9 @@ fn drag_live(app: &App) -> bool {
 /// chips that mean anything are the two ways to cancel it.
 pub(crate) fn override_chips(app: &App) -> Option<Vec<FooterChip>> {
     use crate::keyroute::spell::{Key, Nav};
-    // A keyboard move's own keys (spec 2026-11-03 create folders F31). The
-    // chips run nothing: a click cancels the move.
+    // A keyboard move's own keys (spec 2026-11-03 create folders F31). With
+    // no action they draw as plain key hints, not buttons: F31 has a click
+    // cancel the move, a click on these included.
     if app.sidebar.key_move() {
         return Some(vec![
             (Key::Nav(Nav::UpDown), "move".to_string(), None),

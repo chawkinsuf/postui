@@ -39120,6 +39120,51 @@ fn the_footer_shows_the_key_moves_keys() {
     assert!(text.contains("j/k move     h/l level"), "{text}");
 }
 
+/// F31, review round 1: a dialog that opens during a keyboard move (not
+/// from a key, which the move ignores, but from a reload or the like)
+/// cancels the move first, so the dialog's keys reach it: one Esc closes
+/// it. A mouse drag is cancelled the same way.
+#[test]
+fn a_dialog_opening_cancels_a_key_move() {
+    let (mut app, dir) = folder_app();
+    let before = saved_order(&dir);
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down>");
+    assert!(app.sidebar.key_move());
+    app.update(Action::PromptNewRequest);
+    assert!(app.sidebar.drag.is_none(), "cancelled");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "put back");
+    assert_ne!(app.surface(), crate::keyroute::Surface::SidebarMove);
+    key_matrix_tests::feed(&mut app, "<Esc>");
+    assert!(app.modals.is_empty(), "Esc reached the dialog");
+    assert_eq!(saved_order(&dir), before, "nothing written");
+
+    let r0 = row_rect(&mut app, 0);
+    let b = folder_rect(&mut app, "main/b");
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), b.y));
+    assert!(app.sidebar.mouse_drag());
+    app.update(Action::PromptNewRequest);
+    assert!(app.sidebar.drag.is_none(), "a mouse drag too");
+}
+
+/// F31, review round 1: a terminal paste during a keyboard move does
+/// nothing, as ctrl+v there does; on the sidebar it would import a curl.
+#[test]
+fn a_paste_during_a_key_move_does_nothing() {
+    let (mut app, dir) = folder_app();
+    let before = saved_order(&dir);
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down>");
+    let rows = request_rows(&app);
+    assert!(!app.handle_paste("curl https://example.com/pasted"));
+    assert!(app.sidebar.key_move(), "still moving");
+    assert_eq!(request_rows(&app), rows, "nothing imported");
+    assert!(app.modals.is_empty());
+    key_matrix_tests::feed(&mut app, "<Esc>");
+    assert_eq!(saved_order(&dir), before);
+}
+
 /// D9: dragged onto closed `b/` (rows alpha, beta, a/, b/, c/), `alpha`
 /// waits above it with the dwell on `b/`.
 fn dwelling_on_b() -> (App, tempfile::TempDir, ratatui::layout::Rect) {

@@ -10234,11 +10234,10 @@ impl App {
     /// Rebuilds the sidebar rows from the listing it already holds — the
     /// per-motion path during a row drag, which must not re-read disk.
     ///
-    /// The band tracks the open request, which a drag moves: a request
-    /// drag drags the open request itself (a press opens it before a drag
-    /// can start), and a folder drag can carry it inside the folder's open
-    /// subtree. So this snaps `ListTravel` exactly as `refresh_sidebar`
-    /// does: without it the anim keeps easing toward the open row's old
+    /// The band tracks the open request's row, which a drag can move: the
+    /// block can be that row or carry it, and a block passing it shifts it.
+    /// So this snaps `ListTravel` exactly as `refresh_sidebar` does:
+    /// without it the anim keeps easing toward the open row's old
     /// index while `rebuild` moves that row from slot to slot, and the
     /// `draw` crossfade paints a partial band on both the stale target and
     /// the row the open request used to be on — a ghost that lingers for
@@ -10321,16 +10320,16 @@ impl App {
     /// `m` on a sidebar row (spec 2026-11-03 create folders F31, F32):
     /// picks the cursor's row up for the keyboard move. An open input
     /// closes first, as before any change (task #75); the move's drop is
-    /// one.
+    /// one. `true` either way, as the close may have changed the screen.
     fn start_key_move(&mut self) -> bool {
         if !self.close_inputs_or_stop(true) {
             return true;
         }
         let space = self.active_space();
-        match self.sidebar.selected {
-            Some(i) => self.sidebar.begin_key_move(i, &space),
-            None => false,
+        if let Some(i) = self.sidebar.selected {
+            self.sidebar.begin_key_move(i, &space);
         }
+        true
     }
 
     /// A key while a keyboard move is live (F31): ↑/↓ step the block
@@ -10346,8 +10345,8 @@ impl App {
             KeyCode::Enter => return self.finish_sidebar_drag(true),
             KeyCode::Up => self.sidebar.drag_step(-1),
             KeyCode::Down => self.sidebar.drag_step(1),
-            KeyCode::Left => self.sidebar.drag_out(),
-            KeyCode::Right if self.sidebar.drag_in() => true,
+            KeyCode::Left => self.sidebar.drag_level(true),
+            KeyCode::Right if self.sidebar.drag_level(false) => true,
             KeyCode::Right => match self.sidebar.closed_beside() {
                 Some(path) => {
                     self.spring_open(&path);
@@ -11709,6 +11708,11 @@ impl App {
         if self.edit_block.is_some() && self.modals.is_empty() {
             return false;
         }
+        // A keyboard move takes no paste, as it takes no ctrl+v (spec
+        // 2026-11-03 create folders F31: other keys are ignored).
+        if self.sidebar.key_move() {
+            return false;
+        }
         // First, as no modal, field or response surface can be up when it
         // holds; and before the empty check, as an empty paste there still
         // says it holds no curl (V7).
@@ -12079,7 +12083,14 @@ impl App {
     /// (it paints whole on its first frame), and a dropdown often lands on
     /// top of an existing modal stack, so touching `ModalOpen` for it
     /// would wrongly snap a panel modal's own baseline mid-flight.
+    ///
+    /// A live sidebar row drag, the keyboard move's included, is cancelled
+    /// first (spec 2026-11-03 create folders F31), so the dialog takes the
+    /// keys.
     pub(crate) fn push_modal(&mut self, modal: Modal) {
+        if self.sidebar.drag.is_some() {
+            self.finish_sidebar_drag(false);
+        }
         if modal.dims_backdrop() {
             let now = Instant::now();
             if self.modals.is_empty() && !self.modal_handoff {
