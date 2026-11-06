@@ -1019,13 +1019,15 @@ impl Project {
         let moved: std::collections::HashMap<&str, &str> =
             moves.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
         self.order_edit(to, |order| {
+            // The move made the carried folders, so entries already naming
+            // one or under it name nothing (a partial walk kept them, D7):
+            // they go before anything arrives, as in `rename_folder_entries`.
+            for e in &carried {
+                order::remove_under(order, e);
+            }
             for e in drawn {
                 if order::is_folder_entry(e) {
                     if carried.contains(e.as_str()) {
-                        // The move made it, so entries already naming it or
-                        // under it name nothing (a partial walk kept them,
-                        // D7): they go first, as in `rename_folder_entries`.
-                        order::remove_under(order, e);
                         order::arrive(order, e);
                     }
                 } else if let Some(t) = moved.get(e.as_str()) {
@@ -3378,6 +3380,41 @@ mod tests {
         assert_eq!(
             order::space_order(p.meta(), "auth"),
             ["k", "locked/", "locked/y", "a", "c", "f/", "f/x"]
+        );
+    }
+
+    /// The same for a nested carried folder, and for a stale entry naming a
+    /// request the move brings: each item the move carries is listed once,
+    /// in the order it drew in `from`, and no stale entry under a carried
+    /// folder stays.
+    #[cfg(unix)]
+    #[test]
+    fn move_all_drops_stale_entries_under_a_nested_carried_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/c.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/f/g/y.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/auth/k.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/auth/locked/y.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            (
+                "project.toml",
+                "spaces = [\"main\", \"auth\"]\n\
+                 [space.main]\norder = [\"a\", \"c\", \"f/\", \"f/x\", \"f/g/\", \"f/g/y\"]\n\
+                 [space.auth]\norder = [\"f/g/y\", \"f/\", \"f/x\", \"f/g/\", \"f/g/old\", \
+                 \"f/old\", \"k\", \"locked/\", \"locked/y\"]\n",
+            ),
+        ]);
+        let locked = dir.path().join("requests/auth/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let moved = p.move_all_requests("main", "auth").map(|_| ());
+        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(warned, "the walk failed part way");
+        moved.unwrap();
+        assert_eq!(
+            order::space_order(p.meta(), "auth"),
+            ["k", "locked/", "locked/y", "a", "c", "f/", "f/x", "f/g/", "f/g/y"]
         );
     }
 
