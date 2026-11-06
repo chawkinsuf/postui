@@ -354,12 +354,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: frame.area().height.saturating_sub(crate::components::footer::FOOTER_HEIGHT),
         ..frame.area()
     };
-    // The edit flag's waiting screen takes every click, so the curl
-    // import notice's controls register none over it.
-    let mut blocked = crate::hit::HitMap::default();
-    let toast_hits = if app.edit_block.is_some() { &mut blocked } else { &mut hits };
-    let hovered = app.hovered.as_ref();
-    app.toasts.draw(frame, toast_area, &app.theme, &app.anims, now, toast_hits, hovered);
+    let notice = (!app.curl_notice_hidden()).then_some((&mut hits, app.hovered.as_ref()));
+    app.toasts.draw(frame, toast_area, &app.theme, &app.anims, now, notice);
     app.hits = hits;
 
     // The variable tooltip is painted last of all, over every pane — after

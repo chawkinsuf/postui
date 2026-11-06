@@ -343,6 +343,11 @@ impl App {
                 // drawn rect, so moving within one token changes nothing.
                 let hit_changed = hit != self.hovered;
                 let changed = hit_changed || token != self.hovered_token;
+                // Motion onto the curl import notice lets the pointer hold
+                // it (#240).
+                if matches!(hit, Some(Hit::CurlNotice(_))) {
+                    self.toasts.point_at_curl_notice();
+                }
                 self.hovered = hit;
                 self.hovered_token = token;
                 if hit_changed {
@@ -406,7 +411,8 @@ impl App {
                 // `describe…`), and its `commands` and `quit` keep the
                 // caret as their keys do.
                 // A press on a window separator is exempt as a scrollbar is:
-                // it disturbs nothing ([`Self::is_separator_press`]).
+                // it disturbs nothing ([`Self::is_separator_press`]). So is
+                // the curl import notice, which floats over the panes.
                 let on_bar_row = self.hits.rect_of(&Hit::ResponseJqBar).is_some_and(|bar| {
                     bar.y == m.row && self.hits.pane_at(m.column, m.row) == Some(PaneId::Response)
                 });
@@ -423,6 +429,7 @@ impl App {
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)
                                 | Hit::HScrollTrack(..)
+                                | Hit::CurlNotice(_)
                         )
                     );
                 if jq_blurred {

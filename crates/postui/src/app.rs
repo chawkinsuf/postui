@@ -1258,12 +1258,18 @@ impl App {
     fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.clipboard.reconfigure(&ui_settings);
         self.anims.set_enabled(ui_settings.animations);
-        let watch = !self.ui_settings.curl_button && ui_settings.curl_button;
+        let watch = (self.ui_settings.curl_button, ui_settings.curl_button);
         self.finish_ui_settings(ui_settings);
-        // Turned on: look now rather than at the next focus gain (spec
-        // 2026-10-15 curl import visibility V13).
-        if watch {
-            self.check_clipboard();
+        // Turned on: look now rather than at the next focus gain. Turned
+        // off: the notice goes (spec 2026-10-15 curl import visibility V13).
+        match watch {
+            (false, true) => {
+                self.check_clipboard();
+            }
+            (true, false) => {
+                self.toasts.take_curl_notice(&mut self.anims);
+            }
+            _ => {}
         }
     }
 
@@ -12357,11 +12363,26 @@ impl App {
     }
 
     /// The toasts' tick ([`crate::components::toast::Toasts::on_tick`]):
-    /// the pointer on the curl import notice holds it (#240). Whether a
-    /// toast was showing.
+    /// the curl import notice is held while it is hidden, or while the
+    /// pointer is on it (#240). Whether a toast was showing.
     fn tick_toasts(&mut self, now: Instant) -> bool {
-        let held = matches!(self.hovered, Some(Hit::CurlNotice(_)));
-        self.toasts.on_tick(&mut self.anims, now, held)
+        use crate::components::toast::NoticeHold;
+        let hold = if self.curl_notice_hidden() {
+            NoticeHold::Hidden
+        } else if matches!(self.hovered, Some(Hit::CurlNotice(_))) {
+            NoticeHold::Pointer
+        } else {
+            NoticeHold::Runs
+        };
+        self.toasts.on_tick(&mut self.anims, now, hold)
+    }
+
+    /// Whether the curl import notice is hidden: while a dialog or the
+    /// edit flag's waiting screen is up, it is not drawn and its clock
+    /// stands still, so it shows once they are gone (spec 2026-10-15 curl
+    /// import visibility V10, #240).
+    pub(crate) fn curl_notice_hidden(&self) -> bool {
+        !self.modals.is_empty() || self.edit_block.is_some()
     }
 
     /// Starts the slide-in of any toast pushed since the last call. Run at
@@ -12369,11 +12390,9 @@ impl App {
     /// so a toast never reaches its first draw settled and then slides in
     /// over itself on the next tick — whichever code path pushed it.
     pub(crate) fn arm_pending_toasts(&mut self) {
-        self.toasts.start_pending_anims(
-            &mut self.anims,
-            Instant::now(),
-            self.ui_settings.anim_ms.toast,
-        );
+        let hidden = self.curl_notice_hidden();
+        let slide = self.ui_settings.anim_ms.toast;
+        self.toasts.start_pending_anims(&mut self.anims, Instant::now(), slide, hidden);
     }
 
     /// The response search's note (a wrap, a miss), toasted once at the

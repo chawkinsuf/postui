@@ -6810,8 +6810,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let now = std::time::Instant::now();
-                let mut hits = crate::hit::HitMap::default();
-                app.toasts.draw(f, f.area(), &theme, &app.anims, now, &mut hits, None)
+                app.toasts.draw(f, f.area(), &theme, &app.anims, now, None)
             })
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());

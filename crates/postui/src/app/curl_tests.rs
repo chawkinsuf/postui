@@ -1825,25 +1825,68 @@ fn the_notices_close_takes_it_down_and_does_nothing_else() {
     assert!(!app.check_clipboard(), "and the same curl stays known");
 }
 
-/// Under a dialog Import is refused as a quit is (task #85): the dialog and
-/// the notice stay. The × still works there.
+/// Import imports the curl the notice reported, whatever the clipboard
+/// holds by the time of the click, and reads no clipboard.
 #[test]
-fn the_notices_import_under_a_dialog_is_refused() {
+fn the_notices_import_imports_the_curl_it_reported() {
     use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    app.clipboard.set_read_for_test("curl https://x/other");
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
+}
+
+/// The notice floats over the panes as the variable tooltip does: a click
+/// on it is no click away, so the URL line being typed in stays open, and
+/// a right click goes past it to what is under it.
+#[test]
+fn a_click_on_the_notice_is_no_click_away() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    app.update(Action::FocusUrl);
+    let open = app.editor.sub_focus;
+    assert_ne!(open, SubFocus::None);
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Panel));
+    assert_eq!(app.editor.sub_focus, open, "the panel");
+    let close = app.hits.rect_of(&notice_part(NoticePart::Close)).unwrap();
+    let under = app.hits.hit_at_ignoring_overlays(close.x + 1, close.y);
+    assert!(!matches!(under, Some(Hit::CurlNotice(_))), "a right click: {under:?}");
+    click(&mut app, notice_part(NoticePart::Close));
+    assert_eq!(app.editor.sub_focus, open, "the \u{d7}");
+    assert!(app.toasts.curl_notice().is_none());
+
+    app.focus = PaneId::Response;
+    super::tests::ready_response(&mut app, "{\"a\": 1}");
+    assert!(app.session.response.set_jq_focus(true));
+    app.clipboard.set_read_for_test("curl https://x/other");
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Close));
+    assert!(app.toasts.curl_notice().is_none());
+    assert!(app.session.response.jq_focused(), "the jq bar");
+}
+
+/// Under a dialog the notice waits: it is not drawn and its clock stands
+/// still. Once the dialog closes it shows, with its 10 s from then.
+#[test]
+fn the_notice_waits_for_the_dialog_to_close() {
+    use crate::components::toast::NoticePart;
+    use std::time::{Duration, Instant};
     let mut app = watching("curl https://x/users");
     app.update(Action::PromptNewRequest);
     assert!(app.check_clipboard());
+    draw(&mut app);
+    assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), None, "not drawn");
+    let now = Instant::now();
+    app.tick_toasts(now + Duration::from_secs(60));
+    assert!(app.toasts.curl_notice().is_some(), "held");
+    app.update(Action::CancelTopModal);
+    app.tick_toasts(now + Duration::from_secs(60));
+    app.tick_toasts(now + Duration::from_secs(69));
+    assert!(app.toasts.curl_notice().is_some(), "its 10 s from the close");
     click(&mut app, notice_part(NoticePart::Import));
-    let new_request = |app: &App| {
-        app.modals.iter().count() == 1
-            && matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. }))
-    };
-    assert!(new_request(&app));
-    assert_eq!(app.toasts.last_message(), Some(CLOSE_THE_DIALOG_FIRST));
-    assert!(app.toasts.curl_notice().is_some());
-    click(&mut app, notice_part(NoticePart::Close));
-    assert!(app.toasts.curl_notice().is_none());
-    assert!(new_request(&app), "the dialog stays");
+    assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
 }
 
 /// With no project open the import refuses as it always does, before it
@@ -1860,22 +1903,22 @@ fn the_notices_import_with_no_project_says_so() {
     assert!(app.toasts.curl_notice().is_none());
 }
 
-/// The waiting screen takes every click: the notice registers no controls
-/// over it.
+/// The edit flag's waiting screen hides the notice as a dialog does; it
+/// shows once the screen goes.
 #[test]
-fn the_notice_has_no_controls_over_the_waiting_screen() {
+fn the_notice_waits_out_the_waiting_screen() {
+    use crate::components::toast::NoticePart;
     let mut app = watching("curl https://x/users");
-    assert!(app.check_clipboard());
     let root = app.proj().root().to_path_buf();
     app.edit_block = Some(super::edit_block::EditBlock { root, name: "p".into(), flag: None });
+    assert!(app.check_clipboard());
     draw(&mut app);
-    for part in [
-        crate::components::toast::NoticePart::Panel,
-        crate::components::toast::NoticePart::Import,
-        crate::components::toast::NoticePart::Close,
-    ] {
+    for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
         assert_eq!(app.hits.rect_of(&notice_part(part)), None, "{part:?}");
     }
+    app.edit_block = None;
+    draw(&mut app);
+    assert!(app.hits.rect_of(&notice_part(NoticePart::Import)).is_some());
 }
 
 /// The pointer on the notice holds it past its 10 s; off it, it runs out.
@@ -1900,6 +1943,23 @@ fn the_pointer_on_the_notice_holds_it() {
     app.tick_toasts(now + std::time::Duration::from_secs(30));
     app.tick_toasts(now + std::time::Duration::from_secs(50));
     assert!(app.toasts.curl_notice().is_none(), "let go, it runs out");
+}
+
+/// A pointer at rest where the notice comes to be drawn lights it but
+/// does not hold it: only motion onto it does.
+#[test]
+fn a_pointer_resting_where_the_notice_lands_does_not_hold_it() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    app.arm_pending_toasts();
+    draw(&mut app);
+    let r = app.hits.rect_of(&notice_part(NoticePart::Panel)).unwrap();
+    app.pointer = Some((r.x + 3, r.y));
+    app.resync_hover();
+    assert_eq!(app.hovered, Some(notice_part(NoticePart::Panel)));
+    app.tick_toasts(std::time::Instant::now() + std::time::Duration::from_secs(30));
+    assert!(app.toasts.curl_notice().is_none());
 }
 
 #[test]
@@ -1963,20 +2023,21 @@ fn turning_the_setting_on_checks() {
     app.update(Action::SetUiFlag { key: "curl_button", value: true });
     assert_eq!(notices(&app), 1, "on: checked at once");
     app.update(Action::SetUiFlag { key: "curl_button", value: false });
+    assert_eq!(notices(&app), 0, "off: the notice goes");
     app.update(Action::Undo);
     assert!(app.ui_settings.curl_button);
-    assert_eq!(notices(&app), 1, "undo turns it back on, and the same curl is not shown again");
+    assert_eq!(notices(&app), 0, "undo turns it back on, and the same curl is not shown again");
     app.update(Action::SetUiFlag { key: "curl_button", value: false });
-    app.toasts = Default::default();
     app.clipboard.set_read_for_test("curl https://x/v");
     app.update(Action::SetUiFlag { key: "curl_button", value: true });
     assert_eq!(notices(&app), 1, "a new curl is");
 }
 
-/// V10: toasts paint over dialogs and every screen, so the notice shows
-/// under a dialog, on the Manage screen and with no project open.
+/// V10: the checks run wherever they run. The notice waits under a dialog
+/// (`the_notice_waits_for_the_dialog_to_close`) and shows on the Manage
+/// screen and with no project open.
 #[test]
-fn the_notice_shows_over_a_dialog_on_manage_and_with_no_project() {
+fn the_notice_shows_on_manage_and_with_no_project() {
     let mut app = watching("curl https://x/1");
     app.update(Action::PromptNewRequest);
     assert!(!app.modals.is_empty());

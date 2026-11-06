@@ -15,8 +15,9 @@ impl App {
     /// V4, V10, #240): with the `curl_button` setting on, a toast with an
     /// Import button saying the clipboard holds curl the import would take,
     /// once per text. Run at launch, on a focus gain and when the setting
-    /// is turned on. Toasts paint over dialogs and every screen, so it
-    /// checks wherever it runs. `true` when it showed.
+    /// is turned on, wherever it runs: under a dialog or the edit flag's
+    /// waiting screen the notice waits for them to go
+    /// ([`Self::curl_notice_hidden`]). `true` when there is a new notice.
     pub fn check_clipboard(&mut self) -> bool {
         if !self.ui_settings.curl_button {
             return false;
@@ -24,7 +25,8 @@ impl App {
         // The read marks new curl as known: no change means no curl the
         // import takes, or curl already known.
         let noticed = self.curl_noticed;
-        if self.read_clipboard_curl().is_err() || self.curl_noticed == noticed {
+        let text = self.clipboard.read().unwrap_or_default();
+        if self.parse_clipboard_curl(&text).is_err() || self.curl_noticed == noticed {
             return false;
         }
         let at = crate::keyroute::SpellCtx {
@@ -35,42 +37,46 @@ impl App {
         let hint =
             self.key_spelled(at, &Action::Paste).map(|key| format!("or {key} in the sidebar"));
         let message = "Clipboard holds a curl command";
-        self.toasts.push_curl_notice(message, hint.unwrap_or_default(), &mut self.anims);
+        self.toasts.push_curl_notice(message, hint.unwrap_or_default(), text, &mut self.anims);
         true
     }
 
-    /// A click on the curl import notice (V3, #240). Import is the
-    /// sidebar's ctrl+v: it imports into the cursor row's folder (V2), and
-    /// with no project open the import refuses as it always does. Under a
-    /// dialog it is refused as a quit is (task #85), leaving the dialog and
-    /// the notice as they were: the import's name prompt would open over
-    /// the dialog. The × takes the notice down, dialog or not.
+    /// A click on the curl import notice (V3, #240). Import imports the
+    /// text the notice reported, as the sidebar's ctrl+v would: into the
+    /// cursor row's folder (V2), refused with no project open. The notice
+    /// goes either way. The × takes it down.
     pub(super) fn press_curl_notice(&mut self, part: crate::components::toast::NoticePart) -> bool {
         use crate::components::toast::NoticePart;
         match part {
             NoticePart::Panel => true,
             NoticePart::Close => {
-                self.toasts.dismiss_curl_notice(&mut self.anims);
-                true
-            }
-            NoticePart::Import if !self.modals.is_empty() => {
-                self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
+                self.toasts.take_curl_notice(&mut self.anims);
                 true
             }
             NoticePart::Import => {
-                self.toasts.dismiss_curl_notice(&mut self.anims);
-                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
+                let Some(text) = self.toasts.take_curl_notice(&mut self.anims) else {
+                    return true;
+                };
+                let folder = self.sidebar_import_folder();
+                self.import_with(folder, |_| {
+                    postui_core::curl::parse(&text).map_err(|e| e.to_string())
+                })
             }
         }
     }
 
     /// The clipboard's curl commands, read as every import reads them (a
-    /// clipboard that can't be read is empty, which holds none). Curl the
-    /// import would take is marked as known, with the setting on or off:
-    /// the notice never names curl a notice or an import has read.
+    /// clipboard that can't be read is empty, which holds none).
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
-        let parsed = postui_core::curl::parse(&text);
+        self.parse_clipboard_curl(&text)
+    }
+
+    /// The curl commands of `text`, read from the clipboard. Curl the
+    /// import would take is marked as known, with the setting on or off:
+    /// the notice never names curl a notice or an import has read.
+    fn parse_clipboard_curl(&mut self, text: &str) -> Result<CurlBatch, CurlError> {
+        let parsed = postui_core::curl::parse(text);
         // Past the limit the import refuses (S12): no curl it would take.
         if parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT) {
             // By line, without the ends: the same curl copied with other

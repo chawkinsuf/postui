@@ -1,7 +1,7 @@
 use crate::anim::{AnimKey, Anims};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{Button, ButtonKind, ControlState, fill, text};
-use crate::theme::{self, Theme};
+use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -52,10 +52,35 @@ const NOTICE_CLOSE: &str = " \u{d7} ";
 pub enum NoticePart {
     /// The notice between its controls: the click stops there.
     Panel,
-    /// Imports the clipboard's curl, as ctrl+v on the sidebar does.
+    /// Imports the curl the notice reported, as ctrl+v on the sidebar
+    /// imports the clipboard's.
     Import,
     /// The ×: dismisses the notice.
     Close,
+}
+
+/// What stops the curl import notice's clock on a tick (#240).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeHold {
+    /// Nothing: it runs.
+    Runs,
+    /// The pointer is on it. It holds only once the pointer has moved onto
+    /// it ([`Toasts::point_at_curl_notice`]).
+    Pointer,
+    /// A dialog or the edit flag's waiting screen is up: it is not drawn,
+    /// and it slides in once they are gone.
+    Hidden,
+}
+
+/// The curl import notice's own part of its toast.
+struct Notice {
+    /// The hint after its Import button ("or ^V in the sidebar"), empty
+    /// when the key is unbound.
+    hint: String,
+    /// The clipboard text it reported, which its Import imports.
+    curl: String,
+    /// Whether the pointer has moved onto it since it last left.
+    pointed: bool,
 }
 
 struct Toast {
@@ -77,11 +102,10 @@ struct Toast {
     /// This toast's stable id, keying its own `AnimKey::ToastFade(id)` —
     /// see [`FIRST_TOAST_ID`].
     id: u64,
-    /// `Some` for the curl import notice: the hint after its Import button
-    /// ("or ^V in the sidebar"), empty when the key is unbound.
-    notice: Option<String>,
-    /// While the pointer holds the notice: the life it had left when the
-    /// hold began.
+    /// `Some` for the curl import notice.
+    notice: Option<Notice>,
+    /// While the notice is held ([`NoticeHold`]): the life it had left
+    /// when the hold began.
     held: Option<Duration>,
 }
 
@@ -116,7 +140,7 @@ impl Toasts {
         self.push_toast(message.into(), kind, None)
     }
 
-    fn push_toast(&mut self, message: String, kind: ToastKind, notice: Option<String>) -> u64 {
+    fn push_toast(&mut self, message: String, kind: ToastKind, notice: Option<Notice>) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.entries.push(Toast {
@@ -132,30 +156,44 @@ impl Toasts {
     }
 
     /// Shows the curl import notice (spec 2026-10-15 curl import
-    /// visibility V3, #240): `message` with an Import button, `hint` and a
-    /// ×. It replaces a notice still showing, which spoke of an earlier
-    /// clipboard.
+    /// visibility V3, #240) for the clipboard text `curl`: `message` with
+    /// an Import button, `hint` and a ×. It replaces a notice still
+    /// showing, which spoke of an earlier clipboard.
     pub fn push_curl_notice(
         &mut self,
         message: impl Into<String>,
         hint: impl Into<String>,
+        curl: impl Into<String>,
         anims: &mut Anims,
     ) {
-        self.dismiss_curl_notice(anims);
-        self.push_toast(message.into(), ToastKind::Info, Some(hint.into()));
+        self.take_curl_notice(anims);
+        let notice = Notice { hint: hint.into(), curl: curl.into(), pointed: false };
+        self.push_toast(message.into(), ToastKind::Info, Some(notice));
     }
 
-    /// Takes the curl import notice down at once, if it is showing.
-    pub fn dismiss_curl_notice(&mut self, anims: &mut Anims) {
-        if let Some(id) = self.entries.iter().find(|t| t.notice.is_some()).map(|t| t.id) {
-            self.dismiss(id, anims);
+    /// Takes the curl import notice down at once, if it is up: the text
+    /// it reported.
+    pub fn take_curl_notice(&mut self, anims: &mut Anims) -> Option<String> {
+        let at = self.entries.iter().position(|t| t.notice.is_some())?;
+        let toast = self.entries.remove(at);
+        anims.clear(AnimKey::ToastFade(toast.id));
+        toast.notice.map(|n| n.curl)
+    }
+
+    /// The pointer moved onto the curl import notice: from now until it
+    /// leaves, it holds the notice ([`NoticeHold::Pointer`]).
+    pub fn point_at_curl_notice(&mut self) {
+        if let Some(notice) = self.entries.iter_mut().find_map(|t| t.notice.as_mut()) {
+            notice.pointed = true;
         }
     }
 
-    /// The curl import notice's message and hint, while it shows.
+    /// The curl import notice's message and hint, while it is up.
     #[cfg(test)]
     pub fn curl_notice(&self) -> Option<(&str, &str)> {
-        self.entries.iter().find_map(|t| Some((t.message.as_str(), t.notice.as_deref()?)))
+        self.entries
+            .iter()
+            .find_map(|t| Some((t.message.as_str(), t.notice.as_ref()?.hint.as_str())))
     }
 
     /// [`Self::push`], unless the same message is already up: for a toast a
@@ -218,10 +256,21 @@ impl Toasts {
     /// toast already tracked (mid-slide, settled, or fading) is untouched.
     /// Also stamps `expires_at` for the same newly-pushed toasts (see
     /// `stamp_pending`) — the two are lazily initialized together since
-    /// they're both keyed off "have I seen this toast before".
-    pub fn start_pending_anims(&mut self, anims: &mut Anims, now: Instant, slide_dur: Duration) {
+    /// they're both keyed off "have I seen this toast before". A hidden
+    /// curl import notice ([`NoticeHold::Hidden`]) waits to slide in until
+    /// it is not.
+    pub fn start_pending_anims(
+        &mut self,
+        anims: &mut Anims,
+        now: Instant,
+        slide_dur: Duration,
+        notice_hidden: bool,
+    ) {
         self.stamp_pending(now);
         for t in &self.entries {
+            if notice_hidden && t.notice.is_some() {
+                continue;
+            }
             if anims.value(AnimKey::ToastFade(t.id), now).is_none() {
                 anims.snap(AnimKey::ToastFade(t.id), 0.0);
                 anims.retarget(AnimKey::ToastFade(t.id), 1.0, slide_dur, now);
@@ -239,28 +288,39 @@ impl Toasts {
     /// irregular, adaptive intervals (see `main.rs`) rather than a fixed
     /// period a single crossing check could rely on.
     ///
-    /// `notice_held` is whether the pointer is on the curl import notice
-    /// (#240): while it is, the notice's clock stands still at full
-    /// strength, a fade already begun undone, and it runs on with the life
-    /// it had left (at least the fade) once the pointer leaves.
-    pub fn on_tick(&mut self, anims: &mut Anims, now: Instant, notice_held: bool) -> bool {
+    /// `hold` is what holds the curl import notice (#240): while
+    /// something does, its clock stands still, and it runs on with the life
+    /// it had left (at least the fade) once nothing does. Under the pointer
+    /// it stays at full strength, a fade already begun undone. Hidden, it
+    /// drops its slide, to slide in again once it shows.
+    pub fn on_tick(&mut self, anims: &mut Anims, now: Instant, hold: NoticeHold) -> bool {
         // Captured before pruning: on the tick where the last toast expires,
         // `entries` goes from non-empty to empty, and that transition is
         // itself a state change that needs one final redraw to erase the
         // toast. Returning based on the post-prune state would swallow that
-        // frame and leave the toast painted until the next keypress.
-        let was_visible = !self.entries.is_empty();
+        // frame and leave the toast painted until the next keypress. A
+        // hidden notice is not drawn.
+        let was_visible =
+            self.entries.iter().any(|t| t.notice.is_none() || hold != NoticeHold::Hidden);
         self.stamp_pending(now);
         for t in &mut self.entries {
             let expires_at = t.expires_at.expect("stamped above");
-            if notice_held && t.notice.is_some() {
-                let left = expires_at.saturating_duration_since(now).max(TOAST_FADE_DUR);
-                t.expires_at = Some(now + *t.held.get_or_insert(left));
-                if t.fade_started {
-                    t.fade_started = false;
-                    anims.retarget(AnimKey::ToastFade(t.id), 1.0, TOAST_FADE_DUR, now);
+            if let Some(notice) = &mut t.notice {
+                if hold != NoticeHold::Pointer {
+                    notice.pointed = false;
                 }
-                continue;
+                if hold == NoticeHold::Hidden || notice.pointed {
+                    let left = expires_at.saturating_duration_since(now).max(TOAST_FADE_DUR);
+                    t.expires_at = Some(now + *t.held.get_or_insert(left));
+                    if hold == NoticeHold::Hidden {
+                        t.fade_started = false;
+                        anims.clear(AnimKey::ToastFade(t.id));
+                    } else if t.fade_started {
+                        t.fade_started = false;
+                        anims.retarget(AnimKey::ToastFade(t.id), 1.0, TOAST_FADE_DUR, now);
+                    }
+                    continue;
+                }
             }
             t.held = None;
             let fade_start = expires_at - TOAST_FADE_DUR;
@@ -321,15 +381,16 @@ impl Toasts {
     /// from the edge; while fading out (the final `TOAST_FADE_DUR` of its
     /// life, `t` easing back 1 → 0), the offset is pinned to 0 (the fade
     /// doesn't also creep back off-screen) and every painted color instead
-    /// blends toward `theme.page` by `theme::mix(_, theme.page, 1 - t)` —
+    /// blends toward `theme.page` by `1 - t` ([`crate::paint::fade_to`]) —
     /// replacing the old hard cutoff with a continuous fade. Reusing `t`
     /// for the color blend during the slide too (not just the offset) is
     /// a deliberate bonus: the toast fades in color-wise as it slides,
     /// rather than snapping to full color mid-slide.
     ///
-    /// The curl import notice paints its controls too ([`paint_notice`]),
-    /// registering them in `hits` and lighting the one `hovered` names.
-    #[allow(clippy::too_many_arguments)]
+    /// `notice` is `None` while the curl import notice is hidden
+    /// ([`NoticeHold::Hidden`]): it is left out of the stack. Otherwise
+    /// the notice paints its controls ([`paint_notice`]), registering them
+    /// in the map and lighting the one the pointer is on.
     pub fn draw(
         &self,
         frame: &mut Frame,
@@ -337,25 +398,26 @@ impl Toasts {
         theme: &Theme,
         anims: &Anims,
         now: Instant,
-        hits: &mut HitMap,
-        hovered: Option<&Hit>,
+        mut notice: Option<(&mut HitMap, Option<&Hit>)>,
     ) {
+        let entries: Vec<&Toast> =
+            self.entries.iter().filter(|t| t.notice.is_none() || notice.is_some()).collect();
         // Bottom-right of `screen` (the caller keeps the footer out of that
         // rect), one breathing row off its bottom edge; oldest on top,
         // newest at the bottom. When more toasts are alive than fit, the
         // oldest are the ones held off screen — they expire first anyway.
         let bottom = screen.bottom().saturating_sub(1);
         let visible = (bottom.saturating_sub(screen.y) / TOAST_HEIGHT) as usize;
-        let skip = self.entries.len().saturating_sub(visible);
-        let shown = self.entries.len() - skip;
+        let skip = entries.len().saturating_sub(visible);
+        let shown = entries.len() - skip;
         let mut y = bottom.saturating_sub(shown as u16 * TOAST_HEIGHT);
-        for toast in self.entries.iter().skip(skip) {
+        for toast in entries.into_iter().skip(skip) {
             // Display cells, not chars, for double-width chars (emoji, CJK).
             let display_width = crate::ui::cells(&toast.message);
             // Clamp in usize before narrowing, so a very long message can't wrap.
             let padding_width: usize = 6; // 1 bar col + 1 gap col + 4 right margin
             let clamped_width = match &toast.notice {
-                Some(hint) => notice_width(&toast.message, hint),
+                Some(n) => notice_width(&toast.message, &n.hint),
                 None => display_width.saturating_add(padding_width),
             };
             let width = clamped_width.min(screen.width as usize) as u16;
@@ -376,34 +438,30 @@ impl Toasts {
             if area.bottom() > screen.bottom() {
                 break;
             }
-            if let Some(hint) = &toast.notice {
-                let buf = frame.buffer_mut();
-                paint_notice(buf, area, &toast.message, hint, theme, hits, hovered);
-                crate::paint::fade_to(buf, area, theme.page, fade_toward_page);
-                y += TOAST_HEIGHT;
-                continue;
-            }
             let color = match toast.kind {
                 ToastKind::Info => theme.accent,
                 ToastKind::Success => theme.success,
                 ToastKind::Error => theme.error,
                 ToastKind::Warning => theme.warning,
             };
-            let panel_c = theme::mix(theme.panel, theme.page, fade_toward_page);
-            let bar_c = theme::mix(color, theme.page, fade_toward_page);
-            let text_c = theme::mix(theme.text, theme.page, fade_toward_page);
-
             let buf = frame.buffer_mut();
-            fill(buf, area, panel_c);
+            fill(buf, area, theme.panel);
             for row in area.top()..area.bottom() {
                 if let Some(cell) = buf.cell_mut((area.x, row)) {
                     cell.set_symbol("\u{2588}");
-                    cell.set_fg(bar_c);
-                    cell.set_bg(panel_c);
+                    cell.set_fg(color);
                 }
             }
-            let text_y = area.y + area.height / 2;
-            text(buf, area.x + 2, text_y, &toast.message, text_c, panel_c, false);
+            match (&toast.notice, notice.as_mut()) {
+                (Some(n), Some((hits, hovered))) => {
+                    paint_notice(buf, area, &toast.message, &n.hint, theme, hits, *hovered);
+                }
+                _ => {
+                    let text_y = area.y + area.height / 2;
+                    text(buf, area.x + 2, text_y, &toast.message, theme.text, theme.panel, false);
+                }
+            }
+            crate::paint::fade_to(buf, area, theme.page, fade_toward_page);
             y += TOAST_HEIGHT;
         }
     }
@@ -426,10 +484,11 @@ fn notice_width(message: &str, hint: &str) -> usize {
         + 1
 }
 
-/// Paints the curl import notice into `area`, laid out from its right
-/// edge: the ×, the hint, the Import button, and the message in the room
-/// left, cut to fit. The hint is left out when `area` is narrower than the
-/// notice with it. The panel's hit goes first, so the controls' win.
+/// Paints the curl import notice's contents into `area`, over the toast's
+/// panel and bar, laid out from its right edge: the ×, the hint, the
+/// Import button, and the message in the room left, cut to fit. The hint
+/// is left out when `area` is narrower than the notice with it. The
+/// panel's hit goes first, so the controls' win.
 fn paint_notice(
     buf: &mut Buffer,
     area: Rect,
@@ -439,13 +498,6 @@ fn paint_notice(
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
-    fill(buf, area, theme.panel);
-    for row in area.top()..area.bottom() {
-        if let Some(cell) = buf.cell_mut((area.x, row)) {
-            cell.set_symbol("\u{2588}");
-            cell.set_fg(theme.accent);
-        }
-    }
     let mid = area.y + area.height / 2;
     hits.register(area, Hit::CurlNotice(NoticePart::Panel));
 
@@ -491,10 +543,10 @@ mod tests {
         t.push("Saved", ToastKind::Success);
         assert!(!t.is_empty());
         // First on_tick stamps expires_at = base + TOAST_LIFETIME.
-        t.on_tick(&mut anims, base, false);
-        t.on_tick(&mut anims, base + TOAST_LIFETIME - Duration::from_millis(1), false);
+        t.on_tick(&mut anims, base, NoticeHold::Runs);
+        t.on_tick(&mut anims, base + TOAST_LIFETIME - Duration::from_millis(1), NoticeHold::Runs);
         assert!(!t.is_empty(), "alive one millisecond before expiry");
-        t.on_tick(&mut anims, base + TOAST_LIFETIME, false);
+        t.on_tick(&mut anims, base + TOAST_LIFETIME, NoticeHold::Runs);
         assert!(t.is_empty(), "expired at lifetime");
     }
 
@@ -508,10 +560,10 @@ mod tests {
         let base = Instant::now();
         let msg = "\"user_id\" already belongs to selector \"creds\" — pick a different field name";
         t.push(msg, ToastKind::Error);
-        t.on_tick(&mut anims, base, false);
-        t.on_tick(&mut anims, base + TOAST_LIFETIME, false);
+        t.on_tick(&mut anims, base, NoticeHold::Runs);
+        t.on_tick(&mut anims, base + TOAST_LIFETIME, NoticeHold::Runs);
         assert!(!t.is_empty(), "a long message must outlive the base lifetime");
-        t.on_tick(&mut anims, base + Duration::from_secs(9), false);
+        t.on_tick(&mut anims, base + Duration::from_secs(9), NoticeHold::Runs);
         assert!(t.is_empty(), "but not forever");
     }
 
@@ -536,8 +588,8 @@ mod tests {
             "the anim entry exists before expiry"
         );
 
-        t.on_tick(&mut anims, now, false); // stamps expires_at = now + TOAST_LIFETIME
-        t.on_tick(&mut anims, now + TOAST_LIFETIME, false);
+        t.on_tick(&mut anims, now, NoticeHold::Runs); // stamps expires_at = now + TOAST_LIFETIME
+        t.on_tick(&mut anims, now + TOAST_LIFETIME, NoticeHold::Runs);
         assert!(t.is_empty(), "the toast has expired");
         assert!(
             anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), now).is_none(),
@@ -551,18 +603,29 @@ mod tests {
         let mut t = Toasts::default();
         let base = Instant::now();
         t.push("bye", ToastKind::Info);
-        assert!(t.on_tick(&mut anims, base, false), "still visible right after stamping");
         assert!(
-            t.on_tick(&mut anims, base + TOAST_LIFETIME - Duration::from_millis(1), false),
+            t.on_tick(&mut anims, base, NoticeHold::Runs),
+            "still visible right after stamping"
+        );
+        assert!(
+            t.on_tick(
+                &mut anims,
+                base + TOAST_LIFETIME - Duration::from_millis(1),
+                NoticeHold::Runs
+            ),
             "still visible one millisecond before expiry"
         );
         assert!(
-            t.on_tick(&mut anims, base + TOAST_LIFETIME, false),
+            t.on_tick(&mut anims, base + TOAST_LIFETIME, NoticeHold::Runs),
             "the expiring tick must still request a redraw to erase it"
         );
         assert!(t.is_empty(), "the toast is gone after the expiring tick");
         assert!(
-            !t.on_tick(&mut anims, base + TOAST_LIFETIME + Duration::from_millis(1), false),
+            !t.on_tick(
+                &mut anims,
+                base + TOAST_LIFETIME + Duration::from_millis(1),
+                NoticeHold::Runs
+            ),
             "the tick after expiry is idle: no redraw needed"
         );
     }
@@ -573,17 +636,17 @@ mod tests {
         let mut t = Toasts::default();
         let base = Instant::now();
         t.push("first", ToastKind::Info);
-        t.on_tick(&mut anims, base, false); // stamps "first"'s expires_at = base + TOAST_LIFETIME
+        t.on_tick(&mut anims, base, NoticeHold::Runs); // stamps "first"'s expires_at = base + TOAST_LIFETIME
 
         let midpoint = base + Duration::from_secs(1);
         t.push("second", ToastKind::Error);
-        t.on_tick(&mut anims, midpoint, false); // stamps "second"'s expires_at = midpoint + TOAST_LIFETIME
+        t.on_tick(&mut anims, midpoint, NoticeHold::Runs); // stamps "second"'s expires_at = midpoint + TOAST_LIFETIME
 
-        t.on_tick(&mut anims, base + TOAST_LIFETIME, false);
+        t.on_tick(&mut anims, base + TOAST_LIFETIME, NoticeHold::Runs);
         assert!(!t.is_empty(), "second toast still alive");
         assert_eq!(t.messages(), vec!["second"]);
 
-        t.on_tick(&mut anims, midpoint + TOAST_LIFETIME, false);
+        t.on_tick(&mut anims, midpoint + TOAST_LIFETIME, NoticeHold::Runs);
         assert!(t.is_empty());
     }
 
@@ -598,14 +661,14 @@ mod tests {
         t.push("fading", ToastKind::Info);
         // Stamps expires_at and starts (then settles) the slide-in anim, the
         // same as `App::update` does after every `apply(action)`.
-        t.start_pending_anims(&mut anims, base, Duration::from_millis(1));
+        t.start_pending_anims(&mut anims, base, Duration::from_millis(1), false);
         let fade_start = base + TOAST_LIFETIME - TOAST_FADE_DUR;
 
-        t.on_tick(&mut anims, fade_start - Duration::from_millis(1), false);
+        t.on_tick(&mut anims, fade_start - Duration::from_millis(1), NoticeHold::Runs);
         let before = anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), fade_start);
         assert_eq!(before, Some(1.0), "still fully settled just before the fade window");
 
-        t.on_tick(&mut anims, fade_start, false);
+        t.on_tick(&mut anims, fade_start, NoticeHold::Runs);
         let just_after = anims.value_or(
             AnimKey::ToastFade(FIRST_TOAST_ID),
             fade_start + Duration::from_millis(1),
@@ -618,7 +681,7 @@ mod tests {
 
         // A later tick landing well past fade_start must not re-retarget
         // (which would restart the ease from wherever it had drifted to).
-        t.on_tick(&mut anims, fade_start + Duration::from_millis(50), false);
+        t.on_tick(&mut anims, fade_start + Duration::from_millis(50), NoticeHold::Runs);
         let after_second_tick = anims.value_or(
             AnimKey::ToastFade(FIRST_TOAST_ID),
             fade_start + Duration::from_millis(51),
@@ -636,26 +699,40 @@ mod tests {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
         let base = Instant::now();
-        t.push_curl_notice("Clipboard holds a curl command", "or ^V in the sidebar", &mut anims);
-        t.on_tick(&mut anims, base, false);
-        t.on_tick(&mut anims, base + NOTICE_LIFETIME - Duration::from_millis(1), false);
+        t.push_curl_notice(
+            "Clipboard holds a curl command",
+            "or ^V in the sidebar",
+            "c",
+            &mut anims,
+        );
+        t.on_tick(&mut anims, base, NoticeHold::Runs);
+        t.on_tick(&mut anims, base + NOTICE_LIFETIME - Duration::from_millis(1), NoticeHold::Runs);
         assert!(t.curl_notice().is_some(), "alive just before 10 s");
-        t.on_tick(&mut anims, base + NOTICE_LIFETIME, false);
+        t.on_tick(&mut anims, base + NOTICE_LIFETIME, NoticeHold::Runs);
         assert!(t.is_empty());
     }
 
     /// A newer notice takes the older one's place: one clipboard, one
-    /// notice. Other toasts stay.
+    /// notice. Other toasts stay. Taking it down answers its text.
     #[test]
     fn a_new_curl_notice_replaces_the_old_one() {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
         t.push("Saved", ToastKind::Success);
-        t.push_curl_notice("first", "", &mut anims);
-        t.push_curl_notice("second", "", &mut anims);
+        t.push_curl_notice("first", "", "curl a", &mut anims);
+        t.push_curl_notice("second", "", "curl b", &mut anims);
         assert_eq!(t.messages(), vec!["Saved", "second"]);
-        t.dismiss_curl_notice(&mut anims);
+        assert_eq!(t.take_curl_notice(&mut anims).as_deref(), Some("curl b"));
         assert_eq!(t.messages(), vec!["Saved"]);
+        assert_eq!(t.take_curl_notice(&mut anims), None);
+    }
+
+    /// A notice the pointer has moved onto.
+    fn pointed_notice(anims: &mut Anims) -> Toasts {
+        let mut t = Toasts::default();
+        t.push_curl_notice("n", "", "c", anims);
+        t.point_at_curl_notice();
+        t
     }
 
     /// While the pointer holds the notice its clock stops; let go, it runs
@@ -663,20 +740,41 @@ mod tests {
     #[test]
     fn a_held_curl_notice_waits_and_then_runs_on() {
         let mut anims = Anims::new(true);
+        let mut t = pointed_notice(&mut anims);
+        let base = Instant::now();
+        t.on_tick(&mut anims, base, NoticeHold::Pointer);
+        let held_at = base + Duration::from_secs(4);
+        t.on_tick(&mut anims, held_at, NoticeHold::Runs);
+        t.point_at_curl_notice();
+        t.on_tick(&mut anims, held_at, NoticeHold::Pointer);
+        let let_go = base + Duration::from_secs(60);
+        t.on_tick(&mut anims, let_go, NoticeHold::Pointer);
+        assert!(t.curl_notice().is_some(), "held: no expiry");
+        t.on_tick(&mut anims, let_go, NoticeHold::Runs);
+        t.on_tick(&mut anims, let_go + Duration::from_millis(5999), NoticeHold::Runs);
+        assert!(t.curl_notice().is_some(), "the 6 s it had left");
+        t.on_tick(&mut anims, let_go + Duration::from_secs(6), NoticeHold::Runs);
+        assert!(t.is_empty());
+    }
+
+    /// A pointer that has not moved onto the notice (it came to rest where
+    /// the notice was then drawn) holds nothing; one that left must move
+    /// back onto it to hold it again.
+    #[test]
+    fn only_a_pointer_moved_onto_the_curl_notice_holds_it() {
+        let mut anims = Anims::new(true);
         let mut t = Toasts::default();
         let base = Instant::now();
-        t.push_curl_notice("n", "", &mut anims);
-        t.on_tick(&mut anims, base, false);
-        let held_at = base + Duration::from_secs(4);
-        t.on_tick(&mut anims, held_at, true);
-        let let_go = base + Duration::from_secs(60);
-        t.on_tick(&mut anims, let_go, true);
-        assert!(t.curl_notice().is_some(), "held: no expiry");
-        t.on_tick(&mut anims, let_go, false);
-        t.on_tick(&mut anims, let_go + Duration::from_millis(5999), false);
-        assert!(t.curl_notice().is_some(), "the 6 s it had left");
-        t.on_tick(&mut anims, let_go + Duration::from_secs(6), false);
-        assert!(t.is_empty());
+        t.push_curl_notice("n", "", "c", &mut anims);
+        t.on_tick(&mut anims, base, NoticeHold::Pointer);
+        t.on_tick(&mut anims, base + NOTICE_LIFETIME, NoticeHold::Pointer);
+        assert!(t.is_empty(), "a resting pointer");
+
+        let mut t = pointed_notice(&mut anims);
+        t.on_tick(&mut anims, base, NoticeHold::Pointer);
+        t.on_tick(&mut anims, base + Duration::from_secs(1), NoticeHold::Runs);
+        t.on_tick(&mut anims, base + NOTICE_LIFETIME, NoticeHold::Pointer);
+        assert!(t.is_empty(), "left, then back without moving onto it");
     }
 
     /// A hold during the fade brings it back to full strength, and the
@@ -684,34 +782,61 @@ mod tests {
     #[test]
     fn holding_a_fading_curl_notice_restores_it() {
         let mut anims = Anims::new(true);
-        let mut t = Toasts::default();
+        let mut t = pointed_notice(&mut anims);
         let base = Instant::now();
-        t.push_curl_notice("n", "", &mut anims);
-        t.start_pending_anims(&mut anims, base, Duration::from_millis(1));
+        t.start_pending_anims(&mut anims, base, Duration::from_millis(1), false);
         let fading = base + NOTICE_LIFETIME - Duration::from_millis(200);
-        t.on_tick(&mut anims, fading, false);
+        t.on_tick(&mut anims, fading, NoticeHold::Pointer);
+        t.on_tick(&mut anims, fading, NoticeHold::Runs);
         let mid = fading + Duration::from_millis(100);
         assert!(anims.value_or(AnimKey::ToastFade(FIRST_TOAST_ID), mid, 1.0) < 1.0, "fading");
-        t.on_tick(&mut anims, mid, true);
+        t.point_at_curl_notice();
+        t.on_tick(&mut anims, mid, NoticeHold::Pointer);
         let later = mid + Duration::from_secs(5);
-        t.on_tick(&mut anims, later, true);
+        t.on_tick(&mut anims, later, NoticeHold::Pointer);
         assert_eq!(anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), later), Some(1.0));
-        t.on_tick(&mut anims, later, false);
-        t.on_tick(&mut anims, later + TOAST_FADE_DUR, false);
+        t.on_tick(&mut anims, later, NoticeHold::Runs);
+        t.on_tick(&mut anims, later + TOAST_FADE_DUR, NoticeHold::Runs);
         assert!(t.is_empty(), "fades out once let go");
     }
 
-    /// Only the notice holds: an ordinary toast runs out under the pointer
-    /// as it always did.
+    /// Hidden under a dialog the notice waits whole, with no slide: once it
+    /// shows, it slides in and has its 10 s from then. A hidden notice is
+    /// no reason to redraw.
     #[test]
-    fn a_hold_leaves_ordinary_toasts_alone() {
+    fn a_hidden_curl_notice_waits_and_slides_in_once_shown() {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
         let base = Instant::now();
-        t.push("Saved", ToastKind::Success);
-        t.on_tick(&mut anims, base, true);
-        t.on_tick(&mut anims, base + TOAST_LIFETIME, true);
+        let slide = Duration::from_millis(100);
+        t.push_curl_notice("n", "", "c", &mut anims);
+        t.start_pending_anims(&mut anims, base, slide, true);
+        assert!(!t.on_tick(&mut anims, base, NoticeHold::Hidden));
+        let shown = base + Duration::from_secs(60);
+        assert!(!t.on_tick(&mut anims, shown, NoticeHold::Hidden));
+        assert_eq!(anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), shown), None, "no slide yet");
+        t.on_tick(&mut anims, shown, NoticeHold::Runs);
+        t.start_pending_anims(&mut anims, shown, slide, false);
+        assert_eq!(anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), shown), Some(0.0), "slides in");
+        t.on_tick(&mut anims, shown + NOTICE_LIFETIME - Duration::from_secs(1), NoticeHold::Runs);
+        assert!(t.curl_notice().is_some(), "its 10 s run from when it showed");
+        t.on_tick(&mut anims, shown + NOTICE_LIFETIME, NoticeHold::Runs);
         assert!(t.is_empty());
+    }
+
+    /// Only the notice holds: an ordinary toast runs out under the pointer
+    /// and under a dialog as it always did.
+    #[test]
+    fn a_hold_leaves_ordinary_toasts_alone() {
+        for hold in [NoticeHold::Pointer, NoticeHold::Hidden] {
+            let mut anims = Anims::new(true);
+            let mut t = Toasts::default();
+            let base = Instant::now();
+            t.push("Saved", ToastKind::Success);
+            t.on_tick(&mut anims, base, hold);
+            t.on_tick(&mut anims, base + TOAST_LIFETIME, hold);
+            assert!(t.is_empty(), "{hold:?}");
+        }
     }
 
     fn draw_notice(
@@ -721,14 +846,33 @@ mod tests {
     ) -> (Terminal<TestBackend>, HitMap) {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
-        t.push_curl_notice("Clipboard holds a curl command", hint, &mut anims);
+        t.push_curl_notice("Clipboard holds a curl command", hint, "c", &mut anims);
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now(), &mut hits, hovered))
+            .draw(|f| {
+                t.draw(f, f.area(), &theme, &anims, Instant::now(), Some((&mut hits, hovered)))
+            })
             .unwrap();
         (terminal, hits)
+    }
+
+    /// Hidden, the notice is left out of the stack: the toast before it
+    /// takes the bottom place.
+    #[test]
+    fn a_hidden_curl_notice_is_not_drawn() {
+        let mut anims = Anims::new(true);
+        let mut t = Toasts::default();
+        t.push("Saved", ToastKind::Success);
+        t.push_curl_notice("Clipboard holds a curl command", "", "c", &mut anims);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now(), None)).unwrap();
+        let rows: Vec<String> = (0..20).map(|y| screen_row(&terminal, y)).collect();
+        assert!(!rows.iter().any(|r| r.contains("Clipboard")));
+        let saved = rows.iter().position(|r| r.contains("Saved")).expect("Saved");
+        assert_eq!(saved, 20 - 1 - TOAST_HEIGHT as usize + 1, "the bottom place");
     }
 
     fn screen_row(terminal: &Terminal<TestBackend>, y: u16) -> String {
@@ -793,11 +937,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| {
-                t.draw(f, f.area(), &theme, &anims, Instant::now(), &mut HitMap::default(), None)
-            })
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now(), None)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Copied"));
     }
@@ -813,11 +953,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| {
-                t.draw(f, f.area(), &theme, &anims, Instant::now(), &mut HitMap::default(), None)
-            })
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now(), None)).unwrap();
         let buf = terminal.backend().buffer();
         let row_of = |needle: &str| {
             (0..buf.area.height)
@@ -845,11 +981,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| {
-                t.draw(f, f.area(), &theme, &anims, Instant::now(), &mut HitMap::default(), None)
-            })
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now(), None)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         // Verify that the toast was rendered with the double-width message
         assert!(content.contains("已"), "CJK character should be rendered");
@@ -865,11 +997,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| {
-                t.draw(f, f.area(), &theme, &anims, Instant::now(), &mut HitMap::default(), None)
-            })
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now(), None)).unwrap();
         let buf = terminal.backend().buffer();
 
         // The bar column is the toast area's left edge; find it by scanning
