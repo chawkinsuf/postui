@@ -39427,6 +39427,35 @@ fn a_folder_clash_toasts_and_snaps_back() {
     assert!(!app.op_in_flight);
 }
 
+/// D18 (#245): the toast names the clashing sibling as it shows, not by
+/// its directory, nor by the dragged folder's name.
+#[test]
+fn a_folder_clash_names_the_sibling_as_it_shows() {
+    let (mut app, dir) = spaced_app();
+    for slug in ["main/a/x", "main/box/acc/y"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/f")).unwrap();
+    }
+    std::fs::write(dir.path().join("requests/main/a/.folder.toml"), "name = \"accounts\"\n")
+        .unwrap();
+    std::fs::write(dir.path().join("requests/main/box/acc/.folder.toml"), "name = \"Accounts\"\n")
+        .unwrap();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/box".into());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    let a = folder_rect(&mut app, "main/a");
+    let inner = folder_rect(&mut app, "main/box/acc");
+    app.handle_mouse(left_down(names_x(a), a.y));
+    app.handle_mouse(moved(names_x(a), inner.y));
+    app.handle_mouse(left_up(names_x(a), inner.y));
+    assert!(
+        app.toasts.messages().contains(&"\"Accounts\" already exists here"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(dir.path().join("requests/main/a/x.toml").is_file(), "nothing moved");
+}
+
 /// D18 (amended 2026-11-06, #255): with only the directories clashing, the
 /// drop goes through, its directory numbered, and the folder still shows
 /// its name with the cursor on it.
