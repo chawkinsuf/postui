@@ -11,16 +11,20 @@ use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
 /// The no-repeat memory's key (`App::curl_noticed`, spec 2026-10-15 curl
-/// import visibility V3) for clipboard `text`, parsed as `parsed`: `None`
-/// unless it holds curl the import takes, which past the limit it refuses
-/// (S12). By line, without the ends: the same curl copied with other line
-/// endings or a trailing newline is the same text.
-fn curl_key(text: &str, parsed: &Result<CurlBatch, CurlError>) -> Option<u64> {
+/// import visibility V3) for clipboard `text`. By line, without the ends:
+/// the same curl copied with other line endings or a trailing newline is
+/// the same text.
+fn curl_key(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
-    parsed.as_ref().ok().filter(|b| b.commands.len() <= CURL_IMPORT_LIMIT)?;
     let mut h = std::hash::DefaultHasher::new();
     text.trim().lines().for_each(|line| line.hash(&mut h));
-    Some(h.finish())
+    h.finish()
+}
+
+/// Whether `parsed` is curl the import takes: past the limit it refuses
+/// (S12).
+fn import_takes(parsed: &Result<CurlBatch, CurlError>) -> bool {
+    parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT)
 }
 
 impl App {
@@ -36,9 +40,10 @@ impl App {
             return false;
         }
         let text = self.clipboard.read().unwrap_or_default();
-        // Parsed first: only curl the import would take has a key.
-        let key = curl_key(&text, &postui_core::curl::parse(&text));
-        if key.is_none() || key == self.curl_noticed {
+        // Only curl the import takes is ever known, so known text needs no
+        // parse.
+        let key = Some(curl_key(&text));
+        if key == self.curl_noticed || !import_takes(&postui_core::curl::parse(&text)) {
             return false;
         }
         self.curl_noticed = key;
@@ -47,7 +52,8 @@ impl App {
             surface: crate::keyroute::Surface::Sidebar,
             ..Default::default()
         };
-        // Spelled once, for the notice's short life.
+        // Spelled once, here: Paste's default key is the same in both
+        // profiles, and the notice is short-lived.
         let hint =
             self.key_spelled(at, &Action::Paste).map(|key| format!("or {key} in the sidebar"));
         let message = "Clipboard holds a curl command";
@@ -89,8 +95,8 @@ impl App {
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
         let parsed = postui_core::curl::parse(&text);
-        if let Some(key) = curl_key(&text, &parsed) {
-            self.curl_noticed = Some(key);
+        if import_takes(&parsed) {
+            self.curl_noticed = Some(curl_key(&text));
         }
         parsed
     }

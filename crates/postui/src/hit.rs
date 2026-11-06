@@ -661,14 +661,18 @@ impl HitMap {
     }
 
     /// The topmost drawn `{{token}}` under the point: its name and the rect
-    /// it was drawn into (the tooltip's anchor).
+    /// it was drawn into (the tooltip's anchor). None under the curl import
+    /// notice, which hides what it is drawn over (#240).
     pub fn var_token_at(&self, x: u16, y: u16) -> Option<(&str, Rect)> {
-        self.regions.iter().rev().find_map(|(rect, hit)| match hit {
-            Hit::VarToken(name) if rect.contains(ratatui::layout::Position { x, y }) => {
-                Some((name.as_str(), *rect))
-            }
-            _ => None,
-        })
+        self.regions
+            .iter()
+            .rev()
+            .filter(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
+            .take_while(|(_, hit)| !matches!(hit, Hit::CurlNotice(_)))
+            .find_map(|(rect, hit)| match hit {
+                Hit::VarToken(name) => Some((name.as_str(), *rect)),
+                _ => None,
+            })
     }
 
     /// Topmost `Hit::Pane` containing the point (for wheel routing).
@@ -890,6 +894,21 @@ mod tests {
             90,
             "a thumb top past the track clamps to the max offset"
         );
+    }
+
+    /// Task #240: the curl import notice hides a `{{token}}` drawn under
+    /// it, so no tooltip rises from it; the token's uncovered cells still
+    /// find it.
+    #[test]
+    fn the_curl_notice_hides_the_tokens_under_it() {
+        use crate::components::toast::NoticePart;
+        let mut hits = HitMap::default();
+        hits.register(Rect::new(0, 0, 20, 1), Hit::VarToken("base_url".into()));
+        hits.register(Rect::new(10, 0, 10, 3), Hit::CurlNotice(NoticePart::Panel));
+        hits.register(Rect::new(12, 0, 4, 3), Hit::CurlNotice(NoticePart::Import));
+        assert_eq!(hits.var_token_at(5, 0).map(|(name, _)| name), Some("base_url"));
+        assert_eq!(hits.var_token_at(11, 0), None, "the panel");
+        assert_eq!(hits.var_token_at(13, 0), None, "its Import");
     }
 
     #[test]

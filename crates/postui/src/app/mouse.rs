@@ -762,6 +762,8 @@ impl App {
                     }
                     return self.update(Action::Render);
                 }
+                // Toasts, the curl import notice among them, let the wheel
+                // through to the pane under them (#240).
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.update(Action::ScrollPane(pane, d));
@@ -2697,7 +2699,7 @@ impl App {
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,
             // Taken at the top of the press, before the click-away rules.
-            Hit::CurlNotice(_) => false,
+            Hit::CurlNotice(part) => self.press_curl_notice(part),
             // The input closed at the top of this function (a close it
             // refused swallowed the click there), so selecting a row never
             // resets `form`/`grid` over live typing.
