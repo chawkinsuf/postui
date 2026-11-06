@@ -36,6 +36,7 @@ impl App {
             return false;
         }
         let text = self.clipboard.read().unwrap_or_default();
+        // Parsed first: only curl the import would take has a key.
         let key = curl_key(&text, &postui_core::curl::parse(&text));
         if key.is_none() || key == self.curl_noticed {
             return false;
@@ -46,6 +47,7 @@ impl App {
             surface: crate::keyroute::Surface::Sidebar,
             ..Default::default()
         };
+        // Spelled once, for the notice's short life.
         let hint =
             self.key_spelled(at, &Action::Paste).map(|key| format!("or {key} in the sidebar"));
         let message = "Clipboard holds a curl command";
@@ -56,7 +58,8 @@ impl App {
 
     /// A click on the curl import notice (V3, #240). Import imports the
     /// text the notice reported, as the sidebar's ctrl+v would: into the
-    /// cursor row's folder (V2). The × takes it down.
+    /// cursor row's folder (V2). On the Manage screen too, where the
+    /// palette's import also runs (V10). The × takes it down.
     pub(super) fn press_curl_notice(&mut self, part: crate::components::toast::NoticePart) -> bool {
         use crate::components::toast::NoticePart;
         match part {

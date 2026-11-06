@@ -1260,8 +1260,9 @@ impl App {
         self.anims.set_enabled(ui_settings.animations);
         let watch = (self.ui_settings.curl_button, ui_settings.curl_button);
         self.finish_ui_settings(ui_settings);
-        // Turned on: look now rather than at the next focus gain. Turned
-        // off: the notice goes (spec 2026-10-15 curl import visibility V13).
+        // Turned on: check now rather than at the next focus gain; curl
+        // already noticed stays quiet (V3). Turned off: the notice goes
+        // (spec 2026-10-15 curl import visibility V13).
         match watch {
             (false, true) => {
                 self.check_clipboard();
@@ -12365,6 +12366,11 @@ impl App {
     /// The toasts' tick ([`crate::components::toast::Toasts::on_tick`]),
     /// the pointer on the curl import notice holding it (#240). Whether a
     /// toast was showing.
+    ///
+    /// `hovered` follows the frame: outside a drag, `resync_hover`
+    /// re-resolves it after each draw, so a notice the stack moved from
+    /// under a still pointer is let go. A pointer that left the window
+    /// unreported holds it until a motion off it or a focus loss.
     fn tick_toasts(&mut self, now: Instant) -> bool {
         let pointer_on_it = matches!(self.hovered, Some(Hit::CurlNotice(_)));
         self.toasts.hold_curl_notice(pointer_on_it, now);

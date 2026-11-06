@@ -401,7 +401,9 @@ impl App {
                 }
                 // The curl import notice floats over every pane, part of
                 // none of them: a press on it is its own, and none of the
-                // click-away rules below runs (#240).
+                // click-away rules below runs (#240). Its × and panel change
+                // only the notice, so open inputs stay as they are; its
+                // Import closes them first, as every import does.
                 if let Some(Hit::CurlNotice(part)) = hit {
                     return self.press_curl_notice(part);
                 }
