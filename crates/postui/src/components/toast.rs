@@ -377,8 +377,8 @@ impl Toasts {
     ///
     /// The curl import notice paints its controls ([`paint_notice`]),
     /// registering them in `hits` and lighting the hovered one. With
-    /// `hits` `None` they are painted but take no clicks. A screen too
-    /// narrow for them paints the notice's message alone.
+    /// `hits` `None` (a dialog is up), or on a screen too narrow for
+    /// them, it paints its message alone, at its own width.
     pub fn draw(
         &self,
         frame: &mut Frame,
@@ -439,10 +439,9 @@ impl Toasts {
                     cell.set_fg(color);
                 }
             }
-            match &toast.notice {
-                Some(n) if notice_fits => {
-                    let hits = hits.as_mut().map(|(map, hovered)| (&mut **map, *hovered));
-                    paint_notice(buf, area, &toast.message, &n.hint, theme, hits);
+            match (&toast.notice, hits.as_mut()) {
+                (Some(n), Some((map, hovered))) if notice_fits => {
+                    paint_notice(buf, area, &toast.message, &n.hint, theme, map, *hovered);
                 }
                 _ => {
                     let text_y = area.y + area.height / 2;
@@ -476,18 +475,18 @@ fn notice_width(message: &str, hint: &str) -> usize {
 /// panel and bar, laid out from its right edge: the ×, the hint, the
 /// Import button, and the message in the room left, cut to fit. The hint
 /// is left out when `area` is narrower than the notice with it. The
-/// controls register in `hits` when it is given, the panel's hit first,
-/// so the controls' win.
+/// controls register in `hits`, the panel's hit first, so the controls'
+/// win.
 fn paint_notice(
     buf: &mut Buffer,
     area: Rect,
     message: &str,
     hint: &str,
     theme: &Theme,
-    hits: Option<(&mut HitMap, Option<&Hit>)>,
+    hits: &mut HitMap,
+    hovered: Option<&Hit>,
 ) {
     let mid = area.y + area.height / 2;
-    let hovered = hits.as_ref().and_then(|(_, hovered)| *hovered);
 
     let close_w = crate::ui::cells(NOTICE_CLOSE) as u16;
     let close = Rect::new(area.right().saturating_sub(close_w + 1), mid, close_w, 1);
@@ -513,11 +512,9 @@ fn paint_notice(
     let shown = crate::ui::ellipsize(message, room);
     text(buf, area.x + 2, mid, &shown, theme.text, theme.panel, false);
 
-    if let Some((hits, _)) = hits {
-        hits.register(area, Hit::CurlNotice(NoticePart::Panel));
-        hits.register(block, import_hit);
-        hits.register(close, close_hit);
-    }
+    hits.register(area, Hit::CurlNotice(NoticePart::Panel));
+    hits.register(block, import_hit);
+    hits.register(close, close_hit);
 }
 
 #[cfg(test)]
@@ -823,13 +820,13 @@ mod tests {
         assert!(t.is_empty());
     }
 
-    /// Draws a shown notice `width` columns wide, its controls taking
-    /// clicks unless `inert`.
+    /// Draws `t` on a screen `width` columns wide, with a map for its
+    /// clicks unless `no_clicks` (as while a dialog is up).
     fn draw_toasts(
         t: &Toasts,
         width: u16,
         hovered: Option<&Hit>,
-        inert: bool,
+        no_clicks: bool,
     ) -> (Terminal<TestBackend>, HitMap) {
         let anims = Anims::new(true);
         let theme = Theme::dark();
@@ -837,7 +834,7 @@ mod tests {
         let mut hits = HitMap::default();
         terminal
             .draw(|f| {
-                let map = (!inert).then_some((&mut hits, hovered));
+                let map = (!no_clicks).then_some((&mut hits, hovered));
                 t.draw(f, f.area(), &theme, &anims, Instant::now(), map)
             })
             .unwrap();
@@ -872,20 +869,37 @@ mod tests {
         assert_eq!(hits.rect_of(&Hit::CurlNotice(NoticePart::Import)), None);
     }
 
-    /// With no map for its clicks (a dialog is up) the notice keeps its
-    /// place and its controls, which take no clicks.
+    /// With no map for its clicks (a dialog is up) the notice draws its
+    /// message only, in its own place and at its own width: no control is
+    /// painted or registered, and the toast above it does not move.
     #[test]
-    fn an_inert_curl_notice_keeps_its_place_and_takes_no_clicks() {
+    fn with_no_clicks_the_curl_notice_draws_its_message_only_in_its_place() {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
         t.push("Saved", ToastKind::Success);
-        t.push_curl_notice("Clipboard holds a curl command", "", "c", &mut anims);
+        t.push_curl_notice(
+            "Clipboard holds a curl command",
+            "or ^V in the sidebar",
+            "c",
+            &mut anims,
+        );
         t.show_curl_notice();
-        let (live, _) = draw_toasts(&t, 80, None, false);
-        let (inert, hits) = draw_toasts(&t, 80, None, true);
-        assert_eq!(live.backend().buffer(), inert.backend().buffer(), "the same paint");
+        let (live, _) = draw_toasts(&t, 100, None, false);
+        let (bare, hits) = draw_toasts(&t, 100, None, true);
         for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
             assert_eq!(hits.rect_of(&Hit::CurlNotice(part)), None, "{part:?}");
+        }
+        for y in 0..20 {
+            let (a, b) = (screen_row(&live, y), screen_row(&bare, y));
+            assert_eq!(a.find('\u{2588}'), b.find('\u{2588}'), "the bar, row {y}");
+            if a.contains("Saved") {
+                assert_eq!(a, b, "the toast above, row {y}");
+            }
+        }
+        let mid = screen_row(&bare, 20 - 1 - TOAST_HEIGHT + 1);
+        assert!(mid.contains("Clipboard holds a curl command"), "{mid:?}");
+        for control in ["Import", "sidebar", "\u{d7}"] {
+            assert!(!mid.contains(control), "{control}: {mid:?}");
         }
     }
 

@@ -74,7 +74,10 @@ impl App {
                 self.import_with(folder, |_, reported| {
                     let text = reported.unwrap_or_default();
                     postui_core::curl::parse(&text).map_err(|e| e.to_string())
-                })
+                });
+                // Through `update`, as the other imports are, so the
+                // dispatch tail and `sync_jq` see a request it opened.
+                self.update(Action::Render)
             }
         }
     }

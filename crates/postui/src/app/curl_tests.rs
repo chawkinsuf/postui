@@ -1804,14 +1804,21 @@ fn the_notices_import_imports_into_the_cursor_rows_folder() {
 }
 
 /// It imports as ctrl+v does: a named clean curl needs no prompt (#147).
+/// The click goes through `update`, so the response pane swaps to the
+/// request it opened in the same event.
 #[test]
 fn the_notices_import_creates_a_named_curl_without_a_prompt() {
     use crate::components::toast::NoticePart;
     let mut app = watching("# @name Users\ncurl https://x/users");
+    super::tests::ready_response(&mut app, "{\"a\": 1}");
+    assert!(app.session.response.view().is_some());
     assert!(app.check_clipboard());
     click(&mut app, notice_part(NoticePart::Import));
     assert!(app.modals.is_empty());
-    assert!(slug_named(&app, "Users").is_some());
+    let slug = slug_named(&app, "Users");
+    assert!(slug.is_some());
+    assert_eq!(app.editor.slug, slug, "opened");
+    assert!(app.session.response.view().is_none(), "the old request's response swapped out");
 }
 
 #[test]
@@ -1897,24 +1904,55 @@ fn the_notice_waits_for_the_dialog_to_close() {
     assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
 }
 
+/// The screen's row holding the notice's message, drawn as `draw` draws.
+fn notice_row(app: &mut App) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let buf = terminal.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .find(|row| row.contains("Clipboard holds a curl command"))
+        .expect("the notice is drawn")
+}
+
 /// A notice already up when a dialog opens keeps its place, and its clock
-/// runs: only its controls stop taking clicks, which are the dialog's.
+/// runs, but it shows its message only: no Import, no ×, no hit. A click
+/// where its × was is the dialog's (here a click away, which cancels the
+/// prompt), and the notice stays. Once the dialog closes its controls are
+/// back.
 #[test]
-fn a_dialog_over_the_notice_takes_its_clicks() {
+fn a_dialog_over_the_notice_shows_its_message_only() {
     use crate::components::toast::NoticePart;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use std::time::{Duration, Instant};
     let mut app = watching("curl https://x/users");
     assert!(app.check_clipboard());
     draw(&mut app);
     let panel = app.hits.rect_of(&notice_part(NoticePart::Panel)).unwrap();
+    let close = app.hits.rect_of(&notice_part(NoticePart::Close)).unwrap();
     app.update(Action::PromptNewRequest);
-    draw(&mut app);
+    feed(&mut app, "orders");
+    let row = notice_row(&mut app);
+    assert!(!row.contains("Import") && !row.contains('\u{d7}'), "{row:?}");
     for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
         assert_eq!(app.hits.rect_of(&notice_part(part)), None, "{part:?}");
     }
-    app.update(Action::CancelTopModal);
-    draw(&mut app);
+    assert_eq!(app.hits.hit_at(close.x + 1, close.y), Some(&Hit::ModalOutside));
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: close.x + 1,
+        row: close.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.modals.is_empty(), "the dialog's click away");
+    assert!(app.toasts.curl_notice().is_some(), "the notice did not take it");
+
+    let row = notice_row(&mut app);
+    assert!(row.contains("Import") && row.contains('\u{d7}'), "{row:?}");
     assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), Some(panel), "in its place");
+    assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Close)), Some(close));
     app.update(Action::PromptNewRequest);
     app.tick_toasts(Instant::now() + Duration::from_secs(10));
     assert!(app.toasts.curl_notice().is_none(), "its clock ran");
