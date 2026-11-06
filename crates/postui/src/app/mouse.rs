@@ -401,9 +401,9 @@ impl App {
                 }
                 // The curl import notice floats over every pane, part of
                 // none of them: a press on it is its own, and none of the
-                // click-away rules below runs (#240). Its × and panel change
-                // only the notice, so open inputs stay as they are; its
-                // Import closes them first, as every import does.
+                // click-away rules below runs (#240). Its × and panel leave
+                // open inputs as they are; its Import closes them first, as
+                // every import does.
                 if let Some(Hit::CurlNotice(part)) = hit {
                     return self.press_curl_notice(part);
                 }
@@ -1019,11 +1019,14 @@ impl App {
     /// The edit flag's waiting screen looks at the flag at once, rather
     /// than at its next poll.
     pub fn on_focus_gained(&mut self) -> bool {
-        let clipboard = self.check_clipboard();
-        if self.edit_block.is_some() {
-            return self.poll_edit_flag(Instant::now(), true) | clipboard;
-        }
-        self.update(Action::ReloadProjectFiles) | clipboard
+        let changed = if self.edit_block.is_some() {
+            self.poll_edit_flag(Instant::now(), true)
+        } else {
+            self.update(Action::ReloadProjectFiles)
+        };
+        // Last, so a dialog the open or the reload raises is up before the
+        // notice would arrive, and the notice waits for it (V10).
+        changed | self.check_clipboard()
     }
 
     /// Re-resolves `hovered`/`hovered_token` from the last known pointer

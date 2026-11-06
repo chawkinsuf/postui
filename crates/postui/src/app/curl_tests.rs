@@ -2108,6 +2108,26 @@ fn the_terminal_regaining_focus_rechecks_the_clipboard() {
     assert_eq!(notices(&app), 1);
 }
 
+/// A dialog the focus gain's own reload raises (here the variables
+/// migration, for a file rewritten in the old format) is up before the
+/// notice arrives, so the notice waits for it (V10).
+#[test]
+fn a_dialog_the_focus_gains_reload_raises_holds_the_notice() {
+    let mut app = watching("curl https://x/u");
+    std::fs::write(
+        app.proj().root().join("variables.toml"),
+        "# edited elsewhere\n[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    assert!(!app.modals.is_empty(), "the reload raised the migration question");
+    assert!(app.toasts.curl_notice().is_some(), "found");
+    assert!(
+        !app.toasts.entries().iter().any(|(m, _)| m.starts_with("Clipboard holds")),
+        "waiting for the dialog"
+    );
+}
+
 #[test]
 fn with_the_setting_off_nothing_reads_the_clipboard_for_the_notice() {
     let mut app = app_with_clip("curl https://x/u");

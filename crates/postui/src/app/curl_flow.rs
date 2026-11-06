@@ -11,9 +11,8 @@ use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
 /// The no-repeat memory's key (`App::curl_noticed`, spec 2026-10-15 curl
-/// import visibility V3) for clipboard `text`. By line, without the ends:
-/// the same curl copied with other line endings or a trailing newline is
-/// the same text.
+/// import visibility V3) for clipboard `text`, by line without the ends:
+/// `\n` and `\r\n` endings, or a trailing newline, give the same key.
 fn curl_key(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
@@ -144,7 +143,8 @@ impl App {
     /// A refusal toasts.
     ///
     /// Past the project check every import takes the curl import notice
-    /// down, here and only here (spec 2026-10-15 curl import visibility
+    /// down, one whose text then holds no curl too, here and only here
+    /// (spec 2026-10-15 curl import visibility
     /// V6, #240), so no Import after it brings the same curl in again,
     /// whichever way the import came: the palette, ctrl+v, a terminal's
     /// paste or the notice's own Import. `read` gets the text the notice
