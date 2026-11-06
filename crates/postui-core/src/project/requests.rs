@@ -577,13 +577,15 @@ impl Project {
     /// lists no space `space`. Refused on every disk, as F27 refuses a
     /// folder twin: on a case-sensitive one the move would make a
     /// case-only twin. Called after the move's relist, so a refusal leaves
-    /// the listing fresh.
+    /// the listing fresh. Compares Unicode lowercase, as
+    /// [`folder_ignoring_case`] does.
     fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
         let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
         let dirs: Vec<&str> =
             entries.iter().filter(|e| e.is_dir).map(|e| e.name.as_str()).collect();
+        let wanted = space.to_lowercase();
         if !dirs.contains(&space)
-            && let Some(twin) = dirs.iter().find(|d| same_ignoring_case(d, space))
+            && let Some(twin) = dirs.iter().find(|d| d.to_lowercase() == wanted)
         {
             return Err(case_twin_conflict(twin));
         }
@@ -727,12 +729,8 @@ fn folder_ignoring_case<'a>(
     folders: &'a [crate::storage::FolderListing],
     path: &str,
 ) -> Option<&'a crate::storage::FolderListing> {
-    folders.iter().find(|f| same_ignoring_case(&f.path, path))
-}
-
-/// Whether `a` and `b` are the same in Unicode lowercase.
-fn same_ignoring_case(a: &str, b: &str) -> bool {
-    a.to_lowercase() == b.to_lowercase()
+    let wanted = path.to_lowercase();
+    folders.iter().find(|f| f.path.to_lowercase() == wanted)
 }
 
 /// The refusal of a move into `requests/<path>/`, which is there only in
@@ -5251,7 +5249,11 @@ mod tests {
     fn a_move_lands_in_the_exact_space_directory_beside_a_twin() {
         let (dir, mut p) = folder_project(&[], &["main/x"]);
         std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-        if std::fs::read_dir(dir.path().join("requests")).unwrap().count() < 3 {
+        let names: Vec<String> = std::fs::read_dir(dir.path().join("requests"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        if !(names.iter().any(|n| n == "auth") && names.iter().any(|n| n == "Auth")) {
             return;
         }
         assert_eq!(p.move_request("main/x", "auth").unwrap(), "auth/x");
