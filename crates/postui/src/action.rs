@@ -562,10 +562,13 @@ pub enum Action {
     /// for the request at `slug`; picking one dispatches
     /// `MoveRequestToSpace`.
     PromptMoveRequestToSpace(String),
-    /// The sidebar's `m` key / footer chip / palette: "Move to space…" for
-    /// the selected sidebar request — resolves the selection, then runs
+    /// The sidebar's `M` key / palette: "Move to space…" for the selected
+    /// sidebar request — resolves the selection, then runs
     /// `PromptMoveRequestToSpace`. A no-op when no request is selected.
     PromptMoveSelectedRequestToSpace,
+    /// The sidebar's `m` key / footer chip (spec 2026-11-03 create folders
+    /// F31, F32): picks the selected row up for the keyboard move.
+    StartKeyMove,
     /// Move the request `slug` `delta` positions among its siblings
     /// (clamped) — alt+up/alt+down and the row menu's Move up/down. Writes
     /// `[space.<slug>] order`; an undo step, a quick burst one step.

@@ -171,6 +171,27 @@ pub struct RowDrag {
     /// The closed folder the pointer rests on (D9), by full path, and
     /// since when: it springs open after [`SPRING_DWELL`].
     pub dwell: Option<(String, Instant)>,
+    /// `Some` while the keyboard drives the drag (spec 2026-11-03 create
+    /// folders F31): the way its last ↑/↓ step went, `Down` before any.
+    /// `None` for a mouse drag.
+    pub keys: Option<Heading>,
+}
+
+/// Which way a keyboard move's last ↑/↓ step went: a closed folder on that
+/// side is the one → opens, as the pointer's dwell (D9) opens the folder
+/// the block waits beside, on the side it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heading {
+    Up,
+    Down,
+}
+
+/// One place a keyboard move can step to: the gap it sits in among the
+/// rows outside the block, and the place itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyPlace {
+    pos: usize,
+    place: (String, usize),
 }
 
 /// How long the pointer rests on a closed folder's row before the folder
@@ -741,7 +762,9 @@ impl Sidebar {
             Verb::AddAlt => Some(Action::PromptNewFolder),
             Verb::Rename if on_folder => Some(Action::PromptRenameFolder),
             Verb::Rename => on_request.then_some(Action::PromptRenameRequest),
-            Verb::Move => on_request.then_some(Action::PromptMoveSelectedRequestToSpace),
+            // Spec 2026-11-03 create folders F32: `m` picks the row up for
+            // the keyboard move (F31); Move to space is `M`.
+            Verb::Move => (on_request || on_folder).then_some(Action::StartKeyMove),
             Verb::Delete { count: 0 | 1 } if on_folder => Some(Action::DeleteSelectedFolder),
             Verb::Delete { .. } if on_folder => Some(Action::ShowToast(
                 crate::keyroute::table::NO_COUNTED_DELETE.to_string(),
@@ -1052,11 +1075,12 @@ impl Sidebar {
         y < self.last_list_top && self.scroll == 0
     }
 
-    /// While dragging, a pointer resting on the list's first or last
-    /// screen row asks for a one-row scroll in that direction (the tick
-    /// handler applies it), so a long list can be dragged through.
+    /// While dragging with the mouse, a pointer resting on the list's first
+    /// or last screen row asks for a one-row scroll in that direction (the
+    /// tick handler applies it), so a long list can be dragged through. A
+    /// keyboard move scrolls by its cursor instead.
     pub fn drag_edge(&self, y: u16) -> Option<i32> {
-        if self.drag.is_none() || self.last_list_height == 0 {
+        if !self.mouse_drag() || self.last_list_height == 0 {
             return None;
         }
         let bottom = self.last_list_top + self.last_list_height as u16 - 1;
@@ -1108,8 +1132,31 @@ impl Sidebar {
             origin: place.clone(),
             target: place,
             dwell: None,
+            keys: None,
         });
         true
+    }
+
+    /// Picks row `i` up for a keyboard move (spec 2026-11-03 create folders
+    /// F31): a drag the keyboard drives, from its own place.
+    pub fn begin_key_move(&mut self, i: usize, space: &str) -> bool {
+        if !self.begin_drag(i, space) {
+            return false;
+        }
+        if let Some(d) = self.drag.as_mut() {
+            d.keys = Some(Heading::Down);
+        }
+        true
+    }
+
+    /// Whether a keyboard move is live (F31).
+    pub fn key_move(&self) -> bool {
+        self.drag.as_ref().is_some_and(|d| d.keys.is_some())
+    }
+
+    /// Whether a drag the mouse drives is live.
+    pub fn mouse_drag(&self) -> bool {
+        self.drag.as_ref().is_some_and(|d| d.keys.is_none())
     }
 
     /// The level `key` belongs to in `space` (relative, `""` for the
@@ -1181,6 +1228,24 @@ impl Sidebar {
     /// the picked level's items above `pos`: an inner level's end, or N's
     /// own index in N's level.
     fn place_at(&self, rest: &[usize], pos: usize, column: u16, space: &str) -> (String, usize) {
+        let (inner, depths) = self.levels_at(rest, pos, space);
+        let text_x = self.last_list_x + 1;
+        let picked = (column.saturating_sub(text_x) / 2) as usize;
+        let depth = picked.clamp(*depths.start(), *depths.end());
+        let level = Self::level_in(&inner, depth);
+        let at = rest[..pos].iter().filter(|&&j| self.level_of_row(j, space) == level).count();
+        (level, at)
+    }
+
+    /// D12's levels at `pos` among `rest`: the innermost level (P's, or
+    /// P's inside when P is an open folder) and the depths from N's level
+    /// (the top with no N) in to it. See [`Self::place_at`].
+    fn levels_at(
+        &self,
+        rest: &[usize],
+        pos: usize,
+        space: &str,
+    ) -> (String, std::ops::RangeInclusive<usize>) {
         let above = pos.checked_sub(1).map(|m| rest[m]);
         let (inner, inner_depth) = match above.map(|j| (j, &self.rows[j])) {
             Some((_, Row::Folder { path, expanded: true, depth, .. })) => (
@@ -1191,12 +1256,112 @@ impl Sidebar {
             None => (String::new(), 0),
         };
         let outer_depth = rest.get(pos).map_or(0, |&j| self.rows[j].depth()).min(inner_depth);
-        let text_x = self.last_list_x + 1;
-        let picked = (column.saturating_sub(text_x) / 2) as usize;
-        let depth = picked.clamp(outer_depth, inner_depth);
-        let level = inner.split('/').take(depth).collect::<Vec<_>>().join("/");
-        let at = rest[..pos].iter().filter(|&&j| self.level_of_row(j, space) == level).count();
-        (level, at)
+        (inner, outer_depth..=inner_depth)
+    }
+
+    /// The level `depth` deep along `inner`: `inner` itself or one of the
+    /// folders it is in.
+    fn level_in(inner: &str, depth: usize) -> String {
+        inner.split('/').take(depth).collect::<Vec<_>>().join("/")
+    }
+
+    /// The places a keyboard move steps through (spec 2026-11-03 create
+    /// folders F31), in screen order: every gap among the rows outside
+    /// the block, top to bottom, and in each gap D12's levels, innermost
+    /// first, so a step down past a folder's end steps out one level. They
+    /// are the places a pointer reaches (D9–D14): a gap is D11's place, a
+    /// gap's levels D12's, the gap under an open folder's row D10's, the
+    /// first and last gaps D14's and D13's. The block's own rows are no
+    /// gap, so a folder never steps inside itself (D2).
+    fn key_places(&self) -> Vec<KeyPlace> {
+        let (Some(d), Some(block)) = (self.drag.as_ref(), self.drag_block()) else {
+            return Vec::new();
+        };
+        let rest = self.rest_rows(&block);
+        // Each level's items above the gap, counted on the way down.
+        let mut above: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut out = Vec::new();
+        for pos in 0..=rest.len() {
+            let (inner, depths) = self.levels_at(&rest, pos, &d.space);
+            for depth in depths.rev() {
+                let level = Self::level_in(&inner, depth);
+                let at = above.get(&level).copied().unwrap_or(0);
+                out.push(KeyPlace { pos, place: (level, at) });
+            }
+            if let Some(&j) = rest.get(pos) {
+                *above.entry(self.level_of_row(j, &d.space)).or_default() += 1;
+            }
+        }
+        out
+    }
+
+    /// The keyboard move's places and its index among them.
+    fn key_place_now(&self) -> Option<(Vec<KeyPlace>, usize)> {
+        let target = &self.drag.as_ref()?.target;
+        let places = self.key_places();
+        let now = places.iter().position(|p| p.place == *target)?;
+        Some((places, now))
+    }
+
+    /// How many places a keyboard move has: the most a counted step can
+    /// use.
+    pub fn key_move_reach(&self) -> usize {
+        self.key_places().len()
+    }
+
+    /// ↑ or ↓ in a keyboard move (F31): `delta` places through
+    /// [`Self::key_places`], stopping at either end. `true` when the place
+    /// changed; the caller then `rebuild`s.
+    pub fn drag_step(&mut self, delta: i32) -> bool {
+        let Some((places, now)) = self.key_place_now() else {
+            return false;
+        };
+        if let Some(d) = self.drag.as_mut() {
+            d.keys = Some(if delta < 0 { Heading::Up } else { Heading::Down });
+        }
+        let to = (now as i64 + i64::from(delta)).clamp(0, places.len() as i64 - 1) as usize;
+        self.set_drag(places[to].place.clone(), None)
+    }
+
+    /// ← (`out`) or → in a keyboard move (F31): one level out or in where
+    /// several end on the block's row (D12). `true` when the place
+    /// changed; → at the innermost level changes nothing, and
+    /// [`Self::closed_beside`] names the folder → opens instead.
+    pub fn drag_level(&mut self, out: bool) -> bool {
+        let Some((places, now)) = self.key_place_now() else {
+            return false;
+        };
+        // A gap's levels are listed innermost first.
+        let next = if out { now.checked_add(1) } else { now.checked_sub(1) };
+        match next.and_then(|i| places.get(i)) {
+            Some(p) if p.pos == places[now].pos => self.set_drag(p.place.clone(), None),
+            _ => false,
+        }
+    }
+
+    /// The closed folder → opens in a keyboard move (F31, D9's dwell): the
+    /// one right beside the block in its level, on the side its last ↑/↓
+    /// step went toward, else on the other side. `None` when neither row
+    /// is one.
+    pub fn closed_beside(&self) -> Option<String> {
+        let d = self.drag.as_ref()?;
+        let block = self.drag_block()?;
+        let rest = self.rest_rows(&block);
+        let pos = self.rest_pos(&rest, &d.target, &d.space)?;
+        let closed =
+            |m: Option<usize>| match m.and_then(|m| rest.get(m)).map(|&j| (j, &self.rows[j])) {
+                Some((j, Row::Folder { path, expanded: false, .. }))
+                    if self.level_of_row(j, &d.space) == d.target.0 =>
+                {
+                    Some(path.clone())
+                }
+                _ => None,
+            };
+        let (below, above) = (closed(Some(pos)), closed(pos.checked_sub(1)));
+        match d.keys {
+            Some(Heading::Up) => above.or(below),
+            _ => below.or(above),
+        }
     }
 
     /// Sets the drag's target and dwell; `true` when either changed.
@@ -3016,6 +3181,26 @@ mod tests {
             self.rebuilt(changed)
         }
 
+        /// Picks row `i` up for a keyboard move (F31).
+        fn pick(&mut self, i: usize) {
+            assert!(self.s.begin_key_move(i, "main"), "row {i} picks up");
+        }
+
+        fn step(&mut self, delta: i32) -> bool {
+            let changed = self.s.drag_step(delta);
+            self.rebuilt(changed)
+        }
+
+        fn out(&mut self) -> bool {
+            let changed = self.s.drag_level(true);
+            self.rebuilt(changed)
+        }
+
+        fn inward(&mut self) -> bool {
+            let changed = self.s.drag_level(false);
+            self.rebuilt(changed)
+        }
+
         fn target(&self) -> (String, usize) {
             self.s.drag.as_ref().expect("a live drag").target.clone()
         }
@@ -4249,5 +4434,168 @@ mod tests {
         assert!(s.drag_to(0, 4));
         s.rebuild("main", &expanded(&[]), &[]);
         assert_eq!(row_labels(&s), ["0 e/", "0 a", "0 b"]);
+    }
+
+    // --- the keyboard move (spec 2026-11-03 create folders F31) ---
+
+    /// ↓ walks every place a drag passes, in screen order: onto an open
+    /// folder's row it is the folder's first item (D10), past a folder's
+    /// end it steps out one level at a time (D12), and it steps over a
+    /// closed folder at that folder's level. ↑ walks back. Both stop at
+    /// the ends.
+    #[test]
+    fn a_key_move_steps_through_the_drags_places() {
+        let mut t = double_end();
+        // rows: 0 top, 1 users/, 2 login, 3 v1/, 4 list, 5 get, 6 health,
+        // 7 zed/ (closed)
+        t.pick(0);
+        assert_eq!(t.target(), place("", 0));
+        assert!(!t.step(-1), "already first");
+        let down = [
+            place("users", 0),
+            place("users", 1),
+            place("users/v1", 0),
+            place("users/v1", 1),
+            place("users/v1", 2),
+            place("users", 2),
+            place("", 1),
+            place("", 2),
+            place("", 3),
+        ];
+        for want in &down {
+            assert!(t.step(1), "to {want:?}");
+            assert_eq!(t.target(), *want);
+        }
+        assert_eq!(t.drawn()[7], "top", "past the closed zed/, last");
+        assert!(!t.step(1), "already last");
+        for want in down.iter().rev().skip(1) {
+            assert!(t.step(-1));
+            assert_eq!(t.target(), *want);
+        }
+        assert!(t.step(-1));
+        assert_eq!(t.target(), place("", 0));
+
+        // The block shows where the step put it, with its real key.
+        let mut t = double_end();
+        t.pick(0);
+        t.step(1);
+        assert_eq!(t.drawn()[..3], ["users/", "  top", "  users/login"]);
+        assert_eq!(
+            t.s.selected_key(),
+            Some(RowKey::Request("main/top".into())),
+            "the cursor rides it"
+        );
+    }
+
+    /// A counted step moves that many places, clamped at an end.
+    #[test]
+    fn a_key_move_step_takes_a_count() {
+        let mut t = double_end();
+        t.pick(0);
+        assert!(t.step(3));
+        assert_eq!(t.target(), place("users/v1", 0));
+        assert!(t.step(99));
+        assert_eq!(t.target(), place("", 3));
+        assert!(t.step(-99));
+        assert_eq!(t.target(), place("", 0));
+    }
+
+    /// ← and → pick the level where several end on the block's row (D12),
+    /// and do nothing where only one does.
+    #[test]
+    fn left_and_right_pick_the_level_at_a_shared_end() {
+        let mut t = double_end();
+        t.pick(0);
+        t.step(5);
+        assert_eq!(t.target(), place("users/v1", 2), "the inner folder first");
+        assert!(!t.inward(), "already innermost");
+        assert!(t.out());
+        assert_eq!(t.target(), place("users", 2));
+        assert_eq!(t.drawn()[5], "  top");
+        assert!(t.out());
+        assert_eq!(t.target(), place("", 1));
+        assert_eq!(t.drawn()[5], "top");
+        assert!(!t.out(), "already outermost");
+        assert!(t.inward());
+        assert_eq!(t.target(), place("users", 2));
+
+        let mut t = double_end();
+        t.pick(0);
+        t.step(1);
+        assert_eq!(t.target(), place("users", 0));
+        assert!(!t.out(), "one level here");
+        assert!(!t.inward());
+    }
+
+    /// A folder's block never steps inside itself (D2): its own rows are no
+    /// place.
+    #[test]
+    fn a_key_moved_folder_never_steps_inside_itself() {
+        let mut t = double_end();
+        t.pick(1); // users/, rows 1–5
+        let mut seen = vec![t.target()];
+        while t.step(1) {
+            seen.push(t.target());
+        }
+        assert_eq!(seen, [place("", 1), place("", 2), place("", 3)]);
+        while t.step(-1) {}
+        assert_eq!(t.target(), place("", 0));
+    }
+
+    /// → beside a closed folder in the block's level opens it (D9's
+    /// dwell): the one the last ↑/↓ step went toward, else the other one.
+    #[test]
+    fn right_names_the_closed_folder_beside_the_block() {
+        let mut t = double_end();
+        t.pick(0);
+        t.step(8);
+        assert_eq!(t.target(), place("", 2), "between health and the closed zed/");
+        assert_eq!(t.s.closed_beside().as_deref(), Some("main/zed"), "below, stepping down");
+        t.step(1);
+        assert_eq!(t.target(), place("", 3), "past zed/");
+        assert_eq!(t.s.closed_beside().as_deref(), Some("main/zed"), "above: nothing below");
+
+        // Between two closed folders, the way the last step went decides.
+        let mut t = Tree::new(&["top", "a/x", "b/y"], &["top", "a/", "a/x", "b/", "b/y"], &[]);
+        // rows: 0 top, 1 a/, 2 b/
+        t.pick(0);
+        t.step(1);
+        assert_eq!(t.target(), place("", 1), "between a/ and b/");
+        assert_eq!(t.s.closed_beside().as_deref(), Some("main/b"), "stepping down: b/");
+        t.step(1);
+        t.step(-1);
+        assert_eq!(t.target(), place("", 1));
+        assert_eq!(t.s.closed_beside().as_deref(), Some("main/a"), "stepping up: a/");
+
+        // Only in the block's own level: at an inner folder's end the
+        // closed folder below is the outer level's.
+        let mut t = Tree::new(
+            &["top", "users/login", "zed/q"],
+            &["top", "users/", "users/login", "zed/", "zed/q"],
+            &["users"],
+        );
+        // rows: 0 top, 1 users/, 2 login, 3 zed/
+        t.pick(0);
+        t.step(2);
+        assert_eq!(t.target(), place("users", 1));
+        assert_eq!(t.s.closed_beside(), None);
+        t.out();
+        assert_eq!(t.s.closed_beside().as_deref(), Some("main/zed"));
+    }
+
+    /// A keyboard move is no mouse drag: the pointer's edge scroll leaves
+    /// it alone.
+    #[test]
+    fn a_key_move_is_not_a_mouse_drag() {
+        let mut t = double_end();
+        t.pick(0);
+        assert!(t.s.key_move());
+        assert!(!t.s.mouse_drag());
+        t.s.last_list_height = 2;
+        assert_eq!(t.s.drag_edge(t.s.last_list_top + 1), None);
+        let mut t = double_end();
+        t.begin(0);
+        assert!(t.s.mouse_drag());
+        assert!(!t.s.key_move());
     }
 }

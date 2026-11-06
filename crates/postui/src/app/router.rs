@@ -120,6 +120,7 @@ impl App {
     /// sideways steps too (`{N}l`), never 0 (a plain `j` is one step):
     /// - the sidebar: two per row (an `h` collapses a folder, the next
     ///   steps to its parent);
+    /// - a keyboard move: its places;
     /// - a table: its rows and the add row, and at least its two columns;
     /// - the response: its lines, or its widest line as last drawn (the
     ///   whole count while that is unmeasured);
@@ -131,6 +132,8 @@ impl App {
         use crate::keyroute::MAX_COUNT;
         let most = match surface {
             Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
+            // A keyboard move's places (spec 2026-11-03 create folders F31).
+            Surface::SidebarMove => self.sidebar.key_move_reach(),
             // Every stop: the rows, `+ Add`, and the section's rows under
             // it (task #56). A move out of an open cell never goes past
             // `+ Add`, so the section (a scan of every field on Vars) is
@@ -176,7 +179,8 @@ impl App {
     pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> Ran {
         let surface = self.surface();
         let mut ran = Ran::default();
-        for step in steps {
+        let mut steps = steps.into_iter().peekable();
+        while let Some(step) = steps.next() {
             match step {
                 Step::OpenAs(open) => ran.open_as = Some(open),
                 Step::Sync => self.vim_sync_now(ran.open_as),
@@ -185,6 +189,15 @@ impl App {
                     None => break,
                 },
                 Step::Key(_) if self.surface() != surface => break,
+                // A keyboard move takes a run of one key, a count's, in one
+                // call (spec 2026-11-03 create folders F31).
+                Step::Key(ev) if self.sidebar.key_move() => {
+                    let mut times = 1;
+                    while steps.next_if_eq(&Step::Key(ev)).is_some() {
+                        times += 1;
+                    }
+                    ran = ran.and(Ran::routed(self.key_move_key(ev, times)));
+                }
                 Step::Key(ev) => ran = ran.and(Ran::routed(self.handle_key_routed(ev))),
                 Step::Action(a) => {
                     let history = matches!(a, Action::Undo | Action::Redo);
@@ -243,6 +256,12 @@ impl App {
 
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
+        // A live keyboard move owns the keyboard as a mouse drag does (spec
+        // 2026-11-03 create folders F31). A dialog opening cancels it
+        // (`App::push_modal`).
+        if self.sidebar.key_move() {
+            return Surface::SidebarMove;
+        }
         match self.modals.top() {
             Some(Modal::Prompt { .. }) => Surface::Prompt,
             Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => {

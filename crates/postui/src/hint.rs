@@ -276,6 +276,8 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::OnSelection(Verb::Delete { .. }) => {
             "Delete the selected request or folder".to_string()
         }
+        // Spec 2026-11-03 create folders F31.
+        Action::StartKeyMove => "Pick up the selected request or folder to move it".to_string(),
         Action::ConfirmTopModal => "Confirm the dialog".to_string(),
         Action::CancelTopModal => "Cancel the dialog".to_string(),
         _ => return None,

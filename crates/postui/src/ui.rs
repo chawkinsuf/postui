@@ -256,7 +256,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // during a live row drag, for the same reason: its key is dead. The
     // quit chip stays through a drag, advertising the modified combo, the
     // one key that still pre-empts it.
-    let drag_live = drag_live(app);
+    let drag_live = row_drag_live(app);
     let globals_live = app.modals.footer_chips().is_none() && !drag_live;
     // No quit while a dialog is open (task #85), so no quit chip either.
     let quit_live = !app.quit_refused();
@@ -926,8 +926,9 @@ pub(crate) fn header_keys(app: &App) -> (String, String) {
     (key(Action::SaveRequest), key(Action::DiscardChanges))
 }
 
-/// A row drag is live in the sidebar or a Manage list.
-fn drag_live(app: &App) -> bool {
+/// A row drag is live in the sidebar or a Manage list, the keyboard's
+/// included: either owns the keys.
+fn row_drag_live(app: &App) -> bool {
     app.sidebar.drag.is_some() || app.manage.list.drag.is_some()
 }
 
@@ -940,8 +941,19 @@ fn drag_live(app: &App) -> bool {
 /// swallows every key but Escape (see `App::handle_key`), so the only
 /// chips that mean anything are the two ways to cancel it.
 pub(crate) fn override_chips(app: &App) -> Option<Vec<FooterChip>> {
-    use crate::keyroute::spell::Key;
-    if drag_live(app) {
+    use crate::keyroute::spell::{Key, Nav};
+    // A keyboard move's own keys (spec 2026-11-03 create folders F31). With
+    // no action they draw as plain key hints, not buttons: F31 has a click
+    // cancel the move, a click on these included.
+    if app.sidebar.key_move() {
+        return Some(vec![
+            (Key::Nav(Nav::UpDown), "move".to_string(), None),
+            (Key::Nav(Nav::LeftRight), "level".to_string(), None),
+            (Key::Named("enter"), "drop".to_string(), None),
+            (Key::Named("esc"), "cancel".to_string(), None),
+        ]);
+    }
+    if row_drag_live(app) {
         return Some(vec![
             (Key::Named("esc"), "cancel drag".to_string(), None),
             (Key::Named("right-click"), "cancel drag".to_string(), None),

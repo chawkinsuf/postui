@@ -94,6 +94,8 @@ pub static VERBS: &[ExVerb] = &[
     verb(&["new"], Run::Verb(Verb::Add), "New…"),
     verb(&["rename"], Run::Verb(Verb::Rename), "Rename…"),
     verb(&["delete", "del"], Run::Verb(Verb::Delete { count: 1 }), "Delete"),
+    // `m`'s verb: on the sidebar the keyboard move, which waits for more
+    // keys before it lands (spec 2026-11-03 create folders F32).
     verb(&["move"], Run::Verb(Verb::Move), "Move…"),
     // Vim 9.1's `:imp[ort]`; `:co` up to `:copy` are Vim's `:copy`.
     verb(&["import"], Run::Act(import_curl), "Import curl from clipboard").least(3),

@@ -194,7 +194,8 @@ impl App {
                 }
                 // A live sidebar row drag owns every motion event until the
                 // button comes up, whichever pane the pointer wanders over.
-                if self.sidebar.drag.is_some() {
+                // A keyboard move is the keys': the pointer leaves it alone.
+                if self.sidebar.mouse_drag() {
                     return self.sidebar_drag_to(m.column, m.row);
                 }
                 // So does a live pane resize: the divider follows the
@@ -378,6 +379,9 @@ impl App {
                 // route to the variable itself.
                 let hit = self.hits.hit_at_ignoring_var_tokens(m.column, m.row).cloned();
                 let snapped = self.sidebar.drag.is_some() || self.manage.list.drag.is_some();
+                // A click cancels a keyboard move too (spec 2026-11-03
+                // create folders F31), then acts as the click it is.
+                let hit = self.cancel_sidebar_drag_at(hit);
                 let hit = self.cancel_stale_drags(hit);
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
@@ -508,7 +512,7 @@ impl App {
             // without choosing anything restores the previous selection
             // (see `App::sidebar_menu_revert`).
             MouseEventKind::Down(MouseButton::Right) => {
-                // A right click during a live row drag cancels it, exactly
+                // A right click during a live mouse row drag cancels it, exactly
                 // like a release outside the sidebar or Escape: no context
                 // menu, no selection change, nothing written. This exists
                 // because Ghostty (on Linux, verified with `--keydump` and
@@ -523,20 +527,24 @@ impl App {
                 // armed press ready to promote into a drag out from under
                 // the menu this click is about to open: all of it ends
                 // here, exactly as a `Down(Left)` ends it.
-                if self.sidebar.drag.is_some() {
+                if self.sidebar.mouse_drag() {
                     return self.finish_sidebar_drag(false);
                 }
                 if self.manage.list.drag.is_some() {
                     return self.finish_manage_drag(false);
                 }
                 self.cancel_stale_drags(None);
+                // A keyboard move holds no button: a right click cancels it,
+                // then acts as the click it is (spec 2026-11-03 create
+                // folders F31), as a left click does.
+                let moving = self.sidebar.key_move();
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
-                let Some(mut hit) = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned()
-                else {
-                    return false;
+                let hit = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned();
+                let Some(mut hit) = self.cancel_sidebar_drag_at(hit) else {
+                    return moving;
                 };
-                let mut changed = false;
+                let mut changed = moving;
                 // An open context menu doesn't own the right button the way
                 // it owns the left: a second right click re-targets. It
                 // dismisses the menu through `Action::Close` (running the
@@ -690,8 +698,9 @@ impl App {
                     return true;
                 }
                 // A row drag writes its new order only when it is dropped
-                // on the sidebar; a release anywhere else cancels it.
-                if self.sidebar.drag.is_some() {
+                // on the sidebar; a release anywhere else cancels it. A
+                // keyboard move drops only on Enter.
+                if self.sidebar.mouse_drag() {
                     let inside = self.sidebar_drag_inside(m.column, m.row);
                     return self.finish_sidebar_drag(inside) | ended;
                 }
@@ -859,22 +868,13 @@ impl App {
     /// mapped to the row that was painted there and re-found in the
     /// restored list; every other hit passes through unchanged. Returns
     /// the hit to dispatch.
+    ///
+    /// A keyboard move holds no button, so it is not one of them: only a
+    /// press ends it ([`Self::cancel_sidebar_drag_at`]).
     pub fn cancel_stale_drags(&mut self, hit: Option<Hit>) -> Option<Hit> {
         let mut hit = hit;
-        if self.sidebar.drag.is_some() {
-            let painted = match &hit {
-                Some(Hit::SidebarRow(i)) => self.sidebar.rows.get(*i).cloned(),
-                _ => None,
-            };
-            self.finish_sidebar_drag(false);
-            if let Some(row) = painted {
-                hit = self
-                    .sidebar
-                    .rows
-                    .iter()
-                    .position(|r| Sidebar::same_row(r, &row))
-                    .map(Hit::SidebarRow);
-            }
+        if self.sidebar.mouse_drag() {
+            hit = self.cancel_sidebar_drag_at(hit);
         }
         if self.manage.list.drag.is_some() {
             let tab = self.manage.tab;
@@ -897,11 +897,37 @@ impl App {
         hit
     }
 
+    /// Cancels a live sidebar drag, the mouse's or the keyboard's, for the
+    /// press `hit` (resolved against the last frame, which painted the
+    /// drag's preview order): a row hit is mapped to the row painted there
+    /// and re-found in the rows snapped back. A press cancels a keyboard
+    /// move (spec 2026-11-03 create folders F31) as it ends a mouse drag
+    /// whose release was lost. Returns the hit to dispatch.
+    fn cancel_sidebar_drag_at(&mut self, hit: Option<Hit>) -> Option<Hit> {
+        if self.sidebar.drag.is_none() {
+            return hit;
+        }
+        let painted = match &hit {
+            Some(Hit::SidebarRow(i)) => self.sidebar.rows.get(*i).cloned(),
+            _ => None,
+        };
+        self.finish_sidebar_drag(false);
+        match painted {
+            Some(row) => self
+                .sidebar
+                .rows
+                .iter()
+                .position(|r| Sidebar::same_row(r, &row))
+                .map(Hit::SidebarRow),
+            None => hit,
+        }
+    }
+
     /// Whether a drag is live: a row drag, a scrollbar thumb drag, a text
     /// sweep or a pane resize. An armed press that has not become a drag
-    /// is not one.
+    /// is not one, and nor is a keyboard move, which holds no button.
     fn drag_live(&self) -> bool {
-        self.sidebar.drag.is_some()
+        self.sidebar.mouse_drag()
             || self.manage.list.drag.is_some()
             || self.drag.is_some()
             || self.text_drag.is_some()
@@ -1029,7 +1055,7 @@ impl App {
     /// length of the drag; a live pane resize keeps its handle's resize
     /// shape wherever the pointer wanders (spec S3, E4).
     pub fn pointer_shape_update(&mut self) -> Option<PointerShape> {
-        let shape = if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
+        let shape = if self.sidebar.mouse_drag() || self.manage.list.drag.is_some() {
             PointerShape::Grabbing
         } else {
             match self.resize.map(|drag| drag.kind) {

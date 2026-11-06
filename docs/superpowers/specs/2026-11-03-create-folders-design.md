@@ -220,6 +220,29 @@ the open request).
   live keyboard move owns the keyboard as a live drag does; Enter calls
   the same drop path as a mouse release. Footer chips while moving:
   `↑↓ move`, `←→ level`, `⏎ drop`, `esc cancel`.
+  *Built 2026-11-05 (#241):* the state is the drag's own `RowDrag`, with
+  `keys` saying the keyboard drives it. The places are every gap among
+  the rows outside the block, top to bottom, each with D12's levels,
+  innermost first, from the same math the pointer's column uses
+  (`levels_at`, `level_in`); so ↓ past a folder's end steps out one level
+  per press, and ← / → walk the same levels. While it is live the router's
+  surface is `Surface::SidebarMove`, which binds only vim's `j` `k` `h`
+  `l` (counted); every other key reaches nothing. The pointer leaves it
+  alone (motion, a lost-release recovery, a focus loss); a press cancels
+  it. The chips read `enter drop`, as every other chip spells Enter, and
+  run nothing, since a click cancels. Mine: → at the innermost level
+  opens the closed folder beside the block in its level, on the side its
+  last ↑/↓ step went toward, else on the other side (D9's "side it came
+  from"); a click cancels, then acts as the click it is, as a press that
+  ends a lost mouse drag does (it selects and arms nothing); the
+  sidebar's `m move` chip starts the keyboard move and Move to space has
+  no chip (row menu, palette, `M`); vim's `:move` on the sidebar starts
+  the keyboard move; `m` closes an open input first.
+  *Review round 1 (#241), mine:* a dialog that opens during a move (a
+  reload's question) cancels the move first, as a click does, so the
+  dialog gets the keys; `App::push_modal` does it, for a mouse drag too.
+  A terminal paste during a keyboard move does nothing, as ctrl+v there
+  does.
 - **Menu and palette (F12, F13).** The folder row menu and the palette
   ("Folder: new", the palette's naming) get their entries. *Changed in
   the build:* no `A` footer chip. The sidebar's chip row has no room to
