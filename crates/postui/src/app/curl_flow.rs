@@ -11,31 +11,49 @@ use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
 impl App {
-    /// Whether the clipboard holds curl the import would take: what the
-    /// sidebar's Import curl button shows (spec 2026-10-15 curl import
-    /// visibility V3–V5). Reads only while the `curl_button` setting is
-    /// on (V13); off, the button goes. Run at launch, on a focus gain and
-    /// when the setting changes; `true` when the answer changed.
+    /// The curl import notice (spec 2026-10-15 curl import visibility V3,
+    /// V4, V10, #240): with the `curl_button` setting on, a toast saying
+    /// the clipboard holds curl the import would take, once per text. Run
+    /// at launch, on a focus gain and when the setting changes. Nothing is
+    /// read while a dialog is open, off the main screen or with no project
+    /// open. `true` when it showed.
     pub fn check_clipboard(&mut self) -> bool {
-        let before = self.sidebar.curl_ready;
-        if self.ui_settings.curl_button {
-            let _ = self.read_clipboard_curl();
-        } else {
-            self.sidebar.curl_ready = false;
+        let shown = self.modals.is_empty() && self.screen == Screen::Main;
+        if !(self.ui_settings.curl_button && shown && self.project().is_some()) {
+            return false;
         }
-        self.sidebar.curl_ready != before
+        // The read marks new curl as known: no change means no curl the
+        // import takes, or curl already known.
+        let noticed = self.curl_noticed;
+        if self.read_clipboard_curl().is_err() || self.curl_noticed == noticed {
+            return false;
+        }
+        let at = crate::keyroute::SpellCtx {
+            profile: self.profile(),
+            surface: crate::keyroute::Surface::Sidebar,
+            ..Default::default()
+        };
+        let key = crate::keyroute::spell::spell(at, &Action::Paste, &self.keymap)
+            .map(|c| format!(" — {} in the sidebar imports it", crate::keyroute::spell::glyphs(&c)))
+            .unwrap_or_default();
+        self.toasts.push(format!("Clipboard holds a curl command{key}"), ToastKind::Info);
+        true
     }
 
     /// The clipboard's curl commands, read as every import reads them (a
-    /// clipboard that can't be read is empty, which holds none). With the
-    /// setting on, every such read is a check too: a stale button goes
-    /// (V6).
+    /// clipboard that can't be read is empty, which holds none). Curl the
+    /// import would take is marked as known, so the notice never names
+    /// curl the user has seen it for or imported.
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
         let parsed = postui_core::curl::parse(&text);
         // Past the limit the import refuses (S12): no curl it would take.
-        let takes = parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT);
-        self.sidebar.curl_ready = self.ui_settings.curl_button && takes;
+        if parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT) {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            text.hash(&mut h);
+            self.curl_noticed = Some(h.finish());
+        }
         parsed
     }
 
@@ -52,9 +70,8 @@ impl App {
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
-    /// The sidebar's Import curl button and a ctrl+v there are this, into
-    /// the cursor row's folder (spec 2026-10-15 curl import visibility V1,
-    /// V2, V6).
+    /// A ctrl+v on the sidebar is this, into the cursor row's folder (spec
+    /// 2026-10-15 curl import visibility V1, V2, V6).
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
         self.import_with(folder, |app| app.read_clipboard_curl().map_err(|e| e.to_string()))
     }
@@ -67,7 +84,7 @@ impl App {
     /// A terminal's paste into the sidebar, which takes no text (V1, V7):
     /// its text's curl imports into the cursor row's folder. That text
     /// need not be the clipboard's (shift+Insert's PRIMARY, a paste
-    /// history), so it leaves the button alone and its error says "paste".
+    /// history), so it leaves the notice alone and its error says "paste".
     pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
         let folder = self.sidebar_import_folder();
         self.import_with(folder, |_| {

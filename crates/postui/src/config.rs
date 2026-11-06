@@ -296,10 +296,11 @@ pub struct UiSettings {
     /// pointer -- the hints are a teaching aid, and a user who knows the
     /// app may prefer the chip row to stay put.
     pub hover_hints: bool,
-    /// Whether the sidebar watches the clipboard for curl and offers an
-    /// "Import curl" button while it holds some (spec 2026-10-15 curl
-    /// import visibility V13). Off by default: the watch reads the
-    /// clipboard unasked, which macOS's pasteboard privacy may alert on.
+    /// Whether postui watches the clipboard for curl and shows a notice
+    /// when it holds some new (spec 2026-10-15 curl import visibility V3,
+    /// V13; the key keeps its name from when the notice was a button,
+    /// #240). Off by default: the watch reads the clipboard unasked, which
+    /// macOS's pasteboard privacy may alert on.
     pub curl_button: bool,
     /// Per-transition durations, tunable via the optional `[animation_ms]`
     /// table; see [`AnimDurations`].
@@ -606,8 +607,8 @@ pub fn config_seed() -> String {
 # Whether a hovered control explains itself on the footer row.
 # hover_hints = {}
 
-# Whether the sidebar offers an \"Import curl\" button while the clipboard
-# holds a curl command. It reads the clipboard when postui regains focus.
+# Whether a notice says when the clipboard holds a new curl command to
+# import. It reads the clipboard when postui regains focus.
 # curl_button = {}
 
 # What Tab does in the jq bar while a completion is showing:

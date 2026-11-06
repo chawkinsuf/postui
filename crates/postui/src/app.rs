@@ -225,6 +225,10 @@ pub struct App {
     /// press showed, and that combo (task #85): pressed again next, while
     /// the toast is live, it quits. See `disarm_quit`.
     quit_armed: Option<(u64, KeyCombo)>,
+    /// A hash of the last clipboard curl the user was told of (the curl
+    /// import notice) or imported: the notice never repeats for it (spec
+    /// 2026-10-15 curl import visibility V3, #240).
+    curl_noticed: Option<u64>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -1254,10 +1258,10 @@ impl App {
     fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.clipboard.reconfigure(&ui_settings);
         self.anims.set_enabled(ui_settings.animations);
-        let watch = ui_settings.curl_button != self.ui_settings.curl_button;
+        let watch = !self.ui_settings.curl_button && ui_settings.curl_button;
         self.finish_ui_settings(ui_settings);
-        // Turned on: look now rather than at the next focus gain. Turned
-        // off: the button goes (spec 2026-10-15 curl import visibility V13).
+        // Turned on: look now rather than at the next focus gain (spec
+        // 2026-10-15 curl import visibility V13).
         if watch {
             self.check_clipboard();
         }
@@ -1997,6 +2001,7 @@ impl App {
         let mut app = Self {
             should_quit: false,
             quit_armed: None,
+            curl_noticed: None,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
             prior_focus: PaneId::Sidebar,
@@ -3817,7 +3822,7 @@ impl App {
                         // must say exactly what it destroys.
                         let body = if self.config_toml_recovers_projects() {
                             "Resets theme, theme contrast, animations, animation speeds, hover hints, \
-                             the curl button, jq tab, indent, indent width, the AI \
+                             the curl import notice, jq tab, indent, indent width, the AI \
                              command, the AI confirmation, clipboard command, and OSC 52 \
                              limit to their defaults. Your project list is preserved."
                         } else {
@@ -7013,8 +7018,8 @@ impl App {
                 true
             }
             // The sidebar takes no text, so ctrl+v there imports the
-            // clipboard's curl: the Import curl button, read for read (spec
-            // 2026-10-15 curl import visibility V1, V6). A terminal's own
+            // clipboard's curl, into the cursor row's folder (spec
+            // 2026-10-15 curl import visibility V1, V2). A terminal's own
             // paste brings its text instead (`paste_text`).
             Action::Paste if self.sidebar_takes_paste() => {
                 self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })

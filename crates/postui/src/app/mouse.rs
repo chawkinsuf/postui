@@ -1997,9 +1997,6 @@ impl App {
             }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarNewFolder => self.update(Action::PromptNewFolder),
-            Hit::SidebarImportCurl => {
-                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
-            }
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);

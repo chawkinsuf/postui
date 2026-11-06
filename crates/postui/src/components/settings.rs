@@ -103,7 +103,7 @@ impl SettingsField {
             SettingsField::JqTab => "jq Tab behavior",
             SettingsField::AiCmd => "AI command",
             SettingsField::AiConfirmed => "Ask before sending to AI",
-            SettingsField::CurlButton => "Import curl button",
+            SettingsField::CurlButton => "Curl import notice",
             SettingsField::ClipboardCmd => "Clipboard command",
             SettingsField::Osc52Limit => "OSC 52 limit",
         }

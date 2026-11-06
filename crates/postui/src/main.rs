@@ -198,9 +198,9 @@ async fn run(
     app.shift_enter_send =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     let mut events = EventStream::new();
-    app.check_clipboard();
 
     app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
+    app.check_clipboard();
     if debug_ai {
         let toast = match postui::ai::debug_log_path() {
             Some(path) => {

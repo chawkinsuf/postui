@@ -75,9 +75,6 @@ pub enum Hit {
     SidebarNewRequest,
     /// The sidebar's `+ Folder` button (spec 2026-11-03 create folders F10).
     SidebarNewFolder,
-    /// The "Import curl" half of the sidebar's top row, there while the
-    /// clipboard holds curl (spec 2026-10-15 curl import visibility V3).
-    SidebarImportCurl,
     /// Index into `sidebar.rows`.
     SidebarRow(usize),
     SidebarFolderArrow(usize),

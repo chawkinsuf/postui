@@ -83,10 +83,6 @@ pub struct Sidebar {
     /// explanation of why nothing is loaded (a project that refused to
     /// open). Paragraphs are separated by blank lines.
     pub notice: Option<String>,
-    /// The clipboard holds curl, so the top row offers "Import curl" (spec
-    /// 2026-10-15 curl import visibility V3). A display copy: only App's
-    /// clipboard reads write it.
-    pub curl_ready: bool,
     /// Index of the cursor/selected row. `None` only when there are no
     /// rows at all; whenever rows exist the cursor is on one of them (G5).
     /// A refresh preserves the selection by row identity, else hands it to
@@ -586,13 +582,6 @@ impl Sidebar {
             RowKey::Request(slug) => slug.rsplit_once('/')?.0.to_string(),
         };
         (folder != space).then_some(folder)
-    }
-
-    /// Whether the sidebar offers its Import curl button: the clipboard
-    /// holds curl and a project is loaded for it to land in (spec
-    /// 2026-10-15 curl import visibility V3, V10).
-    pub fn offers_import(&self) -> bool {
-        self.curl_ready && self.notice.is_none()
     }
 
     /// Selects the row `key` names, if it is visible. `true` when it did.
@@ -1639,7 +1628,7 @@ impl Component for Sidebar {
             let state = |hit: &Hit| {
                 if ctx.hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
             };
-            for (area, label, hit) in button_row_layout(button_area, self.offers_import()) {
+            for (area, label, hit) in button_row_layout(button_area) {
                 let kind = if hit == Hit::SidebarNewRequest {
                     ButtonKind::Primary
                 } else {
@@ -1848,42 +1837,23 @@ impl Component for Sidebar {
     }
 }
 
-/// The top row's buttons, a column apart, each its label's width plus its
-/// share of the spare columns, the last running to the row's end (spec
-/// 2026-11-03 create folders F10, F11). The first layout that fits wins:
-/// with the curl import on, its labels shorten first ("curl", then
-/// "+ Req"), then it drops (spec 2026-10-15 curl import visibility V8);
-/// then `+ Folder` drops, leaving `+ New request` across the whole row
-/// (it stays reachable by key, as the Variable Manager's `+ Selector`).
-fn button_row_layout(row: Rect, curl: bool) -> Vec<(Rect, &'static str, Hit)> {
-    const REQUEST: Hit = Hit::SidebarNewRequest;
-    const FOLDER: Hit = Hit::SidebarNewFolder;
-    const CURL: Hit = Hit::SidebarImportCurl;
-    let with_curl: &[&[(&str, Hit)]] = &[
-        &[("+ Request", REQUEST), ("+ Folder", FOLDER), ("Import curl", CURL)],
-        &[("+ Request", REQUEST), ("+ Folder", FOLDER), ("curl", CURL)],
-        &[("+ Req", REQUEST), ("+ Folder", FOLDER), ("curl", CURL)],
-    ];
-    let plain: &[&[(&str, Hit)]] = &[&[("+ Request", REQUEST), ("+ Folder", FOLDER)]];
-    let candidates = if curl { with_curl.iter().chain(plain) } else { [].iter().chain(plain) };
-    for buttons in candidates {
-        let n = buttons.len() as u16;
-        let need: u16 = buttons.iter().map(|(l, _)| button_min_width(l)).sum::<u16>() + n - 1;
-        let Some(spare) = row.width.checked_sub(need) else { continue };
-        let mut out = Vec::new();
-        let mut x = row.x;
-        for (i, (label, hit)) in buttons.iter().enumerate() {
-            let width = if i + 1 == buttons.len() {
-                row.x + row.width - x
-            } else {
-                button_min_width(label) + spare / n
-            };
-            out.push((Rect { x, width, ..row }, *label, hit.clone()));
-            x += width + 1;
-        }
-        return out;
-    }
-    vec![(row, "+ New request", REQUEST)]
+/// The top row's buttons, `+ Request | + Folder`, a column apart: the
+/// first its label's width plus half the spare columns, the second running
+/// to the row's end (spec 2026-11-03 create folders F10, F11). Too narrow
+/// for both, `+ Folder` drops, leaving `+ New request` across the whole
+/// row (it stays reachable by key, as the Variable Manager's `+ Selector`).
+fn button_row_layout(row: Rect) -> Vec<(Rect, &'static str, Hit)> {
+    const REQUEST: &str = "+ Request";
+    let need = button_min_width(REQUEST) + button_min_width("+ Folder") + 1;
+    let Some(spare) = row.width.checked_sub(need) else {
+        return vec![(row, "+ New request", Hit::SidebarNewRequest)];
+    };
+    let width = button_min_width(REQUEST) + spare / 2;
+    let folder = Rect { x: row.x + width + 1, width: row.width - width - 1, ..row };
+    vec![
+        (Rect { width, ..row }, REQUEST, Hit::SidebarNewRequest),
+        (folder, "+ Folder", Hit::SidebarNewFolder),
+    ]
 }
 
 /// Column width of the request row's method tag field (text right-padded
@@ -2645,8 +2615,9 @@ mod tests {
         assert!(drawn, "the name is drawn");
     }
 
-    /// The top row at `width` columns: its text, and the two buttons' hits.
-    fn button_row(s: &mut Sidebar, width: u16) -> (String, Option<Rect>, Option<Rect>) {
+    /// The top row at `width` columns: its text, and the request button's
+    /// hit.
+    fn button_row(s: &mut Sidebar, width: u16) -> (String, Option<Rect>) {
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(width, 12);
@@ -2655,7 +2626,7 @@ mod tests {
         terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         let label: String = (0..width).map(|x| buf[(x, 1)].symbol().to_string()).collect();
-        (label, hits.rect_of(&Hit::SidebarNewRequest), hits.rect_of(&Hit::SidebarImportCurl))
+        (label, hits.rect_of(&Hit::SidebarNewRequest))
     }
 
     fn folder_button(s: &mut Sidebar, width: u16) -> Option<Rect> {
@@ -2675,50 +2646,25 @@ mod tests {
     fn a_folder_button_sits_beside_the_request_button() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
-        let (label, new, import) = button_row(&mut s, 34);
+        let (label, new) = button_row(&mut s, 34);
         let folder = folder_button(&mut s, 34).expect("the folder button");
         let new = new.unwrap();
         assert!(label.contains("+ Request") && label.contains("+ Folder"), "{label}");
-        assert_eq!(import, None);
         // Each gets its label's width and its share of the spare columns,
         // a column apart, across the whole row the one button had.
         assert_eq!((new.x, new.width, folder.x, folder.width), (1, 16, 18, 15));
         assert_eq!((new.y, new.height), (folder.y, folder.height));
-        let (label, new, _) = button_row(&mut s, 26);
+        let (label, new) = button_row(&mut s, 26);
         assert!(label.contains("+ New request"), "{label}");
         assert_eq!(new.unwrap().width, 24);
         assert_eq!(folder_button(&mut s, 26), None);
     }
 
-    /// F11: with the curl button on, the row shortens its labels, then
-    /// drops the curl button, then the folder button.
     #[test]
-    fn a_curl_on_the_clipboard_joins_the_row_and_drops_first() {
-        let mut s = Sidebar::default();
-        s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
-        s.curl_ready = true;
-        for (width, want, curl, folder) in [
-            (46, ["+ Request", "+ Folder", "Import curl"], true, true),
-            (39, ["+ Request", "+ Folder", "curl"], true, true),
-            (34, ["+ Req", "+ Folder", "curl"], true, true),
-            (30, ["+ Request", "+ Folder", ""], false, true),
-            (26, ["+ New request", "", ""], false, false),
-        ] {
-            let (label, _, import) = button_row(&mut s, width);
-            for w in want.iter().filter(|w| !w.is_empty()) {
-                assert!(label.contains(w), "{width}: {w} in {label:?}");
-            }
-            assert_eq!(import.is_some(), curl, "{width}: {label:?}");
-            assert_eq!(folder_button(&mut s, width).is_some(), folder, "{width}: {label:?}");
-        }
-    }
-
-    #[test]
-    fn a_notice_shows_no_import_button() {
+    fn a_notice_shows_no_buttons() {
         let mut s = Sidebar { notice: Some("nothing open".into()), ..Sidebar::default() };
-        s.curl_ready = true;
-        let (_, new, import) = button_row(&mut s, 34);
-        assert_eq!((new, import), (None, None));
+        let (_, new) = button_row(&mut s, 34);
+        assert_eq!((new, folder_button(&mut s, 34)), (None, None));
     }
 
     #[test]

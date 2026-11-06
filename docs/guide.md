@@ -123,10 +123,11 @@ commands import one after another, and a `# @name list-users` comment above a
 command names it. From the palette, a request can be copied as a curl command,
 or have its contents replaced by the curl command on the clipboard.
 
-The sidebar can also offer an Import curl button whenever the clipboard holds
-a curl command. It's off by default, because offering it means reading the
-clipboard unasked, which on macOS can bring up the pasteboard privacy notice.
-Turn it on with `curl_button` ([configuration](configuration.md)).
+postui can also tell you when the clipboard holds a curl command, with a
+notice in the corner that names the paste key. It shows once for each new
+command. It's off by default, because it means reading the clipboard unasked,
+which on macOS can bring up the pasteboard privacy notice. Turn it on with
+`curl_button` ([configuration](configuration.md)).
 
 ## Mouse
 

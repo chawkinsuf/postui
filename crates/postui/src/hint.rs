@@ -373,8 +373,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             text(if ctx.on { "Disable this row" } else { "Enable this row" })
         }
         // The sidebar takes no text: its paste chip imports (spec
-        // 2026-10-15 curl import visibility V9), so it says what its
-        // Import curl button does.
+        // 2026-10-15 curl import visibility V9, V11).
         Hit::FooterChip(Action::Paste)
             if ctx.spell.surface == crate::keyroute::Surface::Sidebar =>
         {
@@ -467,7 +466,6 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             "Create a folder where the cursor is".to_string(),
             Action::OnSelection(Verb::AddAlt),
         )),
-        Hit::SidebarImportCurl => text("Import curl from clipboard"),
         Hit::SidebarFolderArrow(_) => {
             text(if ctx.on { "Collapse this folder" } else { "Expand this folder" })
         }
@@ -1162,7 +1160,6 @@ mod tests {
             Hit::CopyUrl,
             Hit::SidebarNewRequest,
             Hit::SidebarNewFolder,
-            Hit::SidebarImportCurl,
             Hit::MethodSelector,
             Hit::EditorTab(0),
             Hit::ResponseTab(crate::components::response::ViewMode::Pretty),
