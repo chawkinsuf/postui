@@ -172,9 +172,7 @@ pub(crate) fn footer_chips(
             // each action is what `Sidebar::verb_action` resolves on a
             // request row (plan M2 Deviation 3).
             // `A` (New folder, spec 2026-11-03 create folders F12) has no
-            // chip: the row has no room to spare without pushing the hover
-            // hints out at common widths, and the `+ Folder` button's hint
-            // names its key.
+            // chip: the `+ Folder` button's hint names its key.
             (Key::Of(Action::OnSelection(Verb::Add)), "new", Some(Action::PromptNewRequest)),
             // Rename and delete run their key's verb, so `verb_action`
             // picks the request's op or the folder's by the cursor's row
@@ -192,8 +190,8 @@ pub(crate) fn footer_chips(
                 Some(Action::OnSelection(Verb::Delete { count: 1 })),
             ),
             // The keyboard move (spec 2026-11-03 create folders F31, F32).
-            // Move to space (`M`) has no chip: the row has no room, and it
-            // stays in the row menu and the palette.
+            // Move to space (`M`) has no chip: it is in the row menu and
+            // the palette.
             (Key::Of(Action::OnSelection(Verb::Move)), "move", Some(Action::StartKeyMove)),
             // The sidebar takes no text: a paste there imports its curl
             // (spec 2026-10-15 curl import visibility V9).

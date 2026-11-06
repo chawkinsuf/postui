@@ -10412,9 +10412,8 @@ impl App {
         };
         match p.move_request_shown(&space, &level, &shown, &own, delta) {
             Ok(_) => {
-                // Not a landing: nothing open or active changes, and a
-                // step must not re-walk the tree. The cursor stays on the
-                // moved row.
+                // Not a landing: nothing open or active changes. The
+                // cursor stays on the moved row.
                 self.rebuild_sidebar();
                 self.sidebar.select_key(&key);
                 // A burst merges in core: the journal's top id stays the

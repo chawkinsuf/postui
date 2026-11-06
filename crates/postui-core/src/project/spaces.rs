@@ -312,9 +312,7 @@ impl Project {
         let moved = shown.remove(pos);
         shown.insert(target, moved);
         // Not completed first, as `set_request_order`: `shown` is the
-        // level as drawn, and completing would re-walk the request tree
-        // on every step, which the app's `move_sidebar_row` relies on not
-        // doing.
+        // level as drawn.
         let Some(change) = self.level_change(space, level, &shown) else {
             return Ok(None);
         };
@@ -505,8 +503,7 @@ mod tests {
 
     /// The reorders don't complete the list (spec 2026-11-02 drag into
     /// folders §3, `Project`): they write their level as the sidebar drew
-    /// it, so a step never re-walks the request tree, and a burst of steps
-    /// stays one undo step. A request added outside (here in another
+    /// it, and a burst of steps stays one undo step. A request added outside (here in another
     /// space) is left to the refresh write.
     #[test]
     fn a_burst_of_steps_stays_one_step_and_completes_nothing() {

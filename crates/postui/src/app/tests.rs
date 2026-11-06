@@ -6096,30 +6096,32 @@ fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
 
 /// #258: the sidebar has no alt+↑/↓ reorder (`m` moves a row): in both
 /// profiles they move no request or folder, write nothing and leave the
-/// cursor, and the footer offers no `reorder` chip.
+/// cursor, and the footer offers the `m  move` chip and no `reorder`. Each
+/// key gets a fresh app, so one press can't undo another's move.
 #[test]
 fn alt_arrows_reorder_nothing_in_the_sidebar() {
     use crate::config::KeyProfile;
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
         for key in [RowKey::Request("main/beta".into()), RowKey::Folder("main/b".into())] {
-            let (mut app, dir) = folder_app();
-            app.use_profile(profile);
-            app.sidebar.select_key(&key);
-            app.update(Action::FocusPane(PaneId::Sidebar));
-            let order = saved_order(&dir);
-            let steps = app.history.undo_len();
             for code in [KeyCode::Up, KeyCode::Down] {
+                let (mut app, dir) = folder_app();
+                app.use_profile(profile);
+                app.sidebar.select_key(&key);
+                app.update(Action::FocusPane(PaneId::Sidebar));
+                let order = saved_order(&dir);
+                let steps = app.history.undo_len();
                 app.handle_key(KeyEvent::new(code, KeyModifiers::ALT));
+                app.capture_undo();
+                let what = format!("{profile:?} {key:?} alt+{code:?}");
+                assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "{what}");
+                assert_eq!(folder_rows(&app), ["main/a", "main/b", "main/c"], "{what}");
+                assert_eq!(saved_order(&dir), order, "{what}: nothing written");
+                assert_eq!(app.history.undo_len(), steps, "{what}: no step");
+                assert_eq!(app.sidebar.selected_key(), Some(key.clone()), "{what}");
+                let text = footer_text(&mut app);
+                assert!(text.contains("m  move"), "{what}: {text}");
+                assert!(!text.contains("reorder"), "{what}: {text}");
             }
-            app.capture_undo();
-            let what = format!("{profile:?} {key:?}");
-            assert_eq!(request_rows(&app), ["main/alpha", "main/beta"], "{what}");
-            assert_eq!(saved_order(&dir), order, "{what}: nothing written");
-            assert_eq!(app.history.undo_len(), steps, "{what}: no step");
-            assert_eq!(app.sidebar.selected_key(), Some(key.clone()), "{what}");
-            let text = footer_text(&mut app);
-            assert!(text.contains("move"), "{what}: {text}");
-            assert!(!text.contains("reorder"), "{what}: {text}");
         }
     }
 }
@@ -6588,9 +6590,8 @@ fn undo_of_a_move_to_space_restores_both_lists() {
 }
 
 #[test]
-fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
+fn quick_moves_of_one_request_roll_up_into_one_undo_step() {
     let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
-    // The real UI moves the cursor's row (alt+↑/↓ on the selection).
     app.sidebar.select_slug("main/gamma");
     let steps = app.history.undo_len();
     for _ in 0..2 {
