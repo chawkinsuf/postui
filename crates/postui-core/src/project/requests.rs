@@ -541,7 +541,7 @@ impl Project {
                 && let Some(twin) = folder_ignoring_case(&self.folder_listing, path)
             {
                 return Err(Error::Conflict(format!(
-                    "requests/{}/ is already there in another case; rename it first",
+                    "requests/{}/ is already there in another case; rename it outside postui",
                     twin.path
                 )));
             }
@@ -5101,7 +5101,8 @@ mod tests {
         let before = requests_tree(&dir);
         let r = p.move_request("main/users/x", "auth");
         assert!(
-            matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/auth/Users/")),
+            matches!(&r, Err(Error::Conflict(m))
+                if m.contains("requests/auth/Users/") && m.contains("outside postui")),
             "{r:?}"
         );
         assert_eq!(requests_tree(&dir), before);
@@ -5123,11 +5124,15 @@ mod tests {
     }
 
     /// A folder listed at the exact path is merged into (F27), even beside
-    /// a twin in another case (only a case-sensitive disk holds both).
+    /// a twin in another case. Only a case-sensitive disk holds both, so
+    /// the test does nothing on one that ignores case (macOS CI).
     #[test]
     fn a_move_merges_into_the_exact_path_beside_a_twin() {
         let (dir, mut p) = folder_project(&[], &["main/users/x"]);
         std::fs::create_dir_all(dir.path().join("requests/auth/Users")).unwrap();
+        if dir.path().join("requests/auth/users").exists() {
+            return;
+        }
         std::fs::create_dir_all(dir.path().join("requests/auth/users")).unwrap();
         p.relist();
         assert_eq!(p.move_request("main/users/x", "auth").unwrap(), "auth/users/x");
