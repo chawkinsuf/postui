@@ -3202,8 +3202,14 @@ impl App {
     /// appended to the toasts of destructive-but-undoable actions that act
     /// without a confirm modal.
     fn undo_hint(&self) -> String {
-        crate::keyroute::spell::spell(self.spell_ctx(), &Action::Undo, &self.keymap)
-            .map(|c| format!(" — {} undoes", crate::keyroute::spell::glyphs(&c)))
+        self.key_hint(self.spell_ctx(), &Action::Undo, "undoes")
+    }
+
+    /// ` — <key> <does>`: `action`'s key at `at`, spelled as the footer
+    /// spells it (spec §4.6), for a toast's tail. Empty when it has none.
+    fn key_hint(&self, at: crate::keyroute::SpellCtx, action: &Action, does: &str) -> String {
+        crate::keyroute::spell::spell(at, action, &self.keymap)
+            .map(|c| format!(" — {} {does}", crate::keyroute::spell::glyphs(&c)))
             .unwrap_or_default()
     }
 

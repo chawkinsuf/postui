@@ -1841,6 +1841,8 @@ fn turning_the_setting_on_checks() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_clip("curl https://x/u");
     app.config = crate::config::Config::at(dir.path().to_path_buf());
+    // The checkbox is on the Settings tab, on the Manage screen.
+    app.screen = Screen::Manage;
     app.update(Action::SetUiFlag { key: "curl_button", value: true });
     assert_eq!(notices(&app), 1, "on: checked at once");
     app.update(Action::SetUiFlag { key: "curl_button", value: false });
@@ -1853,22 +1855,34 @@ fn turning_the_setting_on_checks() {
     assert_eq!(notices(&app), 2, "a new curl is");
 }
 
-/// V10: no notice under a dialog, on the Manage screen or with no project
-/// open, and no read there: it shows at the first check without them.
+/// V10: toasts paint over dialogs and every screen, so the notice shows
+/// under a dialog, on the Manage screen and with no project open.
 #[test]
-fn the_notice_waits_out_a_dialog_manage_and_no_project() {
-    let mut app = watching("curl https://x/u");
+fn the_notice_shows_over_a_dialog_on_manage_and_with_no_project() {
+    let mut app = watching("curl https://x/1");
     app.update(Action::PromptNewRequest);
     assert!(!app.modals.is_empty());
-    assert!(!app.check_clipboard(), "a dialog");
+    assert!(app.check_clipboard(), "a dialog");
     app.update(Action::CancelTopModal);
     app.screen = Screen::Manage;
-    assert!(!app.check_clipboard(), "Manage");
+    app.clipboard.set_read_for_test("curl https://x/2");
+    assert!(app.check_clipboard(), "Manage");
     app.screen = Screen::Main;
-    let project = app.project.take();
-    assert!(!app.check_clipboard(), "no project");
-    app.project = project;
+    app.project.take();
+    app.clipboard.set_read_for_test("curl https://x/3");
+    assert!(app.check_clipboard(), "no project");
+    assert_eq!(notices(&app), 3);
+}
+
+#[test]
+fn the_same_curl_with_other_line_ends_is_not_news() {
+    let mut app = watching("curl https://x/u \\\n  -H 'A: b'\n");
     assert!(app.check_clipboard());
+    for same in ["curl https://x/u \\\r\n  -H 'A: b'", "\n curl https://x/u \\\n  -H 'A: b'\r\n"] {
+        app.clipboard.set_read_for_test(same);
+        assert!(!app.check_clipboard(), "{same:?}");
+    }
+    assert_eq!(notices(&app), 1);
 }
 
 #[test]

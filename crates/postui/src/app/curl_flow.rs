@@ -14,12 +14,11 @@ impl App {
     /// The curl import notice (spec 2026-10-15 curl import visibility V3,
     /// V4, V10, #240): with the `curl_button` setting on, a toast saying
     /// the clipboard holds curl the import would take, once per text. Run
-    /// at launch, on a focus gain and when the setting changes. Nothing is
-    /// read while a dialog is open, off the main screen or with no project
-    /// open. `true` when it showed.
+    /// at launch, on a focus gain and when the setting is turned on. Toasts
+    /// paint over dialogs and every screen, so it checks wherever it runs.
+    /// `true` when it showed.
     pub fn check_clipboard(&mut self) -> bool {
-        let shown = self.modals.is_empty() && self.screen == Screen::Main;
-        if !(self.ui_settings.curl_button && shown && self.project().is_some()) {
+        if !self.ui_settings.curl_button {
             return false;
         }
         // The read marks new curl as known: no change means no curl the
@@ -33,25 +32,25 @@ impl App {
             surface: crate::keyroute::Surface::Sidebar,
             ..Default::default()
         };
-        let key = crate::keyroute::spell::spell(at, &Action::Paste, &self.keymap)
-            .map(|c| format!(" — {} in the sidebar imports it", crate::keyroute::spell::glyphs(&c)))
-            .unwrap_or_default();
+        let key = self.key_hint(at, &Action::Paste, "in the sidebar imports it");
         self.toasts.push(format!("Clipboard holds a curl command{key}"), ToastKind::Info);
         true
     }
 
     /// The clipboard's curl commands, read as every import reads them (a
     /// clipboard that can't be read is empty, which holds none). Curl the
-    /// import would take is marked as known, so the notice never names
-    /// curl the user has seen it for or imported.
+    /// import would take is marked as known, with the setting on or off:
+    /// the notice never names curl a notice or an import has read.
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
         let parsed = postui_core::curl::parse(&text);
         // Past the limit the import refuses (S12): no curl it would take.
         if parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT) {
+            // By line, without the ends: the same curl copied with other
+            // line endings or a trailing newline is the same text.
             use std::hash::{Hash, Hasher};
             let mut h = std::hash::DefaultHasher::new();
-            text.hash(&mut h);
+            text.trim().lines().for_each(|line| line.hash(&mut h));
             self.curl_noticed = Some(h.finish());
         }
         parsed
