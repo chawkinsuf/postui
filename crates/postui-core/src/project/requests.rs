@@ -5243,19 +5243,13 @@ mod tests {
 
     /// The space's own directory, listed at its exact name, is moved into
     /// even beside a twin in another case, which is left alone. Only a
-    /// case-sensitive disk holds both, so the test stops on one that
-    /// isn't.
+    /// case-sensitive disk holds both.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_move_lands_in_the_exact_space_directory_beside_a_twin() {
         let (dir, mut p) = folder_project(&[], &["main/x"]);
         std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-        let names: Vec<String> = std::fs::read_dir(dir.path().join("requests"))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .collect();
-        if !(names.iter().any(|n| n == "auth") && names.iter().any(|n| n == "Auth")) {
-            return;
-        }
+        assert!(dir.path().join("requests/auth").is_dir());
         assert_eq!(p.move_request("main/x", "auth").unwrap(), "auth/x");
         assert!(dir.path().join("requests/auth/x.toml").is_file());
         let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
