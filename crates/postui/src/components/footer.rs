@@ -195,7 +195,6 @@ pub(crate) fn footer_chips(
             // Move to space (`M`) has no chip: the row has no room, and it
             // stays in the row menu and the palette.
             (Key::Of(Action::OnSelection(Verb::Move)), "move", Some(Action::StartKeyMove)),
-            (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
             // The sidebar takes no text: a paste there imports its curl
             // (spec 2026-10-15 curl import visibility V9).
             (Key::Of(Action::Paste), "import curl", Some(Action::Paste)),

@@ -96,7 +96,7 @@ follow the same rules.
 
 | # | Behaviour | Who |
 |---|---|---|
-| D21 | alt+↑/↓ and the row menu's Move up/down step past the next sibling of either kind. The Rename prompt stays the keyboard way to change a request's folder; no new keys (#172 owns making folders friendlier). | mine |
+| D21 | alt+↑/↓ and the row menu's Move up/down step past the next sibling of either kind. The Rename prompt stays the keyboard way to change a request's folder; no new keys (#172 owns making folders friendlier). *Amended 2026-11-05 (#258):* the sidebar's alt+↑/↓ are removed, so the rule now covers the row menu's Move up/down alone; `m`, the keyboard move, is the keyboard route ("Now that we have m for move for requests and folders in the request panel, i don't think we need the alt-arrows to move the requests as well", you). | mine; the removal you (#258) |
 | D22 | `postui requests`, the `postui suite` run order, and "Move all requests…" follow the mixed order: the tree walk recurses into a folder at its place in its level (2026-11-01 R11, mixed). | mine |
 | D23 | The Manage screen's request list stays name-sorted (2026-11-01 R12). | mine |
 

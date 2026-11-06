@@ -253,6 +253,15 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   neither is bound in that context; `keys.rs` currently has no
   alt+arrow bindings.) The footer's context-key strip for the sidebar
   advertises them (keyboard-context-actions).
+  *Removed 2026-11-05 (#258):* the sidebar's alt+↑/↓ and its
+  `alt+↑↓ reorder` chip are gone. The user: "Now that we have m for move
+  for requests and folders in the request panel, i don't think we need
+  the alt-arrows to move the requests as well." The keyboard route is
+  now `m`, the keyboard move (spec 2026-11-03 create folders F31, F32),
+  with the row menu's Move up/Move down. In the sidebar alt+↑/↓ do
+  nothing, as any chord it doesn't name. Mine: the row menu's Move
+  up/down stay, as do the Manage lists' alt+↑/↓ (the user named only
+  the request panel's).
 - Request context menu (`context_menu_for`): "Move up" and "Move down"
   after "Duplicate", dispatching the same action. Both are disabled
   (drawn dim, no-op) when the row is already first / last in its
