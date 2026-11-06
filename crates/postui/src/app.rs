@@ -10495,8 +10495,8 @@ impl App {
             }
             Err(e) => {
                 self.op_in_flight = false;
-                // A folder clash names the clashing folder only: under D18
-                // only its directory may clash, so "named" would mislead.
+                // A folder clash leaves out the destination, in the user's
+                // wording (spec 2026-11-02 drag into folders D18, #245).
                 let msg = match (e, item) {
                     (Error::AlreadyExists(name), TreeItem::Request(_)) => {
                         format!("{dest} already has a request named {name:?}")
