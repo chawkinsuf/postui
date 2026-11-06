@@ -780,15 +780,10 @@ impl Project {
         self.order_edit(space, |order| order::remove(order, rel))
     }
 
-    /// A request renamed in its own level: its entry, in place.
+    /// A request renamed in its own level: its entry, in place
+    /// ([`order::rename`]).
     pub(super) fn order_rename(&mut self, space: &str, from: &str, to: &str) -> Result<(), Error> {
-        self.order_edit(space, |order| {
-            for e in order.iter_mut() {
-                if e == from {
-                    *e = to.to_string();
-                }
-            }
-        })
+        self.order_edit(space, |order| order::rename(order, from, to))
     }
 
     pub(super) fn order_insert_after(
@@ -1184,7 +1179,6 @@ impl Project {
             p.relist();
             if let (Some((space, from_rel)), Some((_, to_rel))) =
                 (Self::split_space(&from_slug), Self::split_space(&to_slug))
-                && to_slug != from_slug
             {
                 p.order_rename(space, from_rel, to_rel)?;
             }
@@ -3289,6 +3283,31 @@ mod tests {
             assert_eq!(order[5..7], *beside, "above: {above}: {order:?}");
             assert_eq!(order.iter().filter(|e| *e == "health-copy").count(), 1, "{order:?}");
         }
+    }
+
+    /// D4 over D7, for a same-level rename: a stale entry of the new name
+    /// (one a partial walk kept) drops out, and the request keeps its own
+    /// slot rather than taking the stale one's.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_onto_a_stale_entry_of_its_name_keeps_its_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/b.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/locked/y.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            (
+                "project.toml",
+                "spaces = [\"main\"]\n[space.main]\norder = [\"zed\", \"b\", \"a\", \"locked/\", \"locked/y\"]\n",
+            ),
+        ]);
+        let locked = dir.path().join("requests/main/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let renamed = p.rename_request("main/a", "Zed");
+        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(warned, "the walk failed part way");
+        assert_eq!(renamed.unwrap().0, "main/zed");
+        assert_eq!(main_order(&p), ["b", "zed", "locked/", "locked/y"]);
     }
 
     /// D5a (amended 2026-11-03): the lists are built from `project.toml` as

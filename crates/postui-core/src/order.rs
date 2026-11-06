@@ -292,6 +292,24 @@ pub(crate) fn rename_folder_entries(order: &mut Vec<String>, from: &str, to: &st
     rename_prefix(order, from, to);
 }
 
+/// The request at relative slug `from` renamed to `to` in its own level:
+/// an entry already naming `to` goes first (nothing was on disk there; left
+/// in, one a partial walk kept (D7) would take the request's slot), then
+/// `from`'s entry is renamed in place, as [`rename_folder_entries`] does
+/// for a folder. A `from` the list doesn't name gets no entry, as before
+/// the rename. Renaming to its own slug changes nothing.
+pub(crate) fn rename(order: &mut Vec<String>, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    remove(order, to);
+    for e in order.iter_mut() {
+        if e == from {
+            *e = to.to_string();
+        }
+    }
+}
+
 /// [`remove`] for a folder: `entry` (a folder entry, `"a/"`) and every
 /// entry under it.
 pub(crate) fn remove_under(order: &mut Vec<String>, entry: &str) {
@@ -745,6 +763,17 @@ mod tests {
         let mut order = v(&["c/", "b/", "c/", "a/"]);
         arrive(&mut order, "c/");
         assert_eq!(order, v(&["b/", "a/", "c/"]));
+    }
+
+    /// A request rename keeps its own slot: an entry already naming the new
+    /// slug drops out, and a rename to its own slug keeps its entry.
+    #[test]
+    fn rename_keeps_its_slot_and_drops_an_entry_of_the_new_name() {
+        let mut order = v(&["zed", "b", "a"]);
+        rename(&mut order, "a", "zed");
+        assert_eq!(order, v(&["b", "zed"]));
+        rename(&mut order, "zed", "zed");
+        assert_eq!(order, v(&["b", "zed"]));
     }
 
     /// D17: a folder move renames its own entry and everything under it in
