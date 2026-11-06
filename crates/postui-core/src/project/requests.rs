@@ -464,7 +464,8 @@ impl Project {
     }
 
     /// The one naming rule for a folder's directory, used by a create, a
-    /// rename and a typed path alike (review block 1, mine (approved)): in
+    /// rename, a typed path and a drop onto a taken directory alike (review
+    /// block 1, mine (approved); drag spec D18): in
     /// `level` (a full path), the slug of `name` as one segment
     /// (`slugify`, `folder` when nothing safe survives), `-2`, `-3`, …
     /// while something on disk already has it (F19), as a request's slug
@@ -492,21 +493,23 @@ impl Project {
                 return current.to_string();
             }
         }
-        // Taken by anything on disk, or by a listed folder spelled in any
-        // case (D18's rule for a drop: a case-only twin can't sit beside
-        // it on every filesystem), never by the folder being renamed.
-        let taken = |p: &str| {
-            current != Some(p)
-                && (rel(&format!("{REQUESTS_DIR}/{p}")).is_ok_and(|r| self.disk.exists(&r))
-                    || folder_ignoring_case(&self.folder_listing, p).is_some())
-        };
         let mut path = base.clone();
         let mut n = 2;
-        while taken(&path) {
+        while self.folder_path_taken(&path, current) {
             path = format!("{base}-{n}");
             n += 1;
         }
         path
+    }
+
+    /// Whether a folder's directory can't go at full path `path`: something
+    /// on disk has it, or a listed folder spelled in any case (a case-only
+    /// twin can't sit beside it on every filesystem), `current` (the folder
+    /// being renamed) aside.
+    fn folder_path_taken(&self, path: &str, current: Option<&str>) -> bool {
+        current != Some(path)
+            && (rel(&format!("{REQUESTS_DIR}/{path}")).is_ok_and(|r| self.disk.exists(&r))
+                || folder_ignoring_case(&self.folder_listing, path).is_some())
     }
 
     /// Refuses an op in or on a level (a space, or a folder) whose
@@ -701,9 +704,8 @@ fn named(along: &[(String, String)]) -> Vec<(String, String)> {
     along.iter().map(|(path, typed)| (path.clone(), folder_file_text(typed))).collect()
 }
 
-/// The folder `folders` lists at full path `path` spelled in any case. A
-/// folder move refuses a destination this finds (spec 2026-11-02 drag
-/// into folders D18), whatever the filesystem's case rule. It compares
+/// The folder `folders` lists at full path `path` spelled in any case: a
+/// path this finds is taken, whatever the filesystem's case rule. It compares
 /// Unicode lowercase, not ASCII case: a case-insensitive disk folds
 /// non-ASCII letters too.
 fn folder_ignoring_case<'a>(
@@ -1296,14 +1298,20 @@ impl Project {
     /// A request keeps its file name, `-2`, `-3`, … when the folder has it,
     /// and its text. A folder's directory moves whole, every request under
     /// it in the entry's moves, and its entries are renamed in place, so
-    /// its contents keep their order. Held requests follow.
+    /// its contents keep their order. When something there has its
+    /// directory name, the directory is named from the name it shows, as a
+    /// create names one (`-2`, `-3`, … while taken), and a folder that
+    /// showed its directory name gets it written in its `.folder.toml`.
+    /// Held requests follow.
     ///
     /// Refused, with nothing written: `level` being the item's own (a
     /// same-level drop is `set_request_order`'s, D20), a level or item that
     /// does not exist, a folder going inside itself or one of its own
     /// folders (D2), and a clash (D18): the folder already shows a request
     /// with the name the request will show there (a nameless one shows its
-    /// file name after any `-2`), or already has a folder of that name.
+    /// file name after any `-2`), or a folder with the name the folder
+    /// shows. A folder whose directory would be renamed and whose
+    /// `.folder.toml` doesn't parse is refused too (F24).
     pub fn move_to_level(
         &mut self,
         item: &TreeItem,
@@ -1410,38 +1418,44 @@ impl Project {
         anchor: Option<String>,
     ) -> Result<(String, Moves), Error> {
         let name = rel.rsplit_once('/').map_or(rel, |(_, name)| name);
-        let new_path = format!("{dest}/{name}");
-        let from_dir = folder_rel(path)?;
-        let to_dir = folder_rel(&new_path)?;
-        // D18: a folder the destination shows, in any case, is the clash,
-        // named as it shows; anything else of that name on disk there (a
-        // directory left behind, a plain file) is refused, naming the path.
-        if let Some(clash) = folder_ignoring_case(&self.folder_listing, &new_path) {
+        let Some(listed) = self.folder_listing.iter().find(|f| f.path == path) else {
+            return Err(Error::NotFound(path.to_string()));
+        };
+        let shown = listed.display_name().to_string();
+        let broken = listed.broken.clone();
+        let nameless = listed.name.is_none();
+        // D18: a sibling there that already shows the folder's name, in any
+        // case, is the clash, named as it shows (spec 2026-11-03 create
+        // folders F19): two rows of one name would be ambiguous to a typed
+        // path (F18a).
+        if let Some(clash) = self.siblings_showing(dest, &shown, Some(path)).next() {
             return Err(Error::AlreadyExists(clash.display_name().to_string()));
         }
-        // A sibling there that already shows the folder's display name is
-        // the clash too (spec 2026-11-03 create folders F19): two rows of
-        // one name would be ambiguous to a typed path (F18a).
-        let shown = self
-            .folder_listing
-            .iter()
-            .find(|f| f.path == path)
-            .map_or(name, |f| f.display_name())
-            .to_string();
-        if self.sibling_folder_name_taken(dest, &shown, Some(path)) {
-            return Err(Error::AlreadyExists(shown));
+        // It keeps its directory name (D17) unless that is taken; then the
+        // name it shows gets a directory by the rule a create uses (F19's
+        // one naming rule, #255).
+        let own = format!("{dest}/{name}");
+        let renamed = self.folder_path_taken(&own, None);
+        let new_path = if renamed { self.folder_slot(dest, &shown, None) } else { own };
+        let from_dir = folder_rel(path)?;
+        // A renamed directory can't show a nameless folder's name, so its
+        // file must hold it; a file that doesn't parse can't (F24).
+        if renamed && let Some(e) = broken {
+            return Err(Error::BadName(format!("{from_dir}/{}: {e}", crate::storage::FOLDER_FILE)));
         }
-        if self.disk.exists(&to_dir) {
-            return Err(Error::Conflict(format!("{to_dir} already exists on disk")));
-        }
+        let to_dir = folder_rel(&new_path)?;
         let new_rel = order::relative(&new_path, space).unwrap_or(&new_path).to_string();
         let moves = self.moves_under(path, &new_path);
         let meta = self.meta_for_moves(moves.clone());
         self.order_transaction("move folder to folder", meta, |p| {
             p.shift_folder(&from_dir, &to_dir, &moves)?;
+            if renamed && nameless {
+                p.write_folder_name(&to_dir, &shown)?;
+            }
+            p.relist();
             let entry = order::folder_entry(&new_rel);
             p.order_edit(space, |order| {
-                // Nothing was on disk at the new path (D18 refused it).
+                // Nothing was on disk at the new path (it is free).
                 order::rename_folder_entries(order, rel, &new_rel);
                 order::insert_before(order, &entry, anchor.as_deref());
             })
@@ -1473,9 +1487,9 @@ impl Project {
     }
 
     /// A folder's directory renamed `from_dir` → `to_dir` inside its
-    /// caller's transaction, with every held request in `moves` following,
-    /// then a relist: the one directory move a folder drop and a folder
-    /// rename share.
+    /// caller's transaction, with every held request in `moves` following:
+    /// the one directory move a folder drop and a folder rename share. The
+    /// caller relists once its folder file is written too.
     fn shift_folder(
         &mut self,
         from_dir: &RelPath,
@@ -1488,7 +1502,6 @@ impl Project {
                 self.open_requests.insert(new.clone(), held);
             }
         }
-        self.relist();
         Ok(())
     }
 
@@ -1771,19 +1784,7 @@ impl Project {
             if new_path != path {
                 p.shift_folder(&from_dir, &to_dir, &moves)?;
             }
-            let file = rel(&format!("{to_dir}/{}", crate::storage::FOLDER_FILE))?;
-            match p.disk.read(&file)? {
-                Some(text) => {
-                    let mut doc: toml_edit::DocumentMut = text
-                        .parse()
-                        .map_err(|e: toml_edit::TomlError| Error::BadName(e.to_string()))?;
-                    doc["name"] = toml_edit::value(name);
-                    if doc.to_string() != text {
-                        p.fs_write_text(&file, Some(&doc.to_string()))?;
-                    }
-                }
-                None => p.fs_create_file(&file, &folder_file_text(name))?,
-            }
+            p.write_folder_name(&to_dir, name)?;
             p.relist();
             if new_path != path {
                 // Nothing was on disk at the new path (refused above).
@@ -1794,6 +1795,26 @@ impl Project {
             Ok(())
         })?;
         Ok((new_path, moves))
+    }
+
+    /// Gives the [`crate::storage::FOLDER_FILE`] in `dir` the name `name`,
+    /// other keys kept, writing only when that changes it, or makes the
+    /// file (F20). Inside its caller's transaction, so undo takes it back.
+    fn write_folder_name(&mut self, dir: &RelPath, name: &str) -> Result<(), Error> {
+        let file = rel(&format!("{dir}/{}", crate::storage::FOLDER_FILE))?;
+        match self.disk.read(&file)? {
+            Some(text) => {
+                let mut doc: toml_edit::DocumentMut = text
+                    .parse()
+                    .map_err(|e: toml_edit::TomlError| Error::BadName(e.to_string()))?;
+                doc["name"] = toml_edit::value(name);
+                if doc.to_string() != text {
+                    self.fs_write_text(&file, Some(&doc.to_string()))?;
+                }
+                Ok(())
+            }
+            None => self.fs_create_file(&file, &folder_file_text(name)),
+        }
     }
 
     /// Deletes the folder at full path `path` and everything in it, as one
@@ -4011,43 +4032,41 @@ mod tests {
     /// directories, one holding only a `.DS_Store`, a plain file. Nothing
     /// moves and nothing is journaled. *Amended 2026-11-03 (spec create
     /// folders F3, F8):* a directory is a folder now, shown even when
-    /// empty, so the first three clash as a shown folder; only the plain
-    /// file is refused naming the path.
+    /// empty, so the first three clash as a shown folder. *Amended
+    /// 2026-11-06 (#255):* the plain file only takes the directory name,
+    /// so the drop is numbered past it.
     #[test]
-    fn a_folder_move_onto_a_leftover_directory_refuses_naming_the_path() {
+    fn a_folder_move_onto_a_leftover_directory_clashes_as_a_shown_folder() {
         type Leftover = fn(&tempfile::TempDir);
-        let cases: [(&str, Leftover, bool); 4] = [
-            (
-                "an empty directory",
-                |d| std::fs::create_dir_all(d.path().join("requests/main/v1")).unwrap(),
-                true,
-            ),
-            (
-                "nested empty directories",
-                |d| std::fs::create_dir_all(d.path().join("requests/main/v1/sub/deeper")).unwrap(),
-                true,
-            ),
-            ("a .DS_Store", |d| write(d, "requests/main/v1/.DS_Store", "x"), true),
-            ("a plain file", |d| write(d, "requests/main/v1", "notes"), false),
+        let cases: [(&str, Leftover); 3] = [
+            ("an empty directory", |d| {
+                std::fs::create_dir_all(d.path().join("requests/main/v1")).unwrap()
+            }),
+            ("nested empty directories", |d| {
+                std::fs::create_dir_all(d.path().join("requests/main/v1/sub/deeper")).unwrap()
+            }),
+            ("a .DS_Store", |d| write(d, "requests/main/v1/.DS_Store", "x")),
         ];
-        for (what, make, shown) in cases {
+        for (what, make) in cases {
             let (dir, mut p) = tree_fixture();
             make(&dir);
             let before = read(&dir, "project.toml");
             let r = p.move_to_level(&folder_item("main/users/v1"), "", 0);
-            if shown {
-                assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "v1"), "{what}: {r:?}");
-            } else {
-                assert!(
-                    matches!(&r, Err(Error::Conflict(m)) if m == "requests/main/v1 already exists on disk"),
-                    "{what}: {r:?}"
-                );
-            }
+            assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "v1"), "{what}: {r:?}");
             assert!(dir.path().join("requests/main/users/v1/get.toml").is_file(), "{what}");
             assert!(dir.path().join("requests/main/v1").exists(), "{what}: left as it was");
             assert_eq!(read(&dir, "project.toml"), before, "{what}");
             assert_eq!(p.journal_len(), 0, "{what}");
         }
+        let (dir, mut p) = tree_fixture();
+        write(&dir, "requests/main/v1", "notes");
+        let (new, _) = p.move_to_level(&folder_item("main/users/v1"), "", 0).unwrap();
+        assert_eq!(new, "main/v1-2");
+        assert_eq!(read(&dir, "requests/main/v1").as_deref(), Some("notes"));
+        assert_eq!(
+            read(&dir, "requests/main/v1-2/.folder.toml").as_deref(),
+            Some("name = \"v1\"\n")
+        );
     }
 
     /// D18: a shown folder whose name differs only in case clashes even
@@ -4068,20 +4087,184 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
-    /// D18 names the clashing folder by the name it shows (spec 2026-11-03
-    /// create folders F15), not by its directory.
+    /// D18 (amended 2026-11-06, #255): a directory taken by a folder that
+    /// shows another name is numbered, as a create numbers it (F19), and
+    /// the moved folder gets a `.folder.toml` naming it as it showed. Undo
+    /// takes the move and the file back.
     #[test]
-    fn a_folder_move_refused_by_d18_names_the_clash_by_its_shown_name() {
+    fn a_folder_drop_numbers_a_directory_another_name_has() {
         let (dir, mut p) = fixture();
         write(&dir, "requests/main/users/.folder.toml", "name = \"Accounts\"\n");
         write(&dir, "requests/main/users/a.toml", "method = \"GET\"\nurl = \"u\"\n");
         write(&dir, "requests/main/x/users/b.toml", "method = \"GET\"\nurl = \"u\"\n");
         p.relist();
         p.complete_order().unwrap();
-        let before = read(&dir, "project.toml");
+        let (before, tree) = (read(&dir, "project.toml"), requests_tree(&dir));
+        let (new, moves) = p.move_to_level(&folder_item("main/x/users"), "", 0).unwrap();
+        assert_eq!(new, "main/users-2");
+        assert_eq!(moves, [("main/x/users/b".to_string(), "main/users-2/b".to_string())]);
+        assert!(dir.path().join("requests/main/users-2/b.toml").is_file());
+        assert_eq!(
+            read(&dir, "requests/main/users-2/.folder.toml").as_deref(),
+            Some("name = \"users\"\n")
+        );
+        assert_eq!(
+            read(&dir, "requests/main/users/.folder.toml").as_deref(),
+            Some("name = \"Accounts\"\n")
+        );
+        assert!(
+            p.folders().iter().any(|f| f.path == "main/users-2" && f.display_name() == "users")
+        );
+        assert_eq!(main_order(&p), ["users-2/", "ping", "users/", "users/a", "x/", "users-2/b"]);
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(&dir), tree);
+        assert_eq!(read(&dir, "project.toml"), before);
+    }
+
+    /// #255's steps: "Ping!" in main has directory `ping`; "Ping" dragged
+    /// in from main/x moves to `ping-2`, its own `.folder.toml` untouched.
+    #[test]
+    fn a_folder_drop_keeps_a_named_folder_file_when_numbered() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/ping/.folder.toml", "name = \"Ping!\"\n"),
+            ("requests/main/x/ping/.folder.toml", "name=\"Ping\"  # kept\n"),
+        ]);
+        let (new, _) = p.move_to_level(&folder_item("main/x/ping"), "", 0).unwrap();
+        assert_eq!(new, "main/ping-2");
+        assert_eq!(
+            read(&dir, "requests/main/ping-2/.folder.toml").as_deref(),
+            Some("name=\"Ping\"  # kept\n")
+        );
+    }
+
+    /// A numbered folder whose file has other keys but no name gets the
+    /// name, its other keys kept.
+    #[test]
+    fn a_folder_drop_names_a_numbered_folder_in_its_file_keeping_other_keys() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/.folder.toml", "name = \"Other\"\n"),
+            ("requests/main/x/f/.folder.toml", "color = \"red\"\n"),
+        ]);
+        let (new, _) = p.move_to_level(&folder_item("main/x/f"), "", 0).unwrap();
+        assert_eq!(new, "main/f-2");
+        assert_eq!(
+            read(&dir, "requests/main/f-2/.folder.toml").as_deref(),
+            Some("color = \"red\"\nname = \"f\"\n")
+        );
+    }
+
+    /// A folder file that doesn't parse can't be given the name a numbered
+    /// directory needs, so that drop is refused, as a rename is (F24).
+    #[test]
+    fn a_folder_drop_that_needs_a_number_refuses_a_broken_folder_file() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/.folder.toml", "name = \"Other\"\n"),
+            ("requests/main/x/f/.folder.toml", "name = "),
+        ]);
+        let before = requests_tree(&dir);
+        let r = p.move_to_level(&folder_item("main/x/f"), "", 0);
+        assert!(
+            matches!(&r, Err(Error::BadName(m)) if m.starts_with("requests/main/x/f/.folder.toml")),
+            "{r:?}"
+        );
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// A listed folder spelled in another case takes the directory too
+    /// (a case-insensitive disk would file into it): numbered.
+    #[test]
+    fn a_folder_drop_numbers_past_a_listed_case_twin() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/Users/.folder.toml", "name = \"Accounts\"\n"),
+            ("requests/main/x/users/b.toml", "method = \"GET\"\nurl = \"u\"\n"),
+        ]);
+        let (new, _) = p.move_to_level(&folder_item("main/x/users"), "", 0).unwrap();
+        assert_eq!(new, "main/users-2");
+        assert!(dir.path().join("requests/main/users-2/b.toml").is_file());
+    }
+
+    /// A taken directory is named from the name the folder shows, by the
+    /// rule a create uses (F19), not numbered onto its own directory name:
+    /// `a-2` showing "a" goes to `a` when that is free, else `a-3`.
+    #[test]
+    fn a_folder_drop_onto_a_taken_directory_names_it_from_its_shown_name() {
+        let (_dir, mut p) = folder_tree(&[
+            ("requests/main/a-2/.folder.toml", "name = \"b\"\n"),
+            ("requests/main/box/a-2/.folder.toml", "name = \"a\"\n"),
+        ]);
+        let (new, _) = p.move_to_level(&folder_item("main/box/a-2"), "", 0).unwrap();
+        assert_eq!(new, "main/a");
+        let (_dir, mut p) = folder_tree(&[
+            ("requests/main/a/.folder.toml", "name = \"c\"\n"),
+            ("requests/main/a-2/.folder.toml", "name = \"b\"\n"),
+            ("requests/main/box/a-2/.folder.toml", "name = \"a\"\n"),
+        ]);
+        let (new, _) = p.move_to_level(&folder_item("main/box/a-2"), "", 0).unwrap();
+        assert_eq!(new, "main/a-3");
+    }
+
+    /// A `name` the listing can't show (holding `/`, or blank) leaves the
+    /// folder showing its directory name, so a drop that renames the
+    /// directory writes that name over it, as a rename would: the folder
+    /// still shows "users", never `users-2`, which a sibling shows here.
+    #[test]
+    fn a_folder_drop_names_a_folder_whose_name_it_cannot_show() {
+        for hand_written in ["name = \"a/b\"\n", "name = \"  \"\n"] {
+            let (dir, mut p) = folder_tree(&[
+                ("requests/main/users/.folder.toml", "name = \"Accounts\"\n"),
+                ("requests/main/zzz/.folder.toml", "name = \"users-2\"\n"),
+                ("requests/main/x/users/.folder.toml", hand_written),
+            ]);
+            let (new, _) = p.move_to_level(&folder_item("main/x/users"), "", 0).unwrap();
+            assert_eq!(new, "main/users-2", "{hand_written}");
+            assert_eq!(
+                read(&dir, "requests/main/users-2/.folder.toml").as_deref(),
+                Some("name = \"users\"\n"),
+                "{hand_written}"
+            );
+            assert!(
+                p.folders().iter().any(|f| f.path == "main/users-2" && f.display_name() == "users"),
+                "{hand_written}"
+            );
+        }
+    }
+
+    /// D18: a sibling showing the dragged folder's name from a directory
+    /// of another name refuses the drop, though the directory is free.
+    #[test]
+    fn a_folder_drop_is_refused_by_a_sibling_showing_its_name_from_another_directory() {
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/acc/.folder.toml", "name = \"Users\"\n"),
+            ("requests/main/x/users/b.toml", "method = \"GET\"\nurl = \"u\"\n"),
+        ]);
+        let (before, tree) = (read(&dir, "project.toml"), requests_tree(&dir));
         let r = p.move_to_level(&folder_item("main/x/users"), "", 0);
-        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "Accounts"), "{r:?}");
-        assert!(dir.path().join("requests/main/x/users/b.toml").is_file());
+        assert!(matches!(&r, Err(Error::AlreadyExists(n)) if n == "Users"), "{r:?}");
+        assert_eq!(requests_tree(&dir), tree);
+        assert_eq!(read(&dir, "project.toml"), before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// A folder file that can't be read fails a drop that would rename the
+    /// directory, and the move is rolled back.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_drop_that_cannot_read_its_folder_file_moves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = folder_tree(&[
+            ("requests/main/f/.folder.toml", "name = \"Other\"\n"),
+            ("requests/main/x/f/b.toml", "method = \"GET\"\nurl = \"u\"\n"),
+            ("requests/main/x/f/.folder.toml", "color = \"red\"\n"),
+        ]);
+        let before = read(&dir, "project.toml");
+        let file = dir.path().join("requests/main/x/f/.folder.toml");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let r = p.move_to_level(&folder_item("main/x/f"), "", 0);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).ok();
+        assert!(r.is_err(), "{r:?}");
+        assert!(dir.path().join("requests/main/x/f/b.toml").is_file());
+        assert!(!dir.path().join("requests/main/f-2").exists());
         assert_eq!(read(&dir, "project.toml"), before);
         assert_eq!(p.journal_len(), 0);
     }
@@ -4129,8 +4312,8 @@ mod tests {
     }
 
     /// D17 over D7: entries already under a moved folder's new path (a
-    /// partial walk kept them) name nothing, since D18 refused anything of
-    /// that name on disk, so they go: the moved contents keep their own
+    /// partial walk kept them) name nothing, since the new path is one
+    /// nothing on disk has, so they go: the moved contents keep their own
     /// order and appear once.
     #[cfg(unix)]
     #[test]
