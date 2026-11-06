@@ -1019,9 +1019,11 @@ impl Project {
         let moved: std::collections::HashMap<&str, &str> =
             moves.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
         self.order_edit(to, |order| {
-            // The move made the carried folders, so entries already naming
-            // one or under it name nothing (a partial walk kept them, D7):
-            // they go before anything arrives, as in `rename_folder_entries`.
+            // The move made the carried folders, so entries naming one or
+            // under it name nothing (a partial walk kept them, D7). They go
+            // here, once, before anything arrives. The folders then arrive
+            // by `drawn`, not through `arrive_with_folders`: an empty one
+            // has no request to arrive with.
             for e in &carried {
                 order::remove_under(order, e);
             }
@@ -3351,14 +3353,29 @@ mod tests {
         assert_eq!(main_order(&p), ["b", "zed", "locked/", "locked/y"]);
     }
 
+    /// `files` moved all from `main` to `auth` while `auth/locked` can't be
+    /// read, so the walk fails part way (D7): `auth`'s order after it.
+    #[cfg(unix)]
+    fn move_all_on_a_partial_walk(files: &[(&str, &str)]) -> Vec<String> {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = folder_tree(files);
+        let locked = dir.path().join("requests/auth/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let moved = p.move_all_requests("main", "auth").map(|_| ());
+        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(warned, "the walk failed part way");
+        moved.unwrap();
+        order::space_order(p.meta(), "auth").to_vec()
+    }
+
     /// D4 over D7, for a Move all: a folder the move carries into `to`
     /// lands last in its level, and stale entries of its name and under it
     /// (ones a partial walk kept) drop out rather than lend it their slot.
     #[cfg(unix)]
     #[test]
     fn move_all_carries_a_folder_past_a_stale_entry_of_its_name() {
-        use std::os::unix::fs::PermissionsExt;
-        let (dir, mut p) = folder_tree(&[
+        let order = move_all_on_a_partial_walk(&[
             ("requests/main/c.toml", "method = \"GET\"\nurl = \"u\"\n"),
             ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
             ("requests/auth/k.toml", "method = \"GET\"\nurl = \"u\"\n"),
@@ -3370,17 +3387,7 @@ mod tests {
                  [space.auth]\norder = [\"f/\", \"f/old\", \"k\", \"locked/\", \"locked/y\"]\n",
             ),
         ]);
-        let locked = dir.path().join("requests/auth/locked");
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let moved = p.move_all_requests("main", "auth").map(|_| ());
-        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(warned, "the walk failed part way");
-        moved.unwrap();
-        assert_eq!(
-            order::space_order(p.meta(), "auth"),
-            ["k", "locked/", "locked/y", "a", "c", "f/", "f/x"]
-        );
+        assert_eq!(order, ["k", "locked/", "locked/y", "a", "c", "f/", "f/x"]);
     }
 
     /// The same for a nested carried folder, and for a stale entry naming a
@@ -3390,8 +3397,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn move_all_drops_stale_entries_under_a_nested_carried_folder() {
-        use std::os::unix::fs::PermissionsExt;
-        let (dir, mut p) = folder_tree(&[
+        let order = move_all_on_a_partial_walk(&[
             ("requests/main/c.toml", "method = \"GET\"\nurl = \"u\"\n"),
             ("requests/main/f/x.toml", "method = \"GET\"\nurl = \"u\"\n"),
             ("requests/main/f/g/y.toml", "method = \"GET\"\nurl = \"u\"\n"),
@@ -3405,17 +3411,7 @@ mod tests {
                  \"f/old\", \"k\", \"locked/\", \"locked/y\"]\n",
             ),
         ]);
-        let locked = dir.path().join("requests/auth/locked");
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let moved = p.move_all_requests("main", "auth").map(|_| ());
-        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(warned, "the walk failed part way");
-        moved.unwrap();
-        assert_eq!(
-            order::space_order(p.meta(), "auth"),
-            ["k", "locked/", "locked/y", "a", "c", "f/", "f/x", "f/g/", "f/g/y"]
-        );
+        assert_eq!(order, ["k", "locked/", "locked/y", "a", "c", "f/", "f/x", "f/g/", "f/g/y"]);
     }
 
     /// D5a (amended 2026-11-03): the lists are built from `project.toml` as
