@@ -320,6 +320,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::VmEntryCell { .. }
         | Hit::VarToken(_)
         | Hit::TipPanel(_)
+        | Hit::CurlNotice(crate::components::toast::NoticePart::Panel)
         | Hit::ModalOutside
         | Hit::ModalBody
         | Hit::ModalField(_)
@@ -609,6 +610,12 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             TipEditVerb::Define => "Define this variable",
         }),
         Hit::TipCopy(_) => text("Copy this variable's value"),
+        // The curl import notice (spec 2026-10-15 curl import visibility
+        // V11, #240): its Import says what the button in the row did.
+        Hit::CurlNotice(crate::components::toast::NoticePart::Import) => {
+            text("Import curl from clipboard")
+        }
+        Hit::CurlNotice(crate::components::toast::NoticePart::Close) => text("Dismiss this notice"),
         Hit::TipReveal(_) => {
             text(if ctx.on { "Hide this secret's value" } else { "Show this secret's value" })
         }
@@ -1179,6 +1186,8 @@ mod tests {
             Hit::KeymapChoice(KeymapAnswer::Quit),
             Hit::SettingsFile { file: crate::action::ConfigFile::Config, reset: false },
             Hit::SettingsFile { file: crate::action::ConfigFile::Keys, reset: true },
+            Hit::CurlNotice(crate::components::toast::NoticePart::Import),
+            Hit::CurlNotice(crate::components::toast::NoticePart::Close),
         ] {
             let h = hint_for(&hit, &keymap, &ctx()).unwrap();
             // The key, where one is appended, doesn't count against the

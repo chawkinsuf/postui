@@ -382,6 +382,9 @@ pub enum Hit {
     ResponseJqRevert,
     /// The jq bar's ✕, on a view or with text typed: clears the filter.
     ResponseJqClear,
+    /// The curl import notice, a toast with controls (spec 2026-10-15 curl
+    /// import visibility V3, #240): its panel, Import button or ×.
+    CurlNotice(crate::components::toast::NoticePart),
 }
 
 #[cfg(test)]
@@ -475,7 +478,8 @@ impl PointerShape {
                 | Hit::StripControls
                 | Hit::ModalOutside
                 | Hit::ModalBody
-                | Hit::TipPanel(_),
+                | Hit::TipPanel(_)
+                | Hit::CurlNotice(crate::components::toast::NoticePart::Panel),
             ) => PointerShape::Default,
             Some(_) => PointerShape::Pointer,
         }
@@ -932,6 +936,13 @@ mod tests {
         {
             assert_eq!(PointerShape::for_hit(Some(&pill)), PointerShape::Pointer, "{pill:?}");
         }
+        // Task #240: likewise the curl import notice's panel and its
+        // controls.
+        use crate::components::toast::NoticePart;
+        let notice = |part| PointerShape::for_hit(Some(&Hit::CurlNotice(part)));
+        assert_eq!(notice(NoticePart::Panel), PointerShape::Default);
+        assert_eq!(notice(NoticePart::Import), PointerShape::Pointer);
+        assert_eq!(notice(NoticePart::Close), PointerShape::Pointer);
     }
 
     #[test]

@@ -3202,15 +3202,15 @@ impl App {
     /// appended to the toasts of destructive-but-undoable actions that act
     /// without a confirm modal.
     fn undo_hint(&self) -> String {
-        self.key_hint(self.spell_ctx(), &Action::Undo, "undoes")
+        let key = self.key_spelled(self.spell_ctx(), &Action::Undo);
+        key.map(|key| format!(" — {key} undoes")).unwrap_or_default()
     }
 
-    /// ` — <key> <does>`: `action`'s key at `at`, spelled as the footer
-    /// spells it (spec §4.6), for a toast's tail. Empty when it has none.
-    fn key_hint(&self, at: crate::keyroute::SpellCtx, action: &Action, does: &str) -> String {
+    /// `action`'s key at `at`, spelled as the footer spells it (spec
+    /// §4.6); `None` when it has none.
+    fn key_spelled(&self, at: crate::keyroute::SpellCtx, action: &Action) -> Option<String> {
         crate::keyroute::spell::spell(at, action, &self.keymap)
-            .map(|c| format!(" — {} {does}", crate::keyroute::spell::glyphs(&c)))
-            .unwrap_or_default()
+            .map(|c| crate::keyroute::spell::glyphs(&c))
     }
 
     /// The request at `from` now lives at `to` (a rename, a move, their
@@ -3993,7 +3993,7 @@ impl App {
                 let now_animating = self.animating();
                 let was_animating = self.animating_last_tick;
                 self.animating_last_tick = now_animating;
-                self.toasts.on_tick(&mut self.anims, now)
+                self.tick_toasts(now)
                     || self.in_flight_ticking()
                     || tip_changed
                     || flag_changed
@@ -12354,6 +12354,14 @@ impl App {
         } else {
             self.anims.retarget(key, cur, dwell_dur, now);
         }
+    }
+
+    /// The toasts' tick ([`crate::components::toast::Toasts::on_tick`]):
+    /// the pointer on the curl import notice holds it (#240). Whether a
+    /// toast was showing.
+    fn tick_toasts(&mut self, now: Instant) -> bool {
+        let held = matches!(self.hovered, Some(Hit::CurlNotice(_)));
+        self.toasts.on_tick(&mut self.anims, now, held)
     }
 
     /// Starts the slide-in of any toast pushed since the last call. Run at

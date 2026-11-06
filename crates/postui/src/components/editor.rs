@@ -6808,7 +6808,11 @@ mod tests {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| app.toasts.draw(f, f.area(), &theme, &app.anims, std::time::Instant::now()))
+            .draw(|f| {
+                let now = std::time::Instant::now();
+                let mut hits = crate::hit::HitMap::default();
+                app.toasts.draw(f, f.area(), &theme, &app.anims, now, &mut hits, None)
+            })
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("line 2"), "toast must carry the error position: {content}");

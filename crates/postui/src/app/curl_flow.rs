@@ -12,11 +12,11 @@ pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
 impl App {
     /// The curl import notice (spec 2026-10-15 curl import visibility V3,
-    /// V4, V10, #240): with the `curl_button` setting on, a toast saying
-    /// the clipboard holds curl the import would take, once per text. Run
-    /// at launch, on a focus gain and when the setting is turned on. Toasts
-    /// paint over dialogs and every screen, so it checks wherever it runs.
-    /// `true` when it showed.
+    /// V4, V10, #240): with the `curl_button` setting on, a toast with an
+    /// Import button saying the clipboard holds curl the import would take,
+    /// once per text. Run at launch, on a focus gain and when the setting
+    /// is turned on. Toasts paint over dialogs and every screen, so it
+    /// checks wherever it runs. `true` when it showed.
     pub fn check_clipboard(&mut self) -> bool {
         if !self.ui_settings.curl_button {
             return false;
@@ -32,9 +32,36 @@ impl App {
             surface: crate::keyroute::Surface::Sidebar,
             ..Default::default()
         };
-        let key = self.key_hint(at, &Action::Paste, "in the sidebar imports it");
-        self.toasts.push(format!("Clipboard holds a curl command{key}"), ToastKind::Info);
+        let hint =
+            self.key_spelled(at, &Action::Paste).map(|key| format!("or {key} in the sidebar"));
+        let message = "Clipboard holds a curl command";
+        self.toasts.push_curl_notice(message, hint.unwrap_or_default(), &mut self.anims);
         true
+    }
+
+    /// A click on the curl import notice (V3, #240). Import is the
+    /// sidebar's ctrl+v: it imports into the cursor row's folder (V2), and
+    /// with no project open the import refuses as it always does. Under a
+    /// dialog it is refused as a quit is (task #85), leaving the dialog and
+    /// the notice as they were: the import's name prompt would open over
+    /// the dialog. The × takes the notice down, dialog or not.
+    pub(super) fn press_curl_notice(&mut self, part: crate::components::toast::NoticePart) -> bool {
+        use crate::components::toast::NoticePart;
+        match part {
+            NoticePart::Panel => true,
+            NoticePart::Close => {
+                self.toasts.dismiss_curl_notice(&mut self.anims);
+                true
+            }
+            NoticePart::Import if !self.modals.is_empty() => {
+                self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
+                true
+            }
+            NoticePart::Import => {
+                self.toasts.dismiss_curl_notice(&mut self.anims);
+                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
+            }
+        }
     }
 
     /// The clipboard's curl commands, read as every import reads them (a

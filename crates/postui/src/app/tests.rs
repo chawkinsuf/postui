@@ -376,7 +376,7 @@ fn a_late_second_ctrl_c_only_arms_again() {
     let mut app = App::new_for_test();
     app.handle_key(ctrl('c'));
     let later = std::time::Instant::now() + std::time::Duration::from_secs(9);
-    app.toasts.on_tick(&mut app.anims, later);
+    app.toasts.on_tick(&mut app.anims, later, false);
     assert!(app.toasts.is_empty(), "the toast is gone");
     app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "too late: armed again, not quit");

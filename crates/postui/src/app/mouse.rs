@@ -2678,6 +2678,7 @@ impl App {
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,
+            Hit::CurlNotice(part) => self.press_curl_notice(part),
             // The input closed at the top of this function (a close it
             // refused swallowed the click there), so selecting a row never
             // resets `form`/`grid` over live typing.
