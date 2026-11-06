@@ -354,7 +354,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: frame.area().height.saturating_sub(crate::components::footer::FOOTER_HEIGHT),
         ..frame.area()
     };
-    app.toasts.draw(frame, toast_area, &app.theme, &app.anims, now);
+    // Under a dialog the toasts take no clicks, so the curl import notice
+    // shows its message without its controls (spec 2026-10-15 curl import
+    // visibility V10).
+    let toast_hits = (!app.dialog_up()).then_some((&mut hits, app.hovered.as_ref()));
+    app.toasts.draw(frame, toast_area, &app.theme, &app.anims, now, toast_hits);
     app.hits = hits;
 
     // The variable tooltip is painted last of all, over every pane — after

@@ -10,32 +10,93 @@ use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 /// import-without-prompt S12): no one imports hundreds at once.
 pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
+/// The no-repeat memory's key (`App::curl_noticed`, spec 2026-10-15 curl
+/// import visibility V3) for clipboard `text`, by line without the ends:
+/// `\n` and `\r\n` endings, or a trailing newline, give the same key.
+fn curl_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    text.trim().lines().for_each(|line| line.hash(&mut h));
+    h.finish()
+}
+
+/// Whether `parsed` is curl the import takes: past the limit it refuses
+/// (S12).
+fn import_takes(parsed: &Result<CurlBatch, CurlError>) -> bool {
+    parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT)
+}
+
 impl App {
-    /// Whether the clipboard holds curl the import would take: what the
-    /// sidebar's Import curl button shows (spec 2026-10-15 curl import
-    /// visibility V3–V5). Reads only while the `curl_button` setting is
-    /// on (V13); off, the button goes. Run at launch, on a focus gain and
-    /// when the setting changes; `true` when the answer changed.
+    /// The curl import notice (spec 2026-10-15 curl import visibility V3,
+    /// V4, V10, #240): with the `curl_button` setting on, a toast with an
+    /// Import button saying the clipboard holds curl the import would take,
+    /// once per text. Run at launch, on a focus gain and when the setting
+    /// is turned on, wherever it runs: under a dialog or the edit flag's
+    /// waiting screen the notice waits for them to go
+    /// ([`Self::arm_pending_toasts`]). `true` when there is a new notice.
     pub fn check_clipboard(&mut self) -> bool {
-        let before = self.sidebar.curl_ready;
-        if self.ui_settings.curl_button {
-            let _ = self.read_clipboard_curl();
-        } else {
-            self.sidebar.curl_ready = false;
+        if !self.ui_settings.curl_button {
+            return false;
         }
-        self.sidebar.curl_ready != before
+        let text = self.clipboard.read().unwrap_or_default();
+        // Only curl the import takes is ever known, so known text needs no
+        // parse.
+        let key = Some(curl_key(&text));
+        if key == self.curl_noticed || !import_takes(&postui_core::curl::parse(&text)) {
+            return false;
+        }
+        self.curl_noticed = key;
+        let at = crate::keyroute::SpellCtx {
+            profile: self.profile(),
+            surface: crate::keyroute::Surface::Sidebar,
+            ..Default::default()
+        };
+        // Spelled once, here: Paste's default key is the same in both
+        // profiles, and the notice is short-lived.
+        let hint =
+            self.key_spelled(at, &Action::Paste).map(|key| format!("or {key} in the sidebar"));
+        let message = "Clipboard holds a curl command";
+        self.toasts.push_curl_notice(message, hint.unwrap_or_default(), text, &mut self.anims);
+        self.arm_pending_toasts();
+        true
+    }
+
+    /// A click on the curl import notice (V3, #240). Import imports the
+    /// text the notice reported, as the sidebar's ctrl+v would: into the
+    /// cursor row's folder (V2). On the Manage screen too, where the
+    /// palette's import also runs (V10). The × takes it down.
+    pub(super) fn press_curl_notice(&mut self, part: crate::components::toast::NoticePart) -> bool {
+        use crate::components::toast::NoticePart;
+        match part {
+            NoticePart::Panel => true,
+            NoticePart::Close => {
+                self.toasts.take_curl_notice(&mut self.anims);
+                true
+            }
+            NoticePart::Import => {
+                let folder = self.sidebar_import_folder();
+                // Its text was marked as known when the notice showed.
+                self.import_with(folder, |_, reported| {
+                    let text = reported.unwrap_or_default();
+                    postui_core::curl::parse(&text).map_err(|e| e.to_string())
+                });
+                // Through `update`, as the other imports are, so the
+                // dispatch tail and `sync_jq` see a request it opened.
+                self.update(Action::Render)
+            }
+        }
     }
 
     /// The clipboard's curl commands, read as every import reads them (a
-    /// clipboard that can't be read is empty, which holds none). With the
-    /// setting on, every such read is a check too: a stale button goes
-    /// (V6).
+    /// clipboard that can't be read is empty, which holds none). Curl the
+    /// import would take is marked as known, with the setting on or off:
+    /// the notice never names curl an import has read.
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
         let parsed = postui_core::curl::parse(&text);
-        // Past the limit the import refuses (S12): no curl it would take.
-        let takes = parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT);
-        self.sidebar.curl_ready = self.ui_settings.curl_button && takes;
+        if import_takes(&parsed) {
+            self.curl_noticed = Some(curl_key(&text));
+        }
         parsed
     }
 
@@ -52,11 +113,10 @@ impl App {
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
-    /// The sidebar's Import curl button and a ctrl+v there are this, into
-    /// the cursor row's folder (spec 2026-10-15 curl import visibility V1,
-    /// V2, V6).
+    /// A ctrl+v on the sidebar is this, into the cursor row's folder (spec
+    /// 2026-10-15 curl import visibility V1, V2, V6).
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
-        self.import_with(folder, |app| app.read_clipboard_curl().map_err(|e| e.to_string()))
+        self.import_with(folder, |app, _| app.read_clipboard_curl().map_err(|e| e.to_string()))
     }
 
     /// The folder a sidebar import lands in: the cursor row's (V2).
@@ -67,10 +127,10 @@ impl App {
     /// A terminal's paste into the sidebar, which takes no text (V1, V7):
     /// its text's curl imports into the cursor row's folder. That text
     /// need not be the clipboard's (shift+Insert's PRIMARY, a paste
-    /// history), so it leaves the button alone and its error says "paste".
+    /// history), so it is not marked as known and its error says "paste".
     pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
         let folder = self.sidebar_import_folder();
-        self.import_with(folder, |_| {
+        self.import_with(folder, |_, _| {
             postui_core::curl::parse(text).map_err(|e| match e.kind {
                 CurlErrorKind::NotCurl => "the paste holds no curl command".to_string(),
                 _ => e.to_string(),
@@ -81,15 +141,26 @@ impl App {
     /// Every import's entry: a project to land in before anything is
     /// read, then `read`'s commands, the dirty gate and the first prompt.
     /// A refusal toasts.
+    ///
+    /// Past the project check every import takes the curl import notice
+    /// down, one whose text then holds no curl too, here and only here
+    /// (spec 2026-10-15 curl import visibility
+    /// V6, #240), so no Import after it brings the same curl in again,
+    /// whichever way the import came: the palette, ctrl+v, a terminal's
+    /// paste or the notice's own Import. `read` gets the text the notice
+    /// reported, which that Import imports. A refusal after the read (an
+    /// input that won't close, a cancelled unsaved-changes question)
+    /// leaves it gone, a named cost: ctrl+v still imports the clipboard.
     fn import_with(
         &mut self,
         folder: Option<String>,
-        read: impl FnOnce(&mut Self) -> Result<CurlBatch, String>,
+        read: impl FnOnce(&mut Self, Option<String>) -> Result<CurlBatch, String>,
     ) -> bool {
         if self.refuse_without_project() {
             return true;
         }
-        let parsed = read(self);
+        let reported = self.toasts.take_curl_notice(&mut self.anims);
+        let parsed = read(self, reported);
         if let Some(batch) = self.curl_or_toast(parsed) {
             self.start_curl_import(batch, folder);
         }
@@ -366,6 +437,9 @@ impl App {
         if self.refuse_without_project() {
             return true;
         }
+        // As an import's entry takes it ([`Self::import_with`]): the notice
+        // must not offer the curl this replace brings in.
+        self.toasts.take_curl_notice(&mut self.anims);
         let parsed = self.read_clipboard_curl().map_err(|e| e.to_string());
         let Some(batch) = self.curl_or_toast(parsed) else {
             return true;

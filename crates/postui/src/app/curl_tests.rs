@@ -1721,18 +1721,11 @@ fn a_sidebar_paste_without_curl_says_so() {
 }
 
 #[test]
-fn a_sidebar_ctrl_v_is_the_import_button() {
+fn a_sidebar_ctrl_v_reads_the_clipboard_as_the_palette_does() {
     let top = crate::components::sidebar::RowKey::Request("main/top".into());
-    let mut app = on_sidebar("curl https://x/users", &top);
-    app.ui_settings.curl_button = true;
-    app.check_clipboard();
-    // Its read is the button's: a stale button goes, as on a click.
-    app.clipboard.set_read_for_test("hello");
-    app.update(Action::Paste);
-    assert!(!app.sidebar.curl_ready);
-    // An empty clipboard and one that can't be read say what the button
-    // says, not nothing and not the text field's read failure.
-    app.clipboard.set_read_for_test("");
+    let mut app = on_sidebar("", &top);
+    // An empty clipboard and one that can't be read say what the palette's
+    // import says, not nothing and not the text field's read failure.
     app.update(Action::Paste);
     assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
     app.toasts = Default::default();
@@ -1748,11 +1741,16 @@ fn watching(clip: &str) -> App {
     app
 }
 
+/// The curl import notices `app` has shown (V3).
+fn notices(app: &App) -> usize {
+    app.toasts.messages().iter().filter(|m| m.starts_with("Clipboard holds a curl command")).count()
+}
+
 #[test]
-fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
+fn the_notice_shows_only_for_curl_the_import_takes() {
     let mut app = watching("");
     let limit = super::curl_flow::CURL_IMPORT_LIMIT;
-    for (clip, ready) in [
+    for (clip, curl) in [
         ("curl https://x/u".to_string(), true),
         ("hello".to_string(), false),
         ("curl 'https://x".to_string(), false),
@@ -1761,14 +1759,344 @@ fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
         // Past the limit the import refuses (import-without-prompt S12).
         (named_batch(limit + 1), false),
     ] {
+        app.toasts = Default::default();
         app.clipboard.set_read_for_test(&clip);
-        app.check_clipboard();
-        assert_eq!(app.sidebar.curl_ready, ready, "{clip:?}");
+        assert_eq!(app.check_clipboard(), curl, "{clip:?}");
+        assert_eq!(notices(&app), usize::from(curl), "{clip:?}");
     }
     // A clipboard that can't be read holds no curl.
     app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    assert!(!app.check_clipboard());
+}
+
+#[test]
+fn the_notice_names_the_sidebars_paste_key_in_both_profiles() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = watching("curl https://x/u");
+        app.use_profile(profile);
+        app.toasts = Default::default();
+        app.check_clipboard();
+        assert_eq!(
+            app.toasts.curl_notice(),
+            Some(("Clipboard holds a curl command", "or ^V in the sidebar")),
+            "{profile:?}"
+        );
+    }
+}
+
+/// The notice's control under `part`, as the last frame registered it.
+fn notice_part(part: crate::components::toast::NoticePart) -> Hit {
+    Hit::CurlNotice(part)
+}
+
+/// V3 (#240): Import is the sidebar's ctrl+v, into the cursor row's
+/// folder, and the notice goes.
+#[test]
+fn the_notices_import_imports_into_the_cursor_rows_folder() {
+    use crate::components::toast::NoticePart;
+    let api = crate::components::sidebar::RowKey::Folder("main/api".into());
+    let mut app = on_sidebar("curl https://x/users", &api);
+    app.ui_settings.curl_button = true;
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Import));
+    assert_eq!(prompt(&app).1, "api/GET users");
+    assert!(app.toasts.curl_notice().is_none());
+}
+
+/// It imports as ctrl+v does: a named clean curl needs no prompt (#147).
+/// The click goes through `update`, so the response pane swaps to the
+/// request it opened in the same event.
+#[test]
+fn the_notices_import_creates_a_named_curl_without_a_prompt() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("# @name Users\ncurl https://x/users");
+    super::tests::ready_response(&mut app, "{\"a\": 1}");
+    assert!(app.session.response.view().is_some());
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(app.modals.is_empty());
+    let slug = slug_named(&app, "Users");
+    assert!(slug.is_some());
+    assert_eq!(app.editor.slug, slug, "opened");
+    assert!(app.session.response.view().is_none(), "the old request's response swapped out");
+}
+
+#[test]
+fn the_notices_close_takes_it_down_and_does_nothing_else() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Close));
+    assert!(app.toasts.curl_notice().is_none());
+    assert!(app.modals.is_empty());
+    assert!(!app.check_clipboard(), "and the same curl stays known");
+}
+
+/// Import imports the curl the notice reported, whatever the clipboard
+/// holds by the time of the click, and reads no clipboard.
+#[test]
+fn the_notices_import_imports_the_curl_it_reported() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    app.clipboard.set_read_for_test("curl https://x/other");
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
+}
+
+/// The notice floats over the panes: a click on it is no click away, so
+/// the URL line being typed in stays open. A right click stops at it and
+/// opens no menu for what is under it.
+#[test]
+fn a_click_on_the_notice_is_no_click_away() {
+    use crate::components::toast::NoticePart;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = watching("curl https://x/users");
+    app.update(Action::FocusUrl);
+    let open = app.editor.sub_focus;
+    assert_ne!(open, SubFocus::None);
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Panel));
+    assert_eq!(app.editor.sub_focus, open, "the panel");
+    let close = app.hits.rect_of(&notice_part(NoticePart::Close)).unwrap();
+    let under = app.hits.hit_at_ignoring_overlays(close.x + 1, close.y);
+    assert_eq!(under, Some(&notice_part(NoticePart::Close)), "a right click lands on it");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: close.x + 1,
+        row: close.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.modals.is_empty(), "no menu");
+    assert!(app.toasts.curl_notice().is_some());
+    click(&mut app, notice_part(NoticePart::Close));
+    assert_eq!(app.editor.sub_focus, open, "the \u{d7}");
+    assert!(app.toasts.curl_notice().is_none());
+
+    app.focus = PaneId::Response;
+    super::tests::ready_response(&mut app, "{\"a\": 1}");
+    assert!(app.session.response.set_jq_focus(true));
+    app.clipboard.set_read_for_test("curl https://x/other");
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Close));
+    assert!(app.toasts.curl_notice().is_none());
+    assert!(app.session.response.jq_focused(), "the jq bar");
+}
+
+/// A notice found under a dialog waits: it is not drawn and its clock
+/// does not run. Once the dialog closes it slides in, with its 10 s from
+/// then.
+#[test]
+fn the_notice_waits_for_the_dialog_to_close() {
+    use crate::components::toast::NoticePart;
+    use std::time::{Duration, Instant};
+    let mut app = watching("curl https://x/users");
+    app.update(Action::PromptNewRequest);
+    assert!(app.check_clipboard());
+    draw(&mut app);
+    assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), None, "not drawn");
+    app.tick_toasts(Instant::now() + Duration::from_secs(60));
+    assert!(app.toasts.curl_notice().is_some(), "waiting");
+    app.update(Action::CancelTopModal);
+    app.tick_toasts(Instant::now() + Duration::from_secs(9));
+    assert!(app.toasts.curl_notice().is_some(), "its 10 s from the close");
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
+}
+
+/// The screen's row holding the notice's message, drawn as `draw` draws.
+fn notice_row(app: &mut App) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let buf = terminal.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .find(|row| row.contains("Clipboard holds a curl command"))
+        .expect("the notice is drawn")
+}
+
+/// A notice already up when a dialog opens keeps its place, and its clock
+/// runs, but it shows its message only: no Import, no ×, no hit. A click
+/// where its × was is the dialog's (here a click away, which cancels the
+/// prompt), and the notice stays. Once the dialog closes its controls are
+/// back.
+#[test]
+fn a_dialog_over_the_notice_shows_its_message_only() {
+    use crate::components::toast::NoticePart;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use std::time::{Duration, Instant};
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    draw(&mut app);
+    let panel = app.hits.rect_of(&notice_part(NoticePart::Panel)).unwrap();
+    let close = app.hits.rect_of(&notice_part(NoticePart::Close)).unwrap();
+    app.update(Action::PromptNewRequest);
+    feed(&mut app, "orders");
+    let row = notice_row(&mut app);
+    assert!(!row.contains("Import") && !row.contains('\u{d7}'), "{row:?}");
+    for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
+        assert_eq!(app.hits.rect_of(&notice_part(part)), None, "{part:?}");
+    }
+    assert_eq!(app.hits.hit_at(close.x + 1, close.y), Some(&Hit::ModalOutside));
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: close.x + 1,
+        row: close.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.modals.is_empty(), "the dialog's click away");
+    assert!(app.toasts.curl_notice().is_some(), "the notice did not take it");
+
+    let row = notice_row(&mut app);
+    assert!(row.contains("Import") && row.contains('\u{d7}'), "{row:?}");
+    assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), Some(panel), "in its place");
+    assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Close)), Some(close));
+    app.update(Action::PromptNewRequest);
+    app.tick_toasts(Instant::now() + Duration::from_secs(10));
+    assert!(app.toasts.curl_notice().is_none(), "its clock ran");
+}
+
+/// With no project open the import refuses as it always does, and the
+/// notice stays up: once a project is open, its Import imports.
+#[test]
+fn the_notices_import_with_no_project_says_so() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    let project = app.project.take();
+    assert!(app.check_clipboard());
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(app.modals.is_empty());
+    assert!(app.toasts.messages().iter().any(|m| m.starts_with("no project is open")));
+    assert!(app.toasts.curl_notice().is_some());
+    app.project = project;
+    click(&mut app, notice_part(NoticePart::Import));
+    assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
+    assert!(app.toasts.curl_notice().is_none());
+}
+
+/// Focus coming back behind the edit flag's waiting screen checks too:
+/// the notice waits there and shows once the screen goes.
+#[test]
+fn the_notice_is_checked_behind_the_waiting_screen() {
+    let mut app = watching("hello");
     app.check_clipboard();
-    assert!(!app.sidebar.curl_ready);
+    let root = app.proj().root().to_path_buf();
+    app.edit_block = Some(super::edit_block::EditBlock { root, name: "p".into(), flag: None });
+    app.clipboard.set_read_for_test("curl https://x/u");
+    app.on_focus_gained();
+    assert_eq!(notices(&app), 1);
+}
+
+/// At launch the notice is pushed outside any input path: its first frame
+/// already slides it in rather than drawing it settled.
+#[test]
+fn the_notice_slides_in_from_its_first_frame() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = watching("curl https://x/u");
+    app.reset_anims(true);
+    app.ui_settings.anim_ms.toast = std::time::Duration::from_secs(60);
+    assert!(app.check_clipboard());
+    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(!screen.contains("Clipboard holds"), "off screen at the start of its slide");
+}
+
+/// A notice found behind the edit flag's waiting screen waits as under a
+/// dialog; it joins the toasts once the screen goes.
+#[test]
+fn the_notice_waits_out_the_waiting_screen() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    let root = app.proj().root().to_path_buf();
+    app.edit_block = Some(super::edit_block::EditBlock { root, name: "p".into(), flag: None });
+    assert!(app.check_clipboard());
+    draw(&mut app);
+    for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
+        assert_eq!(app.hits.rect_of(&notice_part(part)), None, "{part:?}");
+    }
+    app.edit_block = None;
+    app.arm_pending_toasts();
+    draw(&mut app);
+    assert!(app.hits.rect_of(&notice_part(NoticePart::Import)).is_some());
+}
+
+/// The pointer on the notice holds it past its 10 s; off it, it runs out.
+#[test]
+fn the_pointer_on_the_notice_holds_it() {
+    use crate::components::toast::NoticePart;
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    app.arm_pending_toasts();
+    draw(&mut app);
+    let r = app.hits.rect_of(&notice_part(NoticePart::Panel)).unwrap();
+    let point = |app: &mut App, column, row| {
+        let kind = MouseEventKind::Moved;
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+    };
+    point(&mut app, r.x + 3, r.y);
+    let now = std::time::Instant::now();
+    app.tick_toasts(now + std::time::Duration::from_secs(30));
+    assert!(app.toasts.curl_notice().is_some(), "held past its 10 s");
+    point(&mut app, 0, 0);
+    app.tick_toasts(now + std::time::Duration::from_secs(30));
+    app.tick_toasts(now + std::time::Duration::from_secs(50));
+    assert!(app.toasts.curl_notice().is_none(), "let go, it runs out");
+}
+
+/// A pointer at rest where the notice comes to be drawn lights it but
+/// does not hold it: only motion onto it does.
+#[test]
+fn a_pointer_resting_where_the_notice_lands_does_not_hold_it() {
+    use crate::components::toast::NoticePart;
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    app.arm_pending_toasts();
+    draw(&mut app);
+    let r = app.hits.rect_of(&notice_part(NoticePart::Panel)).unwrap();
+    app.pointer = Some((r.x + 3, r.y));
+    app.resync_hover();
+    assert_eq!(app.hovered, Some(notice_part(NoticePart::Panel)));
+    app.tick_toasts(std::time::Instant::now() + std::time::Duration::from_secs(30));
+    assert!(app.toasts.curl_notice().is_none());
+}
+
+#[test]
+fn the_notice_never_repeats_for_the_same_curl() {
+    let mut app = watching("curl https://x/u");
+    assert!(app.check_clipboard());
+    assert!(!app.check_clipboard(), "the same text");
+    // Not after something else held the clipboard in between either.
+    app.clipboard.set_read_for_test("hello");
+    app.check_clipboard();
+    app.clipboard.set_read_for_test("curl https://x/u");
+    assert!(!app.check_clipboard());
+    app.clipboard.set_read_for_test("curl https://x/v");
+    assert!(app.check_clipboard(), "a new curl shows");
+    assert_eq!(notices(&app), 1, "in the place of the last");
+}
+
+#[test]
+fn the_sidebar_row_keeps_its_two_buttons_while_the_notice_shows() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = watching("curl https://x/u");
+    app.reset_anims(false);
+    app.check_clipboard();
+    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let new = app.hits.rect_of(&Hit::SidebarNewRequest).unwrap();
+    let folder = app.hits.rect_of(&Hit::SidebarNewFolder).unwrap();
+    let line = |y| -> String {
+        (new.x..folder.x + folder.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
+    };
+    let label = (new.y..new.y + new.height).map(line).find(|l| l.contains("Request")).unwrap();
+    assert_eq!(label.split_whitespace().collect::<Vec<_>>(), ["+", "Request", "+", "Folder"]);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(screen.contains("Clipboard holds a curl command"), "the toast is drawn");
 }
 
 #[test]
@@ -1776,45 +2104,111 @@ fn the_terminal_regaining_focus_rechecks_the_clipboard() {
     let mut app = watching("hello");
     app.check_clipboard();
     app.clipboard.set_read_for_test("curl https://x/u");
-    assert!(app.on_focus_gained(), "the button appearing is a repaint");
-    assert!(app.sidebar.curl_ready);
+    assert!(app.on_focus_gained(), "the notice is a repaint");
+    assert_eq!(notices(&app), 1);
+}
+
+/// A dialog the focus gain's own reload raises (here the variables
+/// migration, for a file rewritten in the old format) is up before the
+/// notice arrives, so the notice waits for it (V10).
+#[test]
+fn a_dialog_the_focus_gains_reload_raises_holds_the_notice() {
+    let mut app = watching("curl https://x/u");
+    std::fs::write(
+        app.proj().root().join("variables.toml"),
+        "# edited elsewhere\n[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    assert!(!app.modals.is_empty(), "the reload raised the migration question");
+    assert!(app.toasts.curl_notice().is_some(), "found");
+    assert!(
+        !app.toasts.entries().iter().any(|(m, _)| m.starts_with("Clipboard holds")),
+        "waiting for the dialog"
+    );
 }
 
 #[test]
-fn with_the_setting_off_nothing_reads_the_clipboard_for_the_button() {
+fn with_the_setting_off_nothing_reads_the_clipboard_for_the_notice() {
     let mut app = app_with_clip("curl https://x/u");
     assert!(!app.check_clipboard());
     assert!(!app.on_focus_gained());
-    assert!(!app.sidebar.curl_ready);
-    // The import's own read found curl, but the setting is off.
-    import(&mut app);
-    assert!(app.modals.top().is_some(), "the import ran");
-    assert!(!app.sidebar.curl_ready);
+    assert_eq!(notices(&app), 0);
 }
 
 #[test]
-fn turning_the_setting_on_checks_and_off_hides() {
+fn turning_the_setting_on_checks() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_clip("curl https://x/u");
     app.config = crate::config::Config::at(dir.path().to_path_buf());
+    // The checkbox is on the Settings tab, on the Manage screen.
+    app.screen = Screen::Manage;
     app.update(Action::SetUiFlag { key: "curl_button", value: true });
-    assert!(app.sidebar.curl_ready, "on: checked at once");
+    assert_eq!(notices(&app), 1, "on: checked at once");
     app.update(Action::SetUiFlag { key: "curl_button", value: false });
-    assert!(!app.sidebar.curl_ready, "off: the button goes");
+    assert_eq!(notices(&app), 0, "off: the notice goes");
     app.update(Action::Undo);
     assert!(app.ui_settings.curl_button);
-    assert!(app.sidebar.curl_ready, "undo turns it back on, and checks");
+    assert_eq!(notices(&app), 0, "undo turns it back on, and the same curl is not shown again");
+    app.update(Action::SetUiFlag { key: "curl_button", value: false });
+    app.clipboard.set_read_for_test("curl https://x/v");
+    app.update(Action::SetUiFlag { key: "curl_button", value: true });
+    assert_eq!(notices(&app), 1, "a new curl is");
+}
+
+/// V10: the checks run wherever they run. The notice waits under a dialog
+/// (`the_notice_waits_for_the_dialog_to_close`) and shows on the Manage
+/// screen and with no project open.
+#[test]
+fn the_notice_shows_on_manage_and_with_no_project() {
+    let mut app = watching("curl https://x/1");
+    app.update(Action::PromptNewRequest);
+    assert!(!app.modals.is_empty());
+    assert!(app.check_clipboard(), "a dialog");
+    app.update(Action::CancelTopModal);
+    app.screen = Screen::Manage;
+    app.clipboard.set_read_for_test("curl https://x/2");
+    assert!(app.check_clipboard(), "Manage");
+    app.screen = Screen::Main;
+    app.project.take();
+    app.clipboard.set_read_for_test("curl https://x/3");
+    assert!(app.check_clipboard(), "no project");
+}
+
+#[test]
+fn the_same_curl_with_other_line_ends_is_not_news() {
+    let mut app = watching("curl https://x/u \\\n  -H 'A: b'\n");
+    assert!(app.check_clipboard());
+    for same in ["curl https://x/u \\\r\n  -H 'A: b'", "\n curl https://x/u \\\n  -H 'A: b'\r\n"] {
+        app.clipboard.set_read_for_test(same);
+        assert!(!app.check_clipboard(), "{same:?}");
+    }
+    assert_eq!(notices(&app), 1);
+}
+
+#[test]
+fn an_imported_curl_is_never_noticed() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("curl https://x/users", &top);
+    app.ui_settings.curl_button = true;
+    app.update(Action::Paste);
+    assert_eq!(prompt(&app).1, "GET users", "ctrl+v imports");
+    assert_eq!(notices(&app), 0, "and shows no notice");
+    app.update(Action::CancelTopModal);
+    app.on_focus_gained();
+    assert_eq!(notices(&app), 0, "the import's read made it known");
 }
 
 #[test]
 fn with_no_project_an_import_never_reads_the_clipboard() {
     let mut app = watching("curl https://x/u");
-    app.project = None;
+    let project = app.project.take();
     app.update(Action::FocusPane(PaneId::Sidebar));
     for run in [Action::ImportCurl { folder: None }, Action::Paste] {
         app.update(run.clone());
-        assert!(!app.sidebar.curl_ready, "{run:?}: a read would have found the curl");
     }
+    app.project = project;
+    assert!(app.check_clipboard(), "a read would have made the curl known");
 }
 
 #[test]
@@ -1826,7 +2220,7 @@ fn a_copy_does_not_check_the_clipboard() {
     app.set_clipboard_for_test(c);
     app.update(Action::CopyAsCurl(Some("main/top".into())));
     assert!(app.toasts.last_message().unwrap().starts_with("Copied"));
-    assert!(!app.sidebar.curl_ready);
+    assert_eq!(notices(&app), 0);
 }
 
 #[test]
@@ -1840,40 +2234,74 @@ fn an_unreadable_clipboard_holds_no_curl() {
 }
 
 #[test]
-fn the_import_button_imports_into_the_cursor_rows_folder() {
+fn a_sidebar_ctrl_v_after_the_notice_imports_into_the_cursor_rows_folder() {
     let api = crate::components::sidebar::RowKey::Folder("main/api".into());
     let mut app = on_sidebar("curl https://x/users", &api);
     app.ui_settings.curl_button = true;
-    app.check_clipboard();
-    click(&mut app, Hit::SidebarImportCurl);
+    assert!(app.check_clipboard());
+    app.update(Action::Paste);
     assert_eq!(prompt(&app).1, "api/GET users");
+    assert!(app.toasts.curl_notice().is_none(), "the notice goes: no second import");
 }
 
 #[test]
-fn a_stale_import_button_says_why_and_goes_away() {
-    let mut app = watching("curl https://x/users");
+fn a_ctrl_v_on_curl_gone_from_the_clipboard_says_why() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("curl https://x/users", &top);
+    app.ui_settings.curl_button = true;
     app.check_clipboard();
-    draw(&mut app);
     app.clipboard.set_read_for_test("hello");
-    click(&mut app, Hit::SidebarImportCurl);
+    app.update(Action::Paste);
     assert!(app.modals.is_empty());
     assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
-    assert!(!app.sidebar.curl_ready);
-    draw(&mut app);
-    assert!(app.hits.rect_of(&Hit::SidebarImportCurl).is_none());
+    assert!(app.toasts.curl_notice().is_none(), "the notice spoke of a clipboard now gone");
 }
 
 #[test]
-fn a_sidebar_paste_leaves_the_button_to_its_checks() {
+fn a_sidebar_paste_leaves_the_no_repeat_memory_alone() {
     // A terminal's paste (shift+Insert's PRIMARY, a paste history) need
-    // not be the clipboard: what it holds says nothing about the button.
+    // not be the clipboard: what it holds is not marked as known.
     let top = crate::components::sidebar::RowKey::Request("main/top".into());
     let mut app = on_sidebar("hello", &top);
     app.ui_settings.curl_button = true;
-    app.check_clipboard();
     app.paste_text("curl https://x/users");
     assert_eq!(prompt(&app).1, "GET users", "the paste imports");
-    assert!(!app.sidebar.curl_ready, "but shows no button for the clipboard");
+    app.update(Action::CancelTopModal);
+    app.clipboard.set_read_for_test("curl https://x/users");
+    assert!(app.check_clipboard(), "the same text on the clipboard is still news");
+}
+
+/// Every import takes the notice down at its entry (V6), a terminal's
+/// paste too (cmd+V on macOS): no Import after it brings the same curl in
+/// again. A paste of other text takes it down as well.
+#[test]
+fn a_sidebar_paste_takes_the_notice_down() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    for (paste, imports) in [("curl https://x/users", true), ("hello", false)] {
+        let mut app = on_sidebar("curl https://x/users", &top);
+        app.ui_settings.curl_button = true;
+        assert!(app.check_clipboard());
+        app.paste_text(paste);
+        assert_eq!(!app.modals.is_empty(), imports, "{paste:?}");
+        assert!(app.toasts.curl_notice().is_none(), "{paste:?}");
+    }
+}
+
+/// A replace takes the notice down too: its Import would bring in the
+/// curl the replace just used. With no project open it is refused before
+/// anything goes.
+#[test]
+fn a_replace_takes_the_notice_down() {
+    let mut app = kept_app("curl https://x/new");
+    app.ui_settings.curl_button = true;
+    assert!(app.check_clipboard());
+    let project = app.project.take();
+    replace(&mut app, None);
+    assert!(app.toasts.curl_notice().is_some(), "no project: refused first");
+    app.project = project;
+    replace(&mut app, None);
+    assert_eq!(app.editor.current_request().url, "https://x/new");
+    assert!(app.toasts.curl_notice().is_none());
 }
 
 #[test]

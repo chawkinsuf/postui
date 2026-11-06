@@ -43,7 +43,7 @@ at all is reported and left alone, never overwritten.
 | `theme_contrast` | `0` | From `-3` (softer) to `3` (crisper); `0` is the theme as made. Also set from the theme picker. |
 | `animations` | `true` | Whether transitions ease (tab underline, hover, dialogs) or jump. |
 | `hover_hints` | `true` | Whether a hovered control explains itself on the footer row. |
-| `curl_button` | `false` | Whether the sidebar offers an Import curl button while the clipboard holds a curl command. It reads the clipboard when postui regains focus, which on macOS can bring up the pasteboard privacy notice. |
+| `curl_button` | `false` | Whether a notice says when the clipboard holds a new curl command to import. It reads the clipboard when postui regains focus, which on macOS can bring up the pasteboard privacy notice. |
 | `jq_tab` | `"menu"` | What Tab does in the jq bar: `"menu"` lists the candidates under the bar, `"ghost"` shows the best one after the caret and cycles in place. The older names `"accept"` (menu) and `"cycle"` (ghost) still work. |
 | `indent` | `"spaces"` | How a request body with no indentation of its own indents: `"spaces"` or `"tabs"`. A body that's already indented keeps its own style. |
 | `indent_width` | `2` | The spaces in one indent level, from 1 to 8. |

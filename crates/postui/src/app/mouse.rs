@@ -343,6 +343,11 @@ impl App {
                 // drawn rect, so moving within one token changes nothing.
                 let hit_changed = hit != self.hovered;
                 let changed = hit_changed || token != self.hovered_token;
+                // Motion onto the curl import notice lets the pointer hold
+                // it (#240).
+                if matches!(hit, Some(Hit::CurlNotice(_))) {
+                    self.toasts.point_at_curl_notice();
+                }
                 self.hovered = hit;
                 self.hovered_token = token;
                 if hit_changed {
@@ -383,6 +388,25 @@ impl App {
                 // create folders F31), then acts as the click it is.
                 let hit = self.cancel_sidebar_drag_at(hit);
                 let hit = self.cancel_stale_drags(hit);
+                // The testbed is a dead end for the mouse exactly like it is
+                // for the keyboard (see `App::handle_key`'s `Screen::Testbed`
+                // branch): every click is inert except the footer's quit
+                // chip. Without this, the header/footer chrome — drawn and
+                // hit-registered unconditionally on every screen — would let
+                // a click open the palette, a project/env chooser, or the
+                // Variable Manager from underneath the showcase, with no way
+                // back short of quitting.
+                if self.screen == Screen::Testbed && !hit.as_ref().is_some_and(is_quit_chip) {
+                    return false;
+                }
+                // The curl import notice floats over every pane, part of
+                // none of them: a press on it is its own, and none of the
+                // click-away rules below runs (#240). Its × and panel leave
+                // open inputs as they are; its Import closes them first, as
+                // every import does.
+                if let Some(Hit::CurlNotice(part)) = hit {
+                    return self.press_curl_notice(part);
+                }
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
                 // re-ran it), so all that is left to do is leave the bar.
@@ -467,17 +491,6 @@ impl App {
                     }
                     return self.update(Action::Render);
                 };
-                // The testbed is a dead end for the mouse exactly like it is
-                // for the keyboard (see `App::handle_key`'s `Screen::Testbed`
-                // branch): every click is inert except the footer's quit
-                // chip. Without this, the header/footer chrome — drawn and
-                // hit-registered unconditionally on every screen — would let
-                // a click open the palette, a project/env chooser, or the
-                // Variable Manager from underneath the showcase, with no way
-                // back short of quitting.
-                if self.screen == Screen::Testbed && !is_quit_chip(&hit) {
-                    return false;
-                }
                 // Both counts at once (`count_clicks`): rows and buttons read
                 // the list count, which pairs, so a fast triple click never
                 // toggles a folder twice; text reads the text count.
@@ -544,6 +557,11 @@ impl App {
                 let Some(mut hit) = self.cancel_sidebar_drag_at(hit) else {
                     return moving;
                 };
+                // The curl import notice has no menu and is part of nothing
+                // under it: a right press stops there (#240).
+                if matches!(hit, Hit::CurlNotice(_)) {
+                    return moving;
+                }
                 let mut changed = moving;
                 // An open context menu doesn't own the right button the way
                 // it owns the left: a second right click re-targets. It
@@ -744,6 +762,8 @@ impl App {
                     }
                     return self.update(Action::Render);
                 }
+                // Toasts, the curl import notice among them, let the wheel
+                // through to the pane under them (#240).
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.update(Action::ScrollPane(pane, d));
@@ -999,11 +1019,14 @@ impl App {
     /// The edit flag's waiting screen looks at the flag at once, rather
     /// than at its next poll.
     pub fn on_focus_gained(&mut self) -> bool {
-        if self.edit_block.is_some() {
-            return self.poll_edit_flag(Instant::now(), true);
-        }
-        let clipboard = self.check_clipboard();
-        self.update(Action::ReloadProjectFiles) | clipboard
+        let changed = if self.edit_block.is_some() {
+            self.poll_edit_flag(Instant::now(), true)
+        } else {
+            self.update(Action::ReloadProjectFiles)
+        };
+        // Last, so a dialog the open or the reload raises is up before the
+        // notice would arrive, and the notice waits for it (V10).
+        changed | self.check_clipboard()
     }
 
     /// Re-resolves `hovered`/`hovered_token` from the last known pointer
@@ -1997,9 +2020,6 @@ impl App {
             }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarNewFolder => self.update(Action::PromptNewFolder),
-            Hit::SidebarImportCurl => {
-                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
-            }
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);
@@ -2681,6 +2701,8 @@ impl App {
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,
+            // Taken at the top of the press, before the click-away rules.
+            Hit::CurlNotice(part) => self.press_curl_notice(part),
             // The input closed at the top of this function (a close it
             // refused swallowed the click there), so selecting a row never
             // resets `form`/`grid` over live typing.

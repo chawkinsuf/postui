@@ -75,9 +75,6 @@ pub enum Hit {
     SidebarNewRequest,
     /// The sidebar's `+ Folder` button (spec 2026-11-03 create folders F10).
     SidebarNewFolder,
-    /// The "Import curl" half of the sidebar's top row, there while the
-    /// clipboard holds curl (spec 2026-10-15 curl import visibility V3).
-    SidebarImportCurl,
     /// Index into `sidebar.rows`.
     SidebarRow(usize),
     SidebarFolderArrow(usize),
@@ -385,6 +382,9 @@ pub enum Hit {
     ResponseJqRevert,
     /// The jq bar's ✕, on a view or with text typed: clears the filter.
     ResponseJqClear,
+    /// The curl import notice, a toast with controls (spec 2026-10-15 curl
+    /// import visibility V3, #240): its panel, Import button or ×.
+    CurlNotice(crate::components::toast::NoticePart),
 }
 
 #[cfg(test)]
@@ -478,7 +478,8 @@ impl PointerShape {
                 | Hit::StripControls
                 | Hit::ModalOutside
                 | Hit::ModalBody
-                | Hit::TipPanel(_),
+                | Hit::TipPanel(_)
+                | Hit::CurlNotice(crate::components::toast::NoticePart::Panel),
             ) => PointerShape::Default,
             Some(_) => PointerShape::Pointer,
         }
@@ -660,14 +661,18 @@ impl HitMap {
     }
 
     /// The topmost drawn `{{token}}` under the point: its name and the rect
-    /// it was drawn into (the tooltip's anchor).
+    /// it was drawn into (the tooltip's anchor). None under the curl import
+    /// notice, which hides what it is drawn over (#240).
     pub fn var_token_at(&self, x: u16, y: u16) -> Option<(&str, Rect)> {
-        self.regions.iter().rev().find_map(|(rect, hit)| match hit {
-            Hit::VarToken(name) if rect.contains(ratatui::layout::Position { x, y }) => {
-                Some((name.as_str(), *rect))
-            }
-            _ => None,
-        })
+        self.regions
+            .iter()
+            .rev()
+            .filter(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
+            .take_while(|(_, hit)| !matches!(hit, Hit::CurlNotice(_)))
+            .find_map(|(rect, hit)| match hit {
+                Hit::VarToken(name) => Some((name.as_str(), *rect)),
+                _ => None,
+            })
     }
 
     /// Topmost `Hit::Pane` containing the point (for wheel routing).
@@ -891,6 +896,21 @@ mod tests {
         );
     }
 
+    /// Task #240: the curl import notice hides a `{{token}}` drawn under
+    /// it, so no tooltip rises from it; the token's uncovered cells still
+    /// find it.
+    #[test]
+    fn the_curl_notice_hides_the_tokens_under_it() {
+        use crate::components::toast::NoticePart;
+        let mut hits = HitMap::default();
+        hits.register(Rect::new(0, 0, 20, 1), Hit::VarToken("base_url".into()));
+        hits.register(Rect::new(10, 0, 10, 3), Hit::CurlNotice(NoticePart::Panel));
+        hits.register(Rect::new(12, 0, 4, 3), Hit::CurlNotice(NoticePart::Import));
+        assert_eq!(hits.var_token_at(5, 0).map(|(name, _)| name), Some("base_url"));
+        assert_eq!(hits.var_token_at(11, 0), None, "the panel");
+        assert_eq!(hits.var_token_at(13, 0), None, "its Import");
+    }
+
     #[test]
     fn hovered_thumb_brightens_rather_than_inverting_away() {
         let theme = Theme::for_terminal();
@@ -935,6 +955,13 @@ mod tests {
         {
             assert_eq!(PointerShape::for_hit(Some(&pill)), PointerShape::Pointer, "{pill:?}");
         }
+        // Task #240: likewise the curl import notice's panel and its
+        // controls.
+        use crate::components::toast::NoticePart;
+        let notice = |part| PointerShape::for_hit(Some(&Hit::CurlNotice(part)));
+        assert_eq!(notice(NoticePart::Panel), PointerShape::Default);
+        assert_eq!(notice(NoticePart::Import), PointerShape::Pointer);
+        assert_eq!(notice(NoticePart::Close), PointerShape::Pointer);
     }
 
     #[test]

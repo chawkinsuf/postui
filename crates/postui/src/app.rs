@@ -225,6 +225,10 @@ pub struct App {
     /// press showed, and that combo (task #85): pressed again next, while
     /// the toast is live, it quits. See `disarm_quit`.
     quit_armed: Option<(u64, KeyCombo)>,
+    /// A hash of the last clipboard curl the user was told of (the curl
+    /// import notice) or imported: the notice never repeats for it (spec
+    /// 2026-10-15 curl import visibility V3, #240).
+    curl_noticed: Option<u64>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -1254,12 +1258,19 @@ impl App {
     fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.clipboard.reconfigure(&ui_settings);
         self.anims.set_enabled(ui_settings.animations);
-        let watch = ui_settings.curl_button != self.ui_settings.curl_button;
+        let watch = (self.ui_settings.curl_button, ui_settings.curl_button);
         self.finish_ui_settings(ui_settings);
-        // Turned on: look now rather than at the next focus gain. Turned
-        // off: the button goes (spec 2026-10-15 curl import visibility V13).
-        if watch {
-            self.check_clipboard();
+        // Turned on: check now rather than at the next focus gain; curl
+        // already noticed stays quiet (V3). Turned off: the notice goes
+        // (spec 2026-10-15 curl import visibility V13).
+        match watch {
+            (false, true) => {
+                self.check_clipboard();
+            }
+            (true, false) => {
+                self.toasts.take_curl_notice(&mut self.anims);
+            }
+            _ => {}
         }
     }
 
@@ -1997,6 +2008,7 @@ impl App {
         let mut app = Self {
             should_quit: false,
             quit_armed: None,
+            curl_noticed: None,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
             prior_focus: PaneId::Sidebar,
@@ -3197,9 +3209,15 @@ impl App {
     /// appended to the toasts of destructive-but-undoable actions that act
     /// without a confirm modal.
     fn undo_hint(&self) -> String {
-        crate::keyroute::spell::spell(self.spell_ctx(), &Action::Undo, &self.keymap)
-            .map(|c| format!(" — {} undoes", crate::keyroute::spell::glyphs(&c)))
-            .unwrap_or_default()
+        let key = self.key_spelled(self.spell_ctx(), &Action::Undo);
+        key.map(|key| format!(" — {key} undoes")).unwrap_or_default()
+    }
+
+    /// `action`'s key at `at`, spelled as the footer spells it (spec
+    /// §4.6); `None` when it has none.
+    fn key_spelled(&self, at: crate::keyroute::SpellCtx, action: &Action) -> Option<String> {
+        crate::keyroute::spell::spell(at, action, &self.keymap)
+            .map(|c| crate::keyroute::spell::glyphs(&c))
     }
 
     /// The request at `from` now lives at `to` (a rename, a move, their
@@ -3817,7 +3835,7 @@ impl App {
                         // must say exactly what it destroys.
                         let body = if self.config_toml_recovers_projects() {
                             "Resets theme, theme contrast, animations, animation speeds, hover hints, \
-                             the curl button, jq tab, indent, indent width, the AI \
+                             the curl import notice, jq tab, indent, indent width, the AI \
                              command, the AI confirmation, clipboard command, and OSC 52 \
                              limit to their defaults. Your project list is preserved."
                         } else {
@@ -3982,7 +4000,7 @@ impl App {
                 let now_animating = self.animating();
                 let was_animating = self.animating_last_tick;
                 self.animating_last_tick = now_animating;
-                self.toasts.on_tick(&mut self.anims, now)
+                self.tick_toasts(now)
                     || self.in_flight_ticking()
                     || tip_changed
                     || flag_changed
@@ -7013,8 +7031,8 @@ impl App {
                 true
             }
             // The sidebar takes no text, so ctrl+v there imports the
-            // clipboard's curl: the Import curl button, read for read (spec
-            // 2026-10-15 curl import visibility V1, V6). A terminal's own
+            // clipboard's curl, into the cursor row's folder (spec
+            // 2026-10-15 curl import visibility V1, V2). A terminal's own
             // paste brings its text instead (`paste_text`).
             Action::Paste if self.sidebar_takes_paste() => {
                 self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
@@ -12337,16 +12355,40 @@ impl App {
         }
     }
 
+    /// The toasts' tick ([`crate::components::toast::Toasts::on_tick`]),
+    /// the pointer on the curl import notice holding it (#240). Whether a
+    /// toast was showing.
+    ///
+    /// `hovered` follows the frame: outside a drag, `resync_hover`
+    /// re-resolves it after each draw, so a notice the stack moved from
+    /// under a still pointer is let go. A pointer that left the window
+    /// unreported holds it until a motion off it or a focus loss.
+    fn tick_toasts(&mut self, now: Instant) -> bool {
+        let pointer_on_it = matches!(self.hovered, Some(Hit::CurlNotice(_)));
+        self.toasts.hold_curl_notice(pointer_on_it, now);
+        self.toasts.on_tick(&mut self.anims, now)
+    }
+
+    /// Whether a dialog or the edit flag's waiting screen is up. A new curl
+    /// import notice waits for them to go before it joins the toasts, and
+    /// the controls of one already up take no clicks meanwhile (spec
+    /// 2026-10-15 curl import visibility V10, #240).
+    pub(crate) fn dialog_up(&self) -> bool {
+        !self.modals.is_empty() || self.edit_block.is_some()
+    }
+
     /// Starts the slide-in of any toast pushed since the last call. Run at
     /// the tail of every input path (`update`, `handle_key`, `handle_mouse`)
     /// so a toast never reaches its first draw settled and then slides in
-    /// over itself on the next tick — whichever code path pushed it.
+    /// over itself on the next tick — whichever code path pushed it. A curl
+    /// import notice waiting for a dialog to go joins the toasts here once
+    /// none is up.
     pub(crate) fn arm_pending_toasts(&mut self) {
-        self.toasts.start_pending_anims(
-            &mut self.anims,
-            Instant::now(),
-            self.ui_settings.anim_ms.toast,
-        );
+        if !self.dialog_up() {
+            self.toasts.show_curl_notice();
+        }
+        let slide = self.ui_settings.anim_ms.toast;
+        self.toasts.start_pending_anims(&mut self.anims, Instant::now(), slide);
     }
 
     /// The response search's note (a wrap, a miss), toasted once at the
