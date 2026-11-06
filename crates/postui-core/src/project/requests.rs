@@ -573,6 +573,27 @@ impl Project {
         Ok(())
     }
 
+    /// A move's pre-flight for the directory of `space`, which it moves
+    /// into: refuses when `requests/` holds no directory of that name but
+    /// one in another case (a hand rename of `auth/` to `Auth/`, #257). A
+    /// case-insensitive disk would file the move into it, where the walk
+    /// lists no space `space`. It reads the disk now, as
+    /// [`Self::refuse_case_twins`] reads a fresh listing.
+    fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
+        let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
+        let dirs: Vec<&str> =
+            entries.iter().filter(|e| e.is_dir).map(|e| e.name.as_str()).collect();
+        let wanted = space.to_lowercase();
+        if !dirs.contains(&space)
+            && let Some(twin) = dirs.iter().find(|d| d.to_lowercase() == wanted)
+        {
+            return Err(Error::Conflict(format!(
+                "{REQUESTS_DIR}/{twin}/ is already there in another case; rename it outside postui"
+            )));
+        }
+        Ok(())
+    }
+
     /// The folders `to` (a request's slug in another space, at the same
     /// sub-path as `from`) sits in, for [`Self::make_folders`], each with
     /// the text of the [`crate::storage::FOLDER_FILE`] of the folder at the
@@ -1241,6 +1262,7 @@ impl Project {
         space_rel(space)?;
         let new_slug = self.move_target(slug, space, &[])?;
         let to_path = request_rel(&new_slug)?;
+        self.refuse_space_case_twin(space)?;
         // The target's folders as the disk has them now.
         self.relist();
         let (to_space, to_rel) = Self::split_space(&new_slug).expect("validated");
@@ -1558,6 +1580,7 @@ impl Project {
         if pairs.is_empty() && folders.is_empty() {
             return Ok((pairs, left_behind));
         }
+        self.refuse_space_case_twin(to)?;
         // The target's folders as the disk has them now.
         self.relist();
         let targets: Vec<String> =
@@ -5167,6 +5190,60 @@ mod tests {
         assert!(dir.path().join("requests/auth/users/x.toml").is_file());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "name = \"Accounts\"\n");
         let twin = std::fs::read_dir(dir.path().join("requests/auth/Users")).unwrap();
+        assert_eq!(twin.count(), 0);
+    }
+
+    // --- #257: a space directory listed in another case ---
+
+    /// Space `auth`'s directory was renamed by hand to `Auth/`: on a
+    /// case-insensitive disk the move would land in it, where the walk
+    /// lists no space `auth`. Move to space refuses, naming it, with
+    /// nothing written, though the rename came after the last relist.
+    #[test]
+    fn move_to_space_refuses_a_space_directory_in_another_case() {
+        let (dir, mut p) = folder_project(&[], &["main/x"]);
+        std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
+            .unwrap();
+        let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
+        let r = p.move_request("main/x", "auth");
+        assert!(
+            matches!(&r, Err(Error::Conflict(m))
+                if m.contains("requests/Auth/") && m.contains("outside postui")),
+            "{r:?}"
+        );
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// Move all refuses the same way, whole.
+    #[test]
+    fn move_all_refuses_a_space_directory_in_another_case() {
+        let (dir, mut p) = folder_project(&[], &["main/x", "main/users/y"]);
+        std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
+            .unwrap();
+        p.relist();
+        let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
+        let r = p.move_all_requests("main", "auth");
+        assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/Auth/")), "{r:?}");
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// The space's own directory, listed at its exact name, is moved into
+    /// even beside a twin in another case, which is left alone. Only a
+    /// case-sensitive disk holds both.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_move_lands_in_the_exact_space_directory_beside_a_twin() {
+        let (dir, mut p) = folder_project(&[], &["main/x"]);
+        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(p.move_request("main/x", "auth").unwrap(), "auth/x");
+        assert!(dir.path().join("requests/auth/x.toml").is_file());
+        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
         assert_eq!(twin.count(), 0);
     }
 }
