@@ -83,6 +83,9 @@ struct Notice {
     curl: String,
     /// Whether the pointer has moved onto it since it last left.
     pointed: bool,
+    /// While it is held ([`NoticeHold`]): the life it had left when the
+    /// hold began.
+    held: Option<Duration>,
 }
 
 struct Toast {
@@ -106,9 +109,6 @@ struct Toast {
     id: u64,
     /// `Some` for the curl import notice.
     notice: Option<Notice>,
-    /// While the notice is held ([`NoticeHold`]): the life it had left
-    /// when the hold began.
-    held: Option<Duration>,
 }
 
 impl Toast {
@@ -152,7 +152,6 @@ impl Toasts {
             fade_started: false,
             id,
             notice,
-            held: None,
         });
         id
     }
@@ -169,7 +168,7 @@ impl Toasts {
         anims: &mut Anims,
     ) {
         self.take_curl_notice(anims);
-        let notice = Notice { hint: hint.into(), curl: curl.into(), pointed: false };
+        let notice = Notice { hint: hint.into(), curl: curl.into(), pointed: false, held: None };
         self.push_toast(message.into(), ToastKind::Info, Some(notice));
     }
 
@@ -313,7 +312,7 @@ impl Toasts {
                 }
                 if hold == NoticeHold::Hidden || notice.pointed {
                     let left = expires_at.saturating_duration_since(now).max(TOAST_FADE_DUR);
-                    t.expires_at = Some(now + *t.held.get_or_insert(left));
+                    t.expires_at = Some(now + *notice.held.get_or_insert(left));
                     if hold == NoticeHold::Hidden {
                         t.fade_started = false;
                         anims.clear(AnimKey::ToastFade(t.id));
@@ -323,8 +322,8 @@ impl Toasts {
                     }
                     continue;
                 }
+                notice.held = None;
             }
-            t.held = None;
             let fade_start = expires_at - TOAST_FADE_DUR;
             if !t.fade_started && now >= fade_start {
                 t.fade_started = true;

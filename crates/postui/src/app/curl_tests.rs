@@ -2178,9 +2178,9 @@ fn a_ctrl_v_on_curl_gone_from_the_clipboard_says_why() {
 }
 
 #[test]
-fn a_sidebar_paste_leaves_the_notice_to_its_checks() {
+fn a_sidebar_paste_leaves_the_no_repeat_memory_alone() {
     // A terminal's paste (shift+Insert's PRIMARY, a paste history) need
-    // not be the clipboard: what it holds says nothing about the notice.
+    // not be the clipboard: what it holds is not marked as known.
     let top = crate::components::sidebar::RowKey::Request("main/top".into());
     let mut app = on_sidebar("hello", &top);
     app.ui_settings.curl_button = true;
@@ -2189,6 +2189,39 @@ fn a_sidebar_paste_leaves_the_notice_to_its_checks() {
     app.update(Action::CancelTopModal);
     app.clipboard.set_read_for_test("curl https://x/users");
     assert!(app.check_clipboard(), "the same text on the clipboard is still news");
+}
+
+/// Every import takes the notice down at its entry (V6), a terminal's
+/// paste too (cmd+V on macOS): no Import after it brings the same curl in
+/// again. A paste of other text takes it down as well.
+#[test]
+fn a_sidebar_paste_takes_the_notice_down() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    for (paste, imports) in [("curl https://x/users", true), ("hello", false)] {
+        let mut app = on_sidebar("curl https://x/users", &top);
+        app.ui_settings.curl_button = true;
+        assert!(app.check_clipboard());
+        app.paste_text(paste);
+        assert_eq!(!app.modals.is_empty(), imports, "{paste:?}");
+        assert!(app.toasts.curl_notice().is_none(), "{paste:?}");
+    }
+}
+
+/// A replace takes the notice down too: its Import would bring in the
+/// curl the replace just used. With no project open it is refused before
+/// anything goes.
+#[test]
+fn a_replace_takes_the_notice_down() {
+    let mut app = kept_app("curl https://x/new");
+    app.ui_settings.curl_button = true;
+    assert!(app.check_clipboard());
+    let project = app.project.take();
+    replace(&mut app, None);
+    assert!(app.toasts.curl_notice().is_some(), "no project: refused first");
+    app.project = project;
+    replace(&mut app, None);
+    assert_eq!(app.editor.current_request().url, "https://x/new");
+    assert!(app.toasts.curl_notice().is_none());
 }
 
 #[test]
