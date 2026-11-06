@@ -296,7 +296,8 @@ pub(crate) fn rename_folder_entries(order: &mut Vec<String>, from: &str, to: &st
 /// an entry already naming `to` goes first (nothing was on disk there; left
 /// in, one a partial walk kept (D7) would take the request's slot), then
 /// `from`'s entry is renamed in place, as [`rename_folder_entries`] does
-/// for a folder. Renaming to its own slug changes nothing.
+/// for a folder. A `from` the list doesn't name gets no entry, as before
+/// the rename. Renaming to its own slug changes nothing.
 pub(crate) fn rename(order: &mut Vec<String>, from: &str, to: &str) {
     if from == to {
         return;

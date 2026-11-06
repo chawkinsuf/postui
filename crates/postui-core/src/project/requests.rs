@@ -1179,7 +1179,6 @@ impl Project {
             p.relist();
             if let (Some((space, from_rel)), Some((_, to_rel))) =
                 (Self::split_space(&from_slug), Self::split_space(&to_slug))
-                && to_slug != from_slug
             {
                 p.order_rename(space, from_rel, to_rel)?;
             }
@@ -3304,7 +3303,9 @@ mod tests {
         let locked = dir.path().join("requests/main/locked");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
         let renamed = p.rename_request("main/a", "Zed");
+        let warned = p.listing_warnings().iter().any(|w| w.file.is_none());
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(warned, "the walk failed part way");
         assert_eq!(renamed.unwrap().0, "main/zed");
         assert_eq!(main_order(&p), ["b", "zed", "locked/", "locked/y"]);
     }
