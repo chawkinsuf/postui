@@ -256,7 +256,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // during a live row drag, for the same reason: its key is dead. The
     // quit chip stays through a drag, advertising the modified combo, the
     // one key that still pre-empts it.
-    let drag_live = drag_live(app);
+    let drag_live = row_drag_live(app);
     let globals_live = app.modals.footer_chips().is_none() && !drag_live;
     // No quit while a dialog is open (task #85), so no quit chip either.
     let quit_live = !app.quit_refused();
@@ -928,7 +928,7 @@ pub(crate) fn header_keys(app: &App) -> (String, String) {
 
 /// A row drag is live in the sidebar or a Manage list, the keyboard's
 /// included: either owns the keys.
-fn drag_live(app: &App) -> bool {
+fn row_drag_live(app: &App) -> bool {
     app.sidebar.drag.is_some() || app.manage.list.drag.is_some()
 }
 
@@ -953,7 +953,7 @@ pub(crate) fn override_chips(app: &App) -> Option<Vec<FooterChip>> {
             (Key::Named("esc"), "cancel".to_string(), None),
         ]);
     }
-    if drag_live(app) {
+    if row_drag_live(app) {
         return Some(vec![
             (Key::Named("esc"), "cancel drag".to_string(), None),
             (Key::Named("right-click"), "cancel drag".to_string(), None),

@@ -39165,6 +39165,53 @@ fn a_paste_during_a_key_move_does_nothing() {
     assert_eq!(saved_order(&dir), before);
 }
 
+/// F31, review round 2: a right click cancels a keyboard move, then acts
+/// as the click it is: the row put back under it gets its menu.
+#[test]
+fn a_right_click_cancels_a_key_move_and_opens_the_rows_menu() {
+    let (mut app, dir) = folder_app();
+    let before = saved_order(&dir);
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down>");
+    // rows: beta, alpha (the block), a/, b/, c/
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(right_down(names_x(r0), r0.y));
+    assert!(app.sidebar.drag.is_none(), "the click cancels");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta"]);
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the row's menu");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"), "the row clicked");
+    assert_eq!(saved_order(&dir), before, "nothing written");
+}
+
+/// F31, review round 2: a vim count steps the block that many places,
+/// clamped at either end, in one step.
+#[test]
+fn a_counted_key_move_step_clamps_at_the_ends() {
+    let (mut app, _dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Vim);
+    key_matrix_tests::feed(&mut app, "m99j");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, (String::new(), 2), "the last place");
+    assert_eq!(request_rows(&app), ["main/beta", "main/auth/x", "main/alpha"]);
+    key_matrix_tests::feed(&mut app, "99k");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, (String::new(), 0), "the first place");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/auth/x"]);
+}
+
+/// F31, review round 2: Esc after a count cancels the move, and the count
+/// typed during it goes with it: the next `j` steps one row.
+#[test]
+fn esc_after_a_count_in_a_key_move_leaves_no_count() {
+    let (mut app, _dir) = folder_app();
+    // rows: alpha, beta, a/, b/, c/
+    key_move_ready(&mut app, "main/alpha", crate::config::KeyProfile::Vim);
+    key_matrix_tests::feed(&mut app, "m3<Esc>");
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(app.key_echo(), "");
+    key_matrix_tests::feed(&mut app, "j");
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
 /// D9: dragged onto closed `b/` (rows alpha, beta, a/, b/, c/), `alpha`
 /// waits above it with the dwell on `b/`.
 fn dwelling_on_b() -> (App, tempfile::TempDir, ratatui::layout::Rect) {

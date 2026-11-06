@@ -179,7 +179,8 @@ impl App {
     pub(super) fn run_steps(&mut self, steps: Vec<Step>) -> Ran {
         let surface = self.surface();
         let mut ran = Ran::default();
-        for step in steps {
+        let mut steps = steps.into_iter().peekable();
+        while let Some(step) = steps.next() {
             match step {
                 Step::OpenAs(open) => ran.open_as = Some(open),
                 Step::Sync => self.vim_sync_now(ran.open_as),
@@ -188,6 +189,15 @@ impl App {
                     None => break,
                 },
                 Step::Key(_) if self.surface() != surface => break,
+                // A keyboard move takes a run of one key, a count's, in one
+                // call (spec 2026-11-03 create folders F31).
+                Step::Key(ev) if self.sidebar.key_move() => {
+                    let mut times = 1;
+                    while steps.next_if_eq(&Step::Key(ev)).is_some() {
+                        times += 1;
+                    }
+                    ran = ran.and(Ran::routed(self.key_move_key(ev, times)));
+                }
                 Step::Key(ev) => ran = ran.and(Ran::routed(self.handle_key_routed(ev))),
                 Step::Action(a) => {
                     let history = matches!(a, Action::Undo | Action::Redo);

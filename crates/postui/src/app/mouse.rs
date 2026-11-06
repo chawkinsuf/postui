@@ -512,7 +512,7 @@ impl App {
             // without choosing anything restores the previous selection
             // (see `App::sidebar_menu_revert`).
             MouseEventKind::Down(MouseButton::Right) => {
-                // A right click during a live row drag cancels it, exactly
+                // A right click during a live mouse row drag cancels it, exactly
                 // like a release outside the sidebar or Escape: no context
                 // menu, no selection change, nothing written. This exists
                 // because Ghostty (on Linux, verified with `--keydump` and
@@ -527,20 +527,24 @@ impl App {
                 // armed press ready to promote into a drag out from under
                 // the menu this click is about to open: all of it ends
                 // here, exactly as a `Down(Left)` ends it.
-                if self.sidebar.drag.is_some() {
+                if self.sidebar.mouse_drag() {
                     return self.finish_sidebar_drag(false);
                 }
                 if self.manage.list.drag.is_some() {
                     return self.finish_manage_drag(false);
                 }
                 self.cancel_stale_drags(None);
+                // A keyboard move holds no button: a right click cancels it,
+                // then acts as the click it is (spec 2026-11-03 create
+                // folders F31), as a left click does.
+                let moving = self.sidebar.key_move();
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
-                let Some(mut hit) = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned()
-                else {
-                    return false;
+                let hit = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned();
+                let Some(mut hit) = self.cancel_sidebar_drag_at(hit) else {
+                    return moving;
                 };
-                let mut changed = false;
+                let mut changed = moving;
                 // An open context menu doesn't own the right button the way
                 // it owns the left: a second right click re-targets. It
                 // dismisses the menu through `Action::Close` (running the

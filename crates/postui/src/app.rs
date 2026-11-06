@@ -10332,19 +10332,34 @@ impl App {
         true
     }
 
-    /// A key while a keyboard move is live (F31): ↑/↓ step the block
-    /// through the drag's places, ←/→ pick the level where several end on
-    /// its row, → on a closed folder beside it opens it and puts the block
-    /// in first, Enter drops as a mouse release does. Esc's cancel is
-    /// `route_key`'s, as for a mouse drag. Every other key does nothing.
-    fn key_move_key(&mut self, ev: KeyEvent) -> bool {
+    /// A key while a keyboard move is live (F31), `times` over for a vim
+    /// count: ↑/↓ step the block through the drag's places, `times` places
+    /// in one step; any other key is pressed up to `times` times, stopping
+    /// at a press that changes nothing. Esc's cancel is `route_key`'s, as
+    /// for a mouse drag.
+    fn key_move_key(&mut self, ev: KeyEvent, times: usize) -> bool {
         if !ev.modifiers.is_empty() {
             return false;
         }
+        let delta = i32::try_from(times).unwrap_or(i32::MAX);
         let changed = match ev.code {
+            KeyCode::Up => self.sidebar.drag_step(-delta),
+            KeyCode::Down => self.sidebar.drag_step(delta),
+            code => return (0..times).take_while(|_| self.key_move_press(code)).count() > 0,
+        };
+        if changed {
+            self.rebuild_sidebar();
+        }
+        changed
+    }
+
+    /// One press of `code` in a keyboard move (F31): ←/→ pick the level
+    /// where several end on the block's row, → on a closed folder beside
+    /// it opens it and puts the block in first, Enter drops as a mouse
+    /// release does. Every other key does nothing.
+    fn key_move_press(&mut self, code: KeyCode) -> bool {
+        let changed = match code {
             KeyCode::Enter => return self.finish_sidebar_drag(true),
-            KeyCode::Up => self.sidebar.drag_step(-1),
-            KeyCode::Down => self.sidebar.drag_step(1),
             KeyCode::Left => self.sidebar.drag_level(true),
             KeyCode::Right if self.sidebar.drag_level(false) => true,
             KeyCode::Right => match self.sidebar.closed_beside() {
@@ -12585,7 +12600,7 @@ impl App {
         // A live keyboard move owns the keyboard as a mouse drag does
         // (spec 2026-11-03 create folders F31).
         if self.sidebar.key_move() {
-            return self.key_move_key(ev);
+            return self.key_move_key(ev, 1);
         }
         let combo = KeyCombo::from_event(&ev);
         // A replayed key reads the keymap again: the keymap is only ever
