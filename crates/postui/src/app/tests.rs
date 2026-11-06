@@ -39427,10 +39427,11 @@ fn a_folder_clash_toasts_and_snaps_back() {
     assert!(!app.op_in_flight);
 }
 
-/// D18 with only the directories clashing: the toast names the folder by
-/// the name it shows, not its directory.
+/// D18 (amended 2026-11-06, #255): with only the directories clashing, the
+/// drop goes through, its directory numbered, and the folder still shows
+/// its name with the cursor on it.
 #[test]
-fn a_folder_clash_by_directory_names_the_shown_folder() {
+fn a_folder_drop_onto_a_taken_directory_numbers_it() {
     let (mut app, dir) = spaced_app();
     for slug in ["main/a/x", "main/box/a/y"] {
         postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/f")).unwrap();
@@ -39448,11 +39449,17 @@ fn a_folder_clash_by_directory_names_the_shown_folder() {
     app.handle_mouse(moved(names_x(a), inner.y));
     app.handle_mouse(left_up(names_x(a), inner.y));
     assert!(
-        app.toasts.messages().contains(&"\"Accounts\" already exists here"),
+        !app.toasts.messages().iter().any(|m| m.contains("already exists")),
         "{:?}",
         app.toasts.messages()
     );
-    assert!(dir.path().join("requests/main/a/x.toml").is_file(), "nothing moved");
+    assert!(dir.path().join("requests/main/box/a-2/x.toml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("requests/main/box/a-2/.folder.toml")).unwrap(),
+        "name = \"a\"\n"
+    );
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/box/a-2".into())));
+    assert_eq!(app.sidebar.folder_display("main/box/a-2"), "a");
 }
 
 /// D13: a press on the last row promotes when the pointer goes straight

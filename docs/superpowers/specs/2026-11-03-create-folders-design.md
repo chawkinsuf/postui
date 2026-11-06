@@ -65,7 +65,7 @@ Two more facts shape the design:
 | F5 | Create, rename and delete folder are each one undo step, and undo restores the files, the directories and the order exactly. | mine (approved; the user's undo-restores-exactly rule) |
 | F6 | A folder created or removed outside postui shows or goes on the next reload, as request files do. | mine (approved) |
 | F7 | Empty folders add nothing to `postui requests` or `postui suite`. | mine (approved) |
-| F8 | A drop or rename onto a name already on disk is refused, as drag spec D18 does today. The name it clashes with is now a folder the user can see. | mine (approved) |
+| F8 | A drop or rename onto a name already on disk is refused, as drag spec D18 does today. The name it clashes with is now a folder the user can see. *Amended 2026-11-06 (#255):* a folder drop is refused only by a shown name, as F19 refuses a create; a directory taken otherwise is numbered (drag spec D18). | mine (approved) |
 | F9 | Create, rename and delete folder all come in this task. | you ("all three in this task") |
 | F10 | The sidebar's top row gets a `+ Folder` button beside the request button, the way the Variable Manager pairs `+ Variable` and `+ Selector`. The request button's label becomes `+ Request` when both show. `+ Folder` is the secondary button and drops when the row is too narrow, staying reachable by key, as `+ Selector` does. | you ("i think like the ticket suggested. it follows new var and selector") |
 | F11 | While the opt-in curl import button is on, it stays in the same row after `+ Folder`. Buttons drop right to left when there is no room, so the curl button drops first. #240 owns moving it. *Amended 2026-11-05 (#240):* the curl button leaves the row for good. The row is `+ Request \| + Folder` whatever the clipboard holds, and too narrow for both it is `+ New request` alone (F10). The curl import's notice is a toast now (curl import visibility spec V3). | mine; #240 is you ("maybe that could be done a different way? like a notification button that slides in. we can make a new task for that."); the toast in place of the button is mine (approved: "just in the toast like you originally recommended") |
@@ -123,7 +123,8 @@ folder listing instead, or in addition:
 - `arrive_with_folders`, `shows_folder_ignoring_case`, `move_to_level`
   and `level_entries` read the folder listing.
 - D18's on-disk check in `move_folder_to` stays as written: it already
-  refuses any existing name.
+  refuses any existing name. (Since 2026-11-06, #255, it numbers instead:
+  drag spec D18.)
 
 ### Core: every folder postui makes is journaled and gets its file
 
