@@ -388,6 +388,23 @@ impl App {
                 // create folders F31), then acts as the click it is.
                 let hit = self.cancel_sidebar_drag_at(hit);
                 let hit = self.cancel_stale_drags(hit);
+                // The testbed is a dead end for the mouse exactly like it is
+                // for the keyboard (see `App::handle_key`'s `Screen::Testbed`
+                // branch): every click is inert except the footer's quit
+                // chip. Without this, the header/footer chrome — drawn and
+                // hit-registered unconditionally on every screen — would let
+                // a click open the palette, a project/env chooser, or the
+                // Variable Manager from underneath the showcase, with no way
+                // back short of quitting.
+                if self.screen == Screen::Testbed && !hit.as_ref().is_some_and(is_quit_chip) {
+                    return false;
+                }
+                // The curl import notice floats over every pane, part of
+                // none of them: a press on it is its own, and none of the
+                // click-away rules below runs (#240).
+                if let Some(Hit::CurlNotice(part)) = hit {
+                    return self.press_curl_notice(part);
+                }
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
                 // re-ran it), so all that is left to do is leave the bar.
@@ -411,8 +428,7 @@ impl App {
                 // `describe…`), and its `commands` and `quit` keep the
                 // caret as their keys do.
                 // A press on a window separator is exempt as a scrollbar is:
-                // it disturbs nothing ([`Self::is_separator_press`]). So is
-                // the curl import notice, which floats over the panes.
+                // it disturbs nothing ([`Self::is_separator_press`]).
                 let on_bar_row = self.hits.rect_of(&Hit::ResponseJqBar).is_some_and(|bar| {
                     bar.y == m.row && self.hits.pane_at(m.column, m.row) == Some(PaneId::Response)
                 });
@@ -429,7 +445,6 @@ impl App {
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)
                                 | Hit::HScrollTrack(..)
-                                | Hit::CurlNotice(_)
                         )
                     );
                 if jq_blurred {
@@ -474,17 +489,6 @@ impl App {
                     }
                     return self.update(Action::Render);
                 };
-                // The testbed is a dead end for the mouse exactly like it is
-                // for the keyboard (see `App::handle_key`'s `Screen::Testbed`
-                // branch): every click is inert except the footer's quit
-                // chip. Without this, the header/footer chrome — drawn and
-                // hit-registered unconditionally on every screen — would let
-                // a click open the palette, a project/env chooser, or the
-                // Variable Manager from underneath the showcase, with no way
-                // back short of quitting.
-                if self.screen == Screen::Testbed && !is_quit_chip(&hit) {
-                    return false;
-                }
                 // Both counts at once (`count_clicks`): rows and buttons read
                 // the list count, which pairs, so a fast triple click never
                 // toggles a folder twice; text reads the text count.
@@ -551,6 +555,11 @@ impl App {
                 let Some(mut hit) = self.cancel_sidebar_drag_at(hit) else {
                     return moving;
                 };
+                // The curl import notice has no menu and is part of nothing
+                // under it: a right press stops there (#240).
+                if matches!(hit, Hit::CurlNotice(_)) {
+                    return moving;
+                }
                 let mut changed = moving;
                 // An open context menu doesn't own the right button the way
                 // it owns the left: a second right click re-targets. It
@@ -1733,9 +1742,6 @@ impl App {
                     // keeps the cell open too (#135); committing it first
                     // would take the caret's tooltip down before it acts.
                     | Hit::FooterChip(Action::TipPill(_))
-                    // The curl import notice floats over the panes, part of
-                    // none of them (#240).
-                    | Hit::CurlNotice(_)
             )
             // The tooltip floats over the rows: clicking one of its pills
             // must neither commit the cell under edit nor drop the selection.
@@ -2688,7 +2694,8 @@ impl App {
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,
-            Hit::CurlNotice(part) => self.press_curl_notice(part),
+            // Taken at the top of the press, before the click-away rules.
+            Hit::CurlNotice(_) => false,
             // The input closed at the top of this function (a close it
             // refused swallowed the click there), so selecting a row never
             // resets `form`/`grid` over live typing.

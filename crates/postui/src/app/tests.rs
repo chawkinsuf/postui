@@ -376,7 +376,7 @@ fn a_late_second_ctrl_c_only_arms_again() {
     let mut app = App::new_for_test();
     app.handle_key(ctrl('c'));
     let later = std::time::Instant::now() + std::time::Duration::from_secs(9);
-    app.toasts.on_tick(&mut app.anims, later, crate::components::toast::NoticeHold::Runs);
+    app.toasts.on_tick(&mut app.anims, later);
     assert!(app.toasts.is_empty(), "the toast is gone");
     app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "too late: armed again, not quit");
@@ -19645,6 +19645,33 @@ fn clicking_bare_background_commits_the_cell_under_edit() {
     assert!(app.varmanager.grid.editing.is_none(), "the edit is done");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(on_disk.contains("10019"), "{on_disk}");
+}
+
+/// The curl import notice floats over the Manage screen too (#240): a
+/// press on it, left or right, is no click away from the cell under edit.
+#[test]
+fn a_press_on_the_curl_notice_leaves_the_manager_cell_open() {
+    use crate::components::toast::NoticePart;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x + 10, r.y));
+    app.handle_key(plain('9'));
+    app.ui_settings.curl_button = true;
+    app.clipboard.set_read_for_test("curl https://x/u");
+    assert!(app.check_clipboard());
+    rendered_text_tall(&mut app);
+    let panel = app.hits.rect_of(&Hit::CurlNotice(NoticePart::Panel)).expect("the notice");
+    app.handle_mouse(right_down(panel.x + 3, panel.y));
+    app.handle_mouse(left_down(panel.x + 3, panel.y));
+    assert!(app.varmanager.grid.editing.is_some(), "the panel, left and right");
+    let close = app.hits.rect_of(&Hit::CurlNotice(NoticePart::Close)).unwrap();
+    app.handle_mouse(left_down(close.x + 1, close.y));
+    assert!(app.toasts.curl_notice().is_none(), "the \u{d7} took it down");
+    assert!(app.varmanager.grid.editing.is_some(), "the cell is still live");
 }
 
 #[test]

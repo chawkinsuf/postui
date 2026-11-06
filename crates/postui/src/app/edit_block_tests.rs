@@ -370,6 +370,37 @@ fn focus_gained_looks_at_the_flag_now() {
     assert_eq!(root(&app), other.path());
 }
 
+/// A curl import notice that the same focus gain found waits out the
+/// screen: the frame the project opens on leaves it out, rather than
+/// drawing it settled before its slide (#240).
+#[test]
+fn a_curl_notice_found_as_the_flag_comes_down_slides_in() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let other = other_project("Other");
+    let mut app = waiting_on(other.path());
+    app.edit_flag_polled = Some(Instant::now());
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("curl https://x/u");
+    app.set_clipboard_for_test(clip);
+    app.ui_settings.curl_button = true;
+    app.reset_anims(true);
+    app.ui_settings.anim_ms.toast = std::time::Duration::from_secs(60);
+    lower(other.path());
+    app.on_focus_gained();
+    assert!(app.edit_block.is_none());
+    assert!(app.toasts.curl_notice().is_some());
+    let screen = |app: &mut App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        buf.content().iter().map(|c| c.symbol()).collect::<String>()
+    };
+    assert!(!screen(&mut app).contains("Clipboard holds"), "not drawn settled");
+    app.update(Action::Tick);
+    assert!(!screen(&mut app).contains("Clipboard holds"), "off screen at its slide's start");
+    assert!(app.toasts.entries().iter().any(|(m, _)| m.starts_with("Clipboard holds")));
+}
+
 /// The screen covers the frame: its buttons are the only hits, and a
 /// click on one runs it. The note's control chars show as their codes.
 #[test]

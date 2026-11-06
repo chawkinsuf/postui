@@ -1876,8 +1876,9 @@ fn a_click_on_the_notice_is_no_click_away() {
     assert!(app.session.response.jq_focused(), "the jq bar");
 }
 
-/// Under a dialog the notice waits: it is not drawn and its clock stands
-/// still. Once the dialog closes it shows, with its 10 s from then.
+/// A notice found under a dialog waits: it is not drawn and its clock
+/// does not run. Once the dialog closes it slides in, with its 10 s from
+/// then.
 #[test]
 fn the_notice_waits_for_the_dialog_to_close() {
     use crate::components::toast::NoticePart;
@@ -1887,16 +1888,36 @@ fn the_notice_waits_for_the_dialog_to_close() {
     assert!(app.check_clipboard());
     draw(&mut app);
     assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), None, "not drawn");
-    let now = Instant::now();
-    app.tick_toasts(now);
-    app.tick_toasts(now + Duration::from_secs(60));
-    assert!(app.toasts.curl_notice().is_some(), "held");
+    app.tick_toasts(Instant::now() + Duration::from_secs(60));
+    assert!(app.toasts.curl_notice().is_some(), "waiting");
     app.update(Action::CancelTopModal);
-    app.tick_toasts(now + Duration::from_secs(60));
-    app.tick_toasts(now + Duration::from_secs(69));
+    app.tick_toasts(Instant::now() + Duration::from_secs(9));
     assert!(app.toasts.curl_notice().is_some(), "its 10 s from the close");
     click(&mut app, notice_part(NoticePart::Import));
     assert!(prompt(&app).1.ends_with("GET users"), "{:?}", prompt(&app));
+}
+
+/// A notice already up when a dialog opens keeps its place, and its clock
+/// runs: only its controls stop taking clicks, which are the dialog's.
+#[test]
+fn a_dialog_over_the_notice_takes_its_clicks() {
+    use crate::components::toast::NoticePart;
+    use std::time::{Duration, Instant};
+    let mut app = watching("curl https://x/users");
+    assert!(app.check_clipboard());
+    draw(&mut app);
+    let panel = app.hits.rect_of(&notice_part(NoticePart::Panel)).unwrap();
+    app.update(Action::PromptNewRequest);
+    draw(&mut app);
+    for part in [NoticePart::Panel, NoticePart::Import, NoticePart::Close] {
+        assert_eq!(app.hits.rect_of(&notice_part(part)), None, "{part:?}");
+    }
+    app.update(Action::CancelTopModal);
+    draw(&mut app);
+    assert_eq!(app.hits.rect_of(&notice_part(NoticePart::Panel)), Some(panel), "in its place");
+    app.update(Action::PromptNewRequest);
+    app.tick_toasts(Instant::now() + Duration::from_secs(10));
+    assert!(app.toasts.curl_notice().is_none(), "its clock ran");
 }
 
 /// With no project open the import refuses as it always does, and the
@@ -1945,8 +1966,8 @@ fn the_notice_slides_in_from_its_first_frame() {
     assert!(!screen.contains("Clipboard holds"), "off screen at the start of its slide");
 }
 
-/// The edit flag's waiting screen hides the notice as a dialog does; it
-/// shows once the screen goes.
+/// A notice found behind the edit flag's waiting screen waits as under a
+/// dialog; it joins the toasts once the screen goes.
 #[test]
 fn the_notice_waits_out_the_waiting_screen() {
     use crate::components::toast::NoticePart;
@@ -1959,6 +1980,7 @@ fn the_notice_waits_out_the_waiting_screen() {
         assert_eq!(app.hits.rect_of(&notice_part(part)), None, "{part:?}");
     }
     app.edit_block = None;
+    app.arm_pending_toasts();
     draw(&mut app);
     assert!(app.hits.rect_of(&notice_part(NoticePart::Import)).is_some());
 }

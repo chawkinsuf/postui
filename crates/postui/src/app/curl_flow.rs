@@ -10,6 +10,19 @@ use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 /// import-without-prompt S12): no one imports hundreds at once.
 pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
+/// The no-repeat memory's key (`App::curl_noticed`, spec 2026-10-15 curl
+/// import visibility V3) for clipboard `text`, parsed as `parsed`: `None`
+/// unless it holds curl the import takes, which past the limit it refuses
+/// (S12). By line, without the ends: the same curl copied with other line
+/// endings or a trailing newline is the same text.
+fn curl_key(text: &str, parsed: &Result<CurlBatch, CurlError>) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    parsed.as_ref().ok().filter(|b| b.commands.len() <= CURL_IMPORT_LIMIT)?;
+    let mut h = std::hash::DefaultHasher::new();
+    text.trim().lines().for_each(|line| line.hash(&mut h));
+    Some(h.finish())
+}
+
 impl App {
     /// The curl import notice (spec 2026-10-15 curl import visibility V3,
     /// V4, V10, #240): with the `curl_button` setting on, a toast with an
@@ -17,18 +30,17 @@ impl App {
     /// once per text. Run at launch, on a focus gain and when the setting
     /// is turned on, wherever it runs: under a dialog or the edit flag's
     /// waiting screen the notice waits for them to go
-    /// ([`Self::curl_notice_hidden`]). `true` when there is a new notice.
+    /// ([`Self::arm_pending_toasts`]). `true` when there is a new notice.
     pub fn check_clipboard(&mut self) -> bool {
         if !self.ui_settings.curl_button {
             return false;
         }
-        // The read marks new curl as known: no change means no curl the
-        // import takes, or curl already known.
-        let noticed = self.curl_noticed;
         let text = self.clipboard.read().unwrap_or_default();
-        if self.parse_clipboard_curl(&text).is_err() || self.curl_noticed == noticed {
+        let key = curl_key(&text, &postui_core::curl::parse(&text));
+        if key.is_none() || key == self.curl_noticed {
             return false;
         }
+        self.curl_noticed = key;
         let at = crate::keyroute::SpellCtx {
             profile: self.profile(),
             surface: crate::keyroute::Surface::Sidebar,
@@ -55,34 +67,24 @@ impl App {
             }
             NoticePart::Import => {
                 let folder = self.sidebar_import_folder();
-                self.import_with(folder, |app, reported| {
+                // Its text was marked as known when the notice showed.
+                self.import_with(folder, |_, reported| {
                     let text = reported.unwrap_or_default();
-                    app.parse_clipboard_curl(&text).map_err(|e| e.to_string())
+                    postui_core::curl::parse(&text).map_err(|e| e.to_string())
                 })
             }
         }
     }
 
     /// The clipboard's curl commands, read as every import reads them (a
-    /// clipboard that can't be read is empty, which holds none).
+    /// clipboard that can't be read is empty, which holds none). Curl the
+    /// import would take is marked as known, with the setting on or off:
+    /// the notice never names curl an import has read.
     fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
-        self.parse_clipboard_curl(&text)
-    }
-
-    /// The curl commands of `text`, read from the clipboard. Curl the
-    /// import would take is marked as known, with the setting on or off:
-    /// the notice never names curl a notice or an import has read.
-    fn parse_clipboard_curl(&mut self, text: &str) -> Result<CurlBatch, CurlError> {
-        let parsed = postui_core::curl::parse(text);
-        // Past the limit the import refuses (S12): no curl it would take.
-        if parsed.as_ref().is_ok_and(|b| b.commands.len() <= CURL_IMPORT_LIMIT) {
-            // By line, without the ends: the same curl copied with other
-            // line endings or a trailing newline is the same text.
-            use std::hash::{Hash, Hasher};
-            let mut h = std::hash::DefaultHasher::new();
-            text.trim().lines().for_each(|line| line.hash(&mut h));
-            self.curl_noticed = Some(h.finish());
+        let parsed = postui_core::curl::parse(&text);
+        if let Some(key) = curl_key(&text, &parsed) {
+            self.curl_noticed = Some(key);
         }
         parsed
     }

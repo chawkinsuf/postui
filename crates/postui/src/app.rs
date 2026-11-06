@@ -12362,37 +12362,35 @@ impl App {
         }
     }
 
-    /// The toasts' tick ([`crate::components::toast::Toasts::on_tick`]):
-    /// the curl import notice is held while it is hidden, or while the
-    /// pointer is on it (#240). Whether a toast was showing.
+    /// The toasts' tick ([`crate::components::toast::Toasts::on_tick`]),
+    /// the pointer on the curl import notice holding it (#240). Whether a
+    /// toast was showing.
     fn tick_toasts(&mut self, now: Instant) -> bool {
-        use crate::components::toast::NoticeHold;
-        let hold = if self.curl_notice_hidden() {
-            NoticeHold::Hidden
-        } else if matches!(self.hovered, Some(Hit::CurlNotice(_))) {
-            NoticeHold::Pointer
-        } else {
-            NoticeHold::Runs
-        };
-        self.toasts.on_tick(&mut self.anims, now, hold)
+        let pointer_on_it = matches!(self.hovered, Some(Hit::CurlNotice(_)));
+        self.toasts.hold_curl_notice(pointer_on_it, now);
+        self.toasts.on_tick(&mut self.anims, now)
     }
 
-    /// Whether the curl import notice is hidden: while a dialog or the
-    /// edit flag's waiting screen is up, it is not drawn and its clock
-    /// stands still, so it shows once they are gone (spec 2026-10-15 curl
-    /// import visibility V10, #240).
-    pub(crate) fn curl_notice_hidden(&self) -> bool {
+    /// Whether a dialog or the edit flag's waiting screen is up. A new curl
+    /// import notice waits for them to go before it joins the toasts, and
+    /// the controls of one already up take no clicks meanwhile (spec
+    /// 2026-10-15 curl import visibility V10, #240).
+    pub(crate) fn dialog_up(&self) -> bool {
         !self.modals.is_empty() || self.edit_block.is_some()
     }
 
     /// Starts the slide-in of any toast pushed since the last call. Run at
     /// the tail of every input path (`update`, `handle_key`, `handle_mouse`)
     /// so a toast never reaches its first draw settled and then slides in
-    /// over itself on the next tick — whichever code path pushed it.
+    /// over itself on the next tick — whichever code path pushed it. A curl
+    /// import notice waiting for a dialog to go joins the toasts here once
+    /// none is up.
     pub(crate) fn arm_pending_toasts(&mut self) {
-        let hidden = self.curl_notice_hidden();
+        if !self.dialog_up() {
+            self.toasts.show_curl_notice();
+        }
         let slide = self.ui_settings.anim_ms.toast;
-        self.toasts.start_pending_anims(&mut self.anims, Instant::now(), slide, hidden);
+        self.toasts.start_pending_anims(&mut self.anims, Instant::now(), slide);
     }
 
     /// The response search's note (a wrap, a miss), toasted once at the
