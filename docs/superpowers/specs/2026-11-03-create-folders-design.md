@@ -68,7 +68,7 @@ Two more facts shape the design:
 | F8 | A drop or rename onto a name already on disk is refused, as drag spec D18 does today. The name it clashes with is now a folder the user can see. | mine (approved) |
 | F9 | Create, rename and delete folder all come in this task. | you ("all three in this task") |
 | F10 | The sidebar's top row gets a `+ Folder` button beside the request button, the way the Variable Manager pairs `+ Variable` and `+ Selector`. The request button's label becomes `+ Request` when both show. `+ Folder` is the secondary button and drops when the row is too narrow, staying reachable by key, as `+ Selector` does. | you ("i think like the ticket suggested. it follows new var and selector") |
-| F11 | While the opt-in curl import button is on, it stays in the same row after `+ Folder`. Buttons drop right to left when there is no room, so the curl button drops first. #240 owns moving it. | mine; #240 is you ("maybe that could be done a different way? like a notification button that slides in. we can make a new task for that.") |
+| F11 | While the opt-in curl import button is on, it stays in the same row after `+ Folder`. Buttons drop right to left when there is no room, so the curl button drops first. #240 owns moving it. *Amended 2026-11-05 (#240):* the curl button leaves the row for good. The row is `+ Request \| + Folder` whatever the clipboard holds, and too narrow for both it is `+ New request` alone (F10). The curl import's notice is a toast now (curl import visibility spec V3). | mine; #240 is you ("maybe that could be done a different way? like a notification button that slides in. we can make a new task for that."); the toast in place of the button is mine (approved: "just in the toast like you originally recommended") |
 | F12 | Keys, in both profiles: `A` on the sidebar opens New folder (`a` stays New request; the variables list pairs `a`/`A` the same way). On a folder row, `r` renames the folder and `d` (arrows) / `dd` (vim) deletes it. A count on a folder row's delete is refused, as the row menu refuses one (`NO_COUNTED_DELETE`). The palette gains "New folder…". | mine (approved: "yes") |
 | F13 | The folder row's right-click menu gains "New folder here…", "Rename…" and "Delete", alongside "New request here…" and "Import curl here…". | mine (approved) |
 | F14 | The `+ Folder` button, `A` and the palette make a folder where the cursor is, by F30's rule. "New folder here…" makes one inside the folder it was opened on, last in it. *Revised in the review:* this replaced "a top-level folder", following F30. | mine (approved for "here"); the cursor rule for folders is mine, following F30 |
@@ -199,6 +199,9 @@ the open request).
   `+ Folder` (secondary) and, when on, the curl button, dropping from the
   right while they don't fit. With only the request button, its label
   stays `+ New request`. A new `Hit::SidebarNewFolder` opens the prompt.
+  *Amended 2026-11-05 (#240):* the curl button and its
+  `Hit::SidebarImportCurl` are gone; the row is the two buttons or the
+  one (F11).
 - **Actions.** `PromptNewFolder`, `PromptNewFolderIn(path)`,
   `PromptRenameFolder`, `DeleteSelectedFolder`, and the matching
   `PromptKind::NewFolder { parent }` / `RenameFolder { from }`. The
@@ -331,7 +334,8 @@ the open request).
 
 ## 6. My calls, for veto
 
-- F11: the curl button stays in the row and drops first.
+- F11: the curl button stays in the row and drops first. *Superseded
+  2026-11-05 by #240:* the button left the row.
 - F24: a broken `.folder.toml` shows the directory name, warns, and
   blocks a rename; other keys are kept on rewrite.
 - F25: deleting a folder holding the open request behaves like deleting
