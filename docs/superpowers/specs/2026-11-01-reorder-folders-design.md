@@ -50,7 +50,7 @@ right-click menu has no Move items.
 | R5 | alt+↑/↓ on a folder row moves it one sibling up or down, clamped at the ends. The cursor stays on it. The folder's right-click menu gains "Move up" and "Move down" after "Import curl here…", drawn disabled at the group's ends. The footer's existing `alt+↑↓ reorder` chip covers it. *Amended 2026-11-05 (#258):* the sidebar's alt+↑/↓ and the chip are removed; the menu items stay, and `m` (the keyboard move) is the keyboard route. The user: "Now that we have m for move for requests and folders in the request panel, i don't think we need the alt-arrows to move the requests as well." R8's burst now comes from quick repeated Move up/down picks. | mine (approved; the 2026-09-04 rule "a keyboard route exists for every move the mouse can make"); the removal you (#258) |
 | R6 | The order is stored in the same `[space.<slug>] order` list. A folder entry is the folder's space-relative path with a trailing slash: `"auth/"`, `"api/v2/"`. The slash keeps it apart from a request slug, which never ends in `/`. | mine (approved) |
 | R7 | The display rule for a level's folders matches the one for its requests. The folders named in the list come first, in list order. The rest follow by name, in today's byte order. A level with no folder entries draws exactly as today. Stale entries (no such folder) are ignored for display and preserved on write. | mine (approved; mirrors the request rule) |
-| R8 | A folder reorder is an undo step, recorded like a request reorder. A drop is its own step. Quick repeated alt+↑/↓ presses on the same folder roll into one step, and a burst that ends where it started records nothing. The toast reads "Undid reorder of folder auth". Undo puts the cursor back on the folder row. | mine (approved; follows 2026-09-04 §Decisions "An undo step") |
+| R8 | A folder reorder is an undo step, recorded like a request reorder. A drop is its own step. Quick repeated alt+↑/↓ presses on the same folder roll into one step, and a burst that ends where it started records nothing. *Amended 2026-11-05 (#258):* with the sidebar's alt+↑/↓ removed, the burst is quick repeated Move up/down picks from the row menu. The toast reads "Undid reorder of folder auth". Undo puts the cursor back on the folder row. | mine (approved; follows 2026-09-04 §Decisions "An undo step") |
 | R9 | When a folder's last request leaves (delete, a rename into another folder, a move to another space, "Move all requests…"), the folder's entry is removed, along with every ancestor folder the same op emptied. A folder made again later is a new folder with no remembered slot. Undo of the op brings the entry back with the request, since the op's journal entry already covers `project.toml`. | you ("if its deleted, it will be a whole new folder if its made again. so it should not remember te position") |
 | R10 | A folder that newly appears through postui (a create, a rename into a new folder path, a move, a curl import into a new folder) follows the request arrival rule. If its level already has listed folder entries, it is appended, so it lands last. Otherwise nothing is written and it sorts by name. Each new ancestor folder of the arriving request goes through the rule, outermost first. "New" means no request other than the arriving ones is under it. | mine (approved; mirrors `order_arrive`) |
 | R10a | A new folder never takes a leftover slot. A folder can be emptied outside postui: a `git pull`, a file manager, an agent's edit, or a teammate on 0.2.0, which has no folder cascade. Its entry then stays in the list. When a folder with that name newly appears through postui (R10), the leftover entry is removed before the arrival rule runs. A folder that reappears outside postui (files written by hand or by an agent) can't be caught, so it comes back in the leftover slot. | mine (approved), to carry R9's ruling ("it will be a whole new folder") to deletes made outside postui |
@@ -121,6 +121,8 @@ right-click menu has no Move items.
 - `drag_to_row(i)` applies R4 over the spans. For requests (all spans of
   one row) it gives today's results, and the existing tests pin that.
 - alt+↑/↓ on a folder row emits `Action::MoveFolder { path, delta }`.
+  *(Removed 2026-11-05, #258; see R5. The row menu's Move up/down emit
+  it.)*
 
 ### App
 
@@ -172,7 +174,7 @@ right-click menu has no Move items.
   one-row folder past a tall open neighbour and back without
   oscillating (a fixed pointer over several motion events gives a
   fixed order); the existing request drag tests unchanged; alt+↑/↓ on
-  a folder row emits `MoveFolder`.
+  a folder row emits `MoveFolder` (since #258: emits nothing).
 - **App** (`app/tests.rs`): press–move–release on a folder row writes
   `"x/"` entries and the rows match on the next frame. Release outside,
   Esc and a right click cancel. An open folder drags with its subtree.
@@ -181,10 +183,11 @@ right-click menu has no Move items.
   on it, and the items are disabled at the ends. Undo and redo of a
   folder drag and of an alt burst, with the toast text and the cursor.
   A plain click on a folder still only selects, and a double click
-  still toggles.
+  still toggles. (Since #258, 2026-11-05: the menu items only, and the
+  burst is of menu picks.)
 - **Manual (tmux)**: drag a folder past an open neighbour and back, drag
   an open folder, alt+↑/↓, the right-click menu, delete the last
-  request then undo.
+  request then undo. (alt+↑/↓ removed 2026-11-05, #258.)
 
 ## 5. Build checklist
 
@@ -197,7 +200,7 @@ One sequence, each step test-first:
    (R10, R10a) in `order_arrive` and the destination side.
 3. Sidebar: folder order in `build_rows` with the merged overlay;
    `RowDrag.key`; `siblings` spans; R4 in `drag_to_row`; alt+↑/↓ on a
-   folder row.
+   folder row (removed 2026-11-05, #258).
 4. App: `sidebar_press` by `RowKey`; `Action::MoveFolder` sharing the
    move handler; `finish_sidebar_drag` by key; the folder menu items.
 5. Docs: `skills/postui/reference.md`, plus the dated note in the
@@ -209,7 +212,8 @@ One sequence, each step test-first:
 - R3: an open folder drags as a block, rather than collapsing during the
   drag.
 - R4: the drag rule that can't oscillate.
-- R5: alt+↑/↓ and the menu items on folder rows.
+- R5: alt+↑/↓ and the menu items on folder rows (alt+↑/↓ removed
+  2026-11-05, #258).
 - R6: folder entries share the `order` list with a trailing slash,
   rather than going in a separate `folders = [...]` key.
 - R8: undo, as for requests, with the toast "reorder of folder auth".

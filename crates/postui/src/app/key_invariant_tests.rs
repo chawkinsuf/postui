@@ -356,9 +356,9 @@ fn on_a_manage_list(start: &Start) -> bool {
 /// longer acts as the bare key. alt+↑/↓ are named on purpose on the
 /// Manage lists (they move a row), so they are exempt there only; so are
 /// ctrl+Home/End everywhere (first/last row on a list, document jumps on
-/// the response; the user's ruling 2026-10-07). The response also names shift+↑/↓ (extend a line
-/// selection) on purpose, spec'd by its own tests, so those are exempt
-/// there only.
+/// the response; the user's ruling 2026-10-07). The response also names
+/// shift+↑/↓ (extend a line selection) on purpose, spec'd by its own
+/// tests, so those are exempt there only.
 #[test]
 fn an_unbound_chord_on_a_list_does_nothing() {
     use KeyCode::*;

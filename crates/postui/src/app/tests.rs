@@ -6725,10 +6725,10 @@ fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
 }
 
 /// In a directory with no `project.toml` (a registered project that lost
-/// it opens as-is) nothing writes an order, so a drag reorder and alt+↓
-/// are refused with a toast saying why, and the rows snap back: no
-/// `project.toml` is made, no step recorded, no op left in flight (spec
-/// 2026-11-02 drag into folders §3, `Project`).
+/// it opens as-is) nothing writes an order, so a drag reorder and the row
+/// menu's Move down are refused with a toast saying why, and the rows
+/// snap back: no `project.toml` is made, no step recorded, no op left in
+/// flight (spec 2026-11-02 drag into folders §3, `Project`).
 #[test]
 fn a_reorder_with_no_project_toml_toasts_and_snaps_back() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6772,11 +6772,11 @@ fn a_reorder_with_no_project_toml_toasts_and_snaps_back() {
     assert!(!dir.path().join("project.toml").exists());
 }
 
-/// alt+↓ whose write fails, and one with no project, clear the op-in-flight
-/// mark themselves, as the drop does, rather than leaning on `dispatch`'s
-/// safety net.
+/// The row menu's Move up whose write fails, and one with no project,
+/// clear the op-in-flight mark themselves, as the drop does, rather than
+/// leaning on `dispatch`'s safety net.
 #[test]
-fn a_keyboard_move_that_fails_leaves_no_op_in_flight() {
+fn a_row_menu_move_that_fails_leaves_no_op_in_flight() {
     let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
     let meta_path = dir.path().join("project.toml");
     std::fs::write(&meta_path, "spaces = [\n").unwrap();

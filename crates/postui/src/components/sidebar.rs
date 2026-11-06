@@ -990,12 +990,12 @@ impl Sidebar {
     }
 
     /// Row `i`'s sibling group, the move group of the row menu's Move
-    /// up/down, in row order:
-    /// every row at its depth under the same parent, of either kind (spec
-    /// 2026-11-02 drag into folders D21), each with the rows it covers: a
-    /// request its own row, a folder its row and its open subtree (spec
-    /// 2026-11-01 reorder folders R3). The group runs between the
-    /// parent's row (a shallower row) and the next shallower row.
+    /// up/down, in row order: every row at its depth under the same
+    /// parent, of either kind (spec 2026-11-02 drag into folders D21), each
+    /// with the rows it covers: a request its own row, a folder its row and
+    /// its open subtree (spec 2026-11-01 reorder folders R3). The group
+    /// runs between the parent's row (a shallower row) and the next
+    /// shallower row.
     pub fn siblings(&self, i: usize) -> Option<Vec<(RowKey, std::ops::Range<usize>)>> {
         let depth = self.rows.get(i)?.depth();
         let mut first = i;

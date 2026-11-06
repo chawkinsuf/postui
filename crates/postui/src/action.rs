@@ -570,8 +570,8 @@ pub enum Action {
     /// F31, F32): picks the selected row up for the keyboard move.
     StartKeyMove,
     /// Move the request `slug` `delta` positions among its siblings
-    /// (clamped) — the row menu's Move up/down. Writes
-    /// `[space.<slug>] order`; an undo step, a quick burst one step.
+    /// (clamped) — the row menu's Move up/down. Writes `[space.<slug>]
+    /// order`; an undo step, a quick burst one step.
     MoveRequest {
         slug: String,
         delta: i32,

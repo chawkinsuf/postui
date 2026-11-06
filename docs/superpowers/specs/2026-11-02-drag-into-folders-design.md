@@ -164,13 +164,14 @@ follow the same rules.
   reorders (`set_request_order`, `move_request_shown`) don't call it:
   they write their whole level as the sidebar drew it, unlisted items
   included, so that level ends complete and nothing arrives; completing
-  there cost a full re-walk per held alt+↓ step (new round 1). In a
+  there cost a full re-walk per held alt+↓ step (new round 1; the
+  sidebar's alt+↑/↓ were removed 2026-11-05, #258). In a
   directory with no `project.toml` (a registered project whose
   `project.toml` was deleted, which opens as-is with a warning) nothing
   writes an order: `order_edit` writes nothing there, so no op ever
   creates a `project.toml`. Creates, renames, moves, puts and drops still
   do their file part, and the items draw by D6. A drag reorder or alt+↑/↓
-  there is refused with a warning toast saying the order can't be saved
+  (since #258, the row menu's Move up/down) there is refused with a warning toast saying the order can't be saved
   without a `project.toml`, rather than snapping back silently. This
   replaces main's reorders and puts creating one (mine (approved): "1 i
   think", new round 2). Inside an op the completion is best effort: a
