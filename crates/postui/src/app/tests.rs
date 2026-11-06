@@ -39097,7 +39097,8 @@ fn a_drop_in_a_folder_with_no_project_rebuilds_the_rows() {
     assert!(!app.op_in_flight);
 }
 
-/// D18: a folder dropped where a folder of its name shows is refused.
+/// D18: a folder dropped where a folder of its name shows is refused, and
+/// the toast names that folder without the destination.
 #[test]
 fn a_folder_clash_toasts_and_snaps_back() {
     let (mut app, dir) = spaced_app();
@@ -39116,13 +39117,41 @@ fn a_folder_clash_toasts_and_snaps_back() {
     assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("box".to_string(), 0));
     app.handle_mouse(left_up(names_x(a), inner.y));
     assert!(
-        app.toasts.messages().contains(&"box already has a folder named \"a\""),
+        app.toasts.messages().contains(&"\"a\" already exists here"),
         "{:?}",
         app.toasts.messages()
     );
     assert!(dir.path().join("requests/main/a/x.toml").is_file(), "nothing moved");
     assert_eq!(folder_rows(&app), ["main/a", "main/box", "main/box/a"], "snapped back");
     assert!(!app.op_in_flight);
+}
+
+/// D18 with only the directories clashing: the toast names the folder by
+/// the name it shows, not its directory.
+#[test]
+fn a_folder_clash_by_directory_names_the_shown_folder() {
+    let (mut app, dir) = spaced_app();
+    for slug in ["main/a/x", "main/box/a/y"] {
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/f")).unwrap();
+    }
+    std::fs::write(dir.path().join("requests/main/box/a/.folder.toml"), "name = \"Accounts\"\n")
+        .unwrap();
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/box".into());
+    app.proj_mut().set_expanded(expanded);
+    app.update(Action::RefreshSidebar);
+    // rows: alpha, beta, a/, box/, Accounts/ (box's, closed)
+    let a = folder_rect(&mut app, "main/a");
+    let inner = folder_rect(&mut app, "main/box/a");
+    app.handle_mouse(left_down(names_x(a), a.y));
+    app.handle_mouse(moved(names_x(a), inner.y));
+    app.handle_mouse(left_up(names_x(a), inner.y));
+    assert!(
+        app.toasts.messages().contains(&"\"Accounts\" already exists here"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(dir.path().join("requests/main/a/x.toml").is_file(), "nothing moved");
 }
 
 /// D13: a press on the last row promotes when the pointer goes straight
