@@ -718,6 +718,9 @@ impl Project {
     /// all `.postui/` (the lock, the trash, secrets and state), which an
     /// undo must never take back (spec §3: "directories the journal must
     /// not own"; review round 7).
+    ///
+    /// Each directory is first checked for a twin in another case
+    /// ([`Self::refuse_dir_case_twin`], #257).
     fn fs_make_parents(&mut self, path: &RelPath) -> Result<(), Error> {
         let full = path.as_str().to_string();
         if !full.starts_with(&format!("{REQUESTS_DIR}/")) {
@@ -727,6 +730,7 @@ impl Project {
         // folders below it are an op's to make and take back.
         for (i, _) in full.match_indices('/').skip(1) {
             let dir = rel(&full[..i])?;
+            self.refuse_dir_case_twin(&dir)?;
             if !self.disk.is_dir(&dir) {
                 self.disk.create_dir(&dir)?;
                 self.record(Op::Created { path: dir });
