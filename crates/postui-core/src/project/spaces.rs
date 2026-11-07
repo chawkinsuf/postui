@@ -117,9 +117,10 @@ impl Project {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.space_slug_for(&display, Some(from))?;
-        // The rename writes into `from`'s directory, or makes it when it is
-        // missing, so a hand-made twin of it refuses (#266). `to`, when it
-        // differs, was numbered past any directory in another case above.
+        // A space whose directory is there only in another case refuses on
+        // every disk, as a move into it does, so the platforms agree
+        // (#266). `to`, when it differs, was numbered past any directory in
+        // another case above.
         self.refuse_space_case_twin(from)?;
         spaces[idx] = to.clone();
         let from = from.to_string();
