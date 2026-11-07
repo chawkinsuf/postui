@@ -10,16 +10,21 @@ use crate::varedit::EditError;
 use crate::varedit;
 
 impl Project {
-    /// `variables.toml` as it reads right now. `peek`, not `read`: a
-    /// scan must never record the stamp `poll` watches.
+    /// `variables.toml` as it reads right now. See [`Self::peek_text`].
     pub fn variables_text(&self) -> Result<String, Error> {
-        Ok(self.disk.peek(&rel(VARIABLES_TOML)?)?.unwrap_or_default())
+        self.peek_text(&rel(VARIABLES_TOML)?)
     }
 
     /// `environments/<env>.toml` as it reads right now. See
-    /// [`Self::variables_text`] for why this peeks.
+    /// [`Self::peek_text`].
     pub fn env_text(&self, env: &str) -> Result<String, Error> {
-        Ok(self.disk.peek(&env_rel(env)?)?.unwrap_or_default())
+        self.peek_text(&env_rel(env)?)
+    }
+
+    /// The text at `path`, empty when there is no file. `peek`, not
+    /// `read`: a scan must never record the stamp `poll` watches.
+    fn peek_text(&self, path: &RelPath) -> Result<String, Error> {
+        Ok(self.disk.peek(path)?.unwrap_or_default())
     }
 
     /// The app's multi-step variable cascades run under one label so
@@ -32,12 +37,18 @@ impl Project {
         self.transaction(label, EntryMeta::default(), f)
     }
 
+    /// Rewrites `variables.toml` through `f`. This and the two edits below
+    /// take the text they edit through `peek_text`: that text is not
+    /// loaded into the model, so recording its
+    /// stamp would let a refused edit hide an outside change to the file
+    /// from `poll` (#81). `Disk::read` records on every read, so the
+    /// choice is made here. The write, when one lands, records the stamp.
     pub fn edit_variables(
         &mut self,
         f: impl FnOnce(&str) -> Result<String, EditError>,
     ) -> Result<(), Error> {
         let path = rel(VARIABLES_TOML)?;
-        let text = self.disk.read(&path)?.unwrap_or_default();
+        let text = self.peek_text(&path)?;
         let new_text = f(&text).map_err(|e| Error::Edit(e.to_string()))?;
         let new_model =
             varmodel::parse_variables(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
@@ -59,7 +70,7 @@ impl Project {
         f: impl FnOnce(&str) -> Result<String, EditError>,
     ) -> Result<(), Error> {
         let path = env_rel(env)?;
-        let text = self.disk.read(&path)?.unwrap_or_default();
+        let text = self.peek_text(&path)?;
         let new_text = f(&text).map_err(|e| Error::Edit(e.to_string()))?;
         let new_env =
             varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
@@ -82,14 +93,14 @@ impl Project {
         ef: impl Fn(&str) -> Result<String, EditError>,
     ) -> Result<(), Error> {
         let vars_path = rel(VARIABLES_TOML)?;
-        let vars_text = self.disk.read(&vars_path)?.unwrap_or_default();
+        let vars_text = self.peek_text(&vars_path)?;
         let new_vars_text = vf(&vars_text).map_err(|e| Error::Edit(e.to_string()))?;
         let new_model =
             varmodel::parse_variables(&new_vars_text).map_err(|e| Error::Edit(e.to_string()))?;
         let mut envs: Vec<(String, RelPath, String, EnvData)> = Vec::new();
         for env in self.environments.clone() {
             let path = env_rel(&env)?;
-            let text = self.disk.read(&path)?.unwrap_or_default();
+            let text = self.peek_text(&path)?;
             let new_text = ef(&text).map_err(|e| Error::Edit(e.to_string()))?;
             let data =
                 varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
@@ -183,6 +194,46 @@ mod tests {
         assert_eq!(read(&dir, "variables.toml").unwrap(), before);
         assert!(p2.variables().selectors.contains_key("region"));
         assert_eq!(p2.journal_len(), 0);
+    }
+
+    /// #81: a refused edit read the file but changed nothing, so an outside
+    /// change to that file is still the next `poll`'s to pick up.
+    #[test]
+    fn a_refused_edit_leaves_an_outside_change_for_the_next_poll() {
+        let refuse = |_: &str| Err::<String, _>(EditError::Conflict("refused".into()));
+        type Edit =
+            fn(&mut Project, &dyn Fn(&str) -> Result<String, EditError>) -> Result<(), Error>;
+        // What the outside change writes, and what the poll must show for it.
+        let vars_outside = ("variables.toml", "[host]\ndefault = \"localhost\"\n[extra]\n");
+        let env_outside = ("environments/dev.toml", "host = \"changed.outside\"\n");
+        let vars_landed = |p: &Project| p.variables().vars.contains_key("extra");
+        let env_landed = |p: &Project| {
+            p.resolved().values.get("host").map(String::as_str) == Some("changed.outside")
+        };
+        type Landed = fn(&Project) -> bool;
+        let edits: [((&str, &str), Edit, Landed); 4] = [
+            (vars_outside, |p, f| p.edit_variables(f), vars_landed),
+            (env_outside, |p, f| p.edit_env("dev", f), env_landed),
+            (
+                vars_outside,
+                |p, f| p.edit_variables_and_envs(f, |doc| Ok(doc.to_string())),
+                vars_landed,
+            ),
+            (
+                env_outside,
+                |p, f| p.edit_variables_and_envs(|doc| Ok(doc.to_string()), f),
+                env_landed,
+            ),
+        ];
+        for ((file, outside), edit, landed) in edits {
+            let (dir, mut p) = fixture();
+            std::fs::write(dir.path().join(file), outside).unwrap();
+            assert!(edit(&mut p, &refuse).is_err(), "{file}");
+            assert!(!landed(&p), "{file}: not read before the poll");
+            assert!(p.changed_on_disk(), "{file}: the change is still pending");
+            assert!(p.poll().0, "{file}");
+            assert!(landed(&p), "{file}: the poll read the change");
+        }
     }
 
     #[test]
