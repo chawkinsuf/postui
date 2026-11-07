@@ -576,16 +576,19 @@ impl Project {
     /// A move's or a create's pre-flight for the directory of `space`,
     /// which it writes into: refuses when `requests/` holds no directory of
     /// that name but one in another case (a hand rename of `auth/` to
-    /// `Auth/`, #257, #260). A case-insensitive disk would file the request
-    /// into it, where the walk lists no space `space`. Refused on every
-    /// disk, as F27 refuses a folder twin: on a case-sensitive one the op
-    /// would make a case-only twin. Called after the op's relist, so a
-    /// refusal leaves the listing fresh. Compares Unicode lowercase, as
+    /// `Auth/`, #257, #260, #263). A case-insensitive disk would file the
+    /// request into it, where the walk lists no space `space`. Refused on
+    /// every disk, as F27 refuses a folder twin: on a case-sensitive one
+    /// the op would make a case-only twin. Called after the op's relist, so
+    /// a refusal leaves the listing fresh. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
     ///
-    /// Each op that writes into a space calls it from its own pre-flight.
-    /// A check under every write, in `fs_make_parents`, was tried in #257
-    /// and reverted (#260, comment 1170).
+    /// Each op that names the space it creates or moves into calls it from
+    /// its own pre-flight. An op on a listed item writes in that item's
+    /// own space, and the walk lists no item in a space whose directory is
+    /// spelled in another case. A check under every write, in
+    /// `fs_make_parents`, was tried in #257 and reverted (#260, comment
+    /// 1170).
     fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
         self.refuse_space_case_twins(&[space])
     }
@@ -1772,9 +1775,10 @@ impl Project {
     /// after `after`'s (the cursor's item) or, with none, last in its level
     /// (2026-11-02 D4). Returns its full path.
     ///
-    /// Refused, with nothing written: an empty name, a missing level, and a
-    /// name a sibling folder already shows. A slug that clashes while the
-    /// shown names differ gets `-2`, `-3`, …
+    /// Refused, with nothing written: an empty name, a missing level, a
+    /// name a sibling folder already shows, and a space whose directory is
+    /// spelled in another case (#263). A slug that clashes while the shown
+    /// names differ gets `-2`, `-3`, …
     pub fn create_folder(
         &mut self,
         level: &str,
@@ -1795,6 +1799,10 @@ impl Project {
             return Err(Error::BadName(path));
         };
         let (space, entry) = (space.to_string(), order::folder_entry(rel_path));
+        // After the level and name checks, as in `create_at`. A folder in a
+        // space whose directory is spelled in another case is not listed,
+        // so a level inside one is refused above as not found.
+        self.refuse_space_case_twin(&space)?;
         let anchor = after.and_then(|a| Self::item_entry(a, &space));
         let meta = self.meta_for_moves(Vec::new());
         self.order_transaction("create folder", meta, |p| {
@@ -5562,6 +5570,28 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
+    /// #263: a New folder in that space refuses the same way.
+    #[test]
+    fn new_folder_refuses_a_space_directory_in_another_case() {
+        let (dir, mut p) = folder_project(&[], &["main/x", "auth/sub/y"]);
+        std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
+            .unwrap();
+        let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
+        let r = p.create_folder("auth", "New", None);
+        assert!(
+            matches!(&r, Err(Error::Conflict(m))
+                if m.contains("requests/Auth/") && m.contains("outside postui")),
+            "{r:?}"
+        );
+        // A level inside it is not listed (a row drawn before the rename).
+        let r = p.create_folder("auth/sub", "New", None);
+        assert!(matches!(&r, Err(Error::NotFound(l)) if l == "auth/sub"), "{r:?}");
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
     /// A create goes into the space's own directory, listed at its exact
     /// name, even beside a twin in another case, which is left alone. Only
     /// a case-sensitive disk holds both.
@@ -5572,8 +5602,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
         assert_eq!(p.create_request_in("auth", "New", None, req("u")).unwrap().0, "auth/new");
         assert_eq!(p.create_request("auth/Other", req("u")).unwrap().0, "auth/other");
+        assert_eq!(p.create_folder("auth", "Folder", None).unwrap(), "auth/folder");
         assert!(dir.path().join("requests/auth/new.toml").is_file());
         assert!(dir.path().join("requests/auth/other.toml").is_file());
+        assert!(dir.path().join("requests/auth/folder").is_dir());
         let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
         assert_eq!(twin.count(), 0);
     }
