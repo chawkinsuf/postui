@@ -12,15 +12,16 @@ impl Project {
     /// `exclude` is the environment a rename renames. An entry of any
     /// kind counts, as an exact-case one already did. An `environments/`
     /// that can't be listed is an error, not a guess, even when
-    /// `display` slugs to `exclude`.
+    /// `display` slugs to `exclude`. The listing records no stamp, so an
+    /// outside change to `environments/` still reaches the next poll.
     pub fn environment_slug_for(
-        &mut self,
+        &self,
         display: &str,
         exclude: Option<&str>,
     ) -> Result<String, Error> {
         let on_disk: Vec<String> = self
             .disk
-            .list(&RelPath::new(ENVIRONMENTS_DIR)?)?
+            .peek_list(&RelPath::new(ENVIRONMENTS_DIR)?)?
             .into_iter()
             .map(|e| e.name.to_lowercase())
             .collect();
@@ -592,6 +593,27 @@ mod tests {
         assert!(created.is_err(), "{created:?}");
         let names = env_dir_names(&dir);
         assert!(!names.contains(&"prod.toml".to_string()), "{names:?}");
+    }
+
+    /// The slug's listing of `environments/` records no stamp: an
+    /// environment file made by hand before a create that then fails
+    /// (here `environments/` can't be written) still reaches the next poll.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_create_leaves_a_hand_made_environment_to_the_poll() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        let envs = dir.path().join("environments");
+        std::fs::write(envs.join("staging.toml"), "").unwrap();
+        let t = std::fs::metadata(&envs).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
+        std::fs::File::open(&envs).unwrap().set_modified(t).unwrap();
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let created = p.create_environment("Prod");
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(created.is_err(), "{created:?}");
+        assert!(p.poll().0, "the poll must see the hand-made file");
+        assert!(p.environments().contains(&"staging".to_string()), "{:?}", p.environments());
     }
 
     #[test]
