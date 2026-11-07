@@ -799,7 +799,8 @@ impl Project {
     /// The files today's `reload_if_changed` stamps: `project.toml`,
     /// `variables.toml`, `environments/` and the active env file. The
     /// spaces under `requests/` are compared, not stamped
-    /// ([`Self::changed_on_disk`]).
+    /// ([`Self::changed_on_disk`]). `Disk::list` still records a stamp for
+    /// `requests/`, as for every directory it lists; nothing reads it.
     fn watched(&self) -> Vec<RelPath> {
         let mut out = vec![
             RelPath::new(PROJECT_TOML).expect("constant"),
@@ -2421,11 +2422,13 @@ mod tests {
         let (dir, mut p) = fixture();
         let requests = dir.path().join("requests");
         std::fs::create_dir(requests.join("extra")).unwrap();
+        std::fs::write(requests.join("extra/hi.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
         assert!(p.poll().0, "a new unlisted space");
+        assert!(p.requests().iter().any(|l| l.slug == "extra/hi"), "and its requests");
         std::fs::rename(requests.join("extra"), requests.join("other")).unwrap();
         assert!(p.poll().0, "an unlisted space renamed");
         assert_eq!(p.spaces(), ["main", "auth", "other"]);
-        std::fs::remove_dir(requests.join("other")).unwrap();
+        std::fs::remove_dir_all(requests.join("other")).unwrap();
         assert!(p.poll().0, "an unlisted space removed");
         assert_eq!(p.spaces(), ["main", "auth"]);
         std::fs::create_dir(requests.join("Bad Name")).unwrap();
