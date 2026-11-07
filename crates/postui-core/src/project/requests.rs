@@ -1145,6 +1145,9 @@ impl Project {
             return Err(Error::BadName(slug));
         };
         let (space, rel) = (space.to_string(), rel.to_string());
+        // Here, where New request and curl import meet, so one call covers
+        // both. A check made before it (the name, the level, the typed
+        // path) may refuse first.
         self.refuse_space_case_twin(&space)?;
         let anchor = after.and_then(|a| Self::item_entry(a, &space));
         req.name = Some(leaf.clone());
