@@ -476,7 +476,8 @@ impl Disk {
         self.stamps.get(rel).copied()
     }
 
-    fn record(&mut self, rel: &RelPath) {
+    /// Records `rel`'s stamp as it is on disk now.
+    pub(crate) fn record(&mut self, rel: &RelPath) {
         let s = self.stamp(rel);
         self.stamps.insert(rel.clone(), s);
     }

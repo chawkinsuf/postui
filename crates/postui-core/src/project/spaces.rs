@@ -16,7 +16,7 @@ impl Project {
                 out.push(name.clone());
             }
         }
-        let (listed, _) = Self::list_spaces(&mut self.disk, &self.meta);
+        let (listed, _, _) = Self::scan_spaces(&self.disk, &self.meta);
         for name in listed {
             if !out.contains(&name) {
                 out.push(name);
@@ -67,7 +67,7 @@ impl Project {
     ) -> Result<String, Error> {
         let on_disk: Vec<String> = self
             .disk
-            .list(&RelPath::new(REQUESTS_DIR)?)?
+            .peek_list(&RelPath::new(REQUESTS_DIR)?)?
             .into_iter()
             .map(|e| e.name.to_lowercase())
             .collect();

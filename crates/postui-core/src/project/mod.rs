@@ -578,10 +578,16 @@ impl Project {
             let _ = self.persist_local();
         }
         let snapshot = self.snapshot();
+        // When the stamp of `requests/` is current here, its changes until
+        // the end are the transaction's own (a space directory it makes,
+        // or its rollback), not outside ones, so the stamp is recorded
+        // again at the end, as it is after the app's other writes (#262).
+        let requests = RelPath::new(REQUESTS_DIR).expect("constant");
+        let spaces_current = !self.disk.changed(&requests);
         self.recording = Some(Vec::new());
         let result = f(self);
         let ops = self.recording.take().unwrap_or_default();
-        match result {
+        let result = match result {
             Ok(v) => {
                 if !ops.is_empty() {
                     self.journal.push(Entry {
@@ -618,7 +624,11 @@ impl Project {
                 }
                 Err(e)
             }
+        };
+        if spaces_current {
+            self.disk.record(&requests);
         }
+        result
     }
 
     /// Runs `f` as one undo entry. See [`Self::run_transaction`].
@@ -1072,8 +1082,16 @@ impl Project {
     }
 
     /// `meta.spaces` first (invalid names skipped, duplicates dropped),
-    /// then unlisted directories under `requests/`, alphabetically.
+    /// then unlisted directories under `requests/`, alphabetically. The
+    /// load of the spaces: it records the stamp of `requests/`, which the
+    /// poll compares to reload them (#262). Every other listing of
+    /// `requests/` peeks.
     fn list_spaces(disk: &mut Disk, meta: &ProjectMeta) -> (Vec<String>, Vec<Warning>) {
+        if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
+            // Before the listing: a directory made while it runs then
+            // reads as a change.
+            disk.record(&dir);
+        }
         let (out, skipped, list_failed) = Self::scan_spaces(disk, meta);
         let mut warnings: Vec<Warning> = skipped.iter().filter_map(Skipped::warning).collect();
         warnings.extend(list_failed);
@@ -1082,9 +1100,10 @@ impl Project {
 
     /// [`list_spaces`](Self::list_spaces), with what it skips for its name
     /// (the listed names, each once, then the directories, alphabetically)
-    /// and the warning a `requests/` that won't list gives.
+    /// and the warning a `requests/` that won't list gives. Records no
+    /// stamp.
     fn scan_spaces(
-        disk: &mut Disk,
+        disk: &Disk,
         meta: &ProjectMeta,
     ) -> (Vec<String>, Vec<Skipped>, Option<Warning>) {
         let mut out: Vec<String> = Vec::new();
@@ -1105,7 +1124,7 @@ impl Project {
         let mut bad_dirs = Vec::new();
         let mut list_failed = None;
         if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
-            match disk.list(&dir) {
+            match disk.peek_list(&dir) {
                 Ok(entries) => {
                     for e in entries.into_iter().filter(|e| e.is_dir) {
                         if !meta::valid_space_name(&e.name) {
@@ -1131,7 +1150,7 @@ impl Project {
     /// names `project.toml` lists, then environment files, then space
     /// directories. Read from disk now, by the listings `open` uses.
     pub fn skipped(&mut self) -> Vec<Skipped> {
-        let (_, spaces, _) = Self::scan_spaces(&mut self.disk, &self.meta);
+        let (_, spaces, _) = Self::scan_spaces(&self.disk, &self.meta);
         let (listed_spaces, dirs): (Vec<Skipped>, Vec<Skipped>) =
             spaces.into_iter().partition(|s| matches!(s, Skipped::ListedSpace(_)));
         let (listed_envs, files): (Vec<Skipped>, Vec<Skipped>) =
@@ -2289,12 +2308,13 @@ mod tests {
         assert_eq!(p.active_env(), None);
     }
 
-    /// #262: a request op's listing of `requests/` between a hand-made
-    /// space directory and the poll leaves the new space for the poll.
+    /// #262: an op's listing of `requests/` between a hand-made space
+    /// directory and the poll leaves the new space for the poll: request
+    /// ops, and the space ops that refuse or change nothing.
     #[test]
-    fn a_request_op_before_the_poll_leaves_a_new_space_dir_for_it() {
-        type RequestOp = fn(&mut Project);
-        let ops: [(&str, RequestOp); 3] = [
+    fn an_op_before_the_poll_leaves_a_new_space_dir_for_it() {
+        type ProjectOp = fn(&mut Project);
+        let ops: [(&str, ProjectOp); 10] = [
             ("create", |p| {
                 let req = crate::model::HttpRequest::default();
                 p.create_request_in("main", "Fresh", None, req).unwrap();
@@ -2305,6 +2325,28 @@ mod tests {
             ("move", |p| {
                 p.move_request("main/ping", "auth").unwrap();
             }),
+            ("move the top space up", |p| {
+                assert!(p.move_space("main", -1).unwrap().is_none());
+            }),
+            ("create a taken space", |p| {
+                p.create_space("Auth").unwrap_err();
+            }),
+            ("rename onto a taken space", |p| {
+                p.rename_space("main", "Auth").unwrap_err();
+            }),
+            ("delete a missing space", |p| {
+                p.delete_space("nope").unwrap_err();
+            }),
+            ("an unchanged space order", |p| {
+                let order = ["main", "auth", "new"].map(String::from);
+                assert!(p.set_space_order(&order).unwrap().is_none());
+            }),
+            ("a space slug", |p| {
+                p.space_slug_for("Other", None).unwrap();
+            }),
+            ("what is skipped", |p| {
+                p.skipped();
+            }),
         ];
         for (what, op) in ops {
             let (dir, mut p) = fixture();
@@ -2313,6 +2355,45 @@ mod tests {
             op(&mut p);
             assert!(p.poll().0, "{what}: the poll still sees requests/ changed");
             assert_eq!(p.spaces(), ["main", "auth", "new"], "{what}");
+        }
+    }
+
+    /// #262: a space directory a request op makes itself (a listed space
+    /// with no directory, as git leaves an empty one) is the app's own
+    /// change to `requests/`, and so is the rollback that takes one back:
+    /// neither leaves the poll a reload to do.
+    #[test]
+    fn a_space_dir_an_op_makes_or_rolls_back_is_no_outside_change() {
+        type ProjectOp = fn(&mut Project);
+        let ops: [(&str, ProjectOp); 3] = [
+            ("create", |p| {
+                let req = crate::model::HttpRequest::default();
+                p.create_request_in("auth", "Fresh", None, req).unwrap();
+            }),
+            ("move", |p| {
+                p.move_request("main/ping", "auth").unwrap();
+            }),
+            ("rollback", |p| {
+                p.transaction("make", EntryMeta::default(), |p| {
+                    p.fs_create_dir(&space_rel("auth")?)?;
+                    Err::<(), _>(Error::Edit("late failure".into()))
+                })
+                .unwrap_err();
+            }),
+        ];
+        for (what, op) in ops {
+            let (dir, mut p) = fixture();
+            let requests = dir.path().join("requests");
+            std::fs::remove_dir_all(requests.join("auth")).unwrap();
+            // Back-dated, so the op's own change to `requests/` moves its
+            // stamp on any clock.
+            let past = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+            std::fs::File::open(&requests).unwrap().set_modified(past).unwrap();
+            assert!(p.poll().0);
+            assert_eq!(p.spaces(), ["main", "auth"], "{what}: listed, so still a space");
+            op(&mut p);
+            assert_eq!(requests.join("auth").is_dir(), what != "rollback", "{what}");
+            assert!(!p.changed_on_disk(), "{what}: the op's own change");
         }
     }
 
