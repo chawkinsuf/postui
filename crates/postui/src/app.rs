@@ -2717,7 +2717,7 @@ impl App {
     /// builds don't check; there an unset key's first sync sets it at its
     /// target with no ease (`Anims::retarget`).
     fn sync_split_anims(&mut self, snap: bool) {
-        for (key, target_v) in self.split_state().anim_values() {
+        for (key, target_v) in crate::anim::SplitAnims::settled(self.split_state()).keyed() {
             if snap {
                 self.anims.snap(key, target_v);
                 continue;
@@ -2743,9 +2743,9 @@ impl App {
     /// [`Self::settled_layout`] for the split `s` instead of the current
     /// one: where `s` would put the panes at the terminal's size.
     fn layout_at(&self, s: crate::split::SplitState) -> Option<crate::layout::AppLayout> {
-        let [collapse_t, response_t, ratio_t] = s.anim_values().map(|(_, v)| v);
+        let v = crate::anim::SplitAnims::settled(s);
         self.term_area.map(|area| {
-            crate::layout::compute_layout(area, collapse_t, response_t, ratio_t, self.sidebar_width)
+            crate::layout::compute_layout(area, v.editor, v.response, v.ratio, self.sidebar_width)
         })
     }
 

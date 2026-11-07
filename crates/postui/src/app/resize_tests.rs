@@ -399,7 +399,7 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
 /// set, done, and sits at the split field's own value.
 fn assert_split_drawn_settled(app: &App) {
     let now = std::time::Instant::now();
-    for (key, settled) in app.split_state().anim_values() {
+    for (key, settled) in crate::anim::SplitAnims::settled(app.split_state()).keyed() {
         assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
         assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
     }
