@@ -12,6 +12,8 @@
 //! editor pane's fixed tab-bar row so they never move out from under the
 //! pointer.
 
+use crate::anim::AnimKey;
+
 /// One of the five named split stops, named by the editor's share, in
 /// the keyboard cycle's on-screen order (the boundary slides down). Only
 /// the two ends, [`Self::EditorFull`] and [`Self::ResponseFull`], are
@@ -90,7 +92,24 @@ impl Default for SplitState {
     }
 }
 
+/// Where a pane's collapse anim (`AnimKey::PaneCollapse` or
+/// `AnimKey::ResponseCollapse`) settles: `1.0` hidden, `0.0` shown.
+pub fn collapse_pole(hidden: bool) -> f32 {
+    if hidden { 1.0 } else { 0.0 }
+}
+
 impl SplitState {
+    /// The split's three anims and the value each one settles at for this
+    /// state, in `layout::compute_layout`'s argument order: the editor's
+    /// and the response's [`collapse_pole`], then the ratio as is.
+    pub fn anim_values(self) -> [(AnimKey, f32); 3] {
+        [
+            (AnimKey::PaneCollapse, collapse_pole(self.editor_minimized)),
+            (AnimKey::ResponseCollapse, collapse_pole(self.response_minimized)),
+            (AnimKey::SplitRatio, self.ratio),
+        ]
+    }
+
     /// The stop this state sits at — the control's lit chip — or `None`
     /// when a dragged share sits between stops. The end stops are the
     /// minimized flags, never a share: a free share at 1.0 or 0.0 (a
@@ -278,6 +297,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Task #253: each pane's collapse key settles at 1.0 hidden and 0.0
+    /// shown, and the ratio key at the ratio.
+    #[test]
+    fn anim_values_map_the_split_to_its_three_keys() {
+        let s = SplitState { editor_minimized: true, response_minimized: false, ratio: 0.3 };
+        assert_eq!(
+            s.anim_values(),
+            [
+                (AnimKey::PaneCollapse, 1.0),
+                (AnimKey::ResponseCollapse, 0.0),
+                (AnimKey::SplitRatio, 0.3)
+            ]
+        );
+        let s = SplitState { editor_minimized: false, response_minimized: true, ratio: 0.7 };
+        assert_eq!(
+            s.anim_values(),
+            [
+                (AnimKey::PaneCollapse, 0.0),
+                (AnimKey::ResponseCollapse, 1.0),
+                (AnimKey::SplitRatio, 0.7)
+            ]
+        );
     }
 
     #[test]

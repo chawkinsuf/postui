@@ -3888,7 +3888,7 @@ impl Editor {
             .value_or(
                 crate::anim::AnimKey::PaneCollapse,
                 ctx.now,
-                if self.table_collapsed { 1.0 } else { 0.0 },
+                crate::split::collapse_pole(self.table_collapsed),
             )
             .clamp(0.0, 1.0);
         if fade_t < 1.0 {

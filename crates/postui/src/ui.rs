@@ -38,17 +38,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // value at `now` is what actually drives the row split. The settled
     // fields are only `value_or`'s default: every app starts with the
     // split's anims set (`App::sync_split_anims`).
-    let collapse_t = app.anims.value_or(
-        crate::anim::AnimKey::PaneCollapse,
-        now,
-        if app.table_collapsed { 1.0 } else { 0.0 },
-    );
-    let response_t = app.anims.value_or(
-        crate::anim::AnimKey::ResponseCollapse,
-        now,
-        if app.session.response.collapsed { 1.0 } else { 0.0 },
-    );
-    let ratio_t = app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio);
+    let [collapse_t, response_t, ratio_t] =
+        app.split_state().anim_values().map(|(key, settled)| app.anims.value_or(key, now, settled));
     app.term_area = Some(frame.area());
     let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t, app.sidebar_width);
     let focus = app.focus;

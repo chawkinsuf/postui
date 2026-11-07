@@ -398,15 +398,8 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
 /// Asserts the split's three anims draw `app`'s split settled: each one is
 /// set, done, and sits at the split field's own value.
 fn assert_split_drawn_settled(app: &App) {
-    use crate::anim::AnimKey;
     let now = std::time::Instant::now();
-    let s = app.split_state();
-    let flag = |on: bool| if on { 1.0 } else { 0.0 };
-    for (key, settled) in [
-        (AnimKey::PaneCollapse, flag(s.editor_minimized)),
-        (AnimKey::ResponseCollapse, flag(s.response_minimized)),
-        (AnimKey::SplitRatio, s.ratio),
-    ] {
+    for (key, settled) in app.split_state().anim_values() {
         assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
         assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
     }
