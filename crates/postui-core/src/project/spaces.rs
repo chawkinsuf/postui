@@ -16,7 +16,7 @@ impl Project {
                 out.push(name.clone());
             }
         }
-        let (listed, _) = Self::list_spaces(&mut self.disk, &self.meta);
+        let (listed, _) = Self::list_spaces(&self.disk, &self.meta);
         for name in listed {
             if !out.contains(&name) {
                 out.push(name);
@@ -28,7 +28,7 @@ impl Project {
     /// Re-lists spaces from `meta` and disk; a vanished active space
     /// falls back to the first with a warning.
     pub(crate) fn refresh_spaces(&mut self) -> Option<Warning> {
-        let (spaces, invalid) = Self::list_spaces(&mut self.disk, &self.meta);
+        let (spaces, invalid) = Self::list_spaces(&self.disk, &self.meta);
         self.spaces = spaces;
         self.spaces_warning = super::join_warnings(&invalid);
         if self.spaces.contains(&self.local.active_space) {
