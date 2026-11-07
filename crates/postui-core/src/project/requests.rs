@@ -583,9 +583,12 @@ impl Project {
     /// a refusal leaves the listing fresh. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
     ///
-    /// Each op that writes into a space calls it from its own pre-flight.
-    /// A check under every write, in `fs_make_parents`, was tried in #257
-    /// and reverted (#260, comment 1170).
+    /// Each op that names the space it creates or moves into calls it from
+    /// its own pre-flight. An op on a listed item writes in that item's
+    /// own space, and the walk lists no item in a space whose directory is
+    /// spelled in another case. A check under every write, in
+    /// `fs_make_parents`, was tried in #257 and reverted (#260, comment
+    /// 1170).
     fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
         self.refuse_space_case_twins(&[space])
     }
@@ -1796,6 +1799,9 @@ impl Project {
             return Err(Error::BadName(path));
         };
         let (space, entry) = (space.to_string(), order::folder_entry(rel_path));
+        // After the level and name checks, as in `create_at`. A folder in a
+        // space whose directory is spelled in another case is not listed,
+        // so a level inside one is refused above as not found.
         self.refuse_space_case_twin(&space)?;
         let anchor = after.and_then(|a| Self::item_entry(a, &space));
         let meta = self.meta_for_moves(Vec::new());
@@ -5567,7 +5573,7 @@ mod tests {
     /// #263: a New folder in that space refuses the same way.
     #[test]
     fn new_folder_refuses_a_space_directory_in_another_case() {
-        let (dir, mut p) = folder_project(&[], &["main/x"]);
+        let (dir, mut p) = folder_project(&[], &["main/x", "auth/sub/y"]);
         std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
             .unwrap();
         let before = requests_tree(&dir);
@@ -5578,6 +5584,9 @@ mod tests {
                 if m.contains("requests/Auth/") && m.contains("outside postui")),
             "{r:?}"
         );
+        // A level inside it is not listed (a row drawn before the rename).
+        let r = p.create_folder("auth/sub", "New", None);
+        assert!(matches!(&r, Err(Error::NotFound(l)) if l == "auth/sub"), "{r:?}");
         assert_eq!(requests_tree(&dir), before);
         assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
         assert_eq!(p.journal_len(), 0);
