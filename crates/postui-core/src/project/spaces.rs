@@ -9,14 +9,14 @@ impl Project {
     /// `meta.spaces` exactly as written (duplicates dropped, invalid
     /// names kept in place) then unlisted directories: the list every
     /// space op writes back. Never filters a hand-written entry away.
-    fn write_list(&mut self) -> Vec<String> {
+    fn write_list(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for name in &self.meta.spaces {
             if !out.contains(name) {
                 out.push(name.clone());
             }
         }
-        let (listed, _, _) = Self::scan_spaces(&self.disk, &self.meta);
+        let (listed, _, _) = Self::scan_spaces(self.disk.peek_list(&requests_rel()), &self.meta);
         for name in listed {
             if !out.contains(&name) {
                 out.push(name);
@@ -60,14 +60,10 @@ impl Project {
     /// counts, a file too: on a case-insensitive disk it holds the name.
     /// A `requests/` that can't be listed is an error, not a guess, even
     /// when `display` slugs to `exclude`.
-    pub fn space_slug_for(
-        &mut self,
-        display: &str,
-        exclude: Option<&str>,
-    ) -> Result<String, Error> {
+    pub fn space_slug_for(&self, display: &str, exclude: Option<&str>) -> Result<String, Error> {
         let on_disk: Vec<String> = self
             .disk
-            .peek_list(&RelPath::new(REQUESTS_DIR)?)?
+            .peek_list(&requests_rel())?
             .into_iter()
             .map(|e| e.name.to_lowercase())
             .collect();

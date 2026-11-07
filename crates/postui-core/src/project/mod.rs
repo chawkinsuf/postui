@@ -231,6 +231,10 @@ pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
     Ok(RelPath::new(s)?)
 }
 
+pub(crate) fn requests_rel() -> RelPath {
+    RelPath::new(REQUESTS_DIR).expect("constant")
+}
+
 pub(crate) fn request_rel(slug: &str) -> Result<RelPath, Error> {
     crate::storage::validate_slug(slug).map_err(|e| Error::BadName(e.to_string()))?;
     rel(&format!("{REQUESTS_DIR}/{slug}.toml"))
@@ -578,16 +582,10 @@ impl Project {
             let _ = self.persist_local();
         }
         let snapshot = self.snapshot();
-        // When the stamp of `requests/` is current here, its changes until
-        // the end are the transaction's own (a space directory it makes,
-        // or its rollback), not outside ones, so the stamp is recorded
-        // again at the end, as it is after the app's other writes (#262).
-        let requests = RelPath::new(REQUESTS_DIR).expect("constant");
-        let spaces_current = !self.disk.changed(&requests);
         self.recording = Some(Vec::new());
         let result = f(self);
         let ops = self.recording.take().unwrap_or_default();
-        let result = match result {
+        match result {
             Ok(v) => {
                 if !ops.is_empty() {
                     self.journal.push(Entry {
@@ -624,11 +622,7 @@ impl Project {
                 }
                 Err(e)
             }
-        };
-        if spaces_current {
-            self.disk.record(&requests);
         }
-        result
     }
 
     /// Runs `f` as one undo entry. See [`Self::run_transaction`].
@@ -814,7 +808,7 @@ impl Project {
             RelPath::new(PROJECT_TOML).expect("constant"),
             RelPath::new(VARIABLES_TOML).expect("constant"),
             RelPath::new(ENVIRONMENTS_DIR).expect("constant"),
-            RelPath::new(REQUESTS_DIR).expect("constant"),
+            requests_rel(),
         ];
         if let Some(env) = &self.active_env
             && let Ok(p) = env_rel(env)
@@ -825,12 +819,11 @@ impl Project {
     }
 
     /// Records the watched files' stamps (what `open`'s reads did for
-    /// the ones it read; directories need an explicit list).
+    /// the ones it read). The watched directories are left to the
+    /// listings that load them, which record their stamps (#262).
     fn stamp_watched(&mut self) {
         for path in self.watched() {
-            if self.disk.is_dir(&path) {
-                let _ = self.disk.list(&path);
-            } else {
+            if !self.disk.is_dir(&path) {
                 let _ = self.disk.read(&path);
             }
         }
@@ -1083,27 +1076,22 @@ impl Project {
 
     /// `meta.spaces` first (invalid names skipped, duplicates dropped),
     /// then unlisted directories under `requests/`, alphabetically. The
-    /// load of the spaces: it records the stamp of `requests/`, which the
-    /// poll compares to reload them (#262). Every other listing of
-    /// `requests/` peeks.
+    /// load of the spaces, so the one listing of `requests/` that records
+    /// its stamp, which the poll compares to reload them; every other
+    /// listing of it peeks (#262).
     fn list_spaces(disk: &mut Disk, meta: &ProjectMeta) -> (Vec<String>, Vec<Warning>) {
-        if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
-            // Before the listing: a directory made while it runs then
-            // reads as a change.
-            disk.record(&dir);
-        }
-        let (out, skipped, list_failed) = Self::scan_spaces(disk, meta);
+        let (out, skipped, list_failed) = Self::scan_spaces(disk.list(&requests_rel()), meta);
         let mut warnings: Vec<Warning> = skipped.iter().filter_map(Skipped::warning).collect();
         warnings.extend(list_failed);
         (out, warnings)
     }
 
-    /// [`list_spaces`](Self::list_spaces), with what it skips for its name
-    /// (the listed names, each once, then the directories, alphabetically)
-    /// and the warning a `requests/` that won't list gives. Records no
-    /// stamp.
+    /// [`list_spaces`](Self::list_spaces) from `listing`, the entries of
+    /// `requests/`, with what it skips for its name (the listed names,
+    /// each once, then the directories, alphabetically) and the warning a
+    /// `requests/` that won't list gives.
     fn scan_spaces(
-        disk: &Disk,
+        listing: Result<Vec<crate::disk::DirEntry>, DiskError>,
         meta: &ProjectMeta,
     ) -> (Vec<String>, Vec<Skipped>, Option<Warning>) {
         let mut out: Vec<String> = Vec::new();
@@ -1123,21 +1111,19 @@ impl Project {
         let mut unlisted = Vec::new();
         let mut bad_dirs = Vec::new();
         let mut list_failed = None;
-        if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
-            match disk.peek_list(&dir) {
-                Ok(entries) => {
-                    for e in entries.into_iter().filter(|e| e.is_dir) {
-                        if !meta::valid_space_name(&e.name) {
-                            if !is_hidden(&e.name) {
-                                bad_dirs.push(e.name);
-                            }
-                        } else if !out.contains(&e.name) {
-                            unlisted.push(e.name);
+        match listing {
+            Ok(entries) => {
+                for e in entries.into_iter().filter(|e| e.is_dir) {
+                    if !meta::valid_space_name(&e.name) {
+                        if !is_hidden(&e.name) {
+                            bad_dirs.push(e.name);
                         }
+                    } else if !out.contains(&e.name) {
+                        unlisted.push(e.name);
                     }
                 }
-                Err(e) => list_failed = Some(format!("could not list {REQUESTS_DIR}/: {e}")),
             }
+            Err(e) => list_failed = Some(format!("could not list {REQUESTS_DIR}/: {e}")),
         }
         unlisted.sort();
         out.extend(unlisted);
@@ -1150,7 +1136,7 @@ impl Project {
     /// names `project.toml` lists, then environment files, then space
     /// directories. Read from disk now, by the listings `open` uses.
     pub fn skipped(&mut self) -> Vec<Skipped> {
-        let (_, spaces, _) = Self::scan_spaces(&self.disk, &self.meta);
+        let (_, spaces, _) = Self::scan_spaces(self.disk.peek_list(&requests_rel()), &self.meta);
         let (listed_spaces, dirs): (Vec<Skipped>, Vec<Skipped>) =
             spaces.into_iter().partition(|s| matches!(s, Skipped::ListedSpace(_)));
         let (listed_envs, files): (Vec<Skipped>, Vec<Skipped>) =
@@ -1521,6 +1507,7 @@ mod requests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::bump_mtime;
 
     /// A project with two spaces, one request each, two environments, a
     /// variable, and nothing local. Every later task's tests start here.
@@ -2224,13 +2211,6 @@ mod tests {
         assert!(matches!(entry.ops[1], Op::Renamed { .. }));
     }
 
-    fn bump_mtime(path: &std::path::Path) {
-        // Coarse-mtime filesystems need the clock to move.
-        let t = std::fs::metadata(path).unwrap().modified().unwrap()
-            + std::time::Duration::from_secs(2);
-        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
-    }
-
     #[test]
     fn poll_is_quiet_until_a_watched_file_changes_then_re_reads() {
         let (dir, mut p) = fixture();
@@ -2395,6 +2375,40 @@ mod tests {
             assert_eq!(requests.join("auth").is_dir(), what != "rollback", "{what}");
             assert!(!p.changed_on_disk(), "{what}: the op's own change");
         }
+    }
+
+    /// #262: a space directory made by hand while an op runs is left for
+    /// the poll, beside the op's own space directory.
+    #[test]
+    fn a_space_dir_made_during_an_op_is_left_for_the_poll() {
+        let (dir, mut p) = fixture();
+        let requests = dir.path().join("requests");
+        std::fs::remove_dir_all(requests.join("auth")).unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+        std::fs::File::open(&requests).unwrap().set_modified(past).unwrap();
+        assert!(p.poll().0);
+        p.transaction("make", EntryMeta::default(), |p| {
+            p.fs_create_dir(&space_rel("auth")?)?;
+            std::fs::create_dir(p.disk.root().join("requests/new")).unwrap();
+            bump_mtime(&p.disk.root().join("requests"));
+            p.fs_create_file(&request_rel("auth/fresh")?, "url = \"u\"\n")
+        })
+        .unwrap();
+        assert!(p.poll().0);
+        assert_eq!(p.spaces(), ["main", "auth", "new"]);
+    }
+
+    /// #262: the stamps recorded at the end of a load leave `requests/` to
+    /// the listing that loaded the spaces, so a directory made after that
+    /// listing is still a change.
+    #[test]
+    fn stamping_the_watched_files_leaves_a_new_space_dir_for_the_poll() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir(dir.path().join("requests/new")).unwrap();
+        bump_mtime(&dir.path().join("requests"));
+        p.stamp_watched();
+        assert!(p.poll().0);
+        assert_eq!(p.spaces(), ["main", "auth", "new"]);
     }
 
     #[test]

@@ -20,6 +20,14 @@ use crate::varmodel;
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 
+/// Moves `path`'s mtime 2 s on, as an outside change to it would:
+/// coarse-mtime filesystems need the clock to move.
+pub fn bump_mtime(path: &Path) {
+    let t =
+        std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+    std::fs::File::open(path).unwrap().set_modified(t).unwrap();
+}
+
 /// Every folder `listing`'s requests sit in, nameless, as the walk would
 /// list their directories: the folder listing for a test that builds a
 /// request listing by hand (the folder listing is the one source of which

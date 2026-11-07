@@ -591,19 +591,19 @@ impl Project {
     /// spelled in another case. A check under every write, in
     /// `fs_make_parents`, was tried in #257 and reverted (#260, comment
     /// 1170).
-    fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
+    fn refuse_space_case_twin(&self, space: &str) -> Result<(), Error> {
         self.refuse_space_case_twins(&[space])
     }
 
     /// [`Self::refuse_space_case_twin`] for each of `spaces`, from one
     /// listing of `requests/`.
-    fn refuse_space_case_twins(&mut self, spaces: &[&str]) -> Result<(), Error> {
+    fn refuse_space_case_twins(&self, spaces: &[&str]) -> Result<(), Error> {
         if spaces.is_empty() {
             return Ok(());
         }
         // A peek: this listing loads no spaces, so it must not mark a
         // new space directory as seen before the poll reloads them (#262).
-        let entries = self.disk.peek_list(&RelPath::new(REQUESTS_DIR)?)?;
+        let entries = self.disk.peek_list(&requests_rel())?;
         let dirs: Vec<&str> =
             entries.iter().filter(|e| e.is_dir).map(|e| e.name.as_str()).collect();
         for space in spaces {
@@ -623,7 +623,7 @@ impl Project {
     /// one of `paths` is skipped: put back whole, it is made at its exact
     /// name. A case-insensitive disk finds the twin at that path, and the
     /// replay's existence check refuses it.
-    pub(super) fn refuse_space_case_twins_of(&mut self, paths: &[&RelPath]) -> Result<(), Error> {
+    pub(super) fn refuse_space_case_twins_of(&self, paths: &[&RelPath]) -> Result<(), Error> {
         let in_requests: std::collections::BTreeSet<&str> = paths
             .iter()
             .filter_map(|p| p.as_str().strip_prefix(REQUESTS_DIR)?.strip_prefix('/'))

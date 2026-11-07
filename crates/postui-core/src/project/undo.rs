@@ -88,7 +88,7 @@ impl Project {
                             !super::is_hidden(name) && (is_dir || name.ends_with(".toml"))
                         };
                         let mut held = false;
-                        for e in self.disk.list(path)? {
+                        for e in self.disk.peek_list(path)? {
                             let Ok(child) = path.join(&e.name) else { continue };
                             held |=
                                 shown(&e.name, e.is_dir) && exists(&self.disk, &overlay, &child);
