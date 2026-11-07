@@ -276,15 +276,22 @@ fn write_list(root: &Path) -> Result<Vec<String>, ProjectError> {
 
 /// The slug [`create_space`] / would give `display`
 /// (`exclude` = the slug being renamed, which is not a collision with
-/// itself).
+/// itself). An entry under `requests/` in any case takes a slug, as in
+/// [`Project::space_slug_for`].
 pub fn space_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {
     // Only a collision probe: with an unreadable meta the directories on
     // disk are the best available answer (the op itself refuses earlier).
     let listed = write_list(root).unwrap_or_default();
+    let on_disk: Vec<String> = std::fs::read_dir(requests_dir(root))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_lowercase())
+        .collect();
     unique_slug_among(
         Kind::Space,
         display,
-        |slug| listed.iter().any(|s| s == slug) || space_dir(root, slug).exists(),
+        |slug| listed.iter().any(|s| s == slug) || on_disk.contains(&slug.to_lowercase()),
         exclude,
     )
 }
@@ -833,6 +840,9 @@ mod tests {
         create_space(dir.path(), "main").unwrap();
         assert_eq!(space_slug_for(dir.path(), "Main", None), "main-2");
         assert_eq!(space_slug_for(dir.path(), "Main", Some("main")), "main");
+        std::fs::create_dir(dir.path().join("requests/Billing")).unwrap();
+        assert_eq!(space_slug_for(dir.path(), "Billing", None), "billing-2");
+        assert_eq!(create_space(dir.path(), "Billing").unwrap(), "billing-2");
     }
 
     #[test]
