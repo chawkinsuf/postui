@@ -580,8 +580,7 @@ impl Project {
     /// case-insensitive disk would file the request into it, where the walk
     /// lists no space `space`. Refused on every disk, as F27
     /// refuses a folder twin: on a case-sensitive one the op would make a
-    /// case-only twin. A move or create calls it after its relist, so a
-    /// refusal leaves the listing fresh. Compares Unicode lowercase, as
+    /// case-only twin. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
     ///
     /// Each op that names the space it creates, moves into or renames calls
@@ -773,7 +772,7 @@ fn folder_ignoring_case<'a>(
     folders.iter().find(|f| f.path.to_lowercase() == wanted)
 }
 
-/// The refusal of a move or a create into `requests/<path>/`, which is
+/// The refusal of an op that writes into `requests/<path>/`, which is
 /// there only in another case: its name isn't a slug, so postui can't
 /// rename it (F33).
 fn case_twin_conflict(path: &str) -> Error {
