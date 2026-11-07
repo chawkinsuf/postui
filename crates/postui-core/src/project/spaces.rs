@@ -52,18 +52,33 @@ impl Project {
             .collect()
     }
 
-    pub fn space_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
-        let listed = self.meta.spaces.clone();
-        meta::unique_slug_among(
+    /// The slug `display` gets as a space's directory: `slugify`, then
+    /// `-2`, `-3`, … while a space lists it or `requests/` holds an entry
+    /// of that name in any case (#264), as a folder's slot is numbered
+    /// (F19): a case-only twin can't sit beside it on every filesystem.
+    /// `exclude` is the space a rename renames. An entry of any kind
+    /// counts, a file too: on a case-insensitive disk it holds the name.
+    /// A `requests/` that can't be listed is an error, not a guess, even
+    /// when `display` slugs to `exclude`.
+    pub fn space_slug_for(
+        &mut self,
+        display: &str,
+        exclude: Option<&str>,
+    ) -> Result<String, Error> {
+        let on_disk: Vec<String> = self
+            .disk
+            .list(&RelPath::new(REQUESTS_DIR)?)?
+            .into_iter()
+            .map(|e| e.name.to_lowercase())
+            .collect();
+        Ok(meta::unique_slug_among(
             meta::Kind::Space,
             display,
             |slug| {
-                listed.iter().any(|s| s == slug)
-                    || self.spaces.iter().any(|s| s == slug)
-                    || space_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false)
+                self.meta.spaces.iter().any(|s| s == slug) || on_disk.contains(&slug.to_lowercase())
             },
             exclude,
-        )
+        ))
     }
 
     pub fn create_space(&mut self, display: &str) -> Result<String, Error> {
@@ -73,7 +88,7 @@ impl Project {
         if meta::display_taken(&display, &spaces, |s| meta::space_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
-        let slug = self.space_slug_for(&display, None);
+        let slug = self.space_slug_for(&display, None)?;
         spaces.push(slug.clone());
         self.transaction("create space", EntryMeta::default(), |p| {
             p.fs_create_dir(&space_rel(&slug)?)?;
@@ -101,7 +116,7 @@ impl Project {
         if meta::display_taken(&display, &spaces, |s| meta::space_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
-        let to = self.space_slug_for(&display, Some(from));
+        let to = self.space_slug_for(&display, Some(from))?;
         spaces[idx] = to.clone();
         let from = from.to_string();
         // Every request in the space changes slug with the directory, at
@@ -330,7 +345,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read};
+    use super::super::tests::{fixture, read, requests_tree};
     use super::*;
 
     #[test]
@@ -395,6 +410,36 @@ mod tests {
             "every request in the space, at every folder level"
         );
         assert!(dir.path().join("requests/main/api/deep.toml").is_file());
+    }
+
+    /// A directory under `requests/` in another case takes the slug, as
+    /// a folder's slot is numbered (F19): a create or a rename gets
+    /// `billing-2` on every disk, never a case-only twin.
+    #[test]
+    fn a_space_slug_compares_directories_ignoring_case() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir(dir.path().join("requests/Billing")).unwrap();
+        assert_eq!(p.create_space("Billing").unwrap(), "billing-2");
+        assert_eq!(p.rename_space("auth", "Billing!").unwrap(), "billing-3");
+        let tree = requests_tree(&dir);
+        assert!(!tree.contains_key("requests/billing"), "{tree:?}");
+    }
+
+    /// A `requests/` that can't be listed (but can be written) refuses the
+    /// create: the slug is not guessed without the twin check.
+    #[cfg(unix)]
+    #[test]
+    fn a_space_create_refuses_when_requests_cannot_be_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        std::fs::create_dir(dir.path().join("requests/Billing")).unwrap();
+        let requests = dir.path().join("requests");
+        std::fs::set_permissions(&requests, std::fs::Permissions::from_mode(0o333)).unwrap();
+        let created = p.create_space("Billing");
+        std::fs::set_permissions(&requests, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(created.is_err(), "{created:?}");
+        let tree = requests_tree(&dir);
+        assert!(!tree.contains_key("requests/billing"), "{tree:?}");
     }
 
     #[test]

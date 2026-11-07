@@ -276,17 +276,30 @@ fn write_list(root: &Path) -> Result<Vec<String>, ProjectError> {
 
 /// The slug [`create_space`] / would give `display`
 /// (`exclude` = the slug being renamed, which is not a collision with
-/// itself).
-pub fn space_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {
+/// itself). An entry under `requests/` in any case takes a slug, as in
+/// [`Project::space_slug_for`], and a `requests/` that can't be listed is
+/// an error there too.
+pub fn space_slug_for(
+    root: &Path,
+    display: &str,
+    exclude: Option<&str>,
+) -> Result<String, ProjectError> {
     // Only a collision probe: with an unreadable meta the directories on
     // disk are the best available answer (the op itself refuses earlier).
     let listed = write_list(root).unwrap_or_default();
-    unique_slug_among(
+    let on_disk: Vec<String> = match std::fs::read_dir(requests_dir(root)) {
+        Ok(entries) => {
+            entries.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(unique_slug_among(
         Kind::Space,
         display,
-        |slug| listed.iter().any(|s| s == slug) || space_dir(root, slug).exists(),
+        |slug| listed.iter().any(|s| s == slug) || on_disk.contains(&slug.to_lowercase()),
         exclude,
-    )
+    ))
 }
 
 /// The slug [`create_environment`] would give `display`.
@@ -310,7 +323,7 @@ pub fn create_space(root: &Path, display: &str) -> Result<String, ProjectError> 
     if display_taken(&display, &spaces, |s| space_display(&meta, s), None) {
         return Err(ProjectError::AlreadyExists(display));
     }
-    let slug = space_slug_for(root, &display, None);
+    let slug = space_slug_for(root, &display, None)?;
     std::fs::create_dir_all(space_dir(root, &slug))?;
     spaces.push(slug.clone());
     edit_project_toml(root, |doc| {
@@ -831,8 +844,11 @@ mod tests {
         assert_eq!(environment_slug_for(dir.path(), "QA", None), "qa-2");
         assert_eq!(environment_slug_for(dir.path(), "QA", Some("qa")), "qa");
         create_space(dir.path(), "main").unwrap();
-        assert_eq!(space_slug_for(dir.path(), "Main", None), "main-2");
-        assert_eq!(space_slug_for(dir.path(), "Main", Some("main")), "main");
+        assert_eq!(space_slug_for(dir.path(), "Main", None).unwrap(), "main-2");
+        assert_eq!(space_slug_for(dir.path(), "Main", Some("main")).unwrap(), "main");
+        std::fs::create_dir(dir.path().join("requests/Billing")).unwrap();
+        assert_eq!(space_slug_for(dir.path(), "Billing", None).unwrap(), "billing-2");
+        assert_eq!(create_space(dir.path(), "Billing").unwrap(), "billing-2");
     }
 
     #[test]

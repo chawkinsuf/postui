@@ -351,6 +351,11 @@ Manage screens when no modal is open. Configurable under the same
   drop it. Environment create/rename/delete undo steps carry
   `project.toml`. A hand-written directory or `spaces` entry that isn't a
   valid slug is still skipped with the existing one-time warning.
+  *Amended 2026-11-07 (#264), as the ticket asked:* a space's slug is
+  taken by an entry under `requests/` spelled in any case, as a folder's
+  is (create folders F19), so a hand-made `requests/Billing/` makes a new
+  or renamed space "Billing" `billing-2/` on every disk, not a case-only
+  twin `billing/` beside it.
 - Directory operations that fail (permissions, non-empty rename target)
   toast the error and leave state unchanged; `project.toml` is written
   only after the filesystem operation succeeds.

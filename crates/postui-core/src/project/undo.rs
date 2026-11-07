@@ -827,14 +827,14 @@ mod tests {
         assert_eq!(twin.count(), 0);
     }
 
-    /// Redo of a space create beside a hand-made twin, which the create
-    /// itself was made beside, puts its directory back.
+    /// Undo and redo of a space create beside a twin made by hand after
+    /// it: the undo takes the directory away and the redo puts it back.
     #[cfg(target_os = "linux")]
     #[test]
     fn redo_of_a_space_create_beside_a_twin() {
         let (dir, mut p) = fixture();
-        std::fs::create_dir_all(dir.path().join("requests/Users")).unwrap();
         assert_eq!(p.create_space("users").unwrap(), "users");
+        std::fs::create_dir_all(dir.path().join("requests/Users")).unwrap();
         p.undo().unwrap().unwrap();
         assert!(!dir.path().join("requests/users").exists());
         p.redo().unwrap().unwrap();
