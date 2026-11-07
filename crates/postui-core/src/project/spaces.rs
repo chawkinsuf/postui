@@ -58,7 +58,8 @@ impl Project {
     /// (F19): a case-only twin can't sit beside it on every filesystem.
     /// `exclude` is the space a rename renames. An entry of any kind
     /// counts, a file too: on a case-insensitive disk it holds the name.
-    /// A `requests/` that can't be listed is an error, not a guess.
+    /// A `requests/` that can't be listed is an error, not a guess, even
+    /// when `display` slugs to `exclude`.
     pub fn space_slug_for(
         &mut self,
         display: &str,
@@ -74,9 +75,7 @@ impl Project {
             meta::Kind::Space,
             display,
             |slug| {
-                self.meta.spaces.iter().any(|s| s == slug)
-                    || self.spaces.iter().any(|s| s == slug)
-                    || on_disk.contains(&slug.to_lowercase())
+                self.meta.spaces.iter().any(|s| s == slug) || on_disk.contains(&slug.to_lowercase())
             },
             exclude,
         ))
