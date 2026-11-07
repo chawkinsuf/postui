@@ -3355,6 +3355,40 @@ fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
 }
 
 #[test]
+fn a_thumb_drag_whose_release_is_lost_ends_at_the_next_bare_motion() {
+    // #94: the button comes up outside the window, so no `Up` arrives. A
+    // terminal that has sent a `Drag(Left)` sends a bare `Moved` only with
+    // the button up, so the hover after it ends the thumb drag (the
+    // held-drag latch, #250) instead of scrolling the pane.
+    use crate::hit::Hit;
+    let mut app = App::new_for_test();
+    let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
+        .map(|i| postui_core::storage::RequestListing {
+            name: None,
+            slug: format!("main/r{i:02}"),
+            broken: None,
+            method: Some(postui_core::model::Method::Get),
+        })
+        .collect();
+    app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
+    render_once(&mut app);
+
+    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
+    assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
+    assert!(app.drag.is_some(), "pressing the thumb starts a drag");
+    assert!(app.handle_mouse(dragged(thumb.x, thumb.y + 3)));
+    let after = app.sidebar.scroll;
+    assert!(after > 0, "the held drag scrolls");
+
+    // The release is lost; the pointer comes back and hovers lower down.
+    app.handle_mouse(moved(thumb.x, thumb.y + 6));
+    assert!(app.drag.is_none(), "the thumb drag ended");
+    assert_eq!(app.sidebar.scroll, after, "the hover scrolls nothing");
+    app.handle_mouse(moved(thumb.x, thumb.y + 9));
+    assert_eq!(app.sidebar.scroll, after, "nor does any hover after it");
+}
+
+#[test]
 fn scrollbar_track_click_below_the_thumb_pages_the_response() {
     use crate::hit::Hit;
     let mut app = App::new_for_test();
