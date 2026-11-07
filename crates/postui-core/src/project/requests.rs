@@ -582,6 +582,10 @@ impl Project {
     /// would make a case-only twin. Called after the op's relist, so a
     /// refusal leaves the listing fresh. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
+    ///
+    /// Each op that writes into a space calls it from its own pre-flight.
+    /// A check under every write, in `fs_make_parents`, was tried in #257
+    /// and reverted (#260, comment 1170).
     fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
         let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
         let dirs: Vec<&str> =
@@ -735,8 +739,9 @@ fn folder_ignoring_case<'a>(
     folders.iter().find(|f| f.path.to_lowercase() == wanted)
 }
 
-/// The refusal of a move or a create into `requests/<path>/`, which is there only in
-/// another case: its name isn't a slug, so postui can't rename it (F33).
+/// The refusal of a move or a create into `requests/<path>/`, which is
+/// there only in another case: its name isn't a slug, so postui can't
+/// rename it (F33).
 fn case_twin_conflict(path: &str) -> Error {
     Error::Conflict(format!(
         "{REQUESTS_DIR}/{path}/ is already there in another case; rename it outside postui"
