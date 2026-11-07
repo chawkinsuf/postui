@@ -597,13 +597,19 @@ impl Project {
 
     /// An undo's or a redo's pre-flight for the spaces its replay writes
     /// into: refuses as [`Self::refuse_space_case_twin`] does for the space
-    /// each of `paths` sits in or is, once per space (#261). A path outside
-    /// `requests/` is in no space.
+    /// each of `paths` sits in, once per space (#261). A space whose
+    /// directory is itself one of `paths` is skipped: put back whole, it is
+    /// made at its exact name. A case-insensitive disk finds the twin at
+    /// that path, and the replay's existence check refuses it.
     pub(super) fn refuse_space_case_twins_of(&mut self, paths: &[&RelPath]) -> Result<(), Error> {
-        let spaces: std::collections::BTreeSet<&str> = paths
+        let in_requests: Vec<&str> = paths
             .iter()
             .filter_map(|p| p.as_str().strip_prefix(REQUESTS_DIR)?.strip_prefix('/'))
-            .filter_map(|rest| rest.split('/').next())
+            .collect();
+        let spaces: std::collections::BTreeSet<&str> = in_requests
+            .iter()
+            .filter_map(|rest| crate::storage::space_of(rest))
+            .filter(|space| !in_requests.contains(space))
             .collect();
         for space in spaces {
             self.refuse_space_case_twin(space)?;

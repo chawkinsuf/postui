@@ -800,4 +800,46 @@ mod tests {
         let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
         assert_eq!(twin.count(), 0);
     }
+
+    /// Undo of a space delete puts the space's directory back whole, at
+    /// its exact name, beside a twin in another case.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn undo_of_a_space_delete_puts_it_back_beside_a_twin() {
+        let (dir, mut p) = fixture();
+        p.delete_space("auth").unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/auth/login.toml").is_file());
+        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(twin.count(), 0);
+    }
+
+    /// So does undo of a space rename.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn undo_of_a_space_rename_puts_it_back_beside_a_twin() {
+        let (dir, mut p) = fixture();
+        assert_eq!(p.rename_space("auth", "Other").unwrap(), "other");
+        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/auth/login.toml").is_file());
+        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(twin.count(), 0);
+    }
+
+    /// Redo of a space create beside a hand-made twin, which the create
+    /// itself was made beside, puts its directory back.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn redo_of_a_space_create_beside_a_twin() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir_all(dir.path().join("requests/Users")).unwrap();
+        assert_eq!(p.create_space("users").unwrap(), "users");
+        p.undo().unwrap().unwrap();
+        assert!(!dir.path().join("requests/users").exists());
+        p.redo().unwrap().unwrap();
+        assert!(dir.path().join("requests/users").is_dir());
+        assert!(dir.path().join("requests/Users").is_dir());
+    }
 }
