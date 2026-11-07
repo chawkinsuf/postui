@@ -229,6 +229,9 @@ pub struct App {
     /// import notice) or imported: the notice never repeats for it (spec
     /// 2026-10-15 curl import visibility V3, #240).
     curl_noticed: Option<u64>,
+    /// The same hash of the last text postui copied: the notice never
+    /// shows for it (V4, #259).
+    clipboard_written: Option<u64>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -2009,6 +2012,7 @@ impl App {
             should_quit: false,
             quit_armed: None,
             curl_noticed: None,
+            clipboard_written: None,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
             prior_focus: PaneId::Sidebar,
@@ -11813,6 +11817,7 @@ impl App {
     fn copy_text_with_toast(&mut self, text: &str, success_msg: String) {
         match self.clipboard.copy(text) {
             crate::clipboard::CopyResult::Copied { .. } => {
+                self.clipboard_written = Some(curl_flow::curl_key(text));
                 self.toasts.push(success_msg, ToastKind::Success);
             }
             crate::clipboard::CopyResult::OscTooLarge => {
