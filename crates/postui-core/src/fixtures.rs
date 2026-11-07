@@ -302,14 +302,28 @@ pub fn space_slug_for(
     ))
 }
 
-/// The slug [`create_environment`] would give `display`.
-pub fn environment_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {
-    unique_slug_among(
+/// The slug [`create_environment`] would give `display`. An entry under
+/// `environments/` named `<slug>.toml` in any case takes a slug, as in
+/// [`Project::environment_slug_for`], and an `environments/` that can't
+/// be listed is an error there too.
+pub fn environment_slug_for(
+    root: &Path,
+    display: &str,
+    exclude: Option<&str>,
+) -> Result<String, ProjectError> {
+    let on_disk: Vec<String> = match std::fs::read_dir(root.join("environments")) {
+        Ok(entries) => {
+            entries.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(unique_slug_among(
         Kind::Environment,
         display,
-        |slug| environment_path(root, slug).exists(),
+        |slug| on_disk.contains(&format!("{slug}.toml").to_lowercase()),
         exclude,
-    )
+    ))
 }
 
 /// Creates a space from a free-form display name: the directory is the
@@ -345,7 +359,7 @@ pub fn create_environment(root: &Path, display: &str) -> Result<String, ProjectE
     if display_taken(&display, &existing, |s| env_display(&meta, s), None) {
         return Err(ProjectError::AlreadyExists(display));
     }
-    let slug = environment_slug_for(root, &display, None);
+    let slug = environment_slug_for(root, &display, None)?;
     std::fs::create_dir_all(root.join("environments"))?;
     std::fs::OpenOptions::new().write(true).create_new(true).open(environment_path(root, &slug))?;
     edit_project_toml(root, |doc| {
@@ -841,8 +855,11 @@ mod tests {
         let dir = tempdir().unwrap();
         init_project(dir.path(), None).unwrap();
         create_environment(dir.path(), "qa").unwrap();
-        assert_eq!(environment_slug_for(dir.path(), "QA", None), "qa-2");
-        assert_eq!(environment_slug_for(dir.path(), "QA", Some("qa")), "qa");
+        assert_eq!(environment_slug_for(dir.path(), "QA", None).unwrap(), "qa-2");
+        assert_eq!(environment_slug_for(dir.path(), "QA", Some("qa")).unwrap(), "qa");
+        std::fs::write(dir.path().join("environments/Prod.toml"), "").unwrap();
+        assert_eq!(environment_slug_for(dir.path(), "Prod", None).unwrap(), "prod-2");
+        assert_eq!(create_environment(dir.path(), "Prod").unwrap(), "prod-2");
         create_space(dir.path(), "main").unwrap();
         assert_eq!(space_slug_for(dir.path(), "Main", None).unwrap(), "main-2");
         assert_eq!(space_slug_for(dir.path(), "Main", Some("main")).unwrap(), "main");

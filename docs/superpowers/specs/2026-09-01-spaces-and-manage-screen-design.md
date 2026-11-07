@@ -356,6 +356,11 @@ Manage screens when no modal is open. Configurable under the same
   is (create folders F19), so a hand-made `requests/Billing/` makes a new
   or renamed space "Billing" `billing-2/` on every disk, not a case-only
   twin `billing/` beside it.
+  *Amended 2026-11-07 (#265), as the ticket asked:* an environment's slug
+  is taken the same way, by an entry under `environments/` named
+  `<slug>.toml` in any case, so a hand-made `environments/Prod.toml` makes
+  a new or renamed environment "Prod" `prod-2.toml` on every disk, not a
+  case-only twin `prod.toml` beside it.
 - Directory operations that fail (permissions, non-empty rename target)
   toast the error and leave state unchanged; `project.toml` is written
   only after the filesystem operation succeeds.
