@@ -399,7 +399,7 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
 /// set, done, and sits at the split field's own value.
 fn assert_split_drawn_settled(app: &App) {
     let now = std::time::Instant::now();
-    for (key, settled) in crate::anim::SplitAnims::settled(app.split_state()).keyed() {
+    for (key, settled) in crate::split_anim::SplitAnims::settled(app.split_state()).keyed() {
         assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
         assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
     }
@@ -473,12 +473,12 @@ fn a_fresh_anim_set_has_the_split_snapped_in() {
 /// eases from that drawn value, for each of the three.
 #[test]
 fn a_first_split_change_eases_from_the_drawn_value() {
-    use crate::anim::AnimKey;
+    use crate::split_anim::SplitAnims;
     let drawn = SplitState::default();
-    for (key, next, from, to) in [
-        (AnimKey::PaneCollapse, SplitState { editor_minimized: true, ..drawn }, 0.0, 1.0),
-        (AnimKey::ResponseCollapse, SplitState { response_minimized: true, ..drawn }, 0.0, 1.0),
-        (AnimKey::SplitRatio, SplitState { ratio: 0.25, ..drawn }, drawn.ratio, 0.25),
+    for next in [
+        SplitState { editor_minimized: true, ..drawn },
+        SplitState { response_minimized: true, ..drawn },
+        SplitState { ratio: 0.25, ..drawn },
     ] {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::bare(tx, std::path::PathBuf::new());
@@ -489,10 +489,24 @@ fn a_first_split_change_eases_from_the_drawn_value() {
         let before = std::time::Instant::now();
         app.set_split_fields(next);
         app.update(Action::Tick);
-        // Sampled before the ease began, the value is the ease's start.
-        assert_eq!(app.anims.value(key, before), Some(from), "{key:?} starts where it was drawn");
-        assert_eq!(app.anims.target(key), Some(to), "{key:?} heads to the new split");
-        assert!(!app.anims.is_done(key, std::time::Instant::now()), "{key:?} eases");
+        let pairs =
+            SplitAnims::settled(drawn).keyed().into_iter().zip(SplitAnims::settled(next).keyed());
+        let mut eased = 0;
+        for ((key, from), (_, to)) in pairs {
+            if from == to {
+                continue;
+            }
+            eased += 1;
+            // Sampled before the ease began, the value is the ease's start.
+            assert_eq!(
+                app.anims.value(key, before),
+                Some(from),
+                "{key:?} starts where it was drawn"
+            );
+            assert_eq!(app.anims.target(key), Some(to), "{key:?} heads to the new split");
+            assert!(!app.anims.is_done(key, std::time::Instant::now()), "{key:?} eases");
+        }
+        assert_eq!(eased, 1, "{next:?} moves one key");
     }
 }
 

@@ -3891,9 +3891,13 @@ impl Editor {
         // at all, and the `› show` toggle is the row's only surviving
         // control. Hidden tabs also take no clicks, so registration is
         // gated on the settled flag, not the fade.
-        let fade_t = crate::anim::SplitAnims::settled(split)
-            .drawn(ctx.anims, ctx.now)
-            .editor
+        let fade_t = ctx
+            .anims
+            .value_or(
+                crate::anim::AnimKey::PaneCollapse,
+                ctx.now,
+                crate::split_anim::SplitAnims::settled(split).editor,
+            )
             .clamp(0.0, 1.0);
         if fade_t < 1.0 {
             let rects = {

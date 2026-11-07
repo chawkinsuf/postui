@@ -38,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // value at `now` is what actually drives the row split. The settled
     // fields are only `SplitAnims::drawn`'s fallback: every app starts with
     // the split's anims set (`App::sync_split_anims`).
-    let t = crate::anim::SplitAnims::settled(app.split_state()).drawn(&app.anims, now);
+    let t = crate::split_anim::SplitAnims::settled(app.split_state()).drawn(&app.anims, now);
     app.term_area = Some(frame.area());
     let layout = compute_layout(frame.area(), t.editor, t.response, t.ratio, app.sidebar_width);
     let focus = app.focus;
