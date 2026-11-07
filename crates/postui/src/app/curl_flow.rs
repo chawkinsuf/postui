@@ -10,8 +10,9 @@ use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 /// import-without-prompt S12): no one imports hundreds at once.
 pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 
-/// The no-repeat memory's key (`App::curl_noticed`, spec 2026-10-15 curl
-/// import visibility V3) for clipboard `text`, by line without the ends:
+/// The key of the no-repeat memory (`App::curl_noticed`, spec 2026-10-15
+/// curl import visibility V3) and of postui's own copy
+/// (`App::clipboard_written`, V4) for clipboard `text`, by line without the ends:
 /// `\n` and `\r\n` endings, or a trailing newline, give the same key.
 pub(super) fn curl_key(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};

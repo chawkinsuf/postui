@@ -2271,20 +2271,23 @@ fn a_copy_keeps_the_memory_of_the_curl_shown() {
     assert!(!app.check_clipboard(), "shown once already");
 }
 
-/// A copy that failed left the clipboard as it was, and so the memory of
-/// the curl the notice already showed.
+/// A copy that did not copy (a failed `clipboard_cmd`, or OSC 52 text over
+/// the limit) keeps nothing: the same curl from elsewhere is still shown.
 #[test]
-fn a_failed_copy_leaves_the_no_repeat_memory_alone() {
-    let (mut app, _dir, _out) = copy_app();
-    app.ui_settings.curl_button = true;
-    let mut c =
-        crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null; exit 1".into()), 65536);
-    c.set_read_for_test("curl https://x/u");
-    app.set_clipboard_for_test(c);
-    assert!(app.check_clipboard());
-    app.update(Action::CopyAsCurl(Some("main/top".into())));
-    assert_eq!(app.toasts.last_message(), Some("Clipboard unavailable — try Shift+drag to select"));
-    assert!(!app.check_clipboard(), "shown once already");
+fn a_copy_that_did_not_copy_keeps_nothing() {
+    use crate::clipboard::Clipboard;
+    for c in [
+        Clipboard::new_for_test(Some("cat > /dev/null; exit 1".into()), 65536),
+        Clipboard::new_for_test(None, 1),
+    ] {
+        let (mut app, _dir, _out) = copy_app();
+        app.ui_settings.curl_button = true;
+        app.set_clipboard_for_test(c);
+        app.copy_text_with_toast("curl https://x/u", "Copied".to_string());
+        assert_ne!(app.toasts.last_message(), Some("Copied"));
+        app.clipboard.set_read_for_test("curl https://x/u");
+        assert!(app.check_clipboard());
+    }
 }
 
 #[test]
