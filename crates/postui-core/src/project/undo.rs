@@ -153,9 +153,7 @@ impl Project {
         }
         // A case-insensitive disk files a path put back into
         // `requests/auth/…` into a hand-renamed `Auth/`, where the walk
-        // lists no space `auth` (#261): each space an inverse puts a path
-        // back into is checked as a move into it is. A text op with an
-        // `after` rewrites or removes a file the loop above found.
+        // lists no space `auth` (#261). The paths the inverses put back:
         let put_back: Vec<&RelPath> = ops
             .iter()
             .filter_map(|op| match op {
@@ -327,7 +325,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read, sizes};
+    use super::super::tests::{fixture, read, requests_tree, sizes};
     use super::*;
     use crate::varedit;
 
@@ -740,10 +738,10 @@ mod tests {
         let (dir, mut p) = fixture();
         p.move_request("auth/login", "main").unwrap();
         rename_auth_by_hand(&dir);
+        let before = requests_tree(&dir);
         let r = p.undo();
         assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert!(dir.path().join("requests/main/login.toml").is_file(), "nothing moved");
-        assert!(!dir.path().join("requests/auth").exists());
+        assert_eq!(requests_tree(&dir), before);
     }
 
     /// Redo of a move into the space refuses the same way.
@@ -753,10 +751,10 @@ mod tests {
         p.move_request("main/ping", "auth").unwrap();
         p.undo().unwrap().unwrap();
         rename_auth_by_hand(&dir);
+        let before = requests_tree(&dir);
         let r = p.redo();
         assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert!(dir.path().join("requests/main/ping.toml").is_file(), "nothing moved");
-        assert!(!dir.path().join("requests/auth").exists());
+        assert_eq!(requests_tree(&dir), before);
     }
 
     /// A restore from the trash (undo of a delete) refuses the same way.
@@ -765,10 +763,10 @@ mod tests {
         let (dir, mut p) = fixture();
         p.delete_request("auth/login").unwrap();
         rename_auth_by_hand(&dir);
+        let before = requests_tree(&dir);
         let r = p.undo();
         assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert!(!dir.path().join("requests/auth").exists());
-        assert!(!dir.path().join("requests/Auth/login.toml").exists());
+        assert_eq!(requests_tree(&dir), before);
     }
 
     /// So does a text write that puts a removed file back.
@@ -780,9 +778,10 @@ mod tests {
             .unwrap();
         p.undo().unwrap().unwrap();
         rename_auth_by_hand(&dir);
+        let before = requests_tree(&dir);
         let r = p.redo();
         assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert!(!dir.path().join("requests/auth").exists());
+        assert_eq!(requests_tree(&dir), before);
     }
 
     /// The space's own directory, there at its exact name, takes the undo

@@ -583,26 +583,37 @@ impl Project {
     /// the listing fresh. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
     fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
+        self.refuse_space_case_twins(&[space])
+    }
+
+    /// [`Self::refuse_space_case_twin`] for each of `spaces`, from one
+    /// listing of `requests/`.
+    fn refuse_space_case_twins(&mut self, spaces: &[&str]) -> Result<(), Error> {
+        if spaces.is_empty() {
+            return Ok(());
+        }
         let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
         let dirs: Vec<&str> =
             entries.iter().filter(|e| e.is_dir).map(|e| e.name.as_str()).collect();
-        let wanted = space.to_lowercase();
-        if !dirs.contains(&space)
-            && let Some(twin) = dirs.iter().find(|d| d.to_lowercase() == wanted)
-        {
-            return Err(case_twin_conflict(twin));
+        for space in spaces {
+            let wanted = space.to_lowercase();
+            if !dirs.contains(space)
+                && let Some(twin) = dirs.iter().find(|d| d.to_lowercase() == wanted)
+            {
+                return Err(case_twin_conflict(twin));
+            }
         }
         Ok(())
     }
 
     /// An undo's or a redo's pre-flight for the spaces its replay writes
     /// into: refuses as [`Self::refuse_space_case_twin`] does for the space
-    /// each of `paths` sits in, once per space (#261). A space whose
-    /// directory is itself one of `paths` is skipped: put back whole, it is
-    /// made at its exact name. A case-insensitive disk finds the twin at
-    /// that path, and the replay's existence check refuses it.
+    /// each of `paths` sits in (#261). A space whose directory is itself
+    /// one of `paths` is skipped: put back whole, it is made at its exact
+    /// name. A case-insensitive disk finds the twin at that path, and the
+    /// replay's existence check refuses it.
     pub(super) fn refuse_space_case_twins_of(&mut self, paths: &[&RelPath]) -> Result<(), Error> {
-        let in_requests: Vec<&str> = paths
+        let in_requests: std::collections::BTreeSet<&str> = paths
             .iter()
             .filter_map(|p| p.as_str().strip_prefix(REQUESTS_DIR)?.strip_prefix('/'))
             .collect();
@@ -611,10 +622,7 @@ impl Project {
             .filter_map(|rest| crate::storage::space_of(rest))
             .filter(|space| !in_requests.contains(space))
             .collect();
-        for space in spaces {
-            self.refuse_space_case_twin(space)?;
-        }
-        Ok(())
+        self.refuse_space_case_twins(&spaces.into_iter().collect::<Vec<_>>())
     }
 
     /// The folders `to` (a request's slug in another space, at the same
@@ -2079,7 +2087,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read};
+    use super::super::tests::{fixture, read, requests_tree};
     use super::*;
     use crate::journal::Op;
     use crate::storage::FolderListing;
@@ -4595,32 +4603,6 @@ mod tests {
         let (_d, p) = folder_tree(&[("requests/main/My Stuff/", "")]);
         assert_eq!(folder_paths(&p), ["main/My Stuff"]);
         assert_eq!(p.folders()[0].display_name(), "My Stuff");
-    }
-
-    /// Every path under `requests/` with its bytes (`None` for a
-    /// directory): what an exact undo must give back.
-    fn requests_tree(
-        dir: &tempfile::TempDir,
-    ) -> std::collections::BTreeMap<String, Option<Vec<u8>>> {
-        fn walk(
-            base: &std::path::Path,
-            d: &std::path::Path,
-            out: &mut std::collections::BTreeMap<String, Option<Vec<u8>>>,
-        ) {
-            for e in std::fs::read_dir(d).unwrap() {
-                let path = e.unwrap().path();
-                let key = path.strip_prefix(base).unwrap().to_string_lossy().into_owned();
-                if path.is_dir() {
-                    out.insert(key, None);
-                    walk(base, &path, out);
-                } else {
-                    out.insert(key, Some(std::fs::read(&path).unwrap()));
-                }
-            }
-        }
-        let mut out = std::collections::BTreeMap::new();
-        walk(dir.path(), &dir.path().join("requests"), &mut out);
-        out
     }
 
     /// `op` is one undo step; undo gives back `requests/` and

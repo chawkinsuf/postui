@@ -1538,6 +1538,32 @@ mod tests {
         std::fs::read_to_string(dir.path().join(rel)).ok()
     }
 
+    /// Every path under `requests/` with its bytes (`None` for a
+    /// directory): what an exact undo must give back.
+    pub(crate) fn requests_tree(
+        dir: &tempfile::TempDir,
+    ) -> std::collections::BTreeMap<String, Option<Vec<u8>>> {
+        fn walk(
+            base: &std::path::Path,
+            d: &std::path::Path,
+            out: &mut std::collections::BTreeMap<String, Option<Vec<u8>>>,
+        ) {
+            for e in std::fs::read_dir(d).unwrap() {
+                let path = e.unwrap().path();
+                let key = path.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    out.insert(key, None);
+                    walk(base, &path, out);
+                } else {
+                    out.insert(key, Some(std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir.path(), &dir.path().join("requests"), &mut out);
+        out
+    }
+
     /// Pane sizes with both set: the split token and the sidebar width.
     pub(crate) fn sizes(split: &str, width: u16) -> LayoutState {
         LayoutState { main_split: Some(split.into()), sidebar_width: Some(width) }
