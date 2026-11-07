@@ -513,8 +513,7 @@ impl Disk {
         Ok(out)
     }
 
-    /// `list` without recording a stamp, as `peek` is to `read`: for a
-    /// listing that does not load what a later `poll` reloads from it.
+    /// `list` without recording a stamp, as `peek` is to `read`.
     pub fn peek_list(&self, dir: &RelPath) -> Result<Vec<DirEntry>, DiskError> {
         let mut out = Vec::new();
         match std::fs::read_dir(self.abs(dir)) {
@@ -538,15 +537,18 @@ impl Disk {
     /// Every file under `dir` (recursively) whose extension is `ext`, and
     /// every directory below `dir` (not `dir` itself), each sorted by path.
     /// The first directory that fails to list is reported as the warning
-    /// and skipped; everything else is still returned. Lists with
-    /// `peek_list`, so it records no stamp.
-    pub fn walk(&self, dir: &RelPath, ext: &str) -> (Vec<RelPath>, Vec<RelPath>, Option<String>) {
+    /// and skipped; everything else is still returned.
+    pub fn walk(
+        &mut self,
+        dir: &RelPath,
+        ext: &str,
+    ) -> (Vec<RelPath>, Vec<RelPath>, Option<String>) {
         let mut files = Vec::new();
         let mut dirs = Vec::new();
         let mut warning = None;
         let mut stack = vec![dir.clone()];
         while let Some(d) = stack.pop() {
-            let entries = match self.peek_list(&d) {
+            let entries = match self.list(&d) {
                 Ok(e) => e,
                 Err(e) => {
                     warning.get_or_insert(e.to_string());
@@ -1110,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn list_records_the_directory_and_peek_list_and_walk_do_not() {
+    fn list_records_the_directory_and_peek_list_does_not() {
         let (dir, mut disk) = disk();
         let requests = RelPath::new("requests").unwrap();
         disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "").unwrap();
@@ -1121,8 +1123,7 @@ mod tests {
         std::fs::File::open(dir.path().join("requests")).unwrap().set_modified(t).unwrap();
         assert!(disk.changed(&requests));
         assert_eq!(disk.peek_list(&requests).unwrap().len(), 2);
-        disk.walk(&requests, "toml");
-        assert!(disk.changed(&requests), "neither peek_list nor walk records");
+        assert!(disk.changed(&requests), "peek_list records nothing");
         disk.list(&requests).unwrap();
         assert!(!disk.changed(&requests), "a list re-records");
     }

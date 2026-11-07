@@ -841,8 +841,10 @@ impl Project {
     /// The spaces are compared rather than stamped because a stamp of
     /// `requests/` cannot tell the app's own changes there (a request
     /// op's space directory, a rollback) from an outside one (#262). The
-    /// cost: a space directory deleted by hand while `project.toml` still
-    /// lists it changes no space, so it waits for the next relist.
+    /// cost: the directory of a space `project.toml` lists, made, removed
+    /// or replaced by hand (a checkout, a pull), changes no space, so its
+    /// requests wait for the next relist, as a request file added or
+    /// removed by hand inside a space does.
     pub fn changed_on_disk(&self) -> bool {
         self.force_reload
             || self.watched().iter().any(|p| self.disk.changed(p))
@@ -1098,8 +1100,7 @@ impl Project {
 
     /// [`list_spaces`](Self::list_spaces), with what it skips for its name
     /// (the listed names, each once, then the directories, alphabetically)
-    /// and the warning a `requests/` that won't list gives. Records no
-    /// stamp of `requests/`.
+    /// and the warning a `requests/` that won't list gives.
     fn scan_spaces(
         disk: &Disk,
         meta: &ProjectMeta,
@@ -1421,6 +1422,7 @@ impl Project {
                 Ok(()) => {
                     let (spaces, w) = Self::list_spaces(&project.disk, &project.meta);
                     project.spaces = spaces;
+                    project.spaces_warning = join_warnings(&w);
                     warnings.extend(w);
                     project.journal.clear();
                 }
@@ -2349,7 +2351,6 @@ mod tests {
         for (what, op) in ops {
             let (dir, mut p) = fixture();
             std::fs::create_dir_all(dir.path().join("requests/new")).unwrap();
-            bump_mtime(&dir.path().join("requests"));
             op(&mut p);
             assert!(p.poll().0, "{what}: the poll still sees the new space");
             assert_eq!(p.spaces(), ["main", "auth", "new"], "{what}");
@@ -2386,8 +2387,6 @@ mod tests {
             let (dir, mut p) = fixture();
             let requests = dir.path().join("requests");
             std::fs::remove_dir_all(requests.join("auth")).unwrap();
-            bump_mtime(&requests);
-            p.poll();
             p.relist();
             assert_eq!(p.spaces(), ["main", "auth"], "{what}: listed, so still a space");
             op(&mut p);
@@ -2403,12 +2402,9 @@ mod tests {
         let (dir, mut p) = fixture();
         let requests = dir.path().join("requests");
         std::fs::remove_dir_all(requests.join("auth")).unwrap();
-        bump_mtime(&requests);
-        p.poll();
         p.transaction("make", EntryMeta::default(), |p| {
             p.fs_create_dir(&space_rel("auth")?)?;
             std::fs::create_dir(p.disk.root().join("requests/new")).unwrap();
-            bump_mtime(&p.disk.root().join("requests"));
             p.fs_create_file(&request_rel("auth/fresh")?, "url = \"u\"\n")
         })
         .unwrap();
@@ -2416,22 +2412,10 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "auth", "new"]);
     }
 
-    /// #262: the stamps recorded at the end of a load leave a new space
-    /// directory for the poll.
-    #[test]
-    fn stamping_the_watched_files_leaves_a_new_space_dir_for_the_poll() {
-        let (dir, mut p) = fixture();
-        std::fs::create_dir(dir.path().join("requests/new")).unwrap();
-        bump_mtime(&dir.path().join("requests"));
-        p.stamp_watched();
-        assert!(p.poll().0);
-        assert_eq!(p.spaces(), ["main", "auth", "new"]);
-    }
-
     /// #262: the poll reloads when the spaces under `requests/` change: an
     /// unlisted space's directory made, renamed or removed by hand. A
-    /// directory skipped for its name, or a listed space's directory
-    /// removed by hand, changes no space, so neither reloads.
+    /// directory skipped for its name changes no space, so it does not
+    /// reload.
     #[test]
     fn the_poll_compares_the_spaces_under_requests() {
         let (dir, mut p) = fixture();
@@ -2445,12 +2429,7 @@ mod tests {
         assert!(p.poll().0, "an unlisted space removed");
         assert_eq!(p.spaces(), ["main", "auth"]);
         std::fs::create_dir(requests.join("Bad Name")).unwrap();
-        bump_mtime(&requests);
         assert!(!p.poll().0, "a directory skipped for its name");
-        std::fs::remove_dir_all(requests.join("auth")).unwrap();
-        bump_mtime(&requests);
-        assert!(!p.poll().0, "a listed space's directory removed");
-        assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
     #[test]

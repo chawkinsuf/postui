@@ -270,7 +270,11 @@ the open request).
   stamps only the top of `requests/` (mod.rs:796), so a file or
   directory added deeper is picked up on the next op or forced reload,
   not on focus. That gap exists for request files today; it is checked
-  and filed separately if real.
+  and filed separately if real. (2026-11-07, #262, mine (approved):
+  `changed_on_disk` no longer stamps `requests/`; it compares the spaces
+  listed under it with the ones shown, so only a change to the set of
+  spaces is noticed on focus, and a listed space's own directory made,
+  removed or replaced outside waits for the next relist too.)
 - The curl button's new home (#240).
 
 ## 4. Tests

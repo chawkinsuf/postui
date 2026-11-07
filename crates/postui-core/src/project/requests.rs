@@ -599,7 +599,7 @@ impl Project {
         if spaces.is_empty() {
             return Ok(());
         }
-        let entries = self.disk.peek_list(&RelPath::new(REQUESTS_DIR)?)?;
+        let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
         let dirs: Vec<&str> =
             entries.iter().filter(|e| e.is_dir).map(|e| e.name.as_str()).collect();
         for space in spaces {
