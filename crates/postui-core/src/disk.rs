@@ -508,6 +508,13 @@ impl Disk {
     /// failing the whole listing (a directory that fails to open still
     /// is). Records the directory's stamp.
     pub fn list(&mut self, dir: &RelPath) -> Result<Vec<DirEntry>, DiskError> {
+        let out = self.peek_list(dir)?;
+        self.record(dir);
+        Ok(out)
+    }
+
+    /// `list` without recording a stamp, as `peek` is to `read`.
+    pub fn peek_list(&self, dir: &RelPath) -> Result<Vec<DirEntry>, DiskError> {
         let mut out = Vec::new();
         match std::fs::read_dir(self.abs(dir)) {
             Ok(entries) => {
@@ -524,7 +531,6 @@ impl Disk {
             Err(e) => return Err(DiskError::io("list", dir)(e)),
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        self.record(dir);
         Ok(out)
     }
 
@@ -1103,6 +1109,23 @@ mod tests {
             ]
         );
         assert!(warning.is_none());
+    }
+
+    #[test]
+    fn list_records_the_directory_and_peek_list_does_not() {
+        let (dir, mut disk) = disk();
+        let requests = RelPath::new("requests").unwrap();
+        disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "").unwrap();
+        disk.list(&requests).unwrap();
+        std::fs::create_dir(dir.path().join("requests/new")).unwrap();
+        let t = std::fs::metadata(dir.path().join("requests")).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
+        std::fs::File::open(dir.path().join("requests")).unwrap().set_modified(t).unwrap();
+        assert!(disk.changed(&requests));
+        assert_eq!(disk.peek_list(&requests).unwrap().len(), 2);
+        assert!(disk.changed(&requests), "peek_list records nothing");
+        disk.list(&requests).unwrap();
+        assert!(!disk.changed(&requests), "a list re-records");
     }
 
     #[cfg(unix)]
