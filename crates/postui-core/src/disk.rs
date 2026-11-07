@@ -348,11 +348,6 @@ impl Disk {
 
     pub fn write_bytes(&mut self, rel: &RelPath, contents: &[u8]) -> Result<(), DiskError> {
         self.refuse(rel)?;
-        self.own_change(&[rel], |d| d.put_bytes(rel, contents))
-    }
-
-    /// `write_bytes` after its read-only check.
-    fn put_bytes(&mut self, rel: &RelPath, contents: &[u8]) -> Result<(), DiskError> {
         let path = self.abs(rel);
         let target = match std::fs::symlink_metadata(&path) {
             Ok(m) if m.file_type().is_symlink() => {
@@ -394,10 +389,8 @@ impl Disk {
         self.refuse(rel)?;
         let path = self.abs(rel);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        self.own_change(&[rel], |d| {
-            d.create_dirs(parent, rel, "create the directory of")?;
-            d.place_new(&path, rel, text.as_bytes())
-        })
+        self.create_dirs(parent, rel, "create the directory of")?;
+        self.place_new(&path, rel, text.as_bytes())
     }
 
     /// `write_new` once the directory is there: stages `contents` beside
@@ -446,46 +439,20 @@ impl Disk {
     /// Removes a file. A missing file is success.
     pub fn remove(&mut self, rel: &RelPath) -> Result<(), DiskError> {
         self.refuse(rel)?;
-        self.own_change(&[rel], |d| {
-            match std::fs::remove_file(d.abs(rel)) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(DiskError::io("remove", rel)(e)),
-            }
-            d.record(rel);
-            Ok(())
-        })
+        match std::fs::remove_file(self.abs(rel)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(DiskError::io("remove", rel)(e)),
+        }
+        self.record(rel);
+        Ok(())
     }
 
     pub fn create_dir(&mut self, rel: &RelPath) -> Result<(), DiskError> {
         self.refuse(rel)?;
-        self.own_change(&[rel], |d| {
-            d.create_dirs(&d.abs(rel), rel, "create")?;
-            d.record(rel);
-            Ok(())
-        })
-    }
-
-    /// Runs `change`, which adds, removes or renames `entries`, then
-    /// records the stamp of each directory holding one again when it was
-    /// recorded and current just before: the change is this `Disk`'s own,
-    /// not one for `poll` to reload, while an outside change already
-    /// pending there stays pending (#262).
-    fn own_change<T>(
-        &mut self,
-        entries: &[&RelPath],
-        change: impl FnOnce(&mut Self) -> Result<T, DiskError>,
-    ) -> Result<T, DiskError> {
-        let current: Vec<RelPath> = entries
-            .iter()
-            .filter_map(|e| e.parent())
-            .filter(|d| self.stamps.get(d).is_some_and(|s| *s == self.stamp(d)))
-            .collect();
-        let out = change(self);
-        for d in &current {
-            self.record(d);
-        }
-        out
+        self.create_dirs(&self.abs(rel), rel, "create")?;
+        self.record(rel);
+        Ok(())
     }
 
     /// The fresh stamp of `rel`, straight from disk.
@@ -527,26 +494,22 @@ impl Disk {
         if to_abs.exists() {
             return Err(DiskError::AlreadyExists(to.to_string()));
         }
-        self.own_change(&[from, to], |d| {
-            if let Some(parent) = to_abs.parent() {
-                d.create_dirs(parent, to, "create the directory of")?;
-            }
-            std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
-            d.record(from);
-            d.record(to);
-            Ok(())
-        })
+        if let Some(parent) = to_abs.parent() {
+            self.create_dirs(parent, to, "create the directory of")?;
+        }
+        std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
+        self.record(from);
+        self.record(to);
+        Ok(())
     }
 
     /// The entries of a directory, sorted by name. A missing directory
     /// lists as empty; an entry that fails to read is skipped rather than
     /// failing the whole listing (a directory that fails to open still
-    /// is). Records the directory's stamp as it was before the read, so
-    /// an entry made while it reads shows as a change.
+    /// is). Records the directory's stamp.
     pub fn list(&mut self, dir: &RelPath) -> Result<Vec<DirEntry>, DiskError> {
-        let before = self.stamp(dir);
         let out = self.peek_list(dir)?;
-        self.stamps.insert(dir.clone(), before);
+        self.record(dir);
         Ok(out)
     }
 
@@ -607,15 +570,13 @@ impl Disk {
 
     pub fn remove_dir_all(&mut self, rel: &RelPath) -> Result<(), DiskError> {
         self.refuse(rel)?;
-        self.own_change(&[rel], |d| {
-            match std::fs::remove_dir_all(d.abs(rel)) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(DiskError::io("remove", rel)(e)),
-            }
-            d.record(rel);
-            Ok(())
-        })
+        match std::fs::remove_dir_all(self.abs(rel)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(DiskError::io("remove", rel)(e)),
+        }
+        self.record(rel);
+        Ok(())
     }
 
     /// Whether `rel` differs from the stamp recorded at the last read or
@@ -1148,58 +1109,6 @@ mod tests {
         assert!(warning.is_none());
     }
 
-    /// #262: a change this `Disk` makes to a directory's entries keeps that
-    /// directory's stamp current when it was current, and leaves an
-    /// outside change already pending there pending.
-    #[test]
-    fn its_own_entry_changes_keep_a_current_directory_current() {
-        type Change = fn(&mut Disk);
-        let p = |s: &str| RelPath::new(s).unwrap();
-        let changes: [(&str, Change); 8] = [
-            ("create_dir", |d| d.create_dir(&RelPath::new("requests/made").unwrap()).unwrap()),
-            ("write", |d| d.write(&RelPath::new("requests/new.toml").unwrap(), "").unwrap()),
-            ("write_new", |d| {
-                d.write_new(&RelPath::new("requests/new.toml").unwrap(), "").unwrap()
-            }),
-            ("remove", |d| d.remove(&RelPath::new("requests/old.toml").unwrap()).unwrap()),
-            ("rename", |d| {
-                let main = RelPath::new("requests/main").unwrap();
-                d.rename(&main, &RelPath::new("requests/moved").unwrap()).unwrap();
-            }),
-            ("remove_dir_all", |d| {
-                d.remove_dir_all(&RelPath::new("requests/main").unwrap()).unwrap();
-            }),
-            ("trash", |d| {
-                d.trash(&RelPath::new("requests/main").unwrap()).unwrap();
-            }),
-            ("restore", |d| {
-                let t = d.trash(&RelPath::new("requests/main").unwrap()).unwrap();
-                d.restore(&t).unwrap();
-            }),
-        ];
-        for (what, change) in changes {
-            for outside in [false, true] {
-                let (dir, mut disk) = disk();
-                let requests = p("requests");
-                disk.write(&p("requests/main/a.toml"), "").unwrap();
-                disk.write(&p("requests/old.toml"), "").unwrap();
-                // Back-dated, so the change moves the stamp on any clock.
-                let past = SystemTime::now() - std::time::Duration::from_secs(10);
-                std::fs::File::open(dir.path().join("requests"))
-                    .unwrap()
-                    .set_modified(past)
-                    .unwrap();
-                disk.list(&requests).unwrap();
-                if outside {
-                    std::fs::create_dir(dir.path().join("requests/outside")).unwrap();
-                    crate::fixtures::bump_mtime(&dir.path().join("requests"));
-                }
-                change(&mut disk);
-                assert_eq!(disk.changed(&requests), outside, "{what}, outside: {outside}");
-            }
-        }
-    }
-
     #[test]
     fn list_records_the_directory_and_peek_list_and_walk_do_not() {
         let (dir, mut disk) = disk();
@@ -1207,7 +1116,9 @@ mod tests {
         disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "").unwrap();
         disk.list(&requests).unwrap();
         std::fs::create_dir(dir.path().join("requests/new")).unwrap();
-        crate::fixtures::bump_mtime(&dir.path().join("requests"));
+        let t = std::fs::metadata(dir.path().join("requests")).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
+        std::fs::File::open(dir.path().join("requests")).unwrap().set_modified(t).unwrap();
         assert!(disk.changed(&requests));
         assert_eq!(disk.peek_list(&requests).unwrap().len(), 2);
         disk.walk(&requests, "toml");

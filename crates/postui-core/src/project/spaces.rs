@@ -9,14 +9,14 @@ impl Project {
     /// `meta.spaces` exactly as written (duplicates dropped, invalid
     /// names kept in place) then unlisted directories: the list every
     /// space op writes back. Never filters a hand-written entry away.
-    fn write_list(&self) -> Vec<String> {
+    fn write_list(&mut self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for name in &self.meta.spaces {
             if !out.contains(name) {
                 out.push(name.clone());
             }
         }
-        let (listed, _, _) = Self::scan_spaces(self.disk.peek_list(&requests_rel()), &self.meta);
+        let (listed, _) = Self::list_spaces(&self.disk, &self.meta);
         for name in listed {
             if !out.contains(&name) {
                 out.push(name);
@@ -28,7 +28,7 @@ impl Project {
     /// Re-lists spaces from `meta` and disk; a vanished active space
     /// falls back to the first with a warning.
     pub(crate) fn refresh_spaces(&mut self) -> Option<Warning> {
-        let (spaces, invalid) = Self::list_spaces(&mut self.disk, &self.meta);
+        let (spaces, invalid) = Self::list_spaces(&self.disk, &self.meta);
         self.spaces = spaces;
         self.spaces_warning = super::join_warnings(&invalid);
         if self.spaces.contains(&self.local.active_space) {
@@ -60,10 +60,14 @@ impl Project {
     /// counts, a file too: on a case-insensitive disk it holds the name.
     /// A `requests/` that can't be listed is an error, not a guess, even
     /// when `display` slugs to `exclude`.
-    pub fn space_slug_for(&self, display: &str, exclude: Option<&str>) -> Result<String, Error> {
+    pub fn space_slug_for(
+        &mut self,
+        display: &str,
+        exclude: Option<&str>,
+    ) -> Result<String, Error> {
         let on_disk: Vec<String> = self
             .disk
-            .peek_list(&requests_rel())?
+            .list(&RelPath::new(REQUESTS_DIR)?)?
             .into_iter()
             .map(|e| e.name.to_lowercase())
             .collect();

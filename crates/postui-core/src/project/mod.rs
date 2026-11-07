@@ -231,10 +231,6 @@ pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
     Ok(RelPath::new(s)?)
 }
 
-pub(crate) fn requests_rel() -> RelPath {
-    RelPath::new(REQUESTS_DIR).expect("constant")
-}
-
 pub(crate) fn request_rel(slug: &str) -> Result<RelPath, Error> {
     crate::storage::validate_slug(slug).map_err(|e| Error::BadName(e.to_string()))?;
     rel(&format!("{REQUESTS_DIR}/{slug}.toml"))
@@ -801,14 +797,14 @@ impl Project {
     }
 
     /// The files today's `reload_if_changed` stamps: `project.toml`,
-    /// `variables.toml`, `environments/`, the active env file, and
-    /// `requests/`.
+    /// `variables.toml`, `environments/` and the active env file. The
+    /// spaces under `requests/` are compared, not stamped
+    /// ([`Self::changed_on_disk`]).
     fn watched(&self) -> Vec<RelPath> {
         let mut out = vec![
             RelPath::new(PROJECT_TOML).expect("constant"),
             RelPath::new(VARIABLES_TOML).expect("constant"),
             RelPath::new(ENVIRONMENTS_DIR).expect("constant"),
-            requests_rel(),
         ];
         if let Some(env) = &self.active_env
             && let Ok(p) = env_rel(env)
@@ -819,11 +815,12 @@ impl Project {
     }
 
     /// Records the watched files' stamps (what `open`'s reads did for
-    /// the ones it read). The watched directories are left to the
-    /// listings that load them, which record their stamps (#262).
+    /// the ones it read; directories need an explicit list).
     fn stamp_watched(&mut self) {
         for path in self.watched() {
-            if !self.disk.is_dir(&path) {
+            if self.disk.is_dir(&path) {
+                let _ = self.disk.list(&path);
+            } else {
                 let _ = self.disk.read(&path);
             }
         }
@@ -838,9 +835,25 @@ impl Project {
     }
 
     /// Whether the next `poll` will re-read: a watched file changed on
-    /// disk since it was last read, or `invalidate_stamps` forced it.
+    /// disk since it was last read, the spaces `requests/` gives now
+    /// differ from the ones shown, or `invalidate_stamps` forced it.
+    ///
+    /// The spaces are compared rather than stamped because a stamp of
+    /// `requests/` cannot tell the app's own changes there (a request
+    /// op's space directory, a rollback) from an outside one (#262). The
+    /// cost: a space directory deleted by hand while `project.toml` still
+    /// lists it changes no space, so it waits for the next relist.
     pub fn changed_on_disk(&self) -> bool {
-        self.force_reload || self.watched().iter().any(|p| self.disk.changed(p))
+        self.force_reload
+            || self.watched().iter().any(|p| self.disk.changed(p))
+            || self.spaces_differ()
+    }
+
+    /// Whether listing the spaces now gives other spaces, or another
+    /// spaces warning, than `self.spaces` and `self.spaces_warning`.
+    fn spaces_differ(&self) -> bool {
+        let (spaces, warnings) = Self::list_spaces(&self.disk, &self.meta);
+        spaces != self.spaces || join_warnings(&warnings) != self.spaces_warning
     }
 
     /// Today's timer reload: silent, mtime-gated, keeps what fails to
@@ -1075,23 +1088,20 @@ impl Project {
     }
 
     /// `meta.spaces` first (invalid names skipped, duplicates dropped),
-    /// then unlisted directories under `requests/`, alphabetically. The
-    /// load of the spaces, so the one listing of `requests/` that records
-    /// its stamp, which the poll compares to reload them; every other
-    /// listing of it peeks (#262).
-    fn list_spaces(disk: &mut Disk, meta: &ProjectMeta) -> (Vec<String>, Vec<Warning>) {
-        let (out, skipped, list_failed) = Self::scan_spaces(disk.list(&requests_rel()), meta);
+    /// then unlisted directories under `requests/`, alphabetically.
+    fn list_spaces(disk: &Disk, meta: &ProjectMeta) -> (Vec<String>, Vec<Warning>) {
+        let (out, skipped, list_failed) = Self::scan_spaces(disk, meta);
         let mut warnings: Vec<Warning> = skipped.iter().filter_map(Skipped::warning).collect();
         warnings.extend(list_failed);
         (out, warnings)
     }
 
-    /// [`list_spaces`](Self::list_spaces) from `listing`, the entries of
-    /// `requests/`, with what it skips for its name (the listed names,
-    /// each once, then the directories, alphabetically) and the warning a
-    /// `requests/` that won't list gives.
+    /// [`list_spaces`](Self::list_spaces), with what it skips for its name
+    /// (the listed names, each once, then the directories, alphabetically)
+    /// and the warning a `requests/` that won't list gives. Records no
+    /// stamp of `requests/`.
     fn scan_spaces(
-        listing: Result<Vec<crate::disk::DirEntry>, DiskError>,
+        disk: &Disk,
         meta: &ProjectMeta,
     ) -> (Vec<String>, Vec<Skipped>, Option<Warning>) {
         let mut out: Vec<String> = Vec::new();
@@ -1111,19 +1121,21 @@ impl Project {
         let mut unlisted = Vec::new();
         let mut bad_dirs = Vec::new();
         let mut list_failed = None;
-        match listing {
-            Ok(entries) => {
-                for e in entries.into_iter().filter(|e| e.is_dir) {
-                    if !meta::valid_space_name(&e.name) {
-                        if !is_hidden(&e.name) {
-                            bad_dirs.push(e.name);
+        if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
+            match disk.peek_list(&dir) {
+                Ok(entries) => {
+                    for e in entries.into_iter().filter(|e| e.is_dir) {
+                        if !meta::valid_space_name(&e.name) {
+                            if !is_hidden(&e.name) {
+                                bad_dirs.push(e.name);
+                            }
+                        } else if !out.contains(&e.name) {
+                            unlisted.push(e.name);
                         }
-                    } else if !out.contains(&e.name) {
-                        unlisted.push(e.name);
                     }
                 }
+                Err(e) => list_failed = Some(format!("could not list {REQUESTS_DIR}/: {e}")),
             }
-            Err(e) => list_failed = Some(format!("could not list {REQUESTS_DIR}/: {e}")),
         }
         unlisted.sort();
         out.extend(unlisted);
@@ -1136,7 +1148,7 @@ impl Project {
     /// names `project.toml` lists, then environment files, then space
     /// directories. Read from disk now, by the listings `open` uses.
     pub fn skipped(&mut self) -> Vec<Skipped> {
-        let (_, spaces, _) = Self::scan_spaces(self.disk.peek_list(&requests_rel()), &self.meta);
+        let (_, spaces, _) = Self::scan_spaces(&self.disk, &self.meta);
         let (listed_spaces, dirs): (Vec<Skipped>, Vec<Skipped>) =
             spaces.into_iter().partition(|s| matches!(s, Skipped::ListedSpace(_)));
         let (listed_envs, files): (Vec<Skipped>, Vec<Skipped>) =
@@ -1189,7 +1201,7 @@ impl Project {
         if !read_only && let Err(e) = disk.empty_trash() {
             warnings.push(format!("could not empty {TRASH_DIR}: {e}"));
         }
-        let (spaces, space_warnings) = Self::list_spaces(&mut disk, &meta);
+        let (spaces, space_warnings) = Self::list_spaces(&disk, &meta);
         let spaces_warning = join_warnings(&space_warnings);
         warnings.extend(space_warnings);
 
@@ -1407,7 +1419,7 @@ impl Project {
             })();
             match seeded {
                 Ok(()) => {
-                    let (spaces, w) = Self::list_spaces(&mut project.disk, &project.meta);
+                    let (spaces, w) = Self::list_spaces(&project.disk, &project.meta);
                     project.spaces = spaces;
                     warnings.extend(w);
                     project.journal.clear();
@@ -1507,7 +1519,6 @@ mod requests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::bump_mtime;
 
     /// A project with two spaces, one request each, two environments, a
     /// variable, and nothing local. Every later task's tests start here.
@@ -2211,6 +2222,13 @@ mod tests {
         assert!(matches!(entry.ops[1], Op::Renamed { .. }));
     }
 
+    fn bump_mtime(path: &std::path::Path) {
+        // Coarse-mtime filesystems need the clock to move.
+        let t = std::fs::metadata(path).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
+        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
+    }
+
     #[test]
     fn poll_is_quiet_until_a_watched_file_changes_then_re_reads() {
         let (dir, mut p) = fixture();
@@ -2236,7 +2254,7 @@ mod tests {
             "name = \"Extra\"\nmethod = \"GET\"\nurl = \"u\"\n",
         )
         .unwrap();
-        bump_mtime(&dir.path().join("requests"));
+        bump_mtime(&dir.path().join("project.toml"));
         let (changed, warnings) = p.poll();
         assert!(changed && warnings.is_empty(), "{warnings:?}");
         assert!(p.requests().iter().any(|l| l.slug == "main/extra"));
@@ -2288,9 +2306,9 @@ mod tests {
         assert_eq!(p.active_env(), None);
     }
 
-    /// #262: an op's listing of `requests/` between a hand-made space
-    /// directory and the poll leaves the new space for the poll: request
-    /// ops, and the space ops that refuse or change nothing.
+    /// #262: an op between a hand-made space directory and the poll
+    /// leaves the new space for the poll: request ops, and the space ops
+    /// that refuse or change nothing.
     #[test]
     fn an_op_before_the_poll_leaves_a_new_space_dir_for_it() {
         type ProjectOp = fn(&mut Project);
@@ -2333,25 +2351,28 @@ mod tests {
             std::fs::create_dir_all(dir.path().join("requests/new")).unwrap();
             bump_mtime(&dir.path().join("requests"));
             op(&mut p);
-            assert!(p.poll().0, "{what}: the poll still sees requests/ changed");
+            assert!(p.poll().0, "{what}: the poll still sees the new space");
             assert_eq!(p.spaces(), ["main", "auth", "new"], "{what}");
         }
     }
 
-    /// #262: a space directory a request op makes itself (a listed space
-    /// with no directory, as git leaves an empty one) is the app's own
-    /// change to `requests/`, and so is the rollback that takes one back:
-    /// neither leaves the poll a reload to do.
+    /// #262: a space directory an op makes itself (a listed space with no
+    /// directory, as git leaves an empty one), and the rollback that takes
+    /// one back, change no space, so they leave the poll nothing to do.
     #[test]
     fn a_space_dir_an_op_makes_or_rolls_back_is_no_outside_change() {
         type ProjectOp = fn(&mut Project);
-        let ops: [(&str, ProjectOp); 3] = [
+        let ops: [(&str, ProjectOp); 4] = [
             ("create", |p| {
                 let req = crate::model::HttpRequest::default();
                 p.create_request_in("auth", "Fresh", None, req).unwrap();
             }),
             ("move", |p| {
                 p.move_request("main/ping", "auth").unwrap();
+            }),
+            ("save", |p| {
+                let req = crate::model::HttpRequest::default();
+                p.save_request("auth/login", &req).unwrap();
             }),
             ("rollback", |p| {
                 p.transaction("make", EntryMeta::default(), |p| {
@@ -2365,11 +2386,9 @@ mod tests {
             let (dir, mut p) = fixture();
             let requests = dir.path().join("requests");
             std::fs::remove_dir_all(requests.join("auth")).unwrap();
-            // Back-dated, so the op's own change to `requests/` moves its
-            // stamp on any clock.
-            let past = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
-            std::fs::File::open(&requests).unwrap().set_modified(past).unwrap();
-            assert!(p.poll().0);
+            bump_mtime(&requests);
+            p.poll();
+            p.relist();
             assert_eq!(p.spaces(), ["main", "auth"], "{what}: listed, so still a space");
             op(&mut p);
             assert_eq!(requests.join("auth").is_dir(), what != "rollback", "{what}");
@@ -2384,9 +2403,8 @@ mod tests {
         let (dir, mut p) = fixture();
         let requests = dir.path().join("requests");
         std::fs::remove_dir_all(requests.join("auth")).unwrap();
-        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
-        std::fs::File::open(&requests).unwrap().set_modified(past).unwrap();
-        assert!(p.poll().0);
+        bump_mtime(&requests);
+        p.poll();
         p.transaction("make", EntryMeta::default(), |p| {
             p.fs_create_dir(&space_rel("auth")?)?;
             std::fs::create_dir(p.disk.root().join("requests/new")).unwrap();
@@ -2398,9 +2416,8 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "auth", "new"]);
     }
 
-    /// #262: the stamps recorded at the end of a load leave `requests/` to
-    /// the listing that loaded the spaces, so a directory made after that
-    /// listing is still a change.
+    /// #262: the stamps recorded at the end of a load leave a new space
+    /// directory for the poll.
     #[test]
     fn stamping_the_watched_files_leaves_a_new_space_dir_for_the_poll() {
         let (dir, mut p) = fixture();
@@ -2409,6 +2426,31 @@ mod tests {
         p.stamp_watched();
         assert!(p.poll().0);
         assert_eq!(p.spaces(), ["main", "auth", "new"]);
+    }
+
+    /// #262: the poll reloads when the spaces under `requests/` change: an
+    /// unlisted space's directory made, renamed or removed by hand. A
+    /// directory skipped for its name, or a listed space's directory
+    /// removed by hand, changes no space, so neither reloads.
+    #[test]
+    fn the_poll_compares_the_spaces_under_requests() {
+        let (dir, mut p) = fixture();
+        let requests = dir.path().join("requests");
+        std::fs::create_dir(requests.join("extra")).unwrap();
+        assert!(p.poll().0, "a new unlisted space");
+        std::fs::rename(requests.join("extra"), requests.join("other")).unwrap();
+        assert!(p.poll().0, "an unlisted space renamed");
+        assert_eq!(p.spaces(), ["main", "auth", "other"]);
+        std::fs::remove_dir(requests.join("other")).unwrap();
+        assert!(p.poll().0, "an unlisted space removed");
+        assert_eq!(p.spaces(), ["main", "auth"]);
+        std::fs::create_dir(requests.join("Bad Name")).unwrap();
+        bump_mtime(&requests);
+        assert!(!p.poll().0, "a directory skipped for its name");
+        std::fs::remove_dir_all(requests.join("auth")).unwrap();
+        bump_mtime(&requests);
+        assert!(!p.poll().0, "a listed space's directory removed");
+        assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
     #[test]
