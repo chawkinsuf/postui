@@ -5,13 +5,32 @@ use super::*;
 use crate::journal::MergeKey;
 
 impl Project {
-    pub fn environment_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
-        meta::unique_slug_among(
+    /// The slug `display` gets as an environment's file: `slugify`, then
+    /// `-2`, `-3`, … while `environments/` holds an entry named
+    /// `<slug>.toml` in any case (#265), as a space's slug is numbered
+    /// (#264): a case-only twin can't sit beside it on every filesystem.
+    /// `exclude` is the environment a rename renames. An entry of any
+    /// kind counts, as an exact-case one already did. An `environments/`
+    /// that can't be listed is an error, not a guess, even when
+    /// `display` slugs to `exclude`. The listing records no stamp, so an
+    /// outside change to `environments/` still reaches the next poll.
+    pub fn environment_slug_for(
+        &self,
+        display: &str,
+        exclude: Option<&str>,
+    ) -> Result<String, Error> {
+        let on_disk: Vec<String> = self
+            .disk
+            .peek_list(&RelPath::new(ENVIRONMENTS_DIR)?)?
+            .into_iter()
+            .map(|e| e.name.to_lowercase())
+            .collect();
+        Ok(meta::unique_slug_among(
             meta::Kind::Environment,
             display,
-            |slug| env_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false),
+            |slug| on_disk.contains(&format!("{slug}.toml").to_lowercase()),
             exclude,
-        )
+        ))
     }
 
     /// `meta.environments` exactly as written (duplicates dropped,
@@ -165,7 +184,7 @@ impl Project {
         if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
-        let slug = self.environment_slug_for(&display, None);
+        let slug = self.environment_slug_for(&display, None)?;
         let mut envs = self.env_write_list();
         envs.push(slug.clone());
         // Creating an environment switches to it, as today's app does;
@@ -200,7 +219,7 @@ impl Project {
         if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
-        let to = self.environment_slug_for(&display, Some(from));
+        let to = self.environment_slug_for(&display, Some(from))?;
         let from = from.to_string();
         // Only rewritten when `project.toml` already lists `from`: a
         // rename never creates an order list the project did without.
@@ -532,6 +551,69 @@ mod tests {
         assert!(read(&dir, SECRETS_TOML).unwrap().contains("[development]"));
         assert!(read(&dir, "project.toml").unwrap().contains("[environment.development]"));
         assert_eq!(p.journal_len(), 2);
+    }
+
+    /// The names under `environments/`, exactly as spelled on disk.
+    fn env_dir_names(dir: &tempfile::TempDir) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir.path().join("environments"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A file under `environments/` named `<slug>.toml` in another case
+    /// takes the slug, as a space's directory does (#264): a create or a
+    /// rename gets `prod-2` on every disk, never a case-only twin.
+    #[test]
+    fn an_environment_slug_compares_files_ignoring_case() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("environments/Prod.toml"), "").unwrap();
+        std::fs::write(dir.path().join("environments/Stage.TOML"), "").unwrap();
+        assert_eq!(p.create_environment("Prod").unwrap(), "prod-2");
+        assert_eq!(p.rename_environment("qa", "Stage").unwrap(), "stage-2");
+        let names = env_dir_names(&dir);
+        assert!(!names.contains(&"prod.toml".to_string()), "{names:?}");
+        assert!(!names.contains(&"stage.toml".to_string()), "{names:?}");
+    }
+
+    /// An `environments/` that can't be listed (but can be written)
+    /// refuses the create: the slug is not guessed without the twin check.
+    #[cfg(unix)]
+    #[test]
+    fn an_environment_create_refuses_when_environments_cannot_be_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("environments/Prod.toml"), "").unwrap();
+        let envs = dir.path().join("environments");
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o333)).unwrap();
+        let created = p.create_environment("Prod");
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(created.is_err(), "{created:?}");
+        let names = env_dir_names(&dir);
+        assert!(!names.contains(&"prod.toml".to_string()), "{names:?}");
+    }
+
+    /// The slug's listing of `environments/` records no stamp: an
+    /// environment file made by hand before a create that then fails
+    /// (here `environments/` can't be written) still reaches the next poll.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_create_leaves_a_hand_made_environment_to_the_poll() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        let envs = dir.path().join("environments");
+        std::fs::write(envs.join("staging.toml"), "").unwrap();
+        let t = std::fs::metadata(&envs).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
+        std::fs::File::open(&envs).unwrap().set_modified(t).unwrap();
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let created = p.create_environment("Prod");
+        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(created.is_err(), "{created:?}");
+        assert!(p.poll().0, "the poll must see the hand-made file");
+        assert!(p.environments().contains(&"staging".to_string()), "{:?}", p.environments());
     }
 
     #[test]
