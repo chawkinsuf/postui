@@ -117,6 +117,11 @@ impl Project {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.space_slug_for(&display, Some(from))?;
+        // A space whose directory is there only in another case refuses on
+        // every disk, as a move into it does, so the platforms agree
+        // (#266). `to`, when it differs, was numbered past any directory in
+        // another case above.
+        self.refuse_space_case_twin(from)?;
         spaces[idx] = to.clone();
         let from = from.to_string();
         // Every request in the space changes slug with the directory, at
@@ -440,6 +445,48 @@ mod tests {
         assert!(created.is_err(), "{created:?}");
         let tree = requests_tree(&dir);
         assert!(!tree.contains_key("requests/billing"), "{tree:?}");
+    }
+
+    /// #266: space `auth`'s directory was renamed by hand to `Auth/`. A
+    /// rename of the space, display-only or to a new slug, refuses as a
+    /// move there does, naming it, with nothing written: on a case-sensitive
+    /// disk it would make `auth/` beside `Auth/`, or a fresh directory that
+    /// leaves `Auth/` and its requests behind.
+    #[test]
+    fn rename_refuses_a_space_directory_in_another_case() {
+        let (dir, mut p) = fixture();
+        std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
+            .unwrap();
+        p.poll();
+        let before = requests_tree(&dir);
+        let meta_before = read(&dir, "project.toml");
+        for display in ["AUTH", "Login Flow"] {
+            let r = p.rename_space("auth", display);
+            assert!(
+                matches!(&r, Err(Error::Conflict(m))
+                    if m.contains("requests/Auth/") && m.contains("outside postui")),
+                "{display}: {r:?}"
+            );
+        }
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(read(&dir, "project.toml"), meta_before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// The space's own directory, listed at its exact name, is renamed even
+    /// beside a twin in another case, which is left alone. Only a
+    /// case-sensitive disk holds both.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_rename_takes_the_exact_space_directory_beside_a_twin() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(p.rename_space("auth", "AUTH").unwrap(), "auth");
+        assert!(dir.path().join("requests/auth/login.toml").is_file());
+        assert_eq!(p.rename_space("auth", "Login Flow").unwrap(), "login-flow");
+        assert!(dir.path().join("requests/login-flow/login.toml").is_file());
+        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(twin.count(), 0);
     }
 
     #[test]

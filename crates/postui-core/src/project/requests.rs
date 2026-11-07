@@ -573,23 +573,23 @@ impl Project {
         Ok(())
     }
 
-    /// A move's or a create's pre-flight for the directory of `space`,
-    /// which it writes into: refuses when `requests/` holds no directory of
-    /// that name but one in another case (a hand rename of `auth/` to
-    /// `Auth/`, #257, #260, #263). A case-insensitive disk would file the
-    /// request into it, where the walk lists no space `space`. Refused on
-    /// every disk, as F27 refuses a folder twin: on a case-sensitive one
-    /// the op would make a case-only twin. Called after the op's relist, so
-    /// a refusal leaves the listing fresh. Compares Unicode lowercase, as
+    /// A move's, a create's or a space rename's pre-flight for the
+    /// directory of `space`, which it writes into: refuses when `requests/`
+    /// holds no directory of that name but one in another case (a hand
+    /// rename of `auth/` to `Auth/`, #257, #260, #263, #266). A
+    /// case-insensitive disk would file the request into it, where the walk
+    /// lists no space `space`. Refused on every disk, as F27
+    /// refuses a folder twin: on a case-sensitive one the op would make a
+    /// case-only twin. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
     ///
-    /// Each op that names the space it creates or moves into calls it from
-    /// its own pre-flight. An op on a listed item writes in that item's
-    /// own space, and the walk lists no item in a space whose directory is
-    /// spelled in another case. A check under every write, in
+    /// Each op that names the space it creates, moves into or renames calls
+    /// it from its own pre-flight. An op on a listed item writes in that
+    /// item's own space, and the walk lists no item in a space whose
+    /// directory is spelled in another case. A check under every write, in
     /// `fs_make_parents`, was tried in #257 and reverted (#260, comment
     /// 1170).
-    fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
+    pub(super) fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
         self.refuse_space_case_twins(&[space])
     }
 
@@ -772,7 +772,7 @@ fn folder_ignoring_case<'a>(
     folders.iter().find(|f| f.path.to_lowercase() == wanted)
 }
 
-/// The refusal of a move or a create into `requests/<path>/`, which is
+/// The refusal of an op that writes into `requests/<path>/`, which is
 /// there only in another case: its name isn't a slug, so postui can't
 /// rename it (F33).
 fn case_twin_conflict(path: &str) -> Error {
