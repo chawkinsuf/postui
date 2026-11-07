@@ -3273,9 +3273,9 @@ fn left_up(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     }
 }
 
-#[test]
-fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
-    use crate::hit::{Hit, offset_for_thumb_top};
+/// An app whose sidebar lists 60 requests, rendered, so the sidebar has a
+/// scrollbar thumb to drag.
+fn long_sidebar_app() -> App {
     let mut app = App::new_for_test();
     let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
         .map(|i| postui_core::storage::RequestListing {
@@ -3287,71 +3287,44 @@ fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
         .collect();
     app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
     render_once(&mut app);
-
-    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
-    let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
-    let spec = app.scrollbar_spec(PaneId::Sidebar).expect("sidebar scrollbar spec");
-    assert_eq!(app.sidebar.scroll, 0);
-
-    assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
-    assert!(app.drag.is_some(), "pressing the thumb starts a drag");
-
-    assert!(app.handle_mouse(moved(thumb.x, thumb.y + 3)));
-    let after = app.sidebar.scroll;
-    assert_eq!(
-        after,
-        offset_for_thumb_top(&spec, track.height, 3),
-        "drag maps the thumb's new top back to a content offset"
-    );
-    assert!(after > 0);
-    assert!(!app.sidebar.ensure_visible, "a free-scroll drag must not snap back to the selection");
-
-    app.handle_mouse(left_up(thumb.x, thumb.y + 3));
-    assert!(app.drag.is_none());
-    app.handle_mouse(moved(thumb.x, thumb.y + 6));
-    assert_eq!(app.sidebar.scroll, after, "motion after release no longer scrolls");
+    app
 }
 
 #[test]
-fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
-    // Real terminals report button-held motion as `Drag(Left)`, not
-    // `Moved` — the prior test only drove `Moved`. Same scenario, same
-    // assertions, `Drag(Left)` motion instead.
+fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
+    // Terminals that track the button report held motion as `Drag(Left)`,
+    // others as `Moved`: the same drag with each.
     use crate::hit::{Hit, offset_for_thumb_top};
-    let mut app = App::new_for_test();
-    let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
-        .map(|i| postui_core::storage::RequestListing {
-            name: None,
-            slug: format!("main/r{i:02}"),
-            broken: None,
-            method: Some(postui_core::model::Method::Get),
-        })
-        .collect();
-    app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
-    render_once(&mut app);
+    type Motion = fn(u16, u16) -> ratatui::crossterm::event::MouseEvent;
+    for (name, motion) in [("Moved", moved as Motion), ("Drag(Left)", dragged)] {
+        let mut app = long_sidebar_app();
 
-    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
-    let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
-    let spec = app.scrollbar_spec(PaneId::Sidebar).expect("sidebar scrollbar spec");
-    assert_eq!(app.sidebar.scroll, 0);
+        let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
+        let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
+        let spec = app.scrollbar_spec(PaneId::Sidebar).expect("sidebar scrollbar spec");
+        assert_eq!(app.sidebar.scroll, 0);
 
-    assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
-    assert!(app.drag.is_some(), "pressing the thumb starts a drag");
+        assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
+        assert!(app.drag.is_some(), "{name}: pressing the thumb starts a drag");
 
-    assert!(app.handle_mouse(dragged(thumb.x, thumb.y + 3)));
-    let after = app.sidebar.scroll;
-    assert_eq!(
-        after,
-        offset_for_thumb_top(&spec, track.height, 3),
-        "Drag(Left) motion maps the thumb's new top back to a content offset"
-    );
-    assert!(after > 0);
-    assert!(!app.sidebar.ensure_visible, "a free-scroll drag must not snap back to the selection");
+        assert!(app.handle_mouse(motion(thumb.x, thumb.y + 3)));
+        let after = app.sidebar.scroll;
+        assert_eq!(
+            after,
+            offset_for_thumb_top(&spec, track.height, 3),
+            "{name}: the drag maps the thumb's new top back to a content offset"
+        );
+        assert!(after > 0, "{name}");
+        assert!(
+            !app.sidebar.ensure_visible,
+            "{name}: a free-scroll drag must not snap back to the selection"
+        );
 
-    app.handle_mouse(left_up(thumb.x, thumb.y + 3));
-    assert!(app.drag.is_none());
-    app.handle_mouse(dragged(thumb.x, thumb.y + 6));
-    assert_eq!(app.sidebar.scroll, after, "motion after release no longer scrolls");
+        app.handle_mouse(left_up(thumb.x, thumb.y + 3));
+        assert!(app.drag.is_none(), "{name}");
+        app.handle_mouse(motion(thumb.x, thumb.y + 6));
+        assert_eq!(app.sidebar.scroll, after, "{name}: motion after release no longer scrolls");
+    }
 }
 
 #[test]
@@ -29385,6 +29358,48 @@ fn bare_motion_after_a_lost_release_ends_a_thumb_drag_and_a_text_sweep() {
     assert!(app.drag.is_none(), "the thumb drag ended");
     assert!(app.text_drag.is_none(), "the text sweep ended");
     assert_eq!(app.hovered, Some(Hit::SidebarRow(2)), "a hover");
+}
+
+#[test]
+fn a_thumb_drag_whose_release_is_lost_ends_at_the_next_bare_motion() {
+    // #94: the test above with a real press and held drag on the thumb.
+    // The button comes up outside the window, so no `Up` arrives. The
+    // pointer comes back either onto the thumb, where the hover is
+    // unchanged and only the drag's end asks for the repaint, or onto a
+    // row, which the hover follows.
+    for on_thumb in [true, false] {
+        let mut app = long_sidebar_app();
+        let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
+        app.handle_mouse(moved(thumb.x, thumb.y));
+        assert_eq!(app.hovered, Some(Hit::ScrollbarThumb(PaneId::Sidebar)));
+        assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
+        assert!(app.drag.is_some(), "pressing the thumb starts a drag");
+        assert!(app.handle_mouse(dragged(thumb.x, thumb.y + 3)));
+        assert!(app.reports_held_drags, "the terminal reports held drags");
+        let after = app.sidebar.scroll;
+        assert!(after > 0, "the held drag scrolls");
+        render_once(&mut app);
+
+        // The release is lost; the pointer comes back and hovers.
+        let (x, y) = if on_thumb { (thumb.x, thumb.y + 3) } else { (thumb.x - 3, thumb.y + 6) };
+        let under = app.hits.hit_at(x, y).cloned();
+        if on_thumb {
+            assert_eq!(under, Some(Hit::ScrollbarThumb(PaneId::Sidebar)), "the thumb moved here");
+            assert_eq!(app.hovered, under, "the hover is already the thumb");
+        } else {
+            assert!(matches!(under, Some(Hit::SidebarRow(_))), "a row: {under:?}");
+        }
+        let why = if on_thumb { "the end repaints" } else { "the hover repaints" };
+        assert!(app.handle_mouse(moved(x, y)), "on_thumb {on_thumb}: {why}");
+        assert!(app.drag.is_none(), "on_thumb {on_thumb}: the thumb drag ended");
+        assert_eq!(app.sidebar.scroll, after, "on_thumb {on_thumb}: the hover scrolls nothing");
+        assert_eq!(app.hovered, under, "on_thumb {on_thumb}: a hover");
+
+        // A terminal that lost the release can go on sending `Drag(Left)`.
+        app.handle_mouse(dragged(x, y + 3));
+        assert!(app.drag.is_none(), "on_thumb {on_thumb}: no drag restarts");
+        assert_eq!(app.sidebar.scroll, after, "on_thumb {on_thumb}: later motion scrolls nothing");
+    }
 }
 
 #[test]
