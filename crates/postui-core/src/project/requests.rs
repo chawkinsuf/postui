@@ -573,15 +573,19 @@ impl Project {
         Ok(())
     }
 
-    /// A move's pre-flight for the directory of `space`, which it moves
-    /// into: refuses when `requests/` holds no directory of that name but
-    /// one in another case (a hand rename of `auth/` to `Auth/`, #257). A
-    /// case-insensitive disk would file the move into it, where the walk
-    /// lists no space `space`. Refused on every disk, as F27 refuses a
-    /// folder twin: on a case-sensitive one the move would make a
-    /// case-only twin. Called after the move's relist, so a refusal leaves
-    /// the listing fresh. Compares Unicode lowercase, as
+    /// A move's or a create's pre-flight for the directory of `space`,
+    /// which it writes into: refuses when `requests/` holds no directory of
+    /// that name but one in another case (a hand rename of `auth/` to
+    /// `Auth/`, #257, #260). A case-insensitive disk would file the request
+    /// into it, where the walk lists no space `space`. Refused on every
+    /// disk, as F27 refuses a folder twin: on a case-sensitive one the op
+    /// would make a case-only twin. Called after the op's relist, so a
+    /// refusal leaves the listing fresh. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
+    ///
+    /// Each op that writes into a space calls it from its own pre-flight.
+    /// A check under every write, in `fs_make_parents`, was tried in #257
+    /// and reverted (#260, comment 1170).
     fn refuse_space_case_twin(&mut self, space: &str) -> Result<(), Error> {
         let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
         let dirs: Vec<&str> =
@@ -735,8 +739,9 @@ fn folder_ignoring_case<'a>(
     folders.iter().find(|f| f.path.to_lowercase() == wanted)
 }
 
-/// The refusal of a move into `requests/<path>/`, which is there only in
-/// another case: its name isn't a slug, so postui can't rename it (F33).
+/// The refusal of a move or a create into `requests/<path>/`, which is
+/// there only in another case: its name isn't a slug, so postui can't
+/// rename it (F33).
 fn case_twin_conflict(path: &str) -> Error {
     Error::Conflict(format!(
         "{REQUESTS_DIR}/{path}/ is already there in another case; rename it outside postui"
@@ -1140,6 +1145,10 @@ impl Project {
             return Err(Error::BadName(slug));
         };
         let (space, rel) = (space.to_string(), rel.to_string());
+        // Here, where New request and curl import meet, so one call covers
+        // both. A check made before it (the name, the level, the typed
+        // path) may refuse first.
+        self.refuse_space_case_twin(&space)?;
         let anchor = after.and_then(|a| Self::item_entry(a, &space));
         req.name = Some(leaf.clone());
         let meta = self.meta_for_moves(Vec::new());
@@ -5504,6 +5513,63 @@ mod tests {
         assert!(dir.path().join("requests/auth").is_dir());
         assert_eq!(p.move_request("main/x", "auth").unwrap(), "auth/x");
         assert!(dir.path().join("requests/auth/x.toml").is_file());
+        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(twin.count(), 0);
+    }
+
+    // --- #260: a create into a space directory listed in another case ---
+
+    /// A New request in space `auth`, whose directory was renamed by hand
+    /// to `Auth/`, refuses as a move there does, naming it, with nothing
+    /// written.
+    #[test]
+    fn new_request_refuses_a_space_directory_in_another_case() {
+        let (dir, mut p) = folder_project(&[], &["main/x"]);
+        std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
+            .unwrap();
+        let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
+        let r = p.create_request_in("auth", "New", None, req("u"));
+        assert!(
+            matches!(&r, Err(Error::Conflict(m))
+                if m.contains("requests/Auth/") && m.contains("outside postui")),
+            "{r:?}"
+        );
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// A curl import into that space, folders on its path included,
+    /// refuses the same way.
+    #[test]
+    fn curl_import_refuses_a_space_directory_in_another_case() {
+        let (dir, mut p) = folder_project(&[], &["main/x"]);
+        std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
+            .unwrap();
+        let before = requests_tree(&dir);
+        let meta_before = std::fs::read(dir.path().join("project.toml")).unwrap();
+        for path in ["auth/New", "auth/Users/New"] {
+            let r = p.create_request(path, req("u"));
+            assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/Auth/")), "{r:?}");
+        }
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), meta_before);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// A create goes into the space's own directory, listed at its exact
+    /// name, even beside a twin in another case, which is left alone. Only
+    /// a case-sensitive disk holds both.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_create_lands_in_the_exact_space_directory_beside_a_twin() {
+        let (dir, mut p) = folder_project(&[], &["main/x"]);
+        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
+        assert_eq!(p.create_request_in("auth", "New", None, req("u")).unwrap().0, "auth/new");
+        assert_eq!(p.create_request("auth/Other", req("u")).unwrap().0, "auth/other");
+        assert!(dir.path().join("requests/auth/new.toml").is_file());
+        assert!(dir.path().join("requests/auth/other.toml").is_file());
         let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
         assert_eq!(twin.count(), 0);
     }
