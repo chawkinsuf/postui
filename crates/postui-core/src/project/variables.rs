@@ -32,12 +32,17 @@ impl Project {
         self.transaction(label, EntryMeta::default(), f)
     }
 
+    /// Rewrites `variables.toml` through `f`. This and the two edits below
+    /// `peek` the text they edit rather than `read` it, since the read
+    /// does not load the file into the model: a recorded stamp would let a
+    /// refused edit hide an outside change to the file from `poll` (#81).
+    /// The write, when one lands, records the stamp.
     pub fn edit_variables(
         &mut self,
         f: impl FnOnce(&str) -> Result<String, EditError>,
     ) -> Result<(), Error> {
         let path = rel(VARIABLES_TOML)?;
-        let text = self.disk.read(&path)?.unwrap_or_default();
+        let text = self.disk.peek(&path)?.unwrap_or_default();
         let new_text = f(&text).map_err(|e| Error::Edit(e.to_string()))?;
         let new_model =
             varmodel::parse_variables(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
@@ -59,7 +64,7 @@ impl Project {
         f: impl FnOnce(&str) -> Result<String, EditError>,
     ) -> Result<(), Error> {
         let path = env_rel(env)?;
-        let text = self.disk.read(&path)?.unwrap_or_default();
+        let text = self.disk.peek(&path)?.unwrap_or_default();
         let new_text = f(&text).map_err(|e| Error::Edit(e.to_string()))?;
         let new_env =
             varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
@@ -82,14 +87,14 @@ impl Project {
         ef: impl Fn(&str) -> Result<String, EditError>,
     ) -> Result<(), Error> {
         let vars_path = rel(VARIABLES_TOML)?;
-        let vars_text = self.disk.read(&vars_path)?.unwrap_or_default();
+        let vars_text = self.disk.peek(&vars_path)?.unwrap_or_default();
         let new_vars_text = vf(&vars_text).map_err(|e| Error::Edit(e.to_string()))?;
         let new_model =
             varmodel::parse_variables(&new_vars_text).map_err(|e| Error::Edit(e.to_string()))?;
         let mut envs: Vec<(String, RelPath, String, EnvData)> = Vec::new();
         for env in self.environments.clone() {
             let path = env_rel(&env)?;
-            let text = self.disk.read(&path)?.unwrap_or_default();
+            let text = self.disk.peek(&path)?.unwrap_or_default();
             let new_text = ef(&text).map_err(|e| Error::Edit(e.to_string()))?;
             let data =
                 varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
@@ -183,6 +188,41 @@ mod tests {
         assert_eq!(read(&dir, "variables.toml").unwrap(), before);
         assert!(p2.variables().selectors.contains_key("region"));
         assert_eq!(p2.journal_len(), 0);
+    }
+
+    /// #81: a refused edit read the file but changed nothing, so an outside
+    /// change to that file is still the next `poll`'s to pick up.
+    #[test]
+    fn a_refused_edit_leaves_an_outside_change_for_the_next_poll() {
+        let refuse = |_: &str| Err::<String, _>(EditError::Conflict("refused".into()));
+        type Edit =
+            fn(&mut Project, &dyn Fn(&str) -> Result<String, EditError>) -> Result<(), Error>;
+        let edits: [(&str, Edit); 4] = [
+            ("variables.toml", |p, f| p.edit_variables(f)),
+            ("environments/dev.toml", |p, f| p.edit_env("dev", f)),
+            ("variables.toml", |p, f| p.edit_variables_and_envs(f, |doc| Ok(doc.to_string()))),
+            ("environments/dev.toml", |p, f| {
+                p.edit_variables_and_envs(|doc| Ok(doc.to_string()), f)
+            }),
+        ];
+        for (file, edit) in edits {
+            let (dir, mut p) = fixture();
+            let outside = if file == "variables.toml" {
+                "[host]\ndefault = \"localhost\"\n[extra]\n"
+            } else {
+                "host = \"changed.outside\"\n"
+            };
+            std::fs::write(dir.path().join(file), outside).unwrap();
+            assert!(edit(&mut p, &refuse).is_err(), "{file}");
+            assert!(p.changed_on_disk(), "{file}: the change is still pending");
+            assert!(p.poll().0, "{file}");
+            assert!(
+                p.variables().vars.contains_key("extra")
+                    || p.resolved().values.get("host").map(String::as_str)
+                        == Some("changed.outside"),
+                "{file}: the poll read the change"
+            );
+        }
     }
 
     #[test]

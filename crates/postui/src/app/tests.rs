@@ -35748,6 +35748,33 @@ fn a_reload_cancels_a_manager_edit_that_refuses_to_close() {
     assert!(!qa.options["user"].contains_key("description"), "nothing written");
 }
 
+/// #81: an edit the Manager refuses reads the file it would have written,
+/// and that read must not count as the project having seen an outside
+/// change to it: the next reload still picks the change up.
+#[test]
+fn a_refused_manager_edit_leaves_an_outside_change_for_the_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    rewrite_qa_without_alice(dir.path());
+    let options = |app: &App| {
+        postui_core::varmodel::options_of(app.variables(), app.env_data(), "user")
+            .map(|e| e.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+
+    assert!(!app.close_manager_input(), "the edit is refused");
+    assert_eq!(options(&app), ["alice", "bob"], "nothing re-read yet");
+    assert!(app.proj().changed_on_disk(), "the outside change is still pending");
+    app.update(Action::ReloadProjectFiles);
+    assert_eq!(options(&app), ["bob", "carol"], "the reload landed");
+}
+
 /// A journaled op closes the input first (`begin_op`): creating an
 /// environment activates it, and the typing must stay in qa.
 #[test]
