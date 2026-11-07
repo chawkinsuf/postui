@@ -226,9 +226,12 @@ pub struct App {
     /// the toast is live, it quits. See `disarm_quit`.
     quit_armed: Option<(u64, KeyCombo)>,
     /// A hash of the last clipboard curl the user was told of (the curl
-    /// import notice), imported or copied as curl: the notice never shows
-    /// for it (spec 2026-10-15 curl import visibility V3, V4, #240, #259).
+    /// import notice) or imported: the notice never repeats for it (spec
+    /// 2026-10-15 curl import visibility V3, #240).
     curl_noticed: Option<u64>,
+    /// The same hash of the last text postui copied: the notice never
+    /// shows for it (V4, #259).
+    clipboard_written: Option<u64>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -2009,6 +2012,7 @@ impl App {
             should_quit: false,
             quit_armed: None,
             curl_noticed: None,
+            clipboard_written: None,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
             prior_focus: PaneId::Sidebar,
@@ -11809,12 +11813,12 @@ impl App {
     /// Copies `text` to the clipboard and toasts the outcome:
     /// `success_msg` on success, the shared size/availability warnings
     /// otherwise. The one clipboard-write path for both explicit copy
-    /// actions and ctrl+c selection copies. `true` when it copied.
-    fn copy_text_with_toast(&mut self, text: &str, success_msg: String) -> bool {
+    /// actions and ctrl+c selection copies.
+    fn copy_text_with_toast(&mut self, text: &str, success_msg: String) {
         match self.clipboard.copy(text) {
             crate::clipboard::CopyResult::Copied { .. } => {
+                self.clipboard_written = Some(curl_flow::curl_key(text));
                 self.toasts.push(success_msg, ToastKind::Success);
-                return true;
             }
             crate::clipboard::CopyResult::OscTooLarge => {
                 self.toasts.push(
@@ -11827,7 +11831,6 @@ impl App {
                     .push("Clipboard unavailable — try Shift+drag to select", ToastKind::Error);
             }
         }
-        false
     }
 
     /// The text of whichever selection currently owns the keyboard, in

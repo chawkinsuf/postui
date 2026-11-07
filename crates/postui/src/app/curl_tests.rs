@@ -2237,7 +2237,38 @@ fn curl_copied_as_curl_is_never_noticed() {
         app.ui_settings.curl_button = true;
         app.on_focus_gained();
         assert_eq!(notices(&app), 0, "setting on at the copy: {on}");
+        // The same text from elsewhere, with no copy, is shown.
+        let (mut fresh, _dir, _out) = copy_app();
+        fresh.ui_settings.curl_button = true;
+        fresh.clipboard.set_read_for_test(&text);
+        assert!(fresh.check_clipboard());
     }
+}
+
+/// Any copy postui makes, not only Copy as curl: a selection holding curl.
+#[test]
+fn curl_copied_from_a_selection_is_never_noticed() {
+    let (mut app, _dir, _out) = copy_app();
+    app.ui_settings.curl_button = true;
+    app.copy_text_with_toast("curl https://x/sel", "Copied selection".to_string());
+    app.clipboard.set_read_for_test("curl https://x/sel");
+    assert!(!app.check_clipboard());
+}
+
+/// A copy leaves the no-repeat memory alone: if the clipboard still holds
+/// the curl already shown (a terminal that dropped the OSC 52 copy), the
+/// notice does not show it again.
+#[test]
+fn a_copy_keeps_the_memory_of_the_curl_shown() {
+    let (mut app, _dir, _out) = copy_app();
+    app.ui_settings.curl_button = true;
+    let mut c = crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null".into()), 65536);
+    c.set_read_for_test("curl https://x/u");
+    app.set_clipboard_for_test(c);
+    assert!(app.check_clipboard());
+    app.update(Action::CopyAsCurl(Some("main/top".into())));
+    assert!(app.toasts.last_message().unwrap().starts_with("Copied"));
+    assert!(!app.check_clipboard(), "shown once already");
 }
 
 /// A copy that failed left the clipboard as it was, and so the memory of

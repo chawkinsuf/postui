@@ -13,7 +13,7 @@ pub(super) const CURL_IMPORT_LIMIT: usize = 50;
 /// The no-repeat memory's key (`App::curl_noticed`, spec 2026-10-15 curl
 /// import visibility V3) for clipboard `text`, by line without the ends:
 /// `\n` and `\r\n` endings, or a trailing newline, give the same key.
-fn curl_key(text: &str) -> u64 {
+pub(super) fn curl_key(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
     text.trim().lines().for_each(|line| line.hash(&mut h));
@@ -39,9 +39,13 @@ impl App {
             return false;
         }
         let text = self.clipboard.read().unwrap_or_default();
-        // Known text is never shown, so it needs no parse.
+        // Only curl the import takes is ever known, so known text needs no
+        // parse. Text postui copied is not news (V4, #259).
         let key = Some(curl_key(&text));
-        if key == self.curl_noticed || !import_takes(&postui_core::curl::parse(&text)) {
+        if key == self.curl_noticed
+            || key == self.clipboard_written
+            || !import_takes(&postui_core::curl::parse(&text))
+        {
             return false;
         }
         self.curl_noticed = key;
@@ -714,12 +718,7 @@ impl App {
                 } else {
                     "Copied as curl"
                 };
-                // Curl postui wrote is not news to the notice (#259), with
-                // the setting on or off. Known by what was written, so no
-                // read-back after the copy (V4).
-                if self.copy_text_with_toast(&text, msg.to_string()) {
-                    self.curl_noticed = Some(curl_key(&text));
-                }
+                self.copy_text_with_toast(&text, msg.to_string());
             }
             Err(postui_core::prepare::PrepareError::Unresolved(causes)) => {
                 let msg = self.unresolved_message(&causes);
