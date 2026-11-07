@@ -2223,6 +2223,39 @@ fn a_copy_does_not_check_the_clipboard() {
     assert_eq!(notices(&app), 0);
 }
 
+/// #259: curl postui itself put on the clipboard is not news, so the focus
+/// gain after Copy as curl (a terminal to paste it in) shows no notice.
+#[test]
+fn curl_copied_as_curl_is_never_noticed() {
+    for on in [true, false] {
+        let (mut app, _dir, out) = copy_app();
+        app.ui_settings.curl_button = on;
+        app.update(Action::CopyAsCurl(Some("main/other".into())));
+        let text = copied(&out).unwrap();
+        // The clipboard gives the copy back, maybe with a trailing newline.
+        app.clipboard.set_read_for_test(&format!("{text}\n"));
+        app.ui_settings.curl_button = true;
+        app.on_focus_gained();
+        assert_eq!(notices(&app), 0, "setting on at the copy: {on}");
+    }
+}
+
+/// A copy that failed left the clipboard as it was, and so the memory of
+/// the curl the notice already showed.
+#[test]
+fn a_failed_copy_leaves_the_no_repeat_memory_alone() {
+    let (mut app, _dir, _out) = copy_app();
+    app.ui_settings.curl_button = true;
+    let mut c =
+        crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null; exit 1".into()), 65536);
+    c.set_read_for_test("curl https://x/u");
+    app.set_clipboard_for_test(c);
+    assert!(app.check_clipboard());
+    app.update(Action::CopyAsCurl(Some("main/top".into())));
+    assert_eq!(app.toasts.last_message(), Some("Clipboard unavailable — try Shift+drag to select"));
+    assert!(!app.check_clipboard(), "shown once already");
+}
+
 #[test]
 fn an_unreadable_clipboard_holds_no_curl() {
     // Empty and image clipboards are read errors to arboard; the import

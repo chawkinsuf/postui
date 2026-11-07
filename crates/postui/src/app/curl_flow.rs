@@ -39,8 +39,7 @@ impl App {
             return false;
         }
         let text = self.clipboard.read().unwrap_or_default();
-        // Only curl the import takes is ever known, so known text needs no
-        // parse.
+        // Known text is never shown, so it needs no parse.
         let key = Some(curl_key(&text));
         if key == self.curl_noticed || !import_takes(&postui_core::curl::parse(&text)) {
             return false;
@@ -715,7 +714,12 @@ impl App {
                 } else {
                     "Copied as curl"
                 };
-                self.copy_text_with_toast(&text, msg.to_string());
+                // Curl postui wrote is not news to the notice (#259), with
+                // the setting on or off. Known by what was written, so no
+                // read-back after the copy (V4).
+                if self.copy_text_with_toast(&text, msg.to_string()) {
+                    self.curl_noticed = Some(curl_key(&text));
+                }
             }
             Err(postui_core::prepare::PrepareError::Unresolved(causes)) => {
                 let msg = self.unresolved_message(&causes);

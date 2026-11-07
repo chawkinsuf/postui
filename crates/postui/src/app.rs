@@ -226,8 +226,8 @@ pub struct App {
     /// the toast is live, it quits. See `disarm_quit`.
     quit_armed: Option<(u64, KeyCombo)>,
     /// A hash of the last clipboard curl the user was told of (the curl
-    /// import notice) or imported: the notice never repeats for it (spec
-    /// 2026-10-15 curl import visibility V3, #240).
+    /// import notice), imported or copied as curl: the notice never shows
+    /// for it (spec 2026-10-15 curl import visibility V3, V4, #240, #259).
     curl_noticed: Option<u64>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
@@ -11809,11 +11809,12 @@ impl App {
     /// Copies `text` to the clipboard and toasts the outcome:
     /// `success_msg` on success, the shared size/availability warnings
     /// otherwise. The one clipboard-write path for both explicit copy
-    /// actions and ctrl+c selection copies.
-    fn copy_text_with_toast(&mut self, text: &str, success_msg: String) {
+    /// actions and ctrl+c selection copies. `true` when it copied.
+    fn copy_text_with_toast(&mut self, text: &str, success_msg: String) -> bool {
         match self.clipboard.copy(text) {
             crate::clipboard::CopyResult::Copied { .. } => {
                 self.toasts.push(success_msg, ToastKind::Success);
+                return true;
             }
             crate::clipboard::CopyResult::OscTooLarge => {
                 self.toasts.push(
@@ -11826,6 +11827,7 @@ impl App {
                     .push("Clipboard unavailable — try Shift+drag to select", ToastKind::Error);
             }
         }
+        false
     }
 
     /// The text of whichever selection currently owns the keyboard, in
