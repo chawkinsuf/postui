@@ -595,6 +595,22 @@ impl Project {
         Ok(())
     }
 
+    /// An undo's or a redo's pre-flight for the spaces its replay writes
+    /// into: refuses as [`Self::refuse_space_case_twin`] does for the space
+    /// each of `paths` sits in or is, once per space (#261). A path outside
+    /// `requests/` is in no space.
+    pub(super) fn refuse_space_case_twins_of(&mut self, paths: &[&RelPath]) -> Result<(), Error> {
+        let spaces: std::collections::BTreeSet<&str> = paths
+            .iter()
+            .filter_map(|p| p.as_str().strip_prefix(REQUESTS_DIR)?.strip_prefix('/'))
+            .filter_map(|rest| rest.split('/').next())
+            .collect();
+        for space in spaces {
+            self.refuse_space_case_twin(space)?;
+        }
+        Ok(())
+    }
+
     /// The folders `to` (a request's slug in another space, at the same
     /// sub-path as `from`) sits in, for [`Self::make_folders`], each with
     /// the text of the [`crate::storage::FOLDER_FILE`] of the folder at the
