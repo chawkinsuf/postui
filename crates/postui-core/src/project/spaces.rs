@@ -52,15 +52,25 @@ impl Project {
             .collect()
     }
 
-    pub fn space_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
-        let listed = self.meta.spaces.clone();
+    /// The slug `display` gets as a space's directory: `slugify`, then
+    /// `-2`, `-3`, … while a space lists it or `requests/` holds an entry
+    /// of that name in any case (#264), as a folder's slot is numbered
+    /// (F19): a case-only twin can't sit beside it on every filesystem.
+    /// `exclude` is the space a rename renames.
+    pub fn space_slug_for(&mut self, display: &str, exclude: Option<&str>) -> String {
+        let on_disk: Vec<String> = RelPath::new(REQUESTS_DIR)
+            .ok()
+            .and_then(|dir| self.disk.list(&dir).ok())
+            .map(|entries| entries.into_iter().map(|e| e.name.to_lowercase()).collect())
+            .unwrap_or_default();
         meta::unique_slug_among(
             meta::Kind::Space,
             display,
             |slug| {
-                listed.iter().any(|s| s == slug)
+                self.meta.spaces.iter().any(|s| s == slug)
                     || self.spaces.iter().any(|s| s == slug)
                     || space_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false)
+                    || on_disk.contains(&slug.to_lowercase())
             },
             exclude,
         )
@@ -330,7 +340,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read};
+    use super::super::tests::{fixture, read, requests_tree};
     use super::*;
 
     #[test]
@@ -395,6 +405,19 @@ mod tests {
             "every request in the space, at every folder level"
         );
         assert!(dir.path().join("requests/main/api/deep.toml").is_file());
+    }
+
+    /// A directory under `requests/` in another case takes the slug, as
+    /// a folder's slot is numbered (F19): a create or a rename gets
+    /// `billing-2` on every disk, never a case-only twin.
+    #[test]
+    fn a_space_slug_compares_directories_ignoring_case() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir(dir.path().join("requests/Billing")).unwrap();
+        assert_eq!(p.create_space("Billing").unwrap(), "billing-2");
+        assert_eq!(p.rename_space("auth", "Billing!").unwrap(), "billing-3");
+        let tree = requests_tree(&dir);
+        assert!(!tree.contains_key("requests/billing"), "{tree:?}");
     }
 
     #[test]
