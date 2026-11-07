@@ -22,6 +22,7 @@ pub mod paint;
 pub mod session;
 pub mod setup;
 pub mod split;
+pub mod split_anim;
 pub mod text;
 pub mod theme;
 pub mod ui;

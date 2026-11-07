@@ -2700,11 +2700,8 @@ impl App {
     }
 
     /// Brings the split's three anims to the split fields, the only setter
-    /// of the three keys' targets: `AnimKey::PaneCollapse` chases
-    /// `table_collapsed` (the editor's hide, on every tab, the Body buffer
-    /// included), `AnimKey::ResponseCollapse` the response's `collapsed`
-    /// (a sticky layout preference `session.sync_open` carries across
-    /// request switches), and `AnimKey::SplitRatio` `split_ratio`.
+    /// of the three keys' targets, each chasing its value in
+    /// [`crate::split_anim::SplitAnims::settled`] of [`Self::split_state`].
     /// `update` eases them (`snap` false) over `anim_ms.pane_collapse`,
     /// leaving one alone when its `Anims::target` (kept after the glide
     /// lands) is already the field's value; a change that draws at once
@@ -2717,13 +2714,7 @@ impl App {
     /// builds don't check; there an unset key's first sync sets it at its
     /// target with no ease (`Anims::retarget`).
     fn sync_split_anims(&mut self, snap: bool) {
-        let flag = |on: bool| if on { 1.0 } else { 0.0 };
-        let targets = [
-            (AnimKey::PaneCollapse, flag(self.table_collapsed)),
-            (AnimKey::ResponseCollapse, flag(self.session.response.collapsed)),
-            (AnimKey::SplitRatio, self.split_ratio),
-        ];
-        for (key, target_v) in targets {
+        for (key, target_v) in crate::split_anim::SplitAnims::settled(self.split_state()).keyed() {
             if snap {
                 self.anims.snap(key, target_v);
                 continue;
@@ -2749,15 +2740,9 @@ impl App {
     /// [`Self::settled_layout`] for the split `s` instead of the current
     /// one: where `s` would put the panes at the terminal's size.
     fn layout_at(&self, s: crate::split::SplitState) -> Option<crate::layout::AppLayout> {
-        let flag = |on: bool| if on { 1.0 } else { 0.0 };
+        let v = crate::split_anim::SplitAnims::settled(s);
         self.term_area.map(|area| {
-            crate::layout::compute_layout(
-                area,
-                flag(s.editor_minimized),
-                flag(s.response_minimized),
-                s.ratio,
-                self.sidebar_width,
-            )
+            crate::layout::compute_layout(area, v.editor, v.response, v.ratio, self.sidebar_width)
         })
     }
 

@@ -3877,6 +3877,14 @@ impl Editor {
             .map(|(i, _)| i);
 
         let strip_area = Rect { height: 2, ..area };
+        // `table_collapsed` stays the authority on this pane's own
+        // minimized flag, so a standalone render still lights the right
+        // chip.
+        let split = crate::split::SplitState {
+            editor_minimized: self.table_collapsed,
+            response_minimized: self.split.response_minimized && !self.table_collapsed,
+            ratio: self.split.ratio,
+        };
         // The pane-collapse progress doubles as the tabs' fade: hiding the
         // editor fades the tab labels (underline, badge, and vars indicator
         // with them) out entirely — settled hidden, the strip isn't painted
@@ -3888,7 +3896,7 @@ impl Editor {
             .value_or(
                 crate::anim::AnimKey::PaneCollapse,
                 ctx.now,
-                if self.table_collapsed { 1.0 } else { 0.0 },
+                crate::split_anim::SplitAnims::settled(split).editor,
             )
             .clamp(0.0, 1.0);
         if fade_t < 1.0 {
@@ -3942,14 +3950,6 @@ impl Editor {
         // each chip's hover hint names its hide/show toggle's key (spec
         // E12a), and `alt+w`, which steps the split, is in the palette.
         let buf = frame.buffer_mut();
-        // `table_collapsed` stays the authority on this pane's own
-        // minimized flag, so a standalone render still lights the right
-        // chip.
-        let split = crate::split::SplitState {
-            editor_minimized: self.table_collapsed,
-            response_minimized: self.split.response_minimized && !self.table_collapsed,
-            ratio: self.split.ratio,
-        };
         let hovered = match ctx.hovered {
             Some(crate::hit::Hit::SplitStop(s)) => Some(*s),
             _ => None,
