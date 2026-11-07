@@ -2289,6 +2289,33 @@ mod tests {
         assert_eq!(p.active_env(), None);
     }
 
+    /// #262: a request op's listing of `requests/` between a hand-made
+    /// space directory and the poll leaves the new space for the poll.
+    #[test]
+    fn a_request_op_before_the_poll_leaves_a_new_space_dir_for_it() {
+        type RequestOp = fn(&mut Project);
+        let ops: [(&str, RequestOp); 3] = [
+            ("create", |p| {
+                let req = crate::model::HttpRequest::default();
+                p.create_request_in("main", "Fresh", None, req).unwrap();
+            }),
+            ("rename", |p| {
+                p.rename_request("main/ping", "Pong").unwrap();
+            }),
+            ("move", |p| {
+                p.move_request("main/ping", "auth").unwrap();
+            }),
+        ];
+        for (what, op) in ops {
+            let (dir, mut p) = fixture();
+            std::fs::create_dir_all(dir.path().join("requests/new")).unwrap();
+            bump_mtime(&dir.path().join("requests"));
+            op(&mut p);
+            assert!(p.poll().0, "{what}: the poll still sees requests/ changed");
+            assert_eq!(p.spaces(), ["main", "auth", "new"], "{what}");
+        }
+    }
+
     #[test]
     fn invalidate_stamps_forces_the_next_poll() {
         let (_d, mut p) = fixture();

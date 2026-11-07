@@ -235,7 +235,9 @@ impl Project {
     }
 
     /// Re-walks `requests/`. Called by every request op and by the app's
-    /// sidebar refresh, as `list_requests` was.
+    /// sidebar refresh, as `list_requests` was. The walk records no stamp
+    /// of `requests/`: a relist does not reload the spaces, which the
+    /// poll reloads when that stamp changes (#262).
     pub fn relist(&mut self) {
         let (listing, folders, warnings) = list(&mut self.disk);
         self.listing = listing;
@@ -599,7 +601,9 @@ impl Project {
         if spaces.is_empty() {
             return Ok(());
         }
-        let entries = self.disk.list(&RelPath::new(REQUESTS_DIR)?)?;
+        // A peek: this listing loads no spaces, so it must not mark a
+        // new space directory as seen before the poll reloads them (#262).
+        let entries = self.disk.peek_list(&RelPath::new(REQUESTS_DIR)?)?;
         let dirs: Vec<&str> =
             entries.iter().filter(|e| e.is_dir).map(|e| e.name.as_str()).collect();
         for space in spaces {
