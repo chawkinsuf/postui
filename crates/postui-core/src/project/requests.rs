@@ -576,11 +576,11 @@ impl Project {
     /// A move's or a create's pre-flight for the directory of `space`,
     /// which it writes into: refuses when `requests/` holds no directory of
     /// that name but one in another case (a hand rename of `auth/` to
-    /// `Auth/`, #257, #260, #263). A case-insensitive disk would file the request
-    /// into it, where the walk lists no space `space`. Refused on every
-    /// disk, as F27 refuses a folder twin: on a case-sensitive one the op
-    /// would make a case-only twin. Called after the op's relist, so a
-    /// refusal leaves the listing fresh. Compares Unicode lowercase, as
+    /// `Auth/`, #257, #260, #263). A case-insensitive disk would file the
+    /// request into it, where the walk lists no space `space`. Refused on
+    /// every disk, as F27 refuses a folder twin: on a case-sensitive one
+    /// the op would make a case-only twin. Called after the op's relist, so
+    /// a refusal leaves the listing fresh. Compares Unicode lowercase, as
     /// [`folder_ignoring_case`] does.
     ///
     /// Each op that writes into a space calls it from its own pre-flight.
