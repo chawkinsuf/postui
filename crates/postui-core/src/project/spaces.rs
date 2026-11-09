@@ -97,6 +97,10 @@ impl Project {
                 meta::set_item_name(doc, meta::Kind::Space, &slug, &display);
             })?;
             p.refresh_spaces();
+            // The refresh shows a space directory made outside that the
+            // poll has not loaded yet; its requests are listed with it
+            // (#274).
+            p.relist();
             Ok(())
         })?;
         Ok(slug)
@@ -232,6 +236,8 @@ impl Project {
         self.transaction_merging("move space", key, |p| {
             p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::slug_array(&spaces)))?;
             p.refresh_spaces();
+            // As `create_space`: a space the refresh shows is listed (#274).
+            p.relist();
             Ok(())
         })?;
         Ok(Some(ListChange { before, after }))
@@ -262,6 +268,8 @@ impl Project {
         self.transaction("reorder spaces", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::slug_array(&spaces)))?;
             p.refresh_spaces();
+            // As `create_space`: a space the refresh shows is listed (#274).
+            p.relist();
             Ok(())
         })?;
         Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
@@ -567,6 +575,38 @@ mod tests {
         assert_eq!(p.spaces(), ["auth", "main"]);
         assert!(p.set_space_order(&["auth".into(), "main".into()]).unwrap().is_none());
         assert!(matches!(p.set_space_order(&["auth".into()]), Err(Error::NotFound(_))));
+    }
+
+    /// #274: a space directory made by hand, with a request in it, that a
+    /// create, a keyboard move or a drag takes into the shown spaces before
+    /// the poll has: its requests are listed with it.
+    #[test]
+    fn a_space_op_that_takes_in_an_unseen_space_lists_its_requests() {
+        type SpaceOp = fn(&mut Project);
+        let ops: [(&str, SpaceOp); 3] = [
+            ("create", |p| {
+                p.create_space("Billing").unwrap();
+            }),
+            ("move", |p| {
+                p.move_space("main", 1).unwrap().unwrap();
+            }),
+            ("drag", |p| {
+                let order = ["auth", "main", "new"].map(String::from);
+                p.set_space_order(&order).unwrap().unwrap();
+            }),
+        ];
+        for (what, op) in ops {
+            let (dir, mut p) = fixture();
+            std::fs::create_dir(dir.path().join("requests/new")).unwrap();
+            std::fs::write(
+                dir.path().join("requests/new/hi.toml"),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+            op(&mut p);
+            assert!(p.spaces().iter().any(|s| s == "new"), "{what}: {:?}", p.spaces());
+            assert!(p.requests().iter().any(|l| l.slug == "new/hi"), "{what}: not listed");
+        }
     }
 
     #[test]

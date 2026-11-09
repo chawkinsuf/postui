@@ -5714,6 +5714,32 @@ fn creating_a_space_does_not_switch_to_it() {
     );
 }
 
+/// #274: a space directory made by hand, with a request in it, shows when
+/// a space create or a keyboard move takes it in before a reload has. A
+/// switch into it then opens its request, not a scratch.
+#[test]
+fn a_space_op_that_shows_a_hand_made_space_lists_its_requests() {
+    let ops = [
+        ("create", Action::CreateSpace("billing".into())),
+        ("move", Action::MoveSpace { name: "main".into(), delta: 1 }),
+    ];
+    for (what, op) in ops {
+        let (mut app, dir) = spaced_app();
+        std::fs::create_dir(dir.path().join("requests/new")).unwrap();
+        std::fs::write(dir.path().join("requests/new/hi.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
+        app.update(op);
+        assert!(app.proj().spaces().iter().any(|s| s == "new"), "{what}");
+        assert_eq!(
+            app.sidebar.space_requests().get("new").map(Vec::as_slice),
+            Some(&["hi".to_string()][..]),
+            "{what}: the Spaces tab lists it"
+        );
+        app.update(Action::SwitchSpace("new".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("new/hi"), "{what}");
+    }
+}
+
 #[test]
 fn creating_a_space_puts_the_manage_cursor_on_the_new_row() {
     use crate::components::manage::ManageTab;

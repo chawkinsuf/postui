@@ -7923,6 +7923,10 @@ impl App {
                         // the request it moves. The Spaces list's cursor
                         // lands on the new row (live or parked).
                         self.select_list_row(crate::components::manage::ManageTab::Spaces, &slug);
+                        // The create can show a space directory made
+                        // outside that no reload has taken in; the sidebar's
+                        // copy of the listing gets its requests (#274).
+                        self.refresh_sidebar();
                         self.record_project_step(
                             t,
                             crate::undo::StepLabel::space(&self.space_name(&slug)),
@@ -8219,6 +8223,9 @@ impl App {
                         if self.screen == Screen::Manage && self.manage.tab == spaces {
                             self.select_list_row(spaces, &name);
                         }
+                        // As `CreateSpace`: a space the move shows is
+                        // listed in the sidebar's copy too (#274).
+                        self.refresh_sidebar();
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
                         // the whole burst stays one undo step.
