@@ -5714,30 +5714,30 @@ fn creating_a_space_does_not_switch_to_it() {
     );
 }
 
-/// #274: a space directory made by hand, with a request in it, shows when
-/// a space create or a keyboard move takes it in before a reload has. A
-/// switch into it then opens its request, not a scratch.
+/// #274: a space create before a reload has taken in a space directory
+/// made by hand, with a request in it, does not show that space. The next
+/// reload shows it with its request, and a switch into it opens the
+/// request, not a scratch.
 #[test]
-fn a_space_op_that_shows_a_hand_made_space_lists_its_requests() {
-    let ops = [
-        ("create", Action::CreateSpace("billing".into())),
-        ("move", Action::MoveSpace { name: "main".into(), delta: 1 }),
-    ];
-    for (what, op) in ops {
-        let (mut app, dir) = spaced_app();
-        std::fs::create_dir(dir.path().join("requests/new")).unwrap();
-        std::fs::write(dir.path().join("requests/new/hi.toml"), "method = \"GET\"\nurl = \"u\"\n")
-            .unwrap();
-        app.update(op);
-        assert!(app.proj().spaces().iter().any(|s| s == "new"), "{what}");
-        assert_eq!(
-            app.sidebar.space_requests().get("new").map(Vec::as_slice),
-            Some(&["hi".to_string()][..]),
-            "{what}: the Spaces tab lists it"
-        );
-        app.update(Action::SwitchSpace("new".into()));
-        assert_eq!(app.editor.slug.as_deref(), Some("new/hi"), "{what}");
-    }
+fn a_space_create_leaves_a_hand_made_space_for_the_reload() {
+    let (mut app, dir) = spaced_app();
+    std::fs::create_dir(dir.path().join("requests/new")).unwrap();
+    std::fs::write(dir.path().join("requests/new/hi.toml"), "method = \"GET\"\nurl = \"u\"\n")
+        .unwrap();
+    app.update(Action::CreateSpace("billing".into()));
+    assert!(app.proj().spaces().iter().any(|s| s == "billing"));
+    assert!(!app.proj().spaces().iter().any(|s| s == "new"));
+    let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+    assert!(!text.contains("[space.new]"), "{text}");
+    app.update(Action::ReloadProjectFiles);
+    assert!(app.proj().spaces().iter().any(|s| s == "new"));
+    assert_eq!(
+        app.sidebar.space_requests().get("new").map(Vec::as_slice),
+        Some(&["hi".to_string()][..]),
+        "the Spaces tab lists it"
+    );
+    app.update(Action::SwitchSpace("new".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("new/hi"));
 }
 
 #[test]
