@@ -452,6 +452,7 @@ mod tests {
         std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
             .unwrap();
         p.poll();
+        let before = requests_tree(&dir);
         let meta_before = read(&dir, "project.toml");
         let held = |dir: &tempfile::TempDir| {
             ["requests/Auth/login.toml", "requests/login-flow/login.toml"]
@@ -463,6 +464,10 @@ mod tests {
         assert!(held(&dir));
         p.undo().unwrap().unwrap();
         assert!(held(&dir));
+        // A case-insensitive disk renamed `Auth/` and puts it back as `auth/`.
+        if cfg!(target_os = "linux") {
+            assert_eq!(requests_tree(&dir), before);
+        }
         assert_eq!(read(&dir, "project.toml"), meta_before);
     }
 

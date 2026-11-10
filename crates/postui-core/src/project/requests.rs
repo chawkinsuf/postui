@@ -1229,8 +1229,6 @@ impl Project {
         space_rel(space)?;
         let new_slug = self.move_target(slug, space, &[])?;
         let to_path = request_rel(&new_slug)?;
-        // The target's folders as the disk has them now.
-        self.relist();
         let meta = self.meta_for_moves(vec![(slug.to_string(), new_slug.clone())]);
         let slug = slug.to_string();
         self.order_transaction("move request", meta, |p| {
@@ -1553,8 +1551,6 @@ impl Project {
         if pairs.is_empty() && folders.is_empty() {
             return Ok((pairs, left_behind));
         }
-        // The target's folders as the disk has them now.
-        self.relist();
         let meta = self.meta_for_moves(pairs.clone());
         let rel_pairs: Vec<(String, String)> = pairs
             .iter()
@@ -5337,6 +5333,12 @@ mod tests {
         assert_eq!(p.move_request("main/users/x", "auth").unwrap(), "auth/users/x");
         assert!(dir.path().join("requests/auth/users/x.toml").is_file());
         assert!(dir.path().join("requests/auth/Users/y.toml").is_file());
+        // A case-sensitive disk gets a new `users/`, named past "Users" (F19).
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("requests/auth/users/.folder.toml")).unwrap(),
+            "name = \"users 2\"\n"
+        );
         p.undo().unwrap().unwrap();
         assert_eq!(requests_tree(&dir), before);
     }

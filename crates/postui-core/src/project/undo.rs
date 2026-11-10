@@ -709,7 +709,7 @@ mod tests {
             |p| drop(p.move_request("auth/login", "main").unwrap()),
             |p| p.delete_request("auth/login").unwrap(),
         ];
-        for op in ops {
+        for (is_delete, op) in [false, true].into_iter().zip(ops) {
             let (dir, mut p) = fixture();
             let kept = dir.path().join("requests/Auth/kept.toml");
             std::fs::write(dir.path().join("requests/auth/kept.toml"), "url = \"u\"\n").unwrap();
@@ -724,9 +724,10 @@ mod tests {
             assert!(!requests.join("auth/login.toml").exists());
             assert!(kept.is_file());
             let mut after = requests_tree(&dir);
-            // The redo leaves the directory the undo made on a
-            // case-sensitive disk when a restore made it.
-            after.remove("requests/auth");
+            // On a case-sensitive disk the undo of the delete made an
+            // empty `auth/`, and the redo leaves it.
+            let left = after.remove("requests/auth").is_some();
+            assert_eq!(left, is_delete && cfg!(target_os = "linux"));
             assert_eq!(after, before);
         }
     }
