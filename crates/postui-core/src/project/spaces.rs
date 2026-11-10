@@ -96,12 +96,7 @@ impl Project {
                 doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
                 meta::set_item_name(doc, meta::Kind::Space, &slug, &display);
             })?;
-            // Shows the new space and nothing else: `requests/` is not
-            // re-listed here, so a space directory made outside still
-            // differs from the shown spaces and the poll loads it (#274).
-            if !p.spaces.contains(&slug) {
-                p.spaces.push(slug.clone());
-            }
+            p.refresh_spaces();
             Ok(())
         })?;
         Ok(slug)
@@ -572,39 +567,6 @@ mod tests {
         assert_eq!(p.spaces(), ["auth", "main"]);
         assert!(p.set_space_order(&["auth".into(), "main".into()]).unwrap().is_none());
         assert!(matches!(p.set_space_order(&["auth".into()]), Err(Error::NotFound(_))));
-    }
-
-    /// #274: a create shows the space it made and leaves a space directory
-    /// made by hand for the poll, which shows it with its requests.
-    #[test]
-    fn a_create_leaves_an_unseen_space_directory_for_the_poll() {
-        let (dir, mut p) = fixture();
-        std::fs::create_dir(dir.path().join("requests/new")).unwrap();
-        std::fs::write(dir.path().join("requests/new/hi.toml"), "method = \"GET\"\nurl = \"u\"\n")
-            .unwrap();
-        p.create_space("Billing").unwrap();
-        assert_eq!(p.spaces(), ["main", "auth", "billing"]);
-        assert!(p.changed_on_disk());
-        assert!(p.poll().0);
-        assert!(p.spaces().iter().any(|s| s == "new"), "{:?}", p.spaces());
-        assert!(p.requests().iter().any(|l| l.slug == "new/hi"));
-    }
-
-    /// The active space's directory removed by hand before a create: the
-    /// poll after the create still reports it.
-    #[test]
-    fn a_create_leaves_a_vanished_active_space_for_the_poll() {
-        let (dir, mut p) = fixture();
-        std::fs::create_dir(dir.path().join("requests/extra")).unwrap();
-        p.poll();
-        p.set_active_space("extra");
-        std::fs::remove_dir(dir.path().join("requests/extra")).unwrap();
-        p.create_space("Billing").unwrap();
-        assert_eq!(p.local().active_space, "extra");
-        let (reloaded, warnings) = p.poll();
-        assert!(reloaded);
-        assert!(warnings.iter().any(|w| w.contains("no longer exists")), "{warnings:?}");
-        assert_eq!(p.local().active_space, "main");
     }
 
     #[test]

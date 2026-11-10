@@ -7907,6 +7907,10 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
+                // The create lists `requests/` itself, so the project is
+                // re-read first: a space directory made outside shows with
+                // its requests before the create meets it (#274).
+                self.apply(Action::ReloadProjectFiles);
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -8206,6 +8210,8 @@ impl App {
                 true
             }
             Action::MoveSpace { name, delta } => {
+                // As `CreateSpace`: re-read first (#274).
+                self.apply(Action::ReloadProjectFiles);
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -10778,8 +10784,19 @@ impl App {
     pub fn finish_manage_drag(&mut self, commit: bool) -> bool {
         use crate::components::manage::ManageTab;
         self.manage_press = None;
+        // As `CreateSpace`: a space order about to be written re-reads the
+        // project first (#274). A reload that finds a change cancels the
+        // drag itself, so nothing is left to commit below.
+        let reloaded = commit
+            && self
+                .manage
+                .list
+                .drag
+                .as_ref()
+                .is_some_and(|d| d.tab == ManageTab::Spaces && d.working != d.original)
+            && self.apply(Action::ReloadProjectFiles);
         let Some(drag) = self.manage.list.drag.take() else {
-            return false;
+            return reloaded;
         };
         let mut reordered = None;
         if commit && drag.working != drag.original && self.project.is_some() {

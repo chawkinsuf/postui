@@ -5714,30 +5714,176 @@ fn creating_a_space_does_not_switch_to_it() {
     );
 }
 
-/// #274: a space create before a reload has taken in a space directory
-/// made by hand, with a request in it, does not show that space. The next
-/// reload shows it with its request, and a switch into it opens the
-/// request, not a scratch.
-#[test]
-fn a_space_create_leaves_a_hand_made_space_for_the_reload() {
-    let (mut app, dir) = spaced_app();
-    std::fs::create_dir(dir.path().join("requests/new")).unwrap();
-    std::fs::write(dir.path().join("requests/new/hi.toml"), "method = \"GET\"\nurl = \"u\"\n")
-        .unwrap();
-    app.update(Action::CreateSpace("billing".into()));
-    assert!(app.proj().spaces().iter().any(|s| s == "billing"));
-    assert!(!app.proj().spaces().iter().any(|s| s == "new"));
-    let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
-    assert!(!text.contains("[space.new]"), "{text}");
-    app.update(Action::ReloadProjectFiles);
-    assert!(app.proj().spaces().iter().any(|s| s == "new"));
+// -- #274: a space op re-reads the project first --------------------------
+
+/// Makes `requests/new/hi.toml` by hand, as another program would.
+fn hand_make_space(root: &std::path::Path) {
+    std::fs::create_dir(root.join("requests/new")).unwrap();
+    std::fs::write(root.join("requests/new/hi.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+}
+
+/// `spaced_app` with a space made by hand: behind the running app's back,
+/// or (`seen`) before the app opened the project.
+fn spaced_app_with_a_hand_made_space(seen: bool) -> (App, tempfile::TempDir) {
+    let (app, dir) = spaced_app();
+    hand_make_space(dir.path());
+    if !seen {
+        return (app, dir);
+    }
+    drop(app);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    (App::with_root(tx, dir.path().to_path_buf()), dir)
+}
+
+fn project_toml(dir: &tempfile::TempDir) -> String {
+    std::fs::read_to_string(dir.path().join("project.toml")).unwrap()
+}
+
+/// The hand-made space shows, and the Spaces tab lists its request.
+#[track_caller]
+fn assert_hand_made_space_is_listed(app: &App) {
+    assert!(app.proj().spaces().iter().any(|s| s == "new"), "{:?}", app.proj().spaces());
+    assert!(app.proj().requests().iter().any(|l| l.slug == "new/hi"));
     assert_eq!(
         app.sidebar.space_requests().get("new").map(Vec::as_slice),
         Some(&["hi".to_string()][..]),
         "the Spaces tab lists it"
     );
+}
+
+/// Every file under `root` with its bytes and modification time.
+fn tree_snapshot(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                out.insert(path.clone(), (std::fs::read(&path).unwrap(), modified));
+            }
+        }
+    }
+    out
+}
+
+/// Runs `op` on a project whose hand-made space the app has not seen, and
+/// on one opened with the space already there. The unseen run must show
+/// the space with its request, and leave `project.toml` after the op, and
+/// again after undo, as the seen run does: the op wrote what it alone
+/// writes, and undo restored the file as it was before the op.
+fn assert_op_matches_a_project_opened_with_the_space(op: impl Fn(&mut App)) {
+    let (mut seen, seen_dir) = spaced_app_with_a_hand_made_space(true);
+    let before = project_toml(&seen_dir);
+    op(&mut seen);
+    let after = project_toml(&seen_dir);
+    assert_ne!(before, after, "the op writes project.toml");
+
+    let (mut app, dir) = spaced_app_with_a_hand_made_space(false);
+    op(&mut app);
+    assert_hand_made_space_is_listed(&app);
+    assert_eq!(app.proj().spaces(), seen.proj().spaces());
+    assert_eq!(project_toml(&dir), after);
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), before);
+    assert_hand_made_space_is_listed(&app);
     app.update(Action::SwitchSpace("new".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("new/hi"));
+    assert_eq!(app.editor.slug.as_deref(), Some("new/hi"), "the request, not a scratch");
+}
+
+#[test]
+fn a_space_create_first_takes_in_a_hand_made_space_with_its_requests() {
+    assert_op_matches_a_project_opened_with_the_space(|app| {
+        app.update(Action::OpenNewSpacePrompt);
+        for c in "billing".chars() {
+            app.handle_key(plain(c));
+        }
+        submit_prompt(app);
+        assert!(app.proj().spaces().iter().any(|s| s == "billing"));
+    });
+}
+
+#[test]
+fn a_keyboard_space_move_first_takes_in_a_hand_made_space_with_its_requests() {
+    use crate::components::manage::ManageTab;
+    assert_op_matches_a_project_opened_with_the_space(|app| {
+        app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(app.proj().spaces()[..2], ["auth", "main"]);
+    });
+}
+
+/// The drop re-reads the project first. The re-read finds the hand-made
+/// space and cancels the drag, as every reload does, so the order the drag
+/// showed, which did not have that space, is not written. The next drag
+/// is over the rows as they are and commits.
+#[test]
+fn a_space_drag_drop_first_takes_in_a_hand_made_space_and_cancels() {
+    let (mut app, dir) = manage_spaces_app();
+    let steps = app.history.undo_len();
+    hand_make_space(dir.path());
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+    assert_hand_made_space_is_listed(&app);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing", "new"]);
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "no order was written");
+    assert_eq!(app.history.undo_len(), steps, "and no undo step recorded");
+
+    let r0 = manage_row(&mut app, 0);
+    let r3 = manage_row(&mut app, 3);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r3.y));
+    app.handle_mouse(left_up(r0.x + 2, r3.y));
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "new", "main"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+    assert_hand_made_space_is_listed(&app);
+    app.update(Action::Undo);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing", "new"]);
+    assert_hand_made_space_is_listed(&app);
+}
+
+/// With nothing changed outside, the re-read before a space op is a check
+/// and no write: a move that moves nothing leaves every file as it was,
+/// and a burst of moves writes `project.toml` only.
+#[test]
+fn a_space_move_with_nothing_changed_outside_writes_only_its_own_order() {
+    let (mut app, dir) = manage_spaces_app();
+    let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+    let steps = app.history.undo_len();
+    let before = tree_snapshot(dir.path());
+
+    // The cursor is on `billing`, the last row, which cannot move down.
+    app.handle_key(alt(KeyCode::Down));
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(tree_snapshot(dir.path()), before);
+    assert_eq!(app.history.undo_len(), steps);
+
+    for (code, order) in [
+        (KeyCode::Up, ["main", "billing", "auth"]),
+        (KeyCode::Up, ["billing", "main", "auth"]),
+        (KeyCode::Down, ["main", "billing", "auth"]),
+    ] {
+        app.handle_key(alt(code));
+        assert_eq!(app.proj().spaces(), order);
+        assert!(!app.proj().changed_on_disk(), "the next re-read finds nothing");
+    }
+    assert_eq!(app.history.undo_len(), steps + 1, "the burst is one step");
+    let project_toml = dir.path().join("project.toml");
+    let mut after = tree_snapshot(dir.path());
+    let mut before = before;
+    assert_ne!(after.remove(&project_toml), before.remove(&project_toml));
+    assert_eq!(after, before, "nothing but project.toml was written");
 }
 
 #[test]
