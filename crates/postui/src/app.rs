@@ -10461,15 +10461,18 @@ impl App {
     /// drag the user just cancelled.
     pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
         self.sidebar_press = None;
+        // A drag belongs to the space it started in. If the active space
+        // moved on underneath it, there is nothing sane to write — its
+        // place names the *old* space's levels — so this is a cancel
+        // however the drag ended.
+        let space = self.active_space();
+        let dropped = self.sidebar.drag.as_ref().filter(|d| commit && d.space == space);
+        let commit = dropped.is_some();
         // A drop that would reorder its level writes that level as the rows
         // show it, so it re-reads first (#239), as a space drop does (#274).
         // A re-read that found a change has cancelled the drag, as every
         // reload does: the order on disk stays, with no toast of its own.
-        let space = self.active_space();
-        let reorders = commit
-            && self.sidebar.drag.as_ref().is_some_and(|d| {
-                d.space == space && d.target.0 == d.origin.0 && d.target != d.origin
-            });
+        let reorders = dropped.is_some_and(|d| d.target.0 == d.origin.0 && d.target != d.origin);
         if reorders && self.apply(Action::ReloadProjectFiles) {
             return true;
         }
@@ -10479,11 +10482,6 @@ impl App {
         let Some(drag) = self.sidebar.drag.take() else {
             return false;
         };
-        // A drag belongs to the space it started in. If the active space
-        // moved on underneath it, there is nothing sane to write — its
-        // place names the *old* space's levels — so this is a cancel
-        // however the drag ended.
-        let commit = commit && drag.space == space;
         // A drop in another level moves the block there (D17).
         if commit && drag.target.0 != drag.origin.0 {
             self.drop_in_level(drag);

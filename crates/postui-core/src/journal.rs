@@ -341,6 +341,24 @@ mod tests {
     }
 
     #[test]
+    fn a_burst_step_that_starts_from_another_text_is_its_own_entry() {
+        let mut j = Journal::new();
+        let key = MergeKey::SpaceOrder { name: "main".into() };
+        j.push(merging_entry("a", "b", Some(key.clone())));
+        j.push(merging_entry("b", "c", Some(key.clone())));
+        assert_eq!(j.len(), 1, "c starts from b: merged");
+        j.push(merging_entry("x", "y", Some(key.clone())));
+        assert_eq!(j.len(), 2, "x is not c: its own entry");
+        match &j.peek_undo().unwrap().ops[0] {
+            Op::Text { before, after, .. } => {
+                assert_eq!(before.as_deref(), Some("x"));
+                assert_eq!(after.as_deref(), Some("y"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_burst_that_nets_to_identity_is_dropped() {
         let mut j = Journal::new();
         let key = MergeKey::SpaceOrder { name: "main".into() };

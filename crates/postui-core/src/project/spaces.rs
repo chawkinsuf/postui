@@ -280,6 +280,11 @@ impl Project {
 
     /// `space`'s list with `level` rewritten to `shown`
     /// (`order::merge_level`), or `None` when that changes nothing.
+    ///
+    /// The list is `self.meta`'s, the last read, not the file's: `shown`
+    /// is the caller's rows, drawn from that same read, and only the
+    /// caller can redraw them. The app re-reads before it takes `shown`
+    /// (#239).
     fn level_change(&self, space: &str, level: &str, shown: &[String]) -> Option<ListChange> {
         let before = crate::order::space_order(&self.meta, space).to_vec();
         let after = crate::order::merge_level(&before, level, shown);
