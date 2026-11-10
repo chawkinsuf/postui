@@ -943,11 +943,19 @@ mod tests {
     /// #228: the Tree tab (and so the jq bar) and jq give one answer to
     /// "is this JSON" for the bodies servers send. The rare gaps kept on
     /// purpose (nesting past serde's limit, serde's private number key) are
-    /// listed at `postui_core::jq`'s `strict_json`.
+    /// listed at `postui_core::jq`'s `strict_json`. #248: jq has a nesting
+    /// limit too, above serde's, so the two differ only between the limits.
     #[test]
     fn the_tree_and_jq_agree_on_what_is_json() {
         use postui_core::jq::JqDocument;
+        let deep = |n: usize| "[".repeat(n) + &"]".repeat(n);
         for body in [
+            deep(127).as_str(),
+            deep(100_000).as_str(),
+            format!("data: {}\n\ndata: 1\n\n", deep(100_000)).as_str(),
+            format!("data: {}\n\n", deep(100_000)).as_str(),
+            // One deep line: neither takes the body.
+            format!("{{\"a\":1}}\n{}\n", deep(100_000)).as_str(),
             "{\"a\":1}",
             "1 2",
             "{}{}",
@@ -968,6 +976,15 @@ mod tests {
                 "{body:?}"
             );
         }
+    }
+
+    /// #248: between serde's nesting limit (127) and jq's (256) the two
+    /// differ: jq reads the body and the Tree does not.
+    #[test]
+    fn jq_reads_a_body_nested_past_the_trees_limit() {
+        let body = "[".repeat(200) + &"]".repeat(200);
+        assert!(JsonTree::parse(&body).is_none());
+        assert!(postui_core::jq::JqDocument::parse(&body).is_ok());
     }
 
     #[test]
