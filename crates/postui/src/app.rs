@@ -6571,8 +6571,7 @@ impl App {
                     // save into whichever option took its row, and holding
                     // the re-read back would leave Send and the pickers on
                     // stale files. Every reload does this, the choosers
-                    // included (mine (approved)); a command that changes
-                    // state stops on the refusal before it reloads.
+                    // included (mine (approved)).
                     //
                     // The close saves into the file as it is on disk now,
                     // outside edit and all, so the typing wins where both
@@ -11431,7 +11430,7 @@ impl App {
     ///
     /// "Before anything else" means before the rename's own checks too:
     /// what asks for nothing refuses nothing, so a file gone from disk is
-    /// left to the watcher to report, as the curl path already leaves it
+    /// not reported here, as the curl path already leaves it
     /// (N5). The name is compared as stored, not trimmed: a hand-made
     /// `" Get User "` comes back from the prompt as `Get User`, which is a
     /// change to the stored name and goes through as a rename, as a padded

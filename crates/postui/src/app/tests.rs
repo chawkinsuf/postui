@@ -38928,7 +38928,7 @@ fn a_file_added_outside_lands_last_without_a_reload_loop() {
     assert_eq!(saved_order(&dir), ["alpha", "beta", "aaa"]);
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/aaa"]);
     assert!(!app.proj().changed_on_disk(), "the app's own write is no outside change");
-    assert!(!app.update(Action::ReloadProjectFiles), "and the next poll finds nothing");
+    assert!(!app.update(Action::ReloadProjectFiles), "and the next reload finds nothing");
     assert_eq!(app.history.undo_len(), 0);
 }
 

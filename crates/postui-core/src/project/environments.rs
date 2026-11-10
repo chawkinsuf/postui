@@ -13,7 +13,7 @@ impl Project {
     /// kind counts, as an exact-case one already did. An `environments/`
     /// that can't be listed is an error, not a guess, even when
     /// `display` slugs to `exclude`. The listing records no stamp, so an
-    /// outside change to `environments/` still reaches the next reload.
+    /// outside change to `environments/` is still seen by `poll`.
     pub fn environment_slug_for(
         &self,
         display: &str,
