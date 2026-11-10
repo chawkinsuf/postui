@@ -6750,15 +6750,24 @@ fn keyboard_moves_of_different_requests_are_separate_steps() {
 #[test]
 fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
     let (mut app, dir) = three_row_app();
-    let r0 = row_rect(&mut app, 0);
-    let r2 = row_rect(&mut app, 2);
-    app.handle_mouse(left_down(r0.x + 2, r0.y));
-    app.handle_mouse(moved(r0.x + 2, r2.y));
-    // `project.toml` turns unparseable under the drag: the order write
-    // refuses rather than overwrite it.
+    let drag_first_row_to_last = |app: &mut App| {
+        let r0 = row_rect(app, 0);
+        let r2 = row_rect(app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+    };
+    // `project.toml` turns unparseable. The first drop's re-read finds the
+    // change and cancels the drop (#239).
     let meta_path = dir.path().join("project.toml");
     std::fs::write(&meta_path, "spaces = [\n").unwrap();
-    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    drag_first_row_to_last(&mut app);
+    assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
+    assert!(!app.toasts.messages().iter().any(|m| m.starts_with("cannot reorder")));
+    assert!(!app.op_in_flight);
+    // The next drop finds nothing new to read: its order write refuses
+    // rather than overwrite the file.
+    drag_first_row_to_last(&mut app);
     assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
     assert!(app.toasts.messages().iter().any(|m| m.starts_with("cannot reorder")));
     assert!(!app.op_in_flight);
@@ -29679,6 +29688,145 @@ fn a_reload_that_changes_the_tree_cancels_a_live_drag() {
 
 fn filetime_of(p: &std::path::Path) -> std::time::SystemTime {
     std::fs::metadata(p).unwrap().modified().unwrap()
+}
+
+// -- #239: a sidebar reorder re-reads the project first -------------------
+
+/// Another program rewriting `main`'s top level to `order`, as a pull
+/// would, behind the running app's back. The trailing comment changes the
+/// file's length, so the mtime gate sees the rewrite even on a
+/// coarse-mtime filesystem. Returns `project.toml` as it left it.
+fn reorder_main_outside(dir: &tempfile::TempDir, order: &[&str]) -> String {
+    let order: Vec<String> = order.iter().map(|s| s.to_string()).collect();
+    postui_core::fixtures::set_level_order(dir.path(), "main", "", &order).unwrap();
+    let path = dir.path().join("project.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{text}\n# pulled\n")).unwrap();
+    project_toml(dir)
+}
+
+fn project_toml(dir: &tempfile::TempDir) -> String {
+    std::fs::read_to_string(dir.path().join("project.toml")).unwrap()
+}
+
+/// Right-clicks sidebar row `i` and clicks its menu's `label` item.
+fn pick_from_sidebar_row_menu(app: &mut App, i: usize, label: &str) {
+    let r = row_rect(app, i);
+    app.handle_mouse(right_down(r.x + 2, r.y));
+    let item = menu_labels(app).iter().position(|l| l == label).expect("the item is listed");
+    render_once(app);
+    let item = app.hits.rect_of(&Hit::DropdownRow(item)).expect("the menu is drawn");
+    app.handle_mouse(left_down(item.x + 1, item.y));
+    app.handle_mouse(left_up(item.x + 1, item.y));
+}
+
+/// The task's case: the order changes outside (alpha and beta swapped) and
+/// the app has not re-read it. Move up on gamma re-reads first, so the swap
+/// stays and gamma moves one place in the order as it is now. Undo puts
+/// `project.toml` back as the other program left it.
+#[test]
+fn a_request_move_first_takes_in_an_order_changed_outside() {
+    let (mut app, dir) = three_row_app();
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+    let steps = app.history.undo_len();
+
+    pick_from_sidebar_row_menu(&mut app, 2, "Move up");
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"]);
+}
+
+/// The same for a folder's Move up.
+#[test]
+fn a_folder_move_first_takes_in_an_order_changed_outside() {
+    let (mut app, dir) = folder_app();
+    // rows: alpha, beta, a/, b/, c/
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "a/", "b/", "c/"]);
+
+    pick_from_sidebar_row_menu(&mut app, 4, "Move up");
+    assert_eq!(level_order(&dir, ""), ["beta", "alpha", "a/", "c/", "b/"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha"]);
+    assert_eq!(folder_rows(&app), ["main/a", "main/c", "main/b"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+}
+
+/// A drop that would reorder re-reads first. A re-read that finds a change
+/// cancels the drag, as every reload does, so the order the drag showed is
+/// not written over the one on disk: the rows show the new order, nothing
+/// is written and no toast is added. The next drag is over the rows as
+/// they are and commits. `drop` picks a row up, moves it down and drops
+/// it: the mouse, then `m`.
+#[test]
+fn a_reordering_drop_first_takes_in_an_order_changed_outside_and_cancels() {
+    fn by_mouse(app: &mut App) {
+        let r0 = row_rect(app, 0);
+        let r2 = row_rect(app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        assert!(app.sidebar.drag.is_some());
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+    }
+    fn by_keys(app: &mut App) {
+        app.focus = PaneId::Sidebar;
+        app.sidebar.selected = Some(0);
+        key_matrix_tests::feed(app, "m<Down><Down>");
+        assert!(app.sidebar.drag.is_some());
+        key_matrix_tests::feed(app, "<CR>");
+    }
+    for (what, drop) in [("mouse", by_mouse as fn(&mut App)), ("m", by_keys)] {
+        let (mut app, dir) = three_row_app();
+        app.use_profile(crate::config::KeyProfile::Arrows);
+        let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+        let steps = app.history.undo_len();
+        let toasts = app.toasts.messages().len();
+
+        drop(&mut app);
+        assert!(app.sidebar.drag.is_none(), "{what}");
+        assert!(app.sidebar_press.is_none(), "{what}");
+        assert_eq!(project_toml(&dir), outside, "{what}: no order was written");
+        assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"], "{what}");
+        assert_eq!(app.history.undo_len(), steps, "{what}: no undo step recorded");
+        assert_eq!(app.toasts.messages().len(), toasts, "{what}: {:?}", app.toasts.messages());
+
+        drop(&mut app);
+        assert_eq!(saved_order(&dir), ["alpha", "gamma", "beta"], "{what}");
+        assert_eq!(app.history.undo_len(), steps + 1, "{what}");
+        app.update(Action::Undo);
+        assert_eq!(project_toml(&dir), outside, "{what}");
+    }
+}
+
+/// With nothing changed outside, the re-read before a reorder finds
+/// nothing, the app's own order write included: a burst of moves is one
+/// undo step, and a drop commits.
+#[test]
+fn a_reorder_with_nothing_changed_outside_is_a_burst_and_a_drop_as_before() {
+    let (mut app, dir) = three_row_app();
+    let steps = app.history.undo_len();
+
+    for (row, order) in [(2, ["alpha", "gamma", "beta"]), (1, ["gamma", "alpha", "beta"])] {
+        pick_from_sidebar_row_menu(&mut app, row, "Move up");
+        assert_eq!(saved_order(&dir), order);
+        assert!(!app.proj().changed_on_disk(), "the next re-read finds nothing");
+    }
+    assert_eq!(app.history.undo_len(), steps + 1, "the burst is one step");
+
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "gamma"]);
+    assert_eq!(app.history.undo_len(), steps + 2);
+    assert!(!app.proj().changed_on_disk());
 }
 
 #[test]

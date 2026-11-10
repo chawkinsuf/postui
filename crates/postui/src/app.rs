@@ -10408,6 +10408,10 @@ impl App {
             RowKey::Request(_) => "request",
             RowKey::Folder(_) => "folder",
         };
+        // As `MoveSpace`: re-read first (#239). The move writes the level
+        // as the rows show it, so it runs over the rows the re-read shows,
+        // not over an order another program has since replaced.
+        self.apply(Action::ReloadProjectFiles);
         let space = self.active_space();
         let (RowKey::Request(full) | RowKey::Folder(full)) = &key;
         let shown = postui_core::storage::space_of(full)
@@ -10462,6 +10466,18 @@ impl App {
     /// drag the user just cancelled.
     pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
         self.sidebar_press = None;
+        // A drop that would reorder its level writes that level as the rows
+        // show it, so it re-reads first (#239), as a space drop does (#274).
+        // A re-read that found a change has cancelled the drag, as every
+        // reload does: the order on disk stays, with no toast of its own.
+        let reorders = self
+            .sidebar
+            .drag
+            .as_ref()
+            .is_some_and(|d| d.target.0 == d.origin.0 && d.target != d.origin);
+        if commit && reorders && self.apply(Action::ReloadProjectFiles) {
+            return true;
+        }
         // The level's entries as the rows show them, read before the drag
         // ends and the rows are rebuilt without it.
         let shown = self.sidebar.drop_entries();
