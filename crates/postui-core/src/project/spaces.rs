@@ -438,29 +438,39 @@ mod tests {
     }
 
     /// Space `auth`'s directory was renamed by hand to `Auth/`. A rename of
-    /// the space is an ordinary one (#278): the space gets its new name and
-    /// a directory, the requests in `Auth/` are kept, and undo puts
-    /// `project.toml` back.
+    /// the space is not refused (#278). A case-sensitive disk makes an empty
+    /// directory at the slug and leaves `Auth/` alone; a case-insensitive
+    /// one renames `Auth/` when the slug changes. Undo takes the made
+    /// directory away or renames it back, and puts `project.toml` back.
     #[test]
-    fn a_rename_of_a_space_whose_directory_is_in_another_case_is_ordinary() {
+    fn a_rename_of_a_space_whose_directory_is_in_another_case_is_not_refused() {
         let (dir, mut p) = fixture();
         std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
             .unwrap();
         p.poll();
         let before = requests_tree(&dir);
         let meta_before = read(&dir, "project.toml");
-        let held = |dir: &tempfile::TempDir| {
-            ["requests/Auth/login.toml", "requests/login-flow/login.toml"]
-                .iter()
-                .any(|f| dir.path().join(f).is_file())
-        };
+        let linux = cfg!(target_os = "linux");
+        let is_file = |f: &str| dir.path().join(f).is_file();
+
+        // The slug stays: only the name changes.
+        assert_eq!(p.rename_space("auth", "AUTH").unwrap(), "auth");
+        assert!(dir.path().join("requests/auth").is_dir());
+        assert!(is_file("requests/Auth/login.toml"));
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(&dir), before);
+        assert_eq!(read(&dir, "project.toml"), meta_before);
+
+        // The slug changes.
         assert_eq!(p.rename_space("auth", "Login Flow").unwrap(), "login-flow");
         assert!(dir.path().join("requests/login-flow").is_dir());
-        assert!(held(&dir));
+        assert_eq!(is_file("requests/login-flow/login.toml"), !linux);
+        assert_eq!(is_file("requests/Auth/login.toml"), linux);
         p.undo().unwrap().unwrap();
-        assert!(held(&dir));
-        // A case-insensitive disk renamed `Auth/` and puts it back as `auth/`.
-        if cfg!(target_os = "linux") {
+        assert!(!dir.path().join("requests/login-flow").exists());
+        assert!(is_file("requests/Auth/login.toml"));
+        // A case-insensitive disk puts the directory back as `auth/`.
+        if linux {
             assert_eq!(requests_tree(&dir), before);
         }
         assert_eq!(read(&dir, "project.toml"), meta_before);
