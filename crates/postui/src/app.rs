@@ -6571,8 +6571,7 @@ impl App {
                     // save into whichever option took its row, and holding
                     // the re-read back would leave Send and the pickers on
                     // stale files. Every reload does this, the choosers
-                    // included (mine (approved)); a command that changes
-                    // state stops on the refusal before it reloads.
+                    // included (mine (approved)).
                     //
                     // The close saves into the file as it is on disk now,
                     // outside edit and all, so the typing wins where both
@@ -10151,7 +10150,7 @@ impl App {
         // Re-lists, then writes in what a list misses where it draws (spec
         // 2026-11-02 drag into folders D5a), so the rows are the same
         // whether or not the write lands. The write goes through `Disk`,
-        // which re-stamps `project.toml`, so the next poll does not see it
+        // which re-stamps `project.toml`, so the next reload does not see it
         // as an outside change. Not an undo step.
         let order_result = p.complete_order().map_err(|e| e.to_string());
         let listing = p.requests().to_vec();
@@ -11431,7 +11430,7 @@ impl App {
     ///
     /// "Before anything else" means before the rename's own checks too:
     /// what asks for nothing refuses nothing, so a file gone from disk is
-    /// left to the watcher to report, as the curl path already leaves it
+    /// not reported here, as the curl path already leaves it
     /// (N5). The name is compared as stored, not trimmed: a hand-made
     /// `" Get User "` comes back from the prompt as `Get User`, which is a
     /// change to the stored name and goes through as a rename, as a padded

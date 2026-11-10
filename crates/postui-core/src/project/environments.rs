@@ -13,7 +13,7 @@ impl Project {
     /// kind counts, as an exact-case one already did. An `environments/`
     /// that can't be listed is an error, not a guess, even when
     /// `display` slugs to `exclude`. The listing records no stamp, so an
-    /// outside change to `environments/` still reaches the next poll.
+    /// outside change to `environments/` is still seen by `poll`.
     pub fn environment_slug_for(
         &self,
         display: &str,
@@ -41,7 +41,7 @@ impl Project {
     /// Unlike the spaces `write_list`, this works from `self.environments`
     /// — the last `refresh_environments` listing — rather than re-listing
     /// disk. A file that appeared since that refresh simply stays
-    /// unlisted until the next poll.
+    /// unlisted until the next reload.
     fn env_write_list(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for name in &self.meta.environments {
@@ -597,7 +597,7 @@ mod tests {
 
     /// The slug's listing of `environments/` records no stamp: an
     /// environment file made by hand before a create that then fails
-    /// (here `environments/` can't be written) still reaches the next poll.
+    /// (here `environments/` can't be written) is still seen by `poll`.
     #[cfg(unix)]
     #[test]
     fn a_failed_create_leaves_a_hand_made_environment_to_the_poll() {
