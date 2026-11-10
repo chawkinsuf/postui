@@ -199,14 +199,17 @@ span underlined in the bar text when known. A body that fails
 entry and the structural menu; the text menu is unchanged.
 
 2026-11-09 (#248, `mine`): a body nested deeper than 256 arrays and
-objects fails `JqDocument::parse` (`not JSON: nested deeper than 256
-levels`), and an event-stream event that deep is skipped. jaq reads and
-prints a value by recursing once per level with no limit, and a stack
-overflow aborts the app. On a 2 MB stack (the TUI's worker threads)
-printing an object overflowed first, from about 400 levels in a debug
-build and 2,000 in a release build; the reader from about 1,300 and
-4,600. The limit is not serde's 127, where the Tree tab stops: `postui
-run --jq` read deeper bodies before and has no Tree to agree with. In
+objects fails `JqDocument::parse` (`the body is nested deeper than 256
+levels`), and an event-stream event that deep is skipped without notice,
+like an event that isn't JSON. jaq reads and prints a value by recursing
+once per level with no limit, and a stack overflow aborts the app. On a
+2 MB stack with an object body, debug / release build, the reader
+overflowed from about 1,300 / 4,600 levels and printing with `.` from
+about 400 / 2,000. The limit covers reading a body and printing it with
+`.` only: a recursive filter over a body under the limit can still
+overflow (64 nested objects under `map_values` recursion, in a debug
+build), which is #282's. The limit is not serde's 127, where the Tree
+tab stops: `postui run --jq` read deeper bodies before and has no Tree to agree with. In
 the TUI a body past 127 levels has no Tree and so no jq bar; an event
 between 128 and 256 levels deep is in jq's values and not in the Tree,
 and a filter that prints it shows `filter output is not JSON` (as on

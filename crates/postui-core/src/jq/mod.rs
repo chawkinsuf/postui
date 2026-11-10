@@ -49,9 +49,10 @@ pub const OUTPUT_CAP: usize = 64 * 1024 * 1024;
 /// The deepest nesting of arrays and objects a body is read with (#248,
 /// `mine`). jaq reads a value, and prints it, by recursing once per level
 /// with no limit, and a stack overflow aborts the process. Measured on a
-/// 2 MB stack, the smallest these run on (the TUI's worker threads), the
-/// first to overflow was printing an object: from about 400 levels in a
-/// debug build and 2,000 in a release build.
+/// 2 MB stack with an object body, debug / release build: the reader
+/// overflowed from about 1,300 / 4,600 levels, printing with `.` from
+/// about 400 / 2,000. What a filter does with the value is not covered
+/// (#282).
 const MAX_DEPTH: usize = 256;
 
 /// A body parsed once by jaq's reader, shared between runs (and threads:
@@ -133,8 +134,8 @@ impl JqDocument {
     /// `mine (approved)`). jaq's own reader also takes `#` comments and
     /// NaN/Infinity.
     ///
-    /// A body nested past [`MAX_DEPTH`] is not JSON either, and an event
-    /// that deep is skipped (#248, `too_deep`).
+    /// A body nested past [`MAX_DEPTH`] is refused, and an event that deep
+    /// is skipped like one that isn't JSON (#248, `too_deep`).
     pub fn parse(body: &str) -> Result<Self, JqError> {
         // One value per event, as the Tree reads an event.
         let event = |d: &str| {
@@ -157,7 +158,9 @@ impl JqDocument {
             JqError::Runtime { message: format!("not JSON: {e}") }
         }
         if too_deep(body) {
-            return Err(not_json(format_args!("nested deeper than {MAX_DEPTH} levels")));
+            return Err(JqError::Runtime {
+                message: format!("the body is nested deeper than {MAX_DEPTH} levels"),
+            });
         }
         let values: Vec<Val> = jaq_json::read::parse_many(body.as_bytes())
             .collect::<Result<_, _>>()
@@ -165,8 +168,6 @@ impl JqDocument {
         if values.is_empty() {
             return Err(JqError::Runtime { message: "not JSON: the body holds no value".into() });
         }
-        // After jaq's read: jaq's error, when it has one, is the one
-        // reported.
         strict_json(body).map_err(not_json)?;
         Ok(JqDocument(values.into()))
     }
@@ -665,13 +666,12 @@ mod tests {
     }
 
     /// #248: jaq's reader recurses once per level and overflowed the stack
-    /// (an abort, not a panic) from a few thousand levels on a 2 MB thread,
-    /// which is what a test thread has.
+    /// (an abort, not a panic) on bodies this deep.
     #[test]
     fn a_body_nested_past_the_limit_is_declined_instead_of_overflowing_the_stack() {
         for body in [nested("[", "]", 100_000), nested("{\"a\":", "}", 100_000)] {
             let err = JqDocument::parse(&body).unwrap_err();
-            assert_eq!(err.message(), "not JSON: nested deeper than 256 levels");
+            assert_eq!(err.message(), "the body is nested deeper than 256 levels");
         }
         // One deep line fails the stream, as any bad value does.
         let stream = format!("{{\"a\":1}}\n{}\n", nested("[", "]", 100_000));

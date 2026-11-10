@@ -978,6 +978,15 @@ mod tests {
         }
     }
 
+    /// #248: between serde's nesting limit (127) and jq's (256) the two
+    /// differ: jq reads the body and the Tree does not.
+    #[test]
+    fn jq_reads_a_body_nested_past_the_trees_limit() {
+        let body = "[".repeat(200) + &"]".repeat(200);
+        assert!(JsonTree::parse(&body).is_none());
+        assert!(postui_core::jq::JqDocument::parse(&body).is_ok());
+    }
+
     #[test]
     fn a_stream_of_values_stacks_them_like_jq() {
         let t = JsonTree::parse("{\"a\":1}\n{\"a\":2}\n").expect("NDJSON has a tree");
