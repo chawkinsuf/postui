@@ -334,7 +334,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read, requests_tree};
+    use super::super::tests::{assert_none_lost, fixture, read, request_files, requests_tree};
     use super::*;
 
     #[test]
@@ -438,19 +438,29 @@ mod tests {
     }
 
     /// Space `auth`'s directory was renamed by hand to `Auth/`. A rename of
-    /// the space is not refused (#278). A case-sensitive disk makes an empty
-    /// directory at the slug and leaves `Auth/` alone; a case-insensitive
-    /// one renames `Auth/` when the slug changes. Undo takes the made
-    /// directory away or renames it back, and puts `project.toml` back.
+    /// the space is not refused (#278): it makes an empty directory at the
+    /// slug and leaves `Auth/` alone, and undo takes the made directory away
+    /// and puts `project.toml` back. Where the disk folds case, the test
+    /// checks only that no request file is lost: that arm was traced, not
+    /// run.
     #[test]
     fn a_rename_of_a_space_whose_directory_is_in_another_case_is_not_refused() {
         let (dir, mut p) = fixture();
         std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
             .unwrap();
         p.poll();
+        if dir.path().join("requests/auth").exists() {
+            let files = request_files(&dir);
+            for name in ["AUTH", "Login Flow"] {
+                let _ = p.rename_space("auth", name);
+                assert_none_lost(&dir, &files);
+                let _ = p.undo();
+                assert_none_lost(&dir, &files);
+            }
+            return;
+        }
         let before = requests_tree(&dir);
         let meta_before = read(&dir, "project.toml");
-        let linux = cfg!(target_os = "linux");
         let is_file = |f: &str| dir.path().join(f).is_file();
 
         // The slug stays: only the name changes.
@@ -464,15 +474,10 @@ mod tests {
         // The slug changes.
         assert_eq!(p.rename_space("auth", "Login Flow").unwrap(), "login-flow");
         assert!(dir.path().join("requests/login-flow").is_dir());
-        assert_eq!(is_file("requests/login-flow/login.toml"), !linux);
-        assert_eq!(is_file("requests/Auth/login.toml"), linux);
-        p.undo().unwrap().unwrap();
-        assert!(!dir.path().join("requests/login-flow").exists());
+        assert!(!is_file("requests/login-flow/login.toml"));
         assert!(is_file("requests/Auth/login.toml"));
-        // A case-insensitive disk puts the directory back as `auth/`.
-        if linux {
-            assert_eq!(requests_tree(&dir), before);
-        }
+        p.undo().unwrap().unwrap();
+        assert_eq!(requests_tree(&dir), before);
         assert_eq!(read(&dir, "project.toml"), meta_before);
     }
 

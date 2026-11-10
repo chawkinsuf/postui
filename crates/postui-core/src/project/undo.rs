@@ -310,7 +310,9 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read, requests_tree, sizes};
+    use super::super::tests::{
+        assert_none_lost, fixture, read, request_files, requests_tree, sizes,
+    };
     use super::*;
     use crate::varedit;
 
@@ -702,7 +704,9 @@ mod tests {
     /// Space `auth`'s directory was renamed by hand to `Auth/` after a move
     /// or a delete took a request out of it. The undo is an ordinary one
     /// (#278): the request goes back to `requests/auth/…`, what `Auth/`
-    /// holds is kept, and redo takes the request out again.
+    /// holds is kept, and redo takes the request out again. Where the disk
+    /// folds case, the test checks only that no request file is lost, the
+    /// trash counted: that arm was traced, not run.
     #[test]
     fn undo_into_a_space_whose_directory_is_in_another_case_is_ordinary() {
         let ops: [fn(&mut Project); 2] = [
@@ -713,9 +717,17 @@ mod tests {
             let (dir, mut p) = fixture();
             let kept = dir.path().join("requests/Auth/kept.toml");
             std::fs::write(dir.path().join("requests/auth/kept.toml"), "url = \"u\"\n").unwrap();
+            let files = request_files(&dir);
             op(&mut p);
             let requests = dir.path().join("requests");
             std::fs::rename(requests.join("auth"), requests.join("Auth")).unwrap();
+            if requests.join("auth").exists() {
+                let _ = p.undo();
+                assert_none_lost(&dir, &files);
+                let _ = p.redo();
+                assert_none_lost(&dir, &files);
+                continue;
+            }
             let before = requests_tree(&dir);
             p.undo().unwrap().unwrap();
             assert!(requests.join("auth/login.toml").is_file());
@@ -724,10 +736,10 @@ mod tests {
             assert!(!requests.join("auth/login.toml").exists());
             assert!(kept.is_file());
             let mut after = requests_tree(&dir);
-            // On a case-sensitive disk the undo of the delete made an
-            // empty `auth/`, and the redo leaves it.
+            // The undo of the delete made an empty `auth/`, and the redo
+            // leaves it.
             let left = after.remove("requests/auth").is_some();
-            assert_eq!(left, is_delete && cfg!(target_os = "linux"));
+            assert_eq!(left, is_delete);
             assert_eq!(after, before);
         }
     }

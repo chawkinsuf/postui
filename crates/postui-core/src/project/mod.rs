@@ -1584,6 +1584,38 @@ mod tests {
         out
     }
 
+    /// The bytes of every request file in the project folder, sorted: a
+    /// non-dot file with a `requests` directory above it, the trash's
+    /// copies included.
+    pub(crate) fn request_files(dir: &tempfile::TempDir) -> Vec<Vec<u8>> {
+        fn walk(d: &std::path::Path, under_requests: bool, out: &mut Vec<Vec<u8>>) {
+            for e in std::fs::read_dir(d).unwrap() {
+                let e = e.unwrap();
+                let (path, name) = (e.path(), e.file_name());
+                if path.is_dir() {
+                    walk(&path, under_requests || name == "requests", out);
+                } else if under_requests && !name.to_string_lossy().starts_with('.') {
+                    out.push(std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir.path(), false, &mut out);
+        out.sort();
+        out
+    }
+
+    /// Asserts that each of `before`'s request files is still somewhere in
+    /// the project folder with the same bytes, copy for copy.
+    pub(crate) fn assert_none_lost(dir: &tempfile::TempDir, before: &[Vec<u8>]) {
+        let mut now = request_files(dir);
+        for file in before {
+            let at = now.iter().position(|f| f == file);
+            let text = String::from_utf8_lossy(file);
+            now.remove(at.unwrap_or_else(|| panic!("a request file is gone: {text:?}")));
+        }
+    }
+
     /// Pane sizes with both set: the split token and the sidebar width.
     pub(crate) fn sizes(split: &str, width: u16) -> LayoutState {
         LayoutState { main_split: Some(split.into()), sidebar_width: Some(width) }

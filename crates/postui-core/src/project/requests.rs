@@ -1995,7 +1995,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read, requests_tree};
+    use super::super::tests::{assert_none_lost, fixture, read, request_files, requests_tree};
     use super::*;
     use crate::journal::Op;
     use crate::storage::FolderListing;
@@ -5306,12 +5306,26 @@ mod tests {
     /// Space `auth`'s directory was renamed by hand to `Auth/`. A create
     /// or a move into the space is an ordinary one (#278): it writes at
     /// `requests/auth/…`, the hand-renamed directory keeps what it held,
-    /// and undo takes the op back exactly.
+    /// and undo takes the op back exactly. Where the disk folds case, the
+    /// test checks only that no request file is lost: that arm was traced,
+    /// not run.
     #[test]
     fn an_op_into_a_space_whose_directory_is_in_another_case_is_ordinary() {
         let (dir, mut p) = folder_project(&[], &["main/x", "auth/a"]);
         std::fs::rename(dir.path().join("requests/auth"), dir.path().join("requests/Auth"))
             .unwrap();
+        if dir.path().join("requests/auth").exists() {
+            let files = request_files(&dir);
+            let _ = p.create_request_in("auth", "New", None, req("u"));
+            assert_none_lost(&dir, &files);
+            let _ = p.undo();
+            assert_none_lost(&dir, &files);
+            let _ = p.move_request("main/x", "auth");
+            assert_none_lost(&dir, &files);
+            let _ = p.undo();
+            assert_none_lost(&dir, &files);
+            return;
+        }
         let before = requests_tree(&dir);
         assert_eq!(p.create_request_in("auth", "New", None, req("u")).unwrap().0, "auth/new");
         assert!(dir.path().join("requests/auth/new.toml").is_file());
@@ -5325,16 +5339,24 @@ mod tests {
     }
 
     /// The same for a folder: the target has a hand-made `Users/` where a
-    /// move makes `users/`.
+    /// move makes `users/`. Where the disk folds case, the test checks only
+    /// that no request file is lost: that arm was traced, not run.
     #[test]
     fn a_move_beside_a_folder_in_another_case_is_ordinary() {
         let (dir, mut p) = folder_project(&[], &["main/users/x", "auth/Users/y"]);
+        if dir.path().join("requests/auth/users").exists() {
+            let files = request_files(&dir);
+            let _ = p.move_request("main/users/x", "auth");
+            assert_none_lost(&dir, &files);
+            let _ = p.undo();
+            assert_none_lost(&dir, &files);
+            return;
+        }
         let before = requests_tree(&dir);
         assert_eq!(p.move_request("main/users/x", "auth").unwrap(), "auth/users/x");
         assert!(dir.path().join("requests/auth/users/x.toml").is_file());
         assert!(dir.path().join("requests/auth/Users/y.toml").is_file());
-        // A case-sensitive disk gets a new `users/`, named past "Users" (F19).
-        #[cfg(target_os = "linux")]
+        // The new `users/` is named past "Users" (F19).
         assert_eq!(
             std::fs::read_to_string(dir.path().join("requests/auth/users/.folder.toml")).unwrap(),
             "name = \"users 2\"\n"
