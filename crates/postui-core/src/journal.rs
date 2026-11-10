@@ -84,7 +84,10 @@ impl Entry {
     }
 
     /// Folds `next` into `self` when both are single `Text` ops on the
-    /// same path: keep the first `before`, take the last `after`.
+    /// same path and `next` starts from the text `self` left: keep the
+    /// first `before`, take the last `after`. A `next` that starts from
+    /// another text (the file was rewritten in between) stays its own
+    /// entry, so its undo restores that text.
     fn try_merge(&mut self, next: &Entry) -> bool {
         let (Some((k1, _)), Some((k2, t2))) = (&self.merge, &next.merge) else {
             return false;
@@ -97,9 +100,10 @@ impl Entry {
             return false;
         };
         match (a, b) {
-            (Op::Text { path: p1, after, .. }, Op::Text { path: p2, after: after2, .. })
-                if same_len && p1 == p2 =>
-            {
+            (
+                Op::Text { path: p1, after, .. },
+                Op::Text { path: p2, before: before2, after: after2 },
+            ) if same_len && p1 == p2 && after == before2 => {
                 *after = after2.clone();
                 self.merge = Some((k2.clone(), *t2));
                 true

@@ -29829,6 +29829,74 @@ fn a_reorder_with_nothing_changed_outside_is_a_burst_and_a_drop_as_before() {
     assert!(!app.proj().changed_on_disk());
 }
 
+/// An outside rewrite between two moves of one burst: the second move is
+/// its own undo step, so Undo puts `project.toml` back as the other
+/// program left it, not as it was before the burst.
+#[test]
+fn a_move_after_an_outside_change_does_not_join_the_burst_before_it() {
+    let (mut app, dir) = three_row_app();
+    let steps = app.history.undo_len();
+    pick_from_sidebar_row_menu(&mut app, 2, "Move up");
+    assert_eq!(saved_order(&dir), ["alpha", "gamma", "beta"]);
+
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+    pick_from_sidebar_row_menu(&mut app, 1, "Move up");
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"]);
+    assert_eq!(app.history.undo_len(), steps + 2);
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+}
+
+/// The other ops that write an order re-read nothing in the app: core
+/// builds their list from `project.toml` as it is on disk. Each one runs
+/// straight after an outside swap of alpha and beta and keeps the swap.
+#[test]
+fn the_other_order_writes_keep_an_order_changed_outside() {
+    type Op = fn(&mut App);
+    let ops: [(&str, Op); 5] = [
+        ("create", |app| {
+            app.update(Action::CreateRequest("delta".into()));
+        }),
+        ("delete", |app| {
+            app.update(Action::DeleteRequest("main/gamma".into()));
+        }),
+        ("duplicate", |app| {
+            app.sidebar.select_slug("main/gamma");
+            app.update(Action::DuplicateRequest);
+        }),
+        ("rename", |app| {
+            app.update(Action::RenameRequest { from: "main/gamma".into(), to: "zeta".into() });
+        }),
+        ("new folder", |app| {
+            app.sidebar.select_slug("main/gamma");
+            app.update(Action::PromptNewFolder);
+            submit_folder_prompt(app, "Made");
+        }),
+    ];
+    for (what, op) in ops {
+        let (mut app, dir) = three_row_app();
+        reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+        let before = saved_order(&dir);
+        op(&mut app);
+        let after = saved_order(&dir);
+        assert_ne!(after, before, "{what}: the op wrote the order");
+        assert_eq!(after[..2], ["beta", "alpha"], "{what}: {after:?}");
+    }
+
+    // A drop into another level: beta into the open auth/, after auth/ was
+    // put first outside.
+    let (mut app, dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    reorder_main_outside(&dir, &["auth/", "alpha", "beta"]);
+    key_move_ready(&mut app, "main/beta", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down>");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 0));
+    key_matrix_tests::feed(&mut app, "<CR>");
+    assert!(dir.path().join("requests/main/auth/beta.toml").is_file(), "the file moved");
+    assert_eq!(level_order(&dir, ""), ["auth/", "alpha"]);
+}
+
 #[test]
 fn a_right_click_on_an_armed_press_disarms_it() {
     let (mut app, _dir) = three_row_app();
