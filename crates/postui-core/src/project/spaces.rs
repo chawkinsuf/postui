@@ -64,7 +64,6 @@ impl Project {
             display,
             |slug| {
                 self.meta.spaces.iter().any(|s| s == slug)
-                    || self.spaces.iter().any(|s| s == slug)
                     || space_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false)
             },
             exclude,
@@ -108,9 +107,7 @@ impl Project {
         }
         let to = self.space_slug_for(&display, Some(from));
         // A space whose directory is there only in another case refuses on
-        // every disk, as a move into it does, so the platforms agree
-        // (#266). `to`, when it differs, was numbered past any directory in
-        // another case above.
+        // every disk, as a move into it does (#266).
         self.refuse_space_case_twin(from)?;
         spaces[idx] = to.clone();
         let from = from.to_string();
@@ -436,6 +433,11 @@ mod tests {
         p.undo().unwrap().unwrap();
         kept("undo of the rename");
         assert!(dir.path().join("requests/auth/login.toml").is_file());
+
+        // An entry at exactly the slug's path, one no space lists, takes it
+        // on every disk.
+        std::fs::write(dir.path().join("requests/reports"), "").unwrap();
+        assert_eq!(p.space_slug_for("Reports", None), "reports-2");
     }
 
     /// #266: space `auth`'s directory was renamed by hand to `Auth/`. A

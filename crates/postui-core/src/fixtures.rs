@@ -274,7 +274,7 @@ fn write_list(root: &Path) -> Result<Vec<String>, ProjectError> {
     Ok(out)
 }
 
-/// The slug [`create_space`] / would give `display`
+/// The slug [`create_space`] would give `display`
 /// (`exclude` = the slug being renamed, which is not a collision with
 /// itself).
 pub fn space_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {

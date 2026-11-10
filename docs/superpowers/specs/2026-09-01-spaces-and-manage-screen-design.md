@@ -362,8 +362,8 @@ Manage screens when no modal is open. Configurable under the same
   a new or renamed environment "Prod" `prod-2.toml` on every disk, not a
   case-only twin `prod.toml` beside it.
   *Amended 2026-11-09 (#279), withdrawing the two notes above:* a slug is
-  taken when the disk says its path exists, as before #264, and the any-case
-  listing is gone. The user's rule: "we need to just have a common sense
+  taken when the disk says its path exists, as before #264 (spaces) and #265
+  (environments), and the any-case listing is gone. The user's rule: "we need to just have a common sense
   behavior that is simple… not worry too much about a case that is caused by
   a user doing something strange". Beside a hand-made `requests/Billing/` or
   `environments/Prod.toml`, a disk that tells the two names apart gives a new

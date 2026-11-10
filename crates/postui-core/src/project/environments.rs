@@ -565,6 +565,9 @@ mod tests {
         p.undo().unwrap().unwrap();
         kept("undo of the rename");
         assert!(dir.path().join("environments/qa.toml").is_file());
+
+        // A file at exactly the slug's path takes it on every disk.
+        assert_eq!(p.environment_slug_for("QA", None), "qa-2");
     }
 
     #[test]
