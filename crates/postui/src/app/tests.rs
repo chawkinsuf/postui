@@ -5853,6 +5853,35 @@ fn a_space_drag_drop_first_takes_in_a_hand_made_space_and_cancels() {
     assert_hand_made_space_is_listed(&app);
 }
 
+/// Any outside change the drop's re-read finds cancels the drop, not only a
+/// new space: here `variables.toml`. The same drag again commits.
+#[test]
+fn a_space_drag_drop_is_cancelled_by_any_outside_change() {
+    let (mut app, dir) = manage_spaces_app();
+    let steps = app.history.undo_len();
+    let toasts = app.toasts.messages().len();
+    std::fs::write(dir.path().join("variables.toml"), "# edited elsewhere\n").unwrap();
+    assert!(app.proj().changed_on_disk(), "precondition");
+    let drag_first_row_to_last = |app: &mut App| {
+        let r0 = manage_row(app, 0);
+        let r2 = manage_row(app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+        assert!(app.manage.list.drag.is_none());
+    };
+
+    drag_first_row_to_last(&mut app);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "no order was written");
+    assert_eq!(app.history.undo_len(), steps, "and no undo step recorded");
+    assert_eq!(app.toasts.messages().len(), toasts, "{:?}", app.toasts.messages());
+
+    drag_first_row_to_last(&mut app);
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+}
+
 /// With nothing changed outside, the re-read before a space op is a check
 /// and no write: a move that moves nothing leaves every file as it was,
 /// and a burst of moves writes `project.toml` only.
@@ -36110,6 +36139,39 @@ fn a_refused_input_stops_a_replace_with_curl() {
     assert_eq!(app.editor.url.text(), url, "the editor is not replaced");
     assert!(app.varmanager.grid.editing.is_some(), "the typing is kept");
     assert!(app.last_action_failed, "the replace stopped");
+}
+
+/// #274: a space create or move re-reads the project first, and a Manager
+/// input that refuses to close stops it before that re-read, which would
+/// cancel the input: the typing is kept, and the op does not run.
+#[test]
+fn a_refused_input_stops_a_space_create_or_move_before_its_reload() {
+    for action in [
+        Action::CreateSpace("billing".into()),
+        Action::MoveSpace { name: "main".into(), delta: -1 },
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        assert_eq!(app.proj().spaces(), ["auth", "main"]);
+        goto_group(&mut app, "user");
+        let r = cell_rect(&mut app, 2, 0);
+        app.handle_mouse(left_down(r.x, r.y));
+        type_chars(&mut app, "description");
+        rewrite_qa_without_alice(dir.path());
+        app.last_action_failed = false;
+
+        app.update(action.clone());
+        let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
+        assert_eq!(edit.input.text(), "description", "{action:?}");
+        assert!(!app.toasts.messages().contains(&EDIT_DISCARDED), "{action:?}");
+        assert_eq!(app.proj().spaces(), ["auth", "main"], "the op did not run: {action:?}");
+        assert!(app.last_action_failed, "{action:?}");
+        assert!(app.proj().changed_on_disk(), "nor the re-read: {action:?}");
+    }
 }
 
 /// A delete of an option whose name cell is live closes the cell first:
