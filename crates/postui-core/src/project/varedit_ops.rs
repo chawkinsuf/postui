@@ -956,27 +956,6 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
-    /// #260: a curl import with secrets into a space whose directory was
-    /// renamed by hand to another case refuses, naming it, and declares
-    /// nothing.
-    #[test]
-    fn an_import_with_secrets_refuses_a_space_directory_in_another_case() {
-        let (dir, mut p) = vars_fixture();
-        p.set_active_env(Some("dev".into()));
-        std::fs::rename(dir.path().join("requests/main"), dir.path().join("requests/Main"))
-            .unwrap();
-        let variables = read(&dir, VARIABLES_TOML);
-        let secrets_file = read(&dir, SECRETS_TOML);
-        let req = HttpRequest::from_toml_str("url = \"https://x/{{TOKEN}}\"\n").unwrap();
-        let secrets = vec![("TOKEN".to_string(), Some("abc123".to_string()))];
-        let r = p.create_request_with_secrets("main/GET x", req, &secrets);
-        assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("requests/Main/")), "{r:?}");
-        assert_eq!(read(&dir, VARIABLES_TOML), variables);
-        assert_eq!(read(&dir, SECRETS_TOML), secrets_file);
-        assert!(!p.variables().vars.contains_key("TOKEN"));
-        assert_eq!(p.journal_len(), 0);
-    }
-
     #[test]
     fn a_selector_may_take_a_field_name() {
         let (_dir, mut p) = vars_fixture();
