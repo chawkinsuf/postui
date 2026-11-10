@@ -44,9 +44,6 @@ impl Project {
     /// editor's swap file, a `README`) goes to the trash with the
     /// directory, and redo brings it back (spec 2026-11-03 create folders,
     /// review rounds 5 and 6; mine (approved: "A")).
-    ///
-    /// Last, it refuses an entry that would put a path back into a space
-    /// whose directory is there only in another case (#261).
     fn preflight(&mut self, ops: &[Op]) -> Result<(), Error> {
         // The user never sees the machinery, only the cause: something
         // changed the file after the op that is being replayed.
@@ -151,19 +148,7 @@ impl Project {
                 }
             }
         }
-        // A case-insensitive disk files a path put back into
-        // `requests/auth/…` into a hand-renamed `Auth/`, where the walk
-        // lists no space `auth` (#261). The paths the inverses put back:
-        let put_back: Vec<&RelPath> = ops
-            .iter()
-            .filter_map(|op| match op {
-                Op::Renamed { from, .. } => Some(from),
-                Op::Trashed { ticket } => Some(&ticket.original),
-                Op::Text { path, before: Some(_), after: None } => Some(path),
-                Op::Created { .. } | Op::Restored { .. } | Op::Text { .. } => None,
-            })
-            .collect();
-        self.refuse_space_case_twins_of(&put_back)
+        Ok(())
     }
 
     /// Reverses one op through the recording primitives.
@@ -325,7 +310,9 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read, requests_tree, sizes};
+    use super::super::tests::{
+        assert_none_lost, fixture, read, request_files, requests_tree, sizes,
+    };
     use super::*;
     use crate::varedit;
 
@@ -714,131 +701,46 @@ mod tests {
         assert!(!p.can_undo() && !p.can_redo());
     }
 
-    // --- #261: a space directory renamed by hand to another case ---
-
-    /// Renames space `auth`'s directory to `Auth/`, as a hand rename
-    /// outside postui would, making it if an op took it away.
-    fn rename_auth_by_hand(dir: &tempfile::TempDir) {
-        let requests = dir.path().join("requests");
-        std::fs::create_dir_all(requests.join("auth")).unwrap();
-        std::fs::rename(requests.join("auth"), requests.join("Auth")).unwrap();
-    }
-
-    fn is_case_twin_refusal(r: &Result<Option<Undone>, Error>) -> bool {
-        matches!(r, Err(Error::Conflict(m))
-            if m.contains("requests/Auth/") && m.contains("outside postui"))
-    }
-
-    /// Undo of a move out of space `auth` would put the request back into
-    /// `requests/auth/`, which a case-insensitive disk resolves into the
-    /// hand-renamed `Auth/`, where the walk lists no space `auth`. The undo
-    /// refuses, naming it, and moves nothing.
+    /// Space `auth`'s directory was renamed by hand to `Auth/` after a move
+    /// or a delete took a request out of it. The undo is an ordinary one
+    /// (#278): the request goes back to `requests/auth/…`, what `Auth/`
+    /// holds is kept, and redo takes the request out again. Where the disk
+    /// folds case, the test checks only that no request file is lost, the
+    /// trash counted: that arm was traced, not run.
     #[test]
-    fn undo_into_a_space_directory_in_another_case_refuses() {
-        let (dir, mut p) = fixture();
-        p.move_request("auth/login", "main").unwrap();
-        rename_auth_by_hand(&dir);
-        let before = requests_tree(&dir);
-        let r = p.undo();
-        assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert_eq!(requests_tree(&dir), before);
-    }
-
-    /// Redo of a move into the space refuses the same way.
-    #[test]
-    fn redo_into_a_space_directory_in_another_case_refuses() {
-        let (dir, mut p) = fixture();
-        p.move_request("main/ping", "auth").unwrap();
-        p.undo().unwrap().unwrap();
-        rename_auth_by_hand(&dir);
-        let before = requests_tree(&dir);
-        let r = p.redo();
-        assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert_eq!(requests_tree(&dir), before);
-    }
-
-    /// A restore from the trash (undo of a delete) refuses the same way.
-    #[test]
-    fn restore_into_a_space_directory_in_another_case_refuses() {
-        let (dir, mut p) = fixture();
-        p.delete_request("auth/login").unwrap();
-        rename_auth_by_hand(&dir);
-        let before = requests_tree(&dir);
-        let r = p.undo();
-        assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert_eq!(requests_tree(&dir), before);
-    }
-
-    /// So does a text write that puts a removed file back.
-    #[test]
-    fn text_put_back_into_a_space_directory_in_another_case_refuses() {
-        let (dir, mut p) = fixture();
-        let new = RelPath::new("requests/auth/new.toml").unwrap();
-        p.transaction("t", EntryMeta::default(), |p| p.fs_write_text(&new, Some("url = \"u\"\n")))
-            .unwrap();
-        p.undo().unwrap().unwrap();
-        rename_auth_by_hand(&dir);
-        let before = requests_tree(&dir);
-        let r = p.redo();
-        assert!(is_case_twin_refusal(&r), "{r:?}");
-        assert_eq!(requests_tree(&dir), before);
-    }
-
-    /// The space's own directory, there at its exact name, takes the undo
-    /// even beside a twin in another case, which is left alone. Only a
-    /// case-sensitive disk holds both.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn undo_lands_in_the_exact_space_directory_beside_a_twin() {
-        let (dir, mut p) = fixture();
-        p.move_request("auth/login", "main").unwrap();
-        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
-        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-        p.undo().unwrap().unwrap();
-        assert!(dir.path().join("requests/auth/login.toml").is_file());
-        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
-        assert_eq!(twin.count(), 0);
-    }
-
-    /// Undo of a space delete puts the space's directory back whole, at
-    /// its exact name, beside a twin in another case.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn undo_of_a_space_delete_puts_it_back_beside_a_twin() {
-        let (dir, mut p) = fixture();
-        p.delete_space("auth").unwrap();
-        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-        p.undo().unwrap().unwrap();
-        assert!(dir.path().join("requests/auth/login.toml").is_file());
-        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
-        assert_eq!(twin.count(), 0);
-    }
-
-    /// So does undo of a space rename.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn undo_of_a_space_rename_puts_it_back_beside_a_twin() {
-        let (dir, mut p) = fixture();
-        assert_eq!(p.rename_space("auth", "Other").unwrap(), "other");
-        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-        p.undo().unwrap().unwrap();
-        assert!(dir.path().join("requests/auth/login.toml").is_file());
-        let twin = std::fs::read_dir(dir.path().join("requests/Auth")).unwrap();
-        assert_eq!(twin.count(), 0);
-    }
-
-    /// Undo and redo of a space create beside a twin made by hand after
-    /// it: the undo takes the directory away and the redo puts it back.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn redo_of_a_space_create_beside_a_twin() {
-        let (dir, mut p) = fixture();
-        assert_eq!(p.create_space("users").unwrap(), "users");
-        std::fs::create_dir_all(dir.path().join("requests/Users")).unwrap();
-        p.undo().unwrap().unwrap();
-        assert!(!dir.path().join("requests/users").exists());
-        p.redo().unwrap().unwrap();
-        assert!(dir.path().join("requests/users").is_dir());
-        assert!(dir.path().join("requests/Users").is_dir());
+    fn undo_into_a_space_whose_directory_is_in_another_case_is_ordinary() {
+        let ops: [fn(&mut Project); 2] = [
+            |p| drop(p.move_request("auth/login", "main").unwrap()),
+            |p| p.delete_request("auth/login").unwrap(),
+        ];
+        for (is_delete, op) in [false, true].into_iter().zip(ops) {
+            let (dir, mut p) = fixture();
+            let kept = dir.path().join("requests/Auth/kept.toml");
+            std::fs::write(dir.path().join("requests/auth/kept.toml"), "url = \"u\"\n").unwrap();
+            let files = request_files(&dir);
+            op(&mut p);
+            let requests = dir.path().join("requests");
+            std::fs::rename(requests.join("auth"), requests.join("Auth")).unwrap();
+            if requests.join("auth").exists() {
+                let _ = p.undo();
+                assert_none_lost(&dir, &files);
+                let _ = p.redo();
+                assert_none_lost(&dir, &files);
+                continue;
+            }
+            let before = requests_tree(&dir);
+            p.undo().unwrap().unwrap();
+            assert!(requests.join("auth/login.toml").is_file());
+            assert!(kept.is_file());
+            p.redo().unwrap().unwrap();
+            assert!(!requests.join("auth/login.toml").exists());
+            assert!(kept.is_file());
+            let mut after = requests_tree(&dir);
+            // The undo of the delete made an empty `auth/`, and the redo
+            // leaves it.
+            let left = after.remove("requests/auth").is_some();
+            assert_eq!(left, is_delete);
+            assert_eq!(after, before);
+        }
     }
 }
