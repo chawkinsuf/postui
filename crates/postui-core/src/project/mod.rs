@@ -796,7 +796,7 @@ impl Project {
         Ok(())
     }
 
-    /// The files `poll` watches by stamp: `project.toml`,
+    /// The files `changed_on_disk` checks by stamp: `project.toml`,
     /// `variables.toml`, `environments/` and the active env file. The
     /// spaces under `requests/` are compared, not stamped
     /// ([`Self::changed_on_disk`]). `Disk::list` still records a stamp for

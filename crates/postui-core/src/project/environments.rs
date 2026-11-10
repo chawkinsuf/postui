@@ -597,7 +597,7 @@ mod tests {
 
     /// The slug's listing of `environments/` records no stamp: an
     /// environment file made by hand before a create that then fails
-    /// (here `environments/` can't be written) still reaches the next reload.
+    /// (here `environments/` can't be written) is still seen by `poll`.
     #[cfg(unix)]
     #[test]
     fn a_failed_create_leaves_a_hand_made_environment_to_the_poll() {

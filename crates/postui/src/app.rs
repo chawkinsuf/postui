@@ -10151,7 +10151,7 @@ impl App {
         // Re-lists, then writes in what a list misses where it draws (spec
         // 2026-11-02 drag into folders D5a), so the rows are the same
         // whether or not the write lands. The write goes through `Disk`,
-        // which re-stamps `project.toml`, so the next poll does not see it
+        // which re-stamps `project.toml`, so the next reload does not see it
         // as an outside change. Not an undo step.
         let order_result = p.complete_order().map_err(|e| e.to_string());
         let listing = p.requests().to_vec();

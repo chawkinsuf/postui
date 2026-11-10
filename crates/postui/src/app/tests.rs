@@ -9220,7 +9220,7 @@ fn create_project_failing_after_discard_keeps_the_edits() {
 fn cycle_env_reloads_project_files_before_switching() {
     let (mut app, dir) = app_with_envs();
     // Rewrite variables.toml on disk with a bumped mtime so
-    // reload_if_changed picks it up.
+    // the reload picks it up.
     std::fs::write(dir.path().join("variables.toml"), "[greeting]\ndefault = \"hi\"\n").unwrap();
     let t = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
     let f = std::fs::File::options().append(true).open(dir.path().join("variables.toml")).unwrap();
@@ -9483,7 +9483,7 @@ fn cycle_env_wraps_and_skips_no_env() {
 fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     let (mut app, dir) = app_with_envs();
     // A real selector (declared in variables.toml, options in the env
-    // file) rather than a bare made-up key: `reload_if_changed` prunes
+    // file) rather than a bare made-up key: a reload prunes
     // selections the model can't account for, so only a genuine one
     // survives the reload an undo triggers.
     std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"user\"]\n")
@@ -9525,7 +9525,7 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
 fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
     let (mut app, dir) = app_with_envs();
     // A real selector (declared in variables.toml, options in the env
-    // file) rather than a bare made-up key: `reload_if_changed` prunes
+    // file) rather than a bare made-up key: a reload prunes
     // selections the model can't account for, so only a genuine one
     // survives the reload an undo triggers.
     std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"user\"]\n")
