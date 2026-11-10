@@ -36141,36 +36141,32 @@ fn a_refused_input_stops_a_replace_with_curl() {
     assert!(app.last_action_failed, "the replace stopped");
 }
 
-/// #274: a space create or move re-reads the project first, and a Manager
-/// input that refuses to close stops it before that re-read, which would
-/// cancel the input: the typing is kept, and the op does not run.
+/// #274: a space create over a Manager input that refuses to close. With
+/// nothing changed outside, the create runs and the input stays open with
+/// its typing. With a file changed outside, the create's re-read cancels
+/// the input, as a reload does, and the create runs.
 #[test]
-fn a_refused_input_stops_a_space_create_or_move_before_its_reload() {
-    for action in [
-        Action::CreateSpace("billing".into()),
-        Action::MoveSpace { name: "main".into(), delta: -1 },
-    ] {
+fn a_space_create_over_a_refused_input_runs_and_its_reload_cancels_the_input() {
+    for changed_outside in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        var_project(dir.path());
-        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
-        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::with_root(tx, dir.path().to_path_buf());
-        assert_eq!(app.proj().spaces(), ["auth", "main"]);
-        goto_group(&mut app, "user");
-        let r = cell_rect(&mut app, 2, 0);
-        app.handle_mouse(left_down(r.x, r.y));
-        type_chars(&mut app, "description");
-        rewrite_qa_without_alice(dir.path());
-        app.last_action_failed = false;
+        let mut app = refused_manager_cell_app(dir.path(), "");
+        if changed_outside {
+            rewrite_qa_without_alice(dir.path());
+        }
 
-        app.update(action.clone());
-        let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
-        assert_eq!(edit.input.text(), "description", "{action:?}");
-        assert!(!app.toasts.messages().contains(&EDIT_DISCARDED), "{action:?}");
-        assert_eq!(app.proj().spaces(), ["auth", "main"], "the op did not run: {action:?}");
-        assert!(app.last_action_failed, "{action:?}");
-        assert!(app.proj().changed_on_disk(), "nor the re-read: {action:?}");
+        app.update(Action::OpenNewSpacePrompt);
+        type_chars(&mut app, "billing");
+        submit_prompt(&mut app);
+        assert!(
+            app.proj().spaces().iter().any(|s| s == "billing"),
+            "{changed_outside}: {:?}",
+            app.proj().spaces()
+        );
+        let discarded = app.toasts.messages().contains(&EDIT_DISCARDED);
+        assert_eq!(discarded, changed_outside, "{:?}", app.toasts.messages());
+        let typing = app.varmanager.grid.editing.as_ref().map(|e| e.input.text().to_string());
+        let kept = (!changed_outside).then(|| "description".to_string());
+        assert_eq!(typing, kept, "{changed_outside}");
     }
 }
 

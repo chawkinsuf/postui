@@ -7907,9 +7907,13 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                if self.reread_before_space_op().is_none() {
-                    return true;
-                }
+                // The create lists `requests/` itself, so the project is
+                // re-read first: a space directory made outside shows with
+                // its requests before the create meets it (#274). This is
+                // the reload Send runs, with its effects: when a file
+                // changed outside, a Variable Manager input that refuses to
+                // close is cancelled, and the create goes on as a Send does.
+                self.apply(Action::ReloadProjectFiles);
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -8209,12 +8213,10 @@ impl App {
                 true
             }
             Action::MoveSpace { name, delta } => {
-                // The move is one step from the named row, so it runs over
-                // the rows the re-read shows; a drag's whole order does not
-                // (`finish_manage_drag`).
-                if self.reread_before_space_op().is_none() {
-                    return true;
-                }
+                // As `CreateSpace`: re-read first (#274). The move is one
+                // step from the named row, so it runs over the rows the
+                // re-read shows.
+                self.apply(Action::ReloadProjectFiles);
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -10774,20 +10776,6 @@ impl App {
             || matches!(self.hits.hit_at(x, y), Some(Hit::ManageRow(_)))
     }
 
-    /// Re-reads the project before a space create, move or drag (#274):
-    /// each lists `requests/` itself, so a space directory made outside
-    /// shows with its requests before the op meets it. `Some(stale)` is
-    /// what the reload answered. The Variable Manager's input closes
-    /// first, as for Reload from disk: `None` when it refuses, with its
-    /// typing kept and `last_action_failed` set, and the caller stops.
-    fn reread_before_space_op(&mut self) -> Option<bool> {
-        if !self.close_manager_input() {
-            self.last_action_failed = true;
-            return None;
-        }
-        Some(self.apply(Action::ReloadProjectFiles))
-    }
-
     /// Ends a row drag of the Spaces or Environments list — whichever tab
     /// the drag itself belongs to. `commit` writes the working order when
     /// it differs from the original; otherwise (release outside, Escape, a
@@ -10805,14 +10793,13 @@ impl App {
             return false;
         };
         let mut reordered = None;
-        // A space order is written only when the re-read before it found
-        // nothing changed outside (#274). Otherwise the drop is a cancel,
-        // as for any drag a reload meets: its order was built on the rows
-        // from before the re-read. The cancel adds no toast of its own.
+        // As `CreateSpace`: a space order re-reads first (#274). A re-read
+        // that found a change makes the drop a cancel, as a reload cancels
+        // a live drag: whichever file changed, and with no toast of its own.
         let commit = commit
             && drag.working != drag.original
             && self.project.is_some()
-            && (drag.tab != ManageTab::Spaces || self.reread_before_space_op() == Some(false));
+            && (drag.tab != ManageTab::Spaces || !self.apply(Action::ReloadProjectFiles));
         if commit {
             // The cursor holds the dragged item's name from `begin_drag`
             // on, so the step's before-view already records that row.
