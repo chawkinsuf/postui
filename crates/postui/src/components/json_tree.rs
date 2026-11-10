@@ -941,13 +941,19 @@ mod tests {
     }
 
     /// #228: the Tree tab (and so the jq bar) and jq give one answer to
-    /// "is this JSON" for the bodies servers send. The rare gaps kept on
-    /// purpose (nesting past serde's limit, serde's private number key) are
-    /// listed at `postui_core::jq`'s `strict_json`.
+    /// "is this JSON" for the bodies servers send. The rare gap kept on
+    /// purpose (serde's private number key) is at `postui_core::jq`'s
+    /// `strict_json`. #248: both stop at serde's nesting limit.
     #[test]
     fn the_tree_and_jq_agree_on_what_is_json() {
         use postui_core::jq::JqDocument;
+        let deep = |n: usize| "[".repeat(n) + &"]".repeat(n);
         for body in [
+            deep(127).as_str(),
+            deep(128).as_str(),
+            deep(100_000).as_str(),
+            format!("data: {}\n\ndata: 1\n\n", deep(100_000)).as_str(),
+            format!("data: {}\n\n", deep(100_000)).as_str(),
             "{\"a\":1}",
             "1 2",
             "{}{}",

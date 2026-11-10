@@ -46,6 +46,10 @@ impl<'a> HasInputs<'a, Val> for &'a Globals<'a> {
 /// `[range(1e9)]` typo must not take the app down.
 pub const OUTPUT_CAP: usize = 64 * 1024 * 1024;
 
+/// The deepest nesting of arrays and objects a body is read with: serde's
+/// limit, so the Tree tab's reader and this one stop at the same depth.
+const MAX_DEPTH: usize = 127;
+
 /// A body parsed once by jaq's reader, shared between runs (and threads:
 /// `jaq-json`'s `sync` feature makes `Val` `Arc`-backed). Every JSON value
 /// in the body, in order: one for a JSON body, several for a stream such as
@@ -124,9 +128,15 @@ impl JqDocument {
     /// and `postui run --jq` agree on comments and NaN (#228, strict JSON:
     /// `mine (approved)`). jaq's own reader also takes `#` comments and
     /// NaN/Infinity.
+    ///
+    /// A body or an event nested past [`MAX_DEPTH`] is not JSON either, as
+    /// it isn't to the Tree (#248, `too_deep`).
     pub fn parse(body: &str) -> Result<Self, JqError> {
         // One value per event, as the Tree reads an event.
         let event = |d: &str| {
+            if too_deep(d) {
+                return None;
+            }
             serde_json::from_str::<serde::de::IgnoredAny>(d).ok()?;
             jaq_json::read::parse_single(d.as_bytes()).ok()
         };
@@ -141,6 +151,9 @@ impl JqDocument {
         }
         fn not_json(e: impl std::fmt::Display) -> JqError {
             JqError::Runtime { message: format!("not JSON: {e}") }
+        }
+        if too_deep(body) {
+            return Err(not_json(format_args!("nested deeper than {MAX_DEPTH} levels")));
         }
         let values: Vec<Val> = jaq_json::read::parse_many(body.as_bytes())
             .collect::<Result<_, _>>()
@@ -159,17 +172,56 @@ impl JqDocument {
 /// building them: a check pass beside jaq's read, about 3% of its time and
 /// no memory on a 45 MB body. It catches what jaq takes and serde doesn't,
 /// in the bodies servers send: `#` comments, NaN/Infinity. It is not a
-/// copy of the Tree's reader: a body nested past serde's limit (which
-/// `IgnoredAny` skips without) or one using serde's private number key can
-/// still differ from the Tree. Kept that way on purpose (#228): matching
-/// the Tree exactly meant reading with serde, 40–110% slower on large
-/// bodies, for cases this rare (you: "I'm not sure I want to make things as
+/// copy of the Tree's reader: a body using serde's private number key can
+/// still differ from the Tree (`IgnoredAny` also skips without serde's
+/// nesting limit; `too_deep` keeps that one). Kept that way on purpose
+/// (#228): matching the Tree exactly meant reading with serde, 40–110%
+/// slower on large bodies, for cases this rare (you: "I'm not sure I want to make things as
 /// complex as this seems to be for some rare edge cases"; this shape:
 /// `mine (approved)`).
 fn strict_json(text: &str) -> Result<(), serde_json::Error> {
     serde_json::Deserializer::from_str(text)
         .into_iter::<serde::de::IgnoredAny>()
         .try_for_each(|value| value.map(drop))
+}
+
+/// Whether `text` nests arrays and objects past [`MAX_DEPTH`], found without
+/// recursion and before jaq's reader runs: that reader recurses once per
+/// level with no limit, and a stack overflow aborts the process (#248). One
+/// more pass over the body, about 5% of the read's time on a 45 MB one.
+///
+/// It counts the brackets jaq's reader would take as nesting, so it skips
+/// what that reader skips: strings and `#` comments. On text that isn't
+/// JSON the count may be off, and such a body is not JSON either way.
+fn too_deep(text: &str) -> bool {
+    let mut depth = 0usize;
+    let mut bytes = text.bytes();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    return true;
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            b'"' => loop {
+                match bytes.next() {
+                    None | Some(b'"') => break,
+                    // The escaped byte, a quote included, ends no string.
+                    Some(b'\\') => {
+                        bytes.next();
+                    }
+                    Some(_) => {}
+                }
+            },
+            b'#' => {
+                bytes.find(|&b| b == b'\n');
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The byte range of `token` inside `code`, when `token` is a sub-slice of
@@ -603,6 +655,57 @@ mod tests {
         }
         let doc = JqDocument::parse("data: NaN\n\ndata: 1\n\n").expect("one event is JSON");
         assert_eq!(outputs(".", &doc), vec!["1"], "the NaN event is skipped, as the Tree skips it");
+    }
+
+    fn nested(open: &str, close: &str, depth: usize) -> String {
+        open.repeat(depth) + "1" + &close.repeat(depth)
+    }
+
+    /// #248: jaq's reader recurses once per level and overflowed the stack
+    /// (an abort, not a panic) from a few thousand levels on a 2 MB thread,
+    /// which is what a test thread has.
+    #[test]
+    fn a_body_nested_past_the_limit_is_declined_instead_of_overflowing_the_stack() {
+        for body in [nested("[", "]", 100_000), nested("{\"a\":", "}", 100_000)] {
+            let err = JqDocument::parse(&body).unwrap_err();
+            assert_eq!(err.message(), "not JSON: nested deeper than 127 levels");
+        }
+        // One deep line fails the stream, as any bad value does.
+        let stream = format!("{{\"a\":1}}\n{}\n", nested("[", "]", 100_000));
+        assert!(JqDocument::parse(&stream).is_err());
+        // A deep event is skipped, as an event that isn't JSON is.
+        let events = format!("data: {}\n\ndata: 2\n\n", nested("[", "]", 100_000));
+        assert_eq!(outputs(".", &JqDocument::parse(&events).unwrap()), vec!["2"]);
+    }
+
+    #[test]
+    fn the_nesting_limit_is_serdes() {
+        for (open, close) in [("[", "]"), ("{\"a\":", "}"), ("[{\"a\":", "}]")] {
+            let per = open.matches(['[', '{']).count();
+            let at = nested(open, close, MAX_DEPTH / per);
+            let past = nested(open, close, MAX_DEPTH / per + 1);
+            assert!(serde_json::from_str::<serde_json::Value>(&at).is_ok(), "{open}");
+            assert!(JqDocument::parse(&at).is_ok(), "{open}");
+            assert!(serde_json::from_str::<serde_json::Value>(&past).is_err(), "{open}");
+            assert!(JqDocument::parse(&past).is_err(), "{open}");
+        }
+    }
+
+    #[test]
+    fn only_brackets_jaq_reads_as_nesting_count_toward_the_limit() {
+        let brackets = "[".repeat(500);
+        // In a string, after an escaped quote too, and one value after another.
+        for body in [
+            format!("\"{brackets}\""),
+            format!("{{\"a \\\" {brackets}\":\"\\\\\",\"b\":\"{brackets}\"}}"),
+            "[[1]]\n".repeat(500),
+        ] {
+            assert!(JqDocument::parse(&body).is_ok(), "{body:.40}");
+        }
+        // jaq skips a `#` comment, so a quote in one opens no string that
+        // would hide the brackets after it.
+        let hidden = format!("# \"\n{}", nested("[", "]", 100_000));
+        assert!(JqDocument::parse(&hidden).is_err());
     }
 
     #[test]

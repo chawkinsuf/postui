@@ -198,6 +198,12 @@ span underlined in the bar text when known. A body that fails
 `JqDocument::parse` (not JSON) disables the chip, the key, the palette
 entry and the structural menu; the text menu is unchanged.
 
+2026-11-09 (#248, `mine`): a body nested deeper than 127 arrays and
+objects fails `JqDocument::parse` (`not JSON: nested deeper than 127
+levels`), and an event-stream event that deep is skipped. 127 is serde's
+limit, where the Tree tab already stops. jaq's reader has no limit and
+overflowed the stack, aborting the app, from a few thousand levels.
+
 ## Paths on tree lines
 
 `JsonTree::parse` records `path: Vec<PathSeg>` per line (`Key(String)` /
