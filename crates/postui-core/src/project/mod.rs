@@ -859,7 +859,7 @@ impl Project {
         spaces != self.spaces || join_warnings(&warnings) != self.spaces_warning
     }
 
-    /// Today's timer reload: silent, mtime-gated, keeps what fails to
+    /// The on-demand reload: silent, mtime-gated, keeps what fails to
     /// parse. Returns whether anything was re-read.
     pub fn poll(&mut self) -> (bool, Vec<Warning>) {
         if !self.changed_on_disk() {
