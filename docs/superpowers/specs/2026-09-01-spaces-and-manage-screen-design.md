@@ -361,6 +361,16 @@ Manage screens when no modal is open. Configurable under the same
   `<slug>.toml` in any case, so a hand-made `environments/Prod.toml` makes
   a new or renamed environment "Prod" `prod-2.toml` on every disk, not a
   case-only twin `prod.toml` beside it.
+  *Amended 2026-11-09 (#279), withdrawing the two notes above:* a slug is
+  taken when the disk says its path exists, as before #264, and the any-case
+  listing is gone. The user's rule: "we need to just have a common sense
+  behavior that is simple… not worry too much about a case that is caused by
+  a user doing something strange". Beside a hand-made `requests/Billing/` or
+  `environments/Prod.toml`, a disk that tells the two names apart gives a new
+  or renamed "Billing" / "Prod" its own `billing/` / `prod.toml` next to it,
+  and one that doesn't numbers it `billing-2/` / `prod-2.toml`. Neither
+  touches the hand-made entry (which the app skips with the warning above),
+  on the op or on its undo. Going back to this check is `mine`.
 - Directory operations that fail (permissions, non-empty rename target)
   toast the error and leave state unchanged; `project.toml` is written
   only after the filesystem operation succeeds.

@@ -2343,7 +2343,7 @@ mod tests {
                 assert!(p.set_space_order(&order).unwrap().is_none());
             }),
             ("a space slug", |p| {
-                p.space_slug_for("Other", None).unwrap();
+                p.space_slug_for("Other", None);
             }),
             ("what is skipped", |p| {
                 p.skipped();
