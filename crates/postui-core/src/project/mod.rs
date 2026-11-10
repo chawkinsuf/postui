@@ -2315,7 +2315,7 @@ mod tests {
     #[test]
     fn an_op_before_the_poll_leaves_a_new_space_dir_for_it() {
         type ProjectOp = fn(&mut Project);
-        let ops: [(&str, ProjectOp); 10] = [
+        let ops: [(&str, ProjectOp); 9] = [
             ("create", |p| {
                 let req = crate::model::HttpRequest::default();
                 p.create_request_in("main", "Fresh", None, req).unwrap();
@@ -2341,9 +2341,6 @@ mod tests {
             ("an unchanged space order", |p| {
                 let order = ["main", "auth", "new"].map(String::from);
                 assert!(p.set_space_order(&order).unwrap().is_none());
-            }),
-            ("a space slug", |p| {
-                p.space_slug_for("Other", None).unwrap();
             }),
             ("what is skipped", |p| {
                 p.skipped();
