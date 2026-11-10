@@ -6,31 +6,16 @@ use crate::journal::MergeKey;
 
 impl Project {
     /// The slug `display` gets as an environment's file: `slugify`, then
-    /// `-2`, `-3`, … while `environments/` holds an entry named
-    /// `<slug>.toml` in any case (#265), as a space's slug is numbered
-    /// (#264): a case-only twin can't sit beside it on every filesystem.
-    /// `exclude` is the environment a rename renames. An entry of any
-    /// kind counts, as an exact-case one already did. An `environments/`
-    /// that can't be listed is an error, not a guess, even when
-    /// `display` slugs to `exclude`. The listing records no stamp, so an
-    /// outside change to `environments/` is still seen by `poll`.
-    pub fn environment_slug_for(
-        &self,
-        display: &str,
-        exclude: Option<&str>,
-    ) -> Result<String, Error> {
-        let on_disk: Vec<String> = self
-            .disk
-            .peek_list(&RelPath::new(ENVIRONMENTS_DIR)?)?
-            .into_iter()
-            .map(|e| e.name.to_lowercase())
-            .collect();
-        Ok(meta::unique_slug_among(
+    /// `-2`, `-3`, … while the disk says `environments/<slug>.toml`
+    /// exists. `exclude` is the environment a rename renames. The disk
+    /// answers for its own case rule (#279), as for a space's slug.
+    pub fn environment_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
+        meta::unique_slug_among(
             meta::Kind::Environment,
             display,
-            |slug| on_disk.contains(&format!("{slug}.toml").to_lowercase()),
+            |slug| env_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false),
             exclude,
-        ))
+        )
     }
 
     /// `meta.environments` exactly as written (duplicates dropped,
@@ -184,7 +169,7 @@ impl Project {
         if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
-        let slug = self.environment_slug_for(&display, None)?;
+        let slug = self.environment_slug_for(&display, None);
         let mut envs = self.env_write_list();
         envs.push(slug.clone());
         // Creating an environment switches to it, as today's app does;
@@ -219,7 +204,7 @@ impl Project {
         if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
-        let to = self.environment_slug_for(&display, Some(from))?;
+        let to = self.environment_slug_for(&display, Some(from));
         let from = from.to_string();
         // Only rewritten when `project.toml` already lists `from`: a
         // rename never creates an order list the project did without.
@@ -553,67 +538,36 @@ mod tests {
         assert_eq!(p.journal_len(), 2);
     }
 
-    /// The names under `environments/`, exactly as spelled on disk.
-    fn env_dir_names(dir: &tempfile::TempDir) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(dir.path().join("environments"))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .collect();
-        names.sort();
-        names
-    }
-
-    /// A file under `environments/` named `<slug>.toml` in another case
-    /// takes the slug, as a space's directory does (#264): a create or a
-    /// rename gets `prod-2` on every disk, never a case-only twin.
+    /// #279: beside a hand-made `environments/Prod.toml`, the disk decides
+    /// the slug of a new or renamed environment "Prod": its own file where
+    /// the disk tells the two names apart, a numbered one where it
+    /// doesn't. Either way the hand-made file keeps its text, through the
+    /// undos too.
     #[test]
-    fn an_environment_slug_compares_files_ignoring_case() {
+    fn an_environment_beside_a_hand_made_file_in_another_case_leaves_it_alone() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("environments/Prod.toml"), "").unwrap();
-        std::fs::write(dir.path().join("environments/Stage.TOML"), "").unwrap();
-        assert_eq!(p.create_environment("Prod").unwrap(), "prod-2");
-        assert_eq!(p.rename_environment("qa", "Stage").unwrap(), "stage-2");
-        let names = env_dir_names(&dir);
-        assert!(!names.contains(&"prod.toml".to_string()), "{names:?}");
-        assert!(!names.contains(&"stage.toml".to_string()), "{names:?}");
-    }
+        std::fs::write(dir.path().join("environments/Prod.toml"), "host = \"mine\"\n").unwrap();
+        let same_name = dir.path().join("environments/prod.toml").exists();
+        let slug = if same_name { "prod-2" } else { "prod" };
+        let kept = |what: &str| {
+            let text = read(&dir, "environments/Prod.toml");
+            assert_eq!(text.as_deref(), Some("host = \"mine\"\n"), "{what}");
+        };
 
-    /// An `environments/` that can't be listed (but can be written)
-    /// refuses the create: the slug is not guessed without the twin check.
-    #[cfg(unix)]
-    #[test]
-    fn an_environment_create_refuses_when_environments_cannot_be_listed() {
-        use std::os::unix::fs::PermissionsExt;
-        let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("environments/Prod.toml"), "").unwrap();
-        let envs = dir.path().join("environments");
-        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o333)).unwrap();
-        let created = p.create_environment("Prod");
-        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(created.is_err(), "{created:?}");
-        let names = env_dir_names(&dir);
-        assert!(!names.contains(&"prod.toml".to_string()), "{names:?}");
-    }
+        assert_eq!(p.create_environment("Prod").unwrap(), slug);
+        kept("create");
+        assert_eq!(read(&dir, &format!("environments/{slug}.toml")).as_deref(), Some(""));
+        p.undo().unwrap().unwrap();
+        kept("undo of the create");
 
-    /// The slug's listing of `environments/` records no stamp: an
-    /// environment file made by hand before a create that then fails
-    /// (here `environments/` can't be written) is still seen by `poll`.
-    #[cfg(unix)]
-    #[test]
-    fn a_failed_create_leaves_a_hand_made_environment_to_the_poll() {
-        use std::os::unix::fs::PermissionsExt;
-        let (dir, mut p) = fixture();
-        let envs = dir.path().join("environments");
-        std::fs::write(envs.join("staging.toml"), "").unwrap();
-        let t = std::fs::metadata(&envs).unwrap().modified().unwrap()
-            + std::time::Duration::from_secs(2);
-        std::fs::File::open(&envs).unwrap().set_modified(t).unwrap();
-        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let created = p.create_environment("Prod");
-        std::fs::set_permissions(&envs, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(created.is_err(), "{created:?}");
-        assert!(p.poll().0, "the poll must see the hand-made file");
-        assert!(p.environments().contains(&"staging".to_string()), "{:?}", p.environments());
+        assert_eq!(p.rename_environment("qa", "Prod").unwrap(), slug);
+        kept("rename");
+        p.undo().unwrap().unwrap();
+        kept("undo of the rename");
+        assert!(dir.path().join("environments/qa.toml").is_file());
+
+        // A file at exactly the slug's path takes it on every disk.
+        assert_eq!(p.environment_slug_for("QA", None), "qa-2");
     }
 
     #[test]
