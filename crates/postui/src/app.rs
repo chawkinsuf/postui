@@ -10399,15 +10399,15 @@ impl App {
     /// The row menu's Move up/down for a sidebar row, a request or a
     /// folder: moves it `delta` places among its siblings.
     ///
-    /// The sidebar already holds the sibling group's displayed order (the
-    /// rows it painted), so a visible row moves without re-walking the
-    /// request tree: one read-modify-write of `project.toml`, then the rows
-    /// are rebuilt from the listing in hand.
+    /// The move writes the row's level as the rows show it, so the rows are
+    /// rebuilt first (`refresh_sidebar`), on every call: rows older than
+    /// `project.toml` would be written over its order (#239).
     fn move_sidebar_row(&mut self, key: RowKey, delta: i32) {
         let noun = match key {
             RowKey::Request(_) => "request",
             RowKey::Folder(_) => "folder",
         };
+        self.refresh_sidebar();
         let space = self.active_space();
         let (RowKey::Request(full) | RowKey::Folder(full)) = &key;
         let shown = postui_core::storage::space_of(full)
@@ -10462,30 +10462,35 @@ impl App {
     /// drag the user just cancelled.
     pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
         self.sidebar_press = None;
+        // A drag belongs to the space it started in. If the active space
+        // moved on underneath it, there is nothing sane to write — its
+        // place names the *old* space's levels — so this is a cancel
+        // however the drag ended.
+        let space = self.active_space();
+        let dropped = self.sidebar.drag.as_ref().filter(|d| commit && d.space == space);
+        let commit = dropped.is_some();
+        // A drop that would reorder its level writes that level as the rows
+        // show it, so the rows are rebuilt first (`refresh_sidebar`), as
+        // `move_sidebar_row` does (#239). The drag is still live, so the
+        // rebuilt rows draw the block at its target.
+        let reorders = dropped.is_some_and(|d| d.target.0 == d.origin.0 && d.target != d.origin);
+        if reorders {
+            self.refresh_sidebar();
+        }
         // The level's entries as the rows show them, read before the drag
         // ends and the rows are rebuilt without it.
         let shown = self.sidebar.drop_entries();
         let Some(drag) = self.sidebar.drag.take() else {
             return false;
         };
-        // A drag belongs to the space it started in. If the active space
-        // moved on underneath it, there is nothing sane to write — its
-        // place names the *old* space's levels — so this is a cancel
-        // however the drag ended.
-        let commit = commit && drag.space == self.active_space();
         // A drop in another level moves the block there (D17).
         if commit && drag.target.0 != drag.origin.0 {
             self.drop_in_level(drag);
             return true;
         }
         let mut reordered = None;
-        // A drop in the block's own level is a reorder (D20); a commit in
-        // another level has gone to `drop_in_level` above.
-        if commit
-            && drag.target != drag.origin
-            && let Some(shown) = shown
-        {
-            let space = drag.space.clone();
+        // A drop in the block's own level is a reorder (D20).
+        if reorders && let Some(shown) = shown {
             let t = self.begin_op();
             let written =
                 self.project.as_mut().map(|p| p.set_request_order(&space, &drag.origin.0, &shown));
