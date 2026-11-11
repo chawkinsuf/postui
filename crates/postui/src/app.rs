@@ -10470,17 +10470,12 @@ impl App {
         let dropped = self.sidebar.drag.as_ref().filter(|d| commit && d.space == space);
         let commit = dropped.is_some();
         // A drop that would reorder its level writes that level as the rows
-        // show it, so it re-reads first (#239), as a space drop does (#274).
-        // A re-read that found a change has cancelled the drag, as every
-        // reload does: the order on disk stays, with no toast of its own.
-        //
-        // Move up/down rebuilds the rows instead (`move_sidebar_row`): its
-        // rows can be older than core's read of the order. A drag's rows
-        // are rebuilt from core's order each time the block moves
-        // (`rebuild_sidebar`).
+        // show it, so the rows are rebuilt first (`refresh_sidebar`), as
+        // `move_sidebar_row` does (#239). The drag is still live, so the
+        // rebuilt rows draw the block at its target.
         let reorders = dropped.is_some_and(|d| d.target.0 == d.origin.0 && d.target != d.origin);
-        if reorders && self.apply(Action::ReloadProjectFiles) {
-            return true;
+        if reorders {
+            self.refresh_sidebar();
         }
         // The level's entries as the rows show them, read before the drag
         // ends and the rows are rebuilt without it.

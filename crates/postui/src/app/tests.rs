@@ -6750,24 +6750,15 @@ fn keyboard_moves_of_different_requests_are_separate_steps() {
 #[test]
 fn a_drop_whose_write_fails_leaves_no_op_in_flight() {
     let (mut app, dir) = three_row_app();
-    let drag_first_row_to_last = |app: &mut App| {
-        let r0 = row_rect(app, 0);
-        let r2 = row_rect(app, 2);
-        app.handle_mouse(left_down(r0.x + 2, r0.y));
-        app.handle_mouse(moved(r0.x + 2, r2.y));
-        app.handle_mouse(left_up(r0.x + 2, r2.y));
-    };
-    // `project.toml` turns unparseable. The first drop's re-read finds the
-    // change and cancels the drop (#239).
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    // `project.toml` turns unparseable under the drag: the order write
+    // refuses rather than overwrite it.
     let meta_path = dir.path().join("project.toml");
     std::fs::write(&meta_path, "spaces = [\n").unwrap();
-    drag_first_row_to_last(&mut app);
-    assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
-    assert!(!app.toasts.messages().iter().any(|m| m.starts_with("cannot reorder")));
-    assert!(!app.op_in_flight);
-    // The next drop finds nothing new to read: its order write refuses
-    // rather than overwrite the file.
-    drag_first_row_to_last(&mut app);
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), "spaces = [\n", "nothing written");
     assert!(app.toasts.messages().iter().any(|m| m.starts_with("cannot reorder")));
     assert!(!app.op_in_flight);
@@ -29758,26 +29749,25 @@ fn a_folder_move_first_takes_in_an_order_changed_outside() {
     assert_eq!(project_toml(&dir), outside);
 }
 
-/// A drop that would reorder re-reads first. A re-read that finds a change
-/// cancels the drag, as every reload does, so the order the drag showed is
-/// not written over the one on disk: the rows show the new order, nothing
-/// is written and no toast is added. The next drag is over the rows as
-/// they are and commits. `drop` picks a row up, moves it down and drops
-/// it: the mouse, then `m`.
+/// A drop in the block's own folder rebuilds the rows first, as Move up
+/// does: the swap stays and gamma lands at the index the drag showed, in
+/// the order as it is now. One undo step, and Undo puts `project.toml` back
+/// as the other program left it. `drop` picks gamma up, moves it up one
+/// place and drops it: the mouse, then `m`.
 #[test]
-fn a_reordering_drop_first_takes_in_an_order_changed_outside_and_cancels() {
+fn a_reordering_drop_first_takes_in_an_order_changed_outside() {
     fn by_mouse(app: &mut App) {
-        let r0 = row_rect(app, 0);
+        let r1 = row_rect(app, 1);
         let r2 = row_rect(app, 2);
-        app.handle_mouse(left_down(r0.x + 2, r0.y));
-        app.handle_mouse(moved(r0.x + 2, r2.y));
+        app.handle_mouse(left_down(r2.x + 2, r2.y));
+        app.handle_mouse(moved(r2.x + 2, r1.y));
         assert!(app.sidebar.drag.is_some());
-        app.handle_mouse(left_up(r0.x + 2, r2.y));
+        app.handle_mouse(left_up(r2.x + 2, r1.y));
     }
     fn by_keys(app: &mut App) {
         app.focus = PaneId::Sidebar;
-        app.sidebar.selected = Some(0);
-        key_matrix_tests::feed(app, "m<Down><Down>");
+        app.sidebar.selected = Some(2);
+        key_matrix_tests::feed(app, "m<Up>");
         assert!(app.sidebar.drag.is_some());
         key_matrix_tests::feed(app, "<CR>");
     }
@@ -29786,27 +29776,83 @@ fn a_reordering_drop_first_takes_in_an_order_changed_outside_and_cancels() {
         app.use_profile(crate::config::KeyProfile::Arrows);
         let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
         let steps = app.history.undo_len();
-        let toasts = app.toasts.messages().len();
 
         drop(&mut app);
         assert!(app.sidebar.drag.is_none(), "{what}");
         assert!(app.sidebar_press.is_none(), "{what}");
-        assert_eq!(project_toml(&dir), outside, "{what}: no order was written");
-        assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"], "{what}");
-        assert_eq!(app.history.undo_len(), steps, "{what}: no undo step recorded");
-        assert_eq!(app.toasts.messages().len(), toasts, "{what}: {:?}", app.toasts.messages());
-
-        drop(&mut app);
-        assert_eq!(saved_order(&dir), ["alpha", "gamma", "beta"], "{what}");
+        assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
+        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{what}");
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "{what}");
         assert_eq!(app.history.undo_len(), steps + 1, "{what}");
+
         app.update(Action::Undo);
         assert_eq!(project_toml(&dir), outside, "{what}");
+        assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"], "{what}");
+    }
+}
+
+/// The cost of rebuilding at the drop: the block keeps its index, not its
+/// neighbours. Delta is dragged up to between alpha and beta, and alpha's
+/// file is removed outside before the release. Delta lands second in the
+/// rows as they are now, below beta. Undo puts back the order the rebuild
+/// read, without alpha.
+#[test]
+fn a_reordering_drop_keeps_its_index_when_a_row_above_it_was_removed_outside() {
+    let (mut app, dir) = three_row_app();
+    postui_core::fixtures::save_request(dir.path(), "main/delta", &req("https://x/4")).unwrap();
+    app.update(Action::RefreshSidebar);
+    let r1 = row_rect(&mut app, 1);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(r3.x + 2, r3.y));
+    app.handle_mouse(moved(r3.x + 2, r1.y));
+    assert_eq!(request_rows(&app), ["main/alpha", "main/delta", "main/beta", "main/gamma"]);
+    let steps = app.history.undo_len();
+
+    std::fs::remove_file(dir.path().join("requests/main/alpha.toml")).unwrap();
+    app.handle_mouse(left_up(r3.x + 2, r1.y));
+    assert_eq!(saved_order(&dir), ["beta", "delta", "gamma"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/delta", "main/gamma"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "delta"]);
+}
+
+/// A drop does not run the re-read a focus change runs, so one that is due
+/// does not cancel it: after another project file changed outside, and
+/// after a Move up that took in an order changed outside.
+#[test]
+fn a_reordering_drop_commits_while_a_re_read_is_due() {
+    type Setup = fn(&mut App, &tempfile::TempDir);
+    let cases: [(&str, Setup); 2] = [
+        ("variables.toml changed outside", |_, dir| {
+            std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"x\"\n").unwrap();
+        }),
+        ("a Move up took in an order changed outside", |app, dir| {
+            reorder_main_outside(dir, &["beta", "alpha", "gamma"]);
+            pick_from_sidebar_row_menu(app, 2, "Move up");
+        }),
+    ];
+    for (what, setup) in cases {
+        let (mut app, dir) = three_row_app();
+        setup(&mut app, &dir);
+        assert!(app.proj().changed_on_disk(), "{what}: a re-read is due");
+        let mut want = saved_order(&dir);
+        want.rotate_left(1);
+        let steps = app.history.undo_len();
+
+        let r0 = row_rect(&mut app, 0);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+        assert_eq!(saved_order(&dir), want, "{what}: the first row went last");
+        assert_eq!(app.history.undo_len(), steps + 1, "{what}");
     }
 }
 
 /// With nothing changed outside, a reorder is as before: a burst of moves
-/// is one undo step, and the moves' own order writes leave nothing for a
-/// drop's re-read to find, so the drop commits.
+/// is one undo step, and a drop after it is its own step.
 #[test]
 fn a_reorder_with_nothing_changed_outside_is_a_burst_and_a_drop_as_before() {
     let (mut app, dir) = three_row_app();
