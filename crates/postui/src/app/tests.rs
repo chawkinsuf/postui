@@ -30214,6 +30214,87 @@ fn an_undo_leaves_no_re_read_due_for_the_next_environment_drop() {
     assert_eq!(app.proj().environments(), ["dev", "qa", "prod"]);
 }
 
+/// Declares a variable `host` and a selector `user` by hand, with a value
+/// and an option in every environment's file, and has the app read them.
+/// The last environment's file also holds `api`, which nothing declares.
+fn hand_declare_variables(app: &mut App, dir: &tempfile::TempDir) {
+    let envs = app.proj().environments().to_vec();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[host]\n\n[selectors.user]\nfields = [\"id\"]\n",
+    )
+    .unwrap();
+    for env in &envs {
+        let api = if Some(env) == envs.last() { "api = \"a\"\n" } else { "" };
+        std::fs::write(
+            dir.path().join(format!("environments/{env}.toml")),
+            format!("host = \"h\"\n{api}\n[options.user.alice]\nid = \"1\"\n"),
+        )
+        .unwrap();
+    }
+    app.resync_project();
+    assert!(app.proj().variables().selectors.contains_key("user"));
+    assert!(!app.proj().changed_on_disk());
+}
+
+/// One edit on the Variables tab, then back to `tab`.
+fn edit_on_the_variables_tab(app: &mut App, tab: ManageTab, edit: &str) {
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    match edit {
+        "a selector's fields" => {
+            app.update(Action::ApplyGroupFields {
+                selector: "user".into(),
+                slots: vec!["user_id".into()],
+            });
+            assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id"]);
+        }
+        "a selector's name" => {
+            let rename = VarStructOp::Rename { from: "user".into(), to: "actor".into() };
+            app.update(Action::VarStruct(rename));
+            assert!(app.proj().variables().selectors.contains_key("actor"));
+        }
+        // The last environment's file holds `api`, so the rename is
+        // refused there and the files written before it are put back.
+        "a refused variable rename" => {
+            let rename = VarStructOp::Rename { from: "host".into(), to: "api".into() };
+            app.update(Action::VarStruct(rename));
+            assert!(app.last_action_failed);
+            assert!(app.proj().variables().vars.contains_key("host"));
+        }
+        other => panic!("{other}"),
+    }
+    app.update(Action::SelectManageTab(tab));
+}
+
+/// #284: the app's own writes of environment files, with nothing changed
+/// outside, leave no re-read due, so the drop after them lands.
+#[test]
+fn an_environment_drop_after_the_apps_own_environment_writes_lands() {
+    for edit in ["a selector's fields", "a selector's name", "a refused variable rename"] {
+        let (mut app, dir) = manage_envs_app();
+        hand_declare_variables(&mut app, &dir);
+        edit_on_the_variables_tab(&mut app, ManageTab::Environments, edit);
+        drag_dev_to_the_top(&mut app);
+        assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"], "{edit}");
+        assert_eq!(app.proj().environments(), ["dev", "prod", "qa"], "{edit}");
+    }
+}
+
+/// #284: as above, for a space drop after a selector fields edit.
+#[test]
+fn a_space_drop_after_a_selector_fields_edit_lands() {
+    let (mut app, dir) = manage_spaces_app();
+    hand_declare_variables(&mut app, &dir);
+    edit_on_the_variables_tab(&mut app, ManageTab::Spaces, "a selector's fields");
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+    assert_eq!(app.proj().spaces(), ["auth", "billing", "main"]);
+}
+
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up

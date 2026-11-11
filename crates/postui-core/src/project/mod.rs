@@ -613,6 +613,10 @@ impl Project {
                 // pre-transaction state.
                 self.relist();
                 self.reload_held_requests();
+                // Ops under `environments/` and their reversal change the
+                // directory's stamp. Listing it again records the new one,
+                // so `changed_on_disk` does not report them (#284).
+                self.refresh_environments();
                 if reversal_failed {
                     self.force_reload = true;
                 }

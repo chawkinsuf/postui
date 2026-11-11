@@ -434,6 +434,12 @@ the rows show what was re-read, and there is no toast. An op that edits
 when the file had changed outside, `edit_project_toml` leaves the
 re-read due, so a reorder after such an op still re-reads.
 
+*(2026-11-11, #284, mine (approved).)* A selector fields edit or rename
+rewrites environment files. It lists `environments/` again afterwards,
+as an environment value edit does, so those writes are not something to
+re-read and the drop after them lands, on either tab. An op that is
+rolled back lists it again too *(mine)*.
+
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)
 swallows the first Escape pressed while a button is held; a `Down(Left)`
