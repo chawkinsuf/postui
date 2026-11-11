@@ -29,9 +29,10 @@ fn conflict(path: &RelPath, what: &str) -> Error {
     Error::Conflict(format!("{path} {what} (changed outside the app)"))
 }
 
-/// Whether the app also writes `path` outside the journal: `state.toml`
-/// (`persist_local`) and a request's file (`save_request`), taken to be
-/// any path under `requests/` but a folder's file.
+/// Whether the app also writes `path` outside the journal, by a write the
+/// journal does not follow: `state.toml` (`persist_local`) and a request's
+/// file (`save_request`), taken to be any path under `requests/` but a
+/// folder's file.
 fn written_outside_journal(path: &RelPath) -> bool {
     path.as_str() == STATE_TOML
         || (path.as_str().starts_with(&format!("{REQUESTS_DIR}/"))
@@ -174,11 +175,15 @@ impl Project {
     /// Two kinds of file are not compared, because what they hold since the
     /// op can be the app's own ([`written_outside_journal`]); a request
     /// rename's undo over an outside edit of the request is #285.
-    /// `project.toml` is compared, though `complete_order` writes it
-    /// outside the journal too, when the TUI's refresh finds a list that
-    /// doesn't name what is on disk (drag into folders D5a): the undo or
-    /// redo of an entry that wrote `project.toml` before that write is
-    /// refused. That is the cost of comparing it.
+    /// `project.toml` is compared. `complete_order` writes it outside the
+    /// journal too, when the TUI's refresh finds a list that doesn't name
+    /// what is on disk (drag into folders D5a); that write goes through
+    /// `fs_write_text`, where the journal follows it.
+    ///
+    /// The text of an entry that was refused and dropped stays in the
+    /// file, so an older entry that wrote the same file is refused after
+    /// it: its old text would take the dropped entry's change to that file
+    /// back too (review round 1, mine).
     fn apply_inverse(&mut self, op: &Op) -> Result<(), Error> {
         match op {
             Op::Renamed { from, to } => self.fs_rename(to, from),
@@ -324,11 +329,26 @@ impl Project {
                 }
                 if matches!(e, Error::Conflict(_)) {
                     // The entry is dropped, as one `preflight` refuses is:
-                    // a retry would find the same text. Nothing is re-read,
-                    // since the inverses change only the disk and are
-                    // reversed above; if one did not reverse, the next
-                    // `poll` re-reads.
-                    self.force_reload |= !reversed;
+                    // a retry would find the same text. There is no
+                    // `reload_all`, since the inverses change only the disk
+                    // and are reversed above; if one did not reverse, the
+                    // next `poll` re-reads.
+                    if reversed {
+                        // A request file the replay rewrote and put back
+                        // has a new stamp. Its held entry, under the slug
+                        // the file is back at, is re-stamped as after a
+                        // replay that ran: only if it was clean going in.
+                        let stayed: Vec<(String, String)> = entry
+                            .meta
+                            .moves
+                            .iter()
+                            .map(|(old, new)| if redo { old } else { new })
+                            .map(|slug| (slug.clone(), slug.clone()))
+                            .collect();
+                        self.rekey_held_after_own_op(&stayed, &clean_before);
+                    } else {
+                        self.force_reload = true;
+                    }
                     return Err(e);
                 }
                 self.reload_all();
@@ -597,18 +617,98 @@ mod tests {
         assert_eq!(read(&dir, "project.toml"), project, "the order it had reversed is back");
     }
 
-    /// The cost of comparing `project.toml` (`apply_inverse`): the TUI's
-    /// refresh completes an order list outside the journal when a request
-    /// appears from outside, and an entry from before that write is refused.
+    /// The TUI's refresh completes an order list outside the journal when
+    /// a request appears from outside. That write is the app's own: the
+    /// entry from before it still undoes, and redoes after the refresh
+    /// has completed the list the undo put back.
     #[test]
-    fn undo_past_an_order_completion_outside_the_journal_is_refused() {
+    fn undo_and_redo_past_an_order_completion_outside_the_journal_still_work() {
         let (dir, mut p) = fixture();
         p.complete_order().unwrap();
         p.rename_request("main/ping", "Pong").unwrap();
         std::fs::write(dir.path().join("requests/main/added.toml"), "url = \"u\"\n").unwrap();
         assert!(p.complete_order().unwrap(), "the refresh writes the new entry");
-        assert_edited_since(p.undo(), "project.toml");
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
+        assert!(p.complete_order().unwrap(), "and again, in the list the undo put back");
+        p.redo().unwrap().unwrap();
         assert!(dir.path().join("requests/main/pong.toml").is_file());
+        assert_eq!(crate::order::space_order(p.meta(), "main"), ["pong", "added"]);
+    }
+
+    /// The same when the op itself first listed the request made outside:
+    /// its undo puts back a list without it, which the refresh completes
+    /// outside the journal before the redo, or before the undo of the step
+    /// beneath.
+    #[test]
+    fn redo_after_a_refresh_completed_the_list_the_undo_put_back_still_works() {
+        let (dir, mut p) = fixture();
+        p.complete_order().unwrap();
+        p.rename_request("auth/login", "Signin").unwrap();
+        std::fs::write(dir.path().join("requests/main/added.toml"), "url = \"u\"\n").unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(p.complete_order().unwrap(), "the refresh lists the request again");
+        p.redo().unwrap().unwrap();
+        assert!(dir.path().join("requests/main/pong.toml").is_file());
+        p.undo().unwrap().unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(dir.path().join("requests/auth/login.toml").is_file(), "the step beneath");
+    }
+
+    /// A completion written over text changed outside does not cover for
+    /// that change: the entry from before it is still refused.
+    #[test]
+    fn an_order_completion_over_an_outside_change_still_refuses_the_undo() {
+        let (dir, mut p) = fixture();
+        p.complete_order().unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        edit_outside(&dir, "project.toml");
+        std::fs::write(dir.path().join("requests/main/added.toml"), "url = \"u\"\n").unwrap();
+        assert!(p.complete_order().unwrap());
+        assert_edited_since(p.undo(), "project.toml");
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains("# outside") && text.contains("added"), "{text}");
+        assert!(dir.path().join("requests/main/pong.toml").is_file());
+    }
+
+    /// A refused entry is dropped with its text still in the files it
+    /// wrote. The entry beneath that wrote one of them is refused too: here
+    /// its old `variables.toml` would name the variable `host` again while
+    /// the environment file keeps `hostname`.
+    #[test]
+    fn the_step_beneath_a_refused_one_that_wrote_the_same_file_is_refused_too() {
+        let (dir, mut p) = fixture();
+        add_port(&mut p);
+        p.cascade("rename var", |p| {
+            p.edit_variables(|doc| varedit::rename_var(doc, "host", "hostname"))?;
+            p.edit_env("dev", |doc| varedit::rename_env_var(doc, "host", "hostname"))
+        })
+        .unwrap();
+        edit_outside(&dir, "environments/dev.toml");
+        let variables = read(&dir, "variables.toml");
+        assert_edited_since(p.undo(), "environments/dev.toml");
+        assert_edited_since(p.undo(), "variables.toml");
+        assert_eq!(read(&dir, "variables.toml"), variables);
+        assert!(p.variables().vars.contains_key("hostname"));
+    }
+
+    /// A refused redo that rewrote an open request's file and put it back
+    /// (the rename's name, written before `project.toml` is compared)
+    /// leaves the request reporting no drift.
+    #[test]
+    fn a_refused_replay_that_rewrote_an_open_request_reports_no_drift() {
+        let (dir, mut p) = fixture();
+        p.complete_order().unwrap();
+        p.open_request("main/ping").unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        p.undo().unwrap().unwrap();
+        assert_eq!(p.held_request_drift("main/ping"), None);
+        let request = read(&dir, "requests/main/ping.toml");
+        edit_outside(&dir, "project.toml");
+        assert_edited_since(p.redo(), "project.toml");
+        assert_eq!(read(&dir, "requests/main/ping.toml"), request, "put back");
+        assert_eq!(p.held_request_drift("main/ping"), None);
     }
 
     /// A save writes a request's file outside the journal. Its text is not

@@ -6670,6 +6670,59 @@ fn a_rename_still_undoes_after_the_renamed_request_is_saved() {
     assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
 }
 
+/// A request made outside is listed by the sidebar's refresh, which writes
+/// it into `project.toml` outside the history. That write is the app's
+/// own, so the steps from before it still undo: the rename, and the delete
+/// beneath it.
+#[test]
+fn undo_still_works_after_the_refresh_listed_a_request_made_outside() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    postui_core::fixtures::save_request(dir.path(), "main/added", &req("https://x/9")).unwrap();
+    app.update(Action::RefreshSidebar);
+    assert_eq!(slot_order(&dir), ["zeta", "gamma", "added"]);
+
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").is_file(), "{:?}", app.toasts.messages());
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file(), "{:?}", app.toasts.messages());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "added"]);
+}
+
+/// The same when the rename itself is what first lists the request made
+/// outside: its undo puts the list back without it, the refresh after the
+/// undo writes it in again, and the redo still works.
+#[test]
+fn redo_still_works_after_the_refresh_completed_the_list_the_undo_put_back() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    postui_core::fixtures::save_request(dir.path(), "main/added", &req("https://x/9")).unwrap();
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "added"]);
+
+    app.toasts = Default::default();
+    app.update(Action::Redo);
+    assert!(dir.path().join("requests/main/zeta.toml").is_file(), "{:?}", app.toasts.messages());
+    assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma", "added"]);
+}
+
+/// A refused redo of a rename had written the open request's name before
+/// it met the changed `project.toml`, and put the file back. The request
+/// is not reported as changed outside afterwards.
+#[test]
+fn a_refused_redo_leaves_the_open_request_clean() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.update(Action::Undo);
+    append_to_project_toml(&dir);
+    app.toasts = Default::default();
+    app.update(Action::Redo);
+    assert!(app.toasts.messages().iter().any(|m| m.contains("could not redo")));
+    assert_eq!(app.proj().held_request_drift("main/beta"), None);
+}
+
 #[test]
 fn undo_of_a_create_drops_its_arrival() {
     let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);

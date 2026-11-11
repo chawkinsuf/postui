@@ -184,6 +184,27 @@ impl Journal {
         }
     }
 
+    /// `op` is a text write the app made that no entry holds. On each
+    /// stack, the newest entry with a text op on that file recorded, in the
+    /// last such op, the text it left there. Where that is the text `op`
+    /// started from, it becomes the text `op` left; an entry that recorded
+    /// other text is left as it is.
+    pub fn follow(&mut self, op: &Op) {
+        let Op::Text { path, before, after } = op else { return };
+        for stack in [&mut self.undo, &mut self.redo] {
+            let left =
+                stack.iter_mut().rev().flat_map(|e| e.ops.iter_mut().rev()).find_map(|o| match o {
+                    Op::Text { path: p, after: left, .. } if p == path => Some(left),
+                    _ => None,
+                });
+            if let Some(left) = left
+                && left == before
+            {
+                left.clone_from(after);
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.undo.len()
     }
@@ -358,6 +379,47 @@ mod tests {
         let id = e.id;
         j.push_redo(e);
         assert_eq!(j.peek_redo().map(|e| e.id), Some(id));
+    }
+
+    fn text_op(path: &str, before: &str, after: &str) -> Op {
+        Op::Text {
+            path: RelPath::new(path).unwrap(),
+            before: Some(before.to_string()),
+            after: Some(after.to_string()),
+        }
+    }
+
+    /// The text each entry of `stack` recorded as left, by its last op.
+    fn left(stack: &[Entry]) -> Vec<Option<&str>> {
+        stack
+            .iter()
+            .map(|e| match e.ops.last() {
+                Some(Op::Text { after, .. }) => after.as_deref(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn follow_moves_the_text_the_newest_entry_on_each_stack_left() {
+        let mut j = Journal::new();
+        j.push(text_entry("a", "project.toml", "0", "1"));
+        j.push(text_entry("other", "variables.toml", "x", "1"));
+        j.push_redo(text_entry("r", "project.toml", "2", "1"));
+        j.follow(&text_op("project.toml", "1", "1+"));
+        assert_eq!(left(&j.undo), [Some("1+"), Some("1")], "only the entry on that file");
+        assert_eq!(left(&j.redo), [Some("1+")]);
+    }
+
+    #[test]
+    fn follow_leaves_an_entry_that_recorded_other_text_and_the_entries_beneath() {
+        let mut j = Journal::new();
+        j.push(text_entry("a", "project.toml", "0", "1"));
+        j.push(text_entry("b", "project.toml", "1", "2"));
+        j.follow(&text_op("project.toml", "1", "1+"));
+        assert_eq!(left(&j.undo), [Some("1"), Some("2")], "the newest left 2, not 1");
+        j.follow(&text_op("project.toml", "2", "2+"));
+        assert_eq!(left(&j.undo), [Some("1"), Some("2+")]);
     }
 
     #[test]

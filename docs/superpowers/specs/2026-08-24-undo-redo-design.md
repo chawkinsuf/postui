@@ -249,18 +249,27 @@ If the file was changed outside the app since (a `git pull`, a hand edit,
 an agent), writing the step's other text back would lose that change, so
 the step is refused like a file that vanished: the toast names the file
 ("… has been edited since (changed outside the app)"), the file is left as
-it is, the step is dropped, and the rest of history stays usable. It makes
-no difference whether the app has re-read the changed file. Anything else
-the step had already put back is reversed again, so a refused step changes
-nothing.
+it is, and the step is dropped. It makes no difference whether the app has
+re-read the changed file. Anything else the step had already put back is
+reversed again, so a refused step changes nothing.
 
 Two kinds of file are not compared, because the app itself writes them
 outside the history and their text since the step can be the app's own:
 `.postui/state.toml` and request files (a save). Undoing a request rename
-over an outside edit of that request is task #285. One cost: the sidebar
-also writes `project.toml` outside the history, when it finds requests or
-folders its order lists don't name (drag into folders D5a), and a step
-that wrote `project.toml` before that write is refused too.
+over an outside edit of that request is task #285.
+
+Once a step is refused and dropped, for this or any other conflict, an
+older step that wrote a compared file the dropped step also wrote is
+refused too: that file holds the dropped step's text, or the outside
+change, and the older step's text would take it back. Steps that wrote
+other files still undo (review round 1, mine).
+
+The sidebar also writes `project.toml` outside the history, when it finds
+requests or folders its order lists don't name (drag into folders D5a).
+The history follows that write (review round 1, mine): the step that
+would next rewrite the file is taken to have left the text the sidebar
+wrote, so it still undoes or redoes. A sidebar write over text that was
+changed outside is not followed, and the step stays refused.
 
 **Empty stack**: quiet "Nothing to undo" / "Nothing to redo" toast.
 

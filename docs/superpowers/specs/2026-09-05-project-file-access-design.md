@@ -234,8 +234,14 @@ enum Entry {
   text the op left. That compare is made at the write, not before
   touching disk, because only there is the file sure to be where the op
   wrote it; a refusal reverses what the replay had already done, drops
-  the entry and re-reads nothing. `state.toml` and request files are not
-  compared (see the undo spec, 2026-08-24, Failure handling).
+  the entry and re-reads no document. `state.toml` and request files are
+  not compared (see the undo spec, 2026-08-24, Failure handling).
+  Review round 1 (mine): a text write the app makes outside a
+  transaction (the sidebar's order completion) is followed by the
+  journal, so the entry that would next rewrite that file records the
+  new text as the text it left; and an open request whose file a refused
+  replay rewrote and put back is re-stamped, so it is not reported as
+  changed outside.
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.
