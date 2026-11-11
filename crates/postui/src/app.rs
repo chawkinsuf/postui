@@ -10399,14 +10399,15 @@ impl App {
     /// The row menu's Move up/down for a sidebar row, a request or a
     /// folder: moves it `delta` places among its siblings.
     ///
-    /// It re-reads the project first (#239), then moves the row among its
-    /// siblings as the rows then show them.
+    /// The move writes the row's level as the rows show it, so the rows are
+    /// rebuilt first (`refresh_sidebar`), on every call: rows older than
+    /// `project.toml` would be written over its order (#239).
     fn move_sidebar_row(&mut self, key: RowKey, delta: i32) {
         let noun = match key {
             RowKey::Request(_) => "request",
             RowKey::Folder(_) => "folder",
         };
-        self.apply(Action::ReloadProjectFiles);
+        self.refresh_sidebar();
         let space = self.active_space();
         let (RowKey::Request(full) | RowKey::Folder(full)) = &key;
         let shown = postui_core::storage::space_of(full)

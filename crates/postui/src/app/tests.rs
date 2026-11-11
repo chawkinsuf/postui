@@ -29690,7 +29690,7 @@ fn filetime_of(p: &std::path::Path) -> std::time::SystemTime {
     std::fs::metadata(p).unwrap().modified().unwrap()
 }
 
-// -- #239: a sidebar reorder re-reads the project first -------------------
+// -- #239: a sidebar reorder takes in an order changed outside first ------
 
 /// Another program rewriting `main`'s top level to `order`, as a pull
 /// would, behind the running app's back. The trailing comment changes the
@@ -29721,9 +29721,9 @@ fn pick_from_sidebar_row_menu(app: &mut App, i: usize, label: &str) {
 }
 
 /// The task's case: the order changes outside (alpha and beta swapped) and
-/// the app has not re-read it. Move up on gamma re-reads first, so the swap
-/// stays and gamma moves one place in the order as it is now. Undo puts
-/// `project.toml` back as the other program left it.
+/// the app has not re-read it. Move up on gamma rebuilds the rows first, so
+/// the swap stays and gamma moves one place in the order as it is now. Undo
+/// puts `project.toml` back as the other program left it.
 #[test]
 fn a_request_move_first_takes_in_an_order_changed_outside() {
     let (mut app, dir) = three_row_app();
@@ -29804,9 +29804,9 @@ fn a_reordering_drop_first_takes_in_an_order_changed_outside_and_cancels() {
     }
 }
 
-/// With nothing changed outside, the re-read before a reorder finds
-/// nothing, the app's own order write included: a burst of moves is one
-/// undo step, and a drop commits.
+/// With nothing changed outside, a reorder is as before: a burst of moves
+/// is one undo step, and the moves' own order writes leave nothing for a
+/// drop's re-read to find, so the drop commits.
 #[test]
 fn a_reorder_with_nothing_changed_outside_is_a_burst_and_a_drop_as_before() {
     let (mut app, dir) = three_row_app();
@@ -29846,6 +29846,51 @@ fn a_move_after_an_outside_change_does_not_join_the_burst_before_it() {
 
     app.update(Action::Undo);
     assert_eq!(project_toml(&dir), outside);
+}
+
+/// Three steps: the order changes outside (alpha and beta swapped); an
+/// environment op on the Manage screen rewrites `project.toml`; Manage
+/// closes and Move up is picked on gamma. The swap stays and gamma moves
+/// one place in the order as it is on disk.
+#[test]
+fn a_move_after_an_environment_op_keeps_an_order_changed_outside() {
+    use crate::components::manage::ManageTab;
+    use postui_core::project::TlsPolicy;
+    type Op = fn(&mut App);
+    let ops: [(&str, Op); 5] = [
+        ("move", |app| {
+            app.update(Action::MoveEnv { name: "dev".into(), delta: -1 });
+        }),
+        ("create", |app| {
+            app.update(Action::CreateEnv("stage".into()));
+        }),
+        ("rename", |app| {
+            app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
+        }),
+        ("delete", |app| {
+            app.update(Action::DeleteEnv("qa".into()));
+        }),
+        ("set TLS policy", |app| {
+            app.update(Action::SetEnvTls { env: "qa".into(), policy: Some(TlsPolicy::Insecure) });
+        }),
+    ];
+    for (what, op) in ops {
+        let (mut app, dir) = three_row_app();
+        app.update(Action::CreateEnv("qa".into()));
+        app.update(Action::CreateEnv("dev".into()));
+        reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+
+        app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+        let before = project_toml(&dir);
+        op(&mut app);
+        assert_ne!(project_toml(&dir), before, "{what}: the op wrote project.toml");
+        app.update(Action::OpenManage { tab: None });
+        assert_eq!(app.screen, Screen::Main, "{what}");
+
+        pick_from_sidebar_row_menu(&mut app, 2, "Move up");
+        assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
+        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{what}");
+    }
 }
 
 /// The other ops that write an order re-read nothing in the app: core
