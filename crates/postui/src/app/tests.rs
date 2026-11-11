@@ -29850,13 +29850,29 @@ fn a_move_after_an_outside_change_does_not_join_the_burst_before_it() {
 
 /// Three steps: the order changes outside (alpha and beta swapped); an
 /// environment op on the Manage screen rewrites `project.toml`; Manage
-/// closes and Move up is picked on gamma. The swap stays and gamma moves
-/// one place in the order as it is on disk.
+/// closes and gamma is moved up one place, by Move up, a mouse drag or
+/// `m`. The swap stays and gamma moves one place in the order as it is on
+/// disk.
 #[test]
-fn a_move_after_an_environment_op_keeps_an_order_changed_outside() {
+fn a_reorder_after_an_environment_op_keeps_an_order_changed_outside() {
     use crate::components::manage::ManageTab;
     use postui_core::project::TlsPolicy;
     type Op = fn(&mut App);
+    let reorders: [(&str, Op); 3] = [
+        ("Move up", |app| pick_from_sidebar_row_menu(app, 2, "Move up")),
+        ("mouse", |app| {
+            let r1 = row_rect(app, 1);
+            let r2 = row_rect(app, 2);
+            app.handle_mouse(left_down(r2.x + 2, r2.y));
+            app.handle_mouse(moved(r2.x + 2, r1.y));
+            app.handle_mouse(left_up(r2.x + 2, r1.y));
+        }),
+        ("m", |app| {
+            app.focus = PaneId::Sidebar;
+            app.sidebar.selected = Some(2);
+            key_matrix_tests::feed(app, "m<Up><CR>");
+        }),
+    ];
     let ops: [(&str, Op); 5] = [
         ("move", |app| {
             app.update(Action::MoveEnv { name: "dev".into(), delta: -1 });
@@ -29875,21 +29891,27 @@ fn a_move_after_an_environment_op_keeps_an_order_changed_outside() {
         }),
     ];
     for (what, op) in ops {
-        let (mut app, dir) = three_row_app();
-        app.update(Action::CreateEnv("qa".into()));
-        app.update(Action::CreateEnv("dev".into()));
-        reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+        for (how, reorder) in reorders {
+            let what = format!("{what}, then {how}");
+            let (mut app, dir) = three_row_app();
+            app.use_profile(crate::config::KeyProfile::Arrows);
+            app.update(Action::CreateEnv("qa".into()));
+            app.update(Action::CreateEnv("dev".into()));
+            reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
 
-        app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-        let before = project_toml(&dir);
-        op(&mut app);
-        assert_ne!(project_toml(&dir), before, "{what}: the op wrote project.toml");
-        app.update(Action::OpenManage { tab: None });
-        assert_eq!(app.screen, Screen::Main, "{what}");
+            app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+            let before = project_toml(&dir);
+            op(&mut app);
+            assert_ne!(project_toml(&dir), before, "{what}: the op wrote project.toml");
+            app.update(Action::OpenManage { tab: None });
+            assert_eq!(app.screen, Screen::Main, "{what}");
+            let rows = request_rows(&app);
+            assert_eq!(rows, ["main/alpha", "main/beta", "main/gamma"], "{what}: the old rows");
 
-        pick_from_sidebar_row_menu(&mut app, 2, "Move up");
-        assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
-        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{what}");
+            reorder(&mut app);
+            assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
+            assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{what}");
+        }
     }
 }
 
