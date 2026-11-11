@@ -843,8 +843,8 @@ impl Project {
     /// Forces the next `poll` to reload.
     pub fn invalidate_stamps(&mut self) {
         self.disk.forget_stamps();
-        // A cleared table compares as "unchanged"; mark one watched path
-        // as never seen by recording a stamp that cannot match.
+        // A cleared table compares as "unchanged", so the flag forces the
+        // reload.
         self.force_reload = true;
     }
 
@@ -966,7 +966,8 @@ impl Project {
     /// restored `environment` is applied last, once `reload_documents`
     /// has refreshed the environment list it must be checked against.
     pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
-        // Everything `poll` re-reads is re-read below.
+        // Everything `poll` re-reads is re-read below, where
+        // `reload_documents` records the watched stamps again.
         self.force_reload = false;
         let mut warnings = Vec::new();
         // `None` = the read/parse failed, leave `active_env` untouched;
