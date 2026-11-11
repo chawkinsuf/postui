@@ -780,7 +780,9 @@ impl Project {
     ///
     /// When `Disk` says the file changed since its recorded stamp, the
     /// next `poll` is left due (#284): the read here records the new
-    /// stamp, and only `meta` is reloaded.
+    /// stamp, and only `meta` is reloaded. Reads of the other watched
+    /// files leave no poll due: #267 to #270 asked for that and were
+    /// scrapped.
     pub(crate) fn edit_project_toml(
         &mut self,
         f: impl FnOnce(&mut toml_edit::DocumentMut),
@@ -960,6 +962,8 @@ impl Project {
     /// restored `environment` is applied last, once `reload_documents`
     /// has refreshed the environment list it must be checked against.
     pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
+        // Everything `poll` re-reads is re-read below.
+        self.force_reload = false;
         let mut warnings = Vec::new();
         // `None` = the read/parse failed, leave `active_env` untouched;
         // `Some(env)` = what `state.toml` said it should be.
@@ -2670,6 +2674,21 @@ mod tests {
         assert!(p.changed_on_disk());
         assert!(p.poll().0);
         assert!(!p.changed_on_disk());
+    }
+
+    /// An undo or a redo re-reads everything, so it leaves no poll due.
+    #[test]
+    fn an_undo_or_a_redo_leaves_no_poll_due() {
+        let (dir, mut p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(dir.path().join("project.toml"), format!("# pulled\n{text}")).unwrap();
+        p.set_env_tls("dev", Some(TlsPolicy::Insecure)).unwrap();
+        assert!(p.changed_on_disk());
+        p.undo().unwrap();
+        assert!(!p.changed_on_disk(), "undo");
+        p.invalidate_stamps();
+        p.redo().unwrap();
+        assert!(!p.changed_on_disk(), "redo");
     }
 
     #[test]

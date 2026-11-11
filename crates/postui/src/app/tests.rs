@@ -30155,6 +30155,18 @@ fn a_keyboard_environment_move_runs_over_the_order_on_disk() {
     }
 }
 
+/// Drags the third row, `dev`, to the top of the list and drops it there.
+fn drag_dev_to_the_top(app: &mut App) {
+    let r0 = manage_row(app, 0);
+    let r2 = manage_row(app, 2);
+    app.handle_mouse(left_down(r2.x + 2, r2.y));
+    app.handle_mouse(moved(r2.x + 2, r0.y));
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working[0], "dev");
+    app.handle_mouse(left_up(r2.x + 2, r0.y));
+    assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+}
+
 /// The drop's re-read finds the change, so the drop writes nothing and
 /// the rows show the order on disk. The same drag over those rows then
 /// lands.
@@ -30163,16 +30175,6 @@ fn an_environment_drop_over_an_order_changed_on_disk_writes_nothing() {
     for taken_in in [false, true] {
         let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
         let steps = app.history.undo_len();
-        let drag_dev_to_the_top = |app: &mut App| {
-            let r0 = manage_row(app, 0);
-            let r2 = manage_row(app, 2);
-            app.handle_mouse(left_down(r2.x + 2, r2.y));
-            app.handle_mouse(moved(r2.x + 2, r0.y));
-            assert_eq!(app.manage.list.drag.as_ref().unwrap().working[0], "dev");
-            app.handle_mouse(left_up(r2.x + 2, r0.y));
-            assert!(app.manage.list.drag.is_none());
-            assert!(app.manage_press.is_none());
-        };
 
         drag_dev_to_the_top(&mut app);
         assert_eq!(
@@ -30197,6 +30199,19 @@ fn an_environment_drop_over_an_order_changed_on_disk_writes_nothing() {
         assert_eq!(app.proj().environments(), ["dev", "qa", "prod"], "taken in {taken_in}");
         assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
     }
+}
+
+/// An undo re-reads everything, so the re-read the TLS setting left due
+/// is no longer due, and the drop after the undo lands.
+#[test]
+fn an_undo_leaves_no_re_read_due_for_the_next_environment_drop() {
+    let (mut app, dir) = manage_envs_app_reordered_by_hand(true);
+    app.update(Action::Undo);
+    assert_eq!(app.proj().environments(), ["qa", "prod", "dev"], "the undo re-read the rows");
+    assert!(!app.proj().changed_on_disk());
+    drag_dev_to_the_top(&mut app);
+    assert_eq!(listed_envs(&dir), ["dev", "qa", "prod"]);
+    assert_eq!(app.proj().environments(), ["dev", "qa", "prod"]);
 }
 
 #[test]
