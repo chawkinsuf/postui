@@ -426,9 +426,10 @@ row menu has no "Move all requests…" item; everything else matches.
 project files first (`ReloadProjectFiles`), as the space reorders do
 since #274, so they act on the order on disk even when it was changed
 outside and the app has not re-read it (a `git pull`). A keyboard move
-is one step from the named row in that order. A drop whose re-read
-found a change, in whichever file, is cancelled: nothing is written and
-the rows show the order on disk, with no toast. An op that edits
+is one step from the named row in that order. A drop is cancelled when
+there was anything to re-read (`Project::changed_on_disk`), not only a
+changed environment order, as on the Spaces tab: nothing is written,
+the rows show what was re-read, and there is no toast. An op that edits
 `project.toml` (a TLS setting) reads the file and so records its stamp;
 when the file had changed outside, `edit_project_toml` leaves the
 re-read due, so a reorder after such an op still re-reads.
