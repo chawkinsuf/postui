@@ -57,12 +57,32 @@ impl Project {
         }
     }
 
-    /// Moves `name` by `delta` among the displayed environments (a swap).
+    /// Reads `project.toml` and lists `environments/` again, so a reorder
+    /// starts from the order on disk now and not from the last read
+    /// (#284: a `git pull` the app has not re-read). It runs on every
+    /// reorder, not when a stamp says the file changed: an op that edits
+    /// `project.toml` without re-listing (a TLS setting) records the
+    /// file's stamp and leaves `self.environments` as it was.
+    ///
+    /// This is not the poll's reload, so a `poll` that is due stays due.
+    fn read_environments(&mut self) -> Result<(), Error> {
+        if self.changed_on_disk() {
+            self.force_reload = true;
+        }
+        let text = self.disk.read(&rel(PROJECT_TOML)?)?.unwrap_or_default();
+        self.meta = toml::from_str(&text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+        self.refresh_environments();
+        Ok(())
+    }
+
+    /// Moves `name` by `delta` among the displayed environments (a swap),
+    /// in the order [`Self::read_environments`] finds on disk.
     pub fn move_environment(
         &mut self,
         name: &str,
         delta: i32,
     ) -> Result<Option<ListChange>, Error> {
+        self.read_environments()?;
         let mut envs = self.env_write_list();
         let slots = self.env_slots(&envs);
         let Some(pos) = slots.iter().position(|i| envs[*i] == *name) else {
@@ -88,13 +108,23 @@ impl Project {
 
     /// Writes the whole displayed order as a drag left it. Refuses an
     /// order that is not exactly the displayed set.
+    ///
+    /// `from` is the displayed order the drag started from. When the
+    /// order [`Self::read_environments`] finds on disk is another one,
+    /// the drag rearranged a list that is no longer there, and nothing is
+    /// written (#284).
     pub fn set_environment_order(
         &mut self,
+        from: &[String],
         displayed: &[String],
     ) -> Result<Option<ListChange>, Error> {
+        self.read_environments()?;
         let mut envs = self.env_write_list();
         let slots = self.env_slots(&envs);
         let valid: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
+        if valid != from {
+            return Ok(None);
+        }
         if let Some(extra) = displayed.iter().find(|n| !valid.contains(n)) {
             return Err(Error::NotFound(extra.clone()));
         }
@@ -443,7 +473,8 @@ mod tests {
     #[test]
     fn set_environment_order_writes_the_dragged_order_and_refuses_a_wrong_set() {
         let (dir, mut p) = fixture();
-        let c = p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().unwrap();
+        let shown = names(&["dev", "qa"]);
+        let c = p.set_environment_order(&shown, &names(&["qa", "dev"])).unwrap().unwrap();
         assert_eq!(c.before, ["dev", "qa"]);
         assert_eq!(c.after, ["qa", "dev"]);
         assert_eq!(p.environments(), ["qa", "dev"]);
@@ -451,13 +482,101 @@ mod tests {
             read(&dir, "project.toml").unwrap().contains("environments = [\"qa\", \"dev\"]"),
             "the drag materialises the whole displayed order"
         );
-        assert!(p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().is_none());
-        assert!(matches!(p.set_environment_order(&["qa".into()]), Err(Error::NotFound(_))));
+        let shown = names(&["qa", "dev"]);
+        assert!(p.set_environment_order(&shown, &shown).unwrap().is_none());
         assert!(matches!(
-            p.set_environment_order(&["qa".into(), "nope".into()]),
+            p.set_environment_order(&shown, &names(&["qa"])),
+            Err(Error::NotFound(_))
+        ));
+        assert!(matches!(
+            p.set_environment_order(&shown, &names(&["qa", "nope"])),
             Err(Error::NotFound(_))
         ));
         assert_eq!(p.journal_len(), 1, "a drag never merges");
+    }
+
+    /// [`ordered_fixture`] with a third environment: `dev`, `qa`, `prod`.
+    fn three_env_fixture() -> (tempfile::TempDir, Project) {
+        let (dir, mut p) = ordered_fixture();
+        p.create_environment("Prod").unwrap();
+        assert_eq!(p.environments(), ["dev", "qa", "prod"]);
+        (dir, p)
+    }
+
+    /// Rewrites the `environments` line of `project.toml` by hand, as
+    /// another program would (a `git pull`), under a new comment line.
+    fn hand_order(dir: &tempfile::TempDir, order: &str) {
+        let text = read(dir, "project.toml").unwrap();
+        let line = text.lines().find(|l| l.starts_with("environments = ")).unwrap().to_string();
+        let text = text.replace(&line, &format!("environments = {order}"));
+        std::fs::write(dir.path().join("project.toml"), format!("# pulled\n{text}")).unwrap();
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// #284: the order was changed outside and not re-read since.
+    #[test]
+    fn a_move_runs_over_the_order_on_disk() {
+        let (dir, mut p) = three_env_fixture();
+        hand_order(&dir, r#"["qa", "dev", "prod"]"#);
+        let c = p.move_environment("prod", -1).unwrap().unwrap();
+        assert_eq!(c.before, ["qa", "dev", "prod"]);
+        assert_eq!(c.after, ["qa", "prod", "dev"]);
+        assert_eq!(p.environments(), ["qa", "prod", "dev"]);
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains(r#"environments = ["qa", "prod", "dev"]"#), "{text}");
+        assert!(p.changed_on_disk(), "the poll still re-reads the rest of the outside edit");
+    }
+
+    /// #284: a move that changes nothing still shows the order on disk,
+    /// and leaves the poll due.
+    #[test]
+    fn a_move_at_the_end_of_the_list_reads_the_order_on_disk() {
+        let (dir, mut p) = three_env_fixture();
+        hand_order(&dir, r#"["qa", "dev", "prod"]"#);
+        assert!(p.move_environment("prod", 1).unwrap().is_none());
+        assert_eq!(p.environments(), ["qa", "dev", "prod"]);
+        assert!(p.changed_on_disk(), "the poll still re-reads the rest of the outside edit");
+    }
+
+    /// #284: an environment removed outside, file and entry, is not
+    /// written back into the list by a move.
+    #[test]
+    fn a_move_lists_the_environment_files_on_disk() {
+        let (dir, mut p) = three_env_fixture();
+        std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
+        hand_order(&dir, r#"["dev", "prod"]"#);
+        let c = p.move_environment("prod", -1).unwrap().unwrap();
+        assert_eq!(c.before, ["dev", "prod"]);
+        assert_eq!(p.environments(), ["prod", "dev"]);
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains(r#"environments = ["prod", "dev"]"#), "{text}");
+    }
+
+    /// #284: a drag's order is written only over the order the drag
+    /// started from.
+    #[test]
+    fn a_drag_order_is_not_written_over_an_order_changed_on_disk() {
+        let (dir, mut p) = three_env_fixture();
+        let steps = p.journal_len();
+        hand_order(&dir, r#"["qa", "dev", "prod"]"#);
+        let shown = names(&["dev", "qa", "prod"]);
+        let dragged = names(&["prod", "dev", "qa"]);
+        assert!(p.set_environment_order(&shown, &dragged).unwrap().is_none());
+        assert_eq!(p.environments(), ["qa", "dev", "prod"], "the list is the one on disk");
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains(r#"environments = ["qa", "dev", "prod"]"#), "{text}");
+        assert_eq!(p.journal_len(), steps);
+        assert!(p.changed_on_disk(), "the poll still re-reads the rest of the outside edit");
+
+        let shown = p.environments().to_vec();
+        let c = p.set_environment_order(&shown, &dragged).unwrap().unwrap();
+        assert_eq!(c.before, ["qa", "dev", "prod"]);
+        assert_eq!(c.after, ["prod", "dev", "qa"]);
+        assert_eq!(p.environments(), ["prod", "dev", "qa"]);
+        assert_eq!(p.journal_len(), steps + 1);
     }
 
     #[test]

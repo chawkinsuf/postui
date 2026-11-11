@@ -30105,6 +30105,104 @@ fn dragging_an_environment_row_reorders_and_persists() {
     );
 }
 
+// -- #284: an environment reorder reads the order on disk first ----------
+
+/// Rewrites `environments = [...]` in `project.toml` by hand, as another
+/// program would (a `git pull`), under a new comment line.
+fn hand_order_envs(dir: &tempfile::TempDir, order: &[&str]) {
+    let path = dir.path().join("project.toml");
+    let mut doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    doc["environments"] = toml_edit::value(toml_edit::Array::from_iter(order.iter().copied()));
+    std::fs::write(&path, format!("# pulled\n{doc}")).unwrap();
+}
+
+/// The Environments tab showing `prod`, `qa`, `dev` over a `project.toml`
+/// reordered by hand to `qa`, `prod`, `dev`. With `taken_in`, another op
+/// of the app (a TLS setting) has read and rewritten `project.toml` since,
+/// which leaves the rows as they were.
+fn manage_envs_app_reordered_by_hand(taken_in: bool) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = manage_envs_app();
+    hand_order_envs(&dir, &["qa", "prod", "dev"]);
+    if taken_in {
+        let policy = Some(postui_core::project::TlsPolicy::Verify);
+        app.update(Action::SetEnvTls { env: "prod".into(), policy });
+    }
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"], "the rows are the old ones");
+    assert_eq!(listed_envs(&dir), ["qa", "prod", "dev"]);
+    assert_eq!(
+        app.proj().changed_on_disk(),
+        !taken_in,
+        "once an op has taken the file in, no stamp says it changed"
+    );
+    (app, dir)
+}
+
+#[test]
+fn a_keyboard_environment_move_runs_over_the_order_on_disk() {
+    for taken_in in [false, true] {
+        let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
+        app.select_list_row(ManageTab::Environments, "dev");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(
+            listed_envs(&dir),
+            ["qa", "dev", "prod"],
+            "taken in {taken_in}: dev moved one up in the order on disk"
+        );
+        assert_eq!(app.proj().environments(), ["qa", "dev", "prod"], "taken in {taken_in}");
+        assert_eq!(
+            app.manage_selected(ManageTab::Environments).as_deref(),
+            Some("dev"),
+            "taken in {taken_in}"
+        );
+        app.update(Action::Undo);
+        assert_eq!(listed_envs(&dir), ["qa", "prod", "dev"], "taken in {taken_in}: undo");
+    }
+}
+
+/// The rows a drag rearranged are not the order on disk any more, so the
+/// drop writes nothing and the rows show the order on disk. The same drag
+/// over those rows then lands.
+#[test]
+fn an_environment_drop_over_an_order_changed_on_disk_writes_nothing() {
+    for taken_in in [false, true] {
+        let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
+        let steps = app.history.undo_len();
+        let drag_dev_to_the_top = |app: &mut App| {
+            let r0 = manage_row(app, 0);
+            let r2 = manage_row(app, 2);
+            app.handle_mouse(left_down(r2.x + 2, r2.y));
+            app.handle_mouse(moved(r2.x + 2, r0.y));
+            assert_eq!(app.manage.list.drag.as_ref().unwrap().working[0], "dev");
+            app.handle_mouse(left_up(r2.x + 2, r0.y));
+            assert!(app.manage.list.drag.is_none());
+            assert!(app.manage_press.is_none());
+        };
+
+        drag_dev_to_the_top(&mut app);
+        assert_eq!(
+            listed_envs(&dir),
+            ["qa", "prod", "dev"],
+            "taken in {taken_in}: the order on disk is kept"
+        );
+        assert_eq!(
+            app.proj().environments(),
+            ["qa", "prod", "dev"],
+            "taken in {taken_in}: and the rows show it"
+        );
+        assert_eq!(app.history.undo_len(), steps, "taken in {taken_in}: no undo step");
+        assert_eq!(
+            app.manage_selected(ManageTab::Environments).as_deref(),
+            Some("dev"),
+            "taken in {taken_in}: the cursor stays on the dragged row"
+        );
+
+        drag_dev_to_the_top(&mut app);
+        assert_eq!(listed_envs(&dir), ["dev", "qa", "prod"], "taken in {taken_in}");
+        assert_eq!(app.proj().environments(), ["dev", "qa", "prod"], "taken in {taken_in}");
+        assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
+    }
+}
+
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up

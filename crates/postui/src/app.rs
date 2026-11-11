@@ -8251,6 +8251,9 @@ impl App {
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
+                // No reload here as `MoveSpace` has: core reads the order
+                // on disk first (#284), and the move is one step from the
+                // named row in that order.
                 match p.move_environment(&name, delta) {
                     Ok(_) => {
                         // As `MoveSpace`: the list lands on the moved
@@ -10812,8 +10815,11 @@ impl App {
                         self.space_name(&drag.name)
                     )),
                 ),
+                // Core reads the order on disk first, and writes nothing
+                // when it is not the order this drag started from (#284):
+                // the rows then show the order on disk, with no toast.
                 _ => (
-                    p.set_environment_order(&drag.working),
+                    p.set_environment_order(&drag.original, &drag.working),
                     crate::undo::StepLabel::reorder(format!(
                         "environment {}",
                         self.env_name(&drag.name)

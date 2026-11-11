@@ -422,6 +422,18 @@ environment keep their slot, and the displayed order is dealt back out
 over the slots the project's own environments occupy. The Environments
 row menu has no "Move all requests…" item; everything else matches.
 
+*(2026-11-10, #284, mine.)* Both environment reorders read
+`project.toml` and list `environments/` first, on every call, so they
+act on the order on disk even when it was changed outside and the app
+has not re-read it (a `git pull`). A keyboard move is one step from the
+named row in that order. `set_environment_order` also takes the
+displayed order the drag started from: when the order on disk is
+another one, the drop writes nothing and the rows show the order on
+disk, with no toast. The read is not gated on a stamp, because an op
+that edits `project.toml` without re-listing the environments (a TLS
+setting) records the file's stamp and leaves the displayed list as it
+was. A reload that was due stays due.
+
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)
 swallows the first Escape pressed while a button is held; a `Down(Left)`
