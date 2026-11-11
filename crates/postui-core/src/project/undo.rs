@@ -61,6 +61,13 @@ impl Project {
     /// editor's swap file, a `README`) goes to the trash with the
     /// directory, and redo brings it back (spec 2026-11-03 create folders,
     /// review rounds 5 and 6; mine (approved: "A")).
+    ///
+    /// A text op's inverse writes the text from before the op, so the file
+    /// must still hold the text the op left: text changed since would be
+    /// written over, and is refused as a conflict instead (#283, mine).
+    /// Two kinds of file are not compared, because what they hold since
+    /// the op can be the app's own ([`written_outside_journal`]); a request
+    /// rename's undo over an outside edit of the request is #285.
     fn preflight(&mut self, ops: &[Op]) -> Result<(), Error> {
         let mut overlay: std::collections::HashMap<RelPath, bool> =
             std::collections::HashMap::new();
@@ -156,6 +163,16 @@ impl Project {
                             if expect_present { "no longer exists" } else { "already exists" },
                         ));
                     }
+                    // Compared where this replay first meets the path: after
+                    // that the file holds what an earlier inverse put there,
+                    // which is not on disk yet. A peek, so a change `poll`
+                    // has not read yet is still `poll`'s to read.
+                    if !overlay.contains_key(path)
+                        && !written_outside_journal(path)
+                        && self.disk.peek(path)? != *after
+                    {
+                        return Err(conflict(path, "has been edited since"));
+                    }
                     overlay.insert(path.clone(), before.is_some());
                 }
             }
@@ -164,38 +181,13 @@ impl Project {
     }
 
     /// Reverses one op through the recording primitives.
-    ///
-    /// A text op's inverse writes the text from before the op, so it is
-    /// made only on the text the op left: text changed since would be
-    /// written over, so it is refused as a conflict instead (#283, mine).
-    /// The compare is here and not in `preflight` because here the file is
-    /// where the op wrote it, whatever this replay moved first. It peeks,
-    /// so a change `poll` has not read yet is still `poll`'s to read.
-    ///
-    /// Two kinds of file are not compared, because what they hold since the
-    /// op can be the app's own ([`written_outside_journal`]); a request
-    /// rename's undo over an outside edit of the request is #285.
-    /// `project.toml` is compared. `complete_order` writes it outside the
-    /// journal too, when the TUI's refresh finds a list that doesn't name
-    /// what is on disk (drag into folders D5a); that write goes through
-    /// `fs_write_text`, where the journal follows it.
-    ///
-    /// The text of an entry that was refused and dropped stays in the
-    /// file, so an older entry that wrote the same file is refused after
-    /// it: its old text would take the dropped entry's change to that file
-    /// back too (review round 1, mine).
     fn apply_inverse(&mut self, op: &Op) -> Result<(), Error> {
         match op {
             Op::Renamed { from, to } => self.fs_rename(to, from),
             Op::Created { path } => self.fs_trash(path).map(|_| ()),
             Op::Trashed { ticket } => self.fs_restore(ticket),
             Op::Restored { ticket } => self.fs_retrash(ticket),
-            Op::Text { path, before, after } => {
-                if !written_outside_journal(path) && self.disk.peek(path)? != *after {
-                    return Err(conflict(path, "has been edited since"));
-                }
-                self.fs_write_text(path, before.as_deref())
-            }
+            Op::Text { path, before, .. } => self.fs_write_text(path, before.as_deref()),
         }
     }
 
@@ -255,13 +247,19 @@ impl Project {
     /// still failed, e.g. a permission error): reverses the ops already
     /// applied (best effort, same loop as `run_transaction`'s Err path),
     /// reloads, and puts the *original* entry back on the stack it came
-    /// from so the user can retry — nothing is lost. A conflict found
-    /// mid-replay (a text op's inverse, see `apply_inverse`) reverses the
-    /// ops already applied the same way, but drops the entry as a refused
-    /// preflight does, and reloads nothing.
+    /// from so the user can retry — nothing is lost.
     fn replay(&mut self, entry: Entry, redo: bool) -> Result<Option<Undone>, Error> {
         debug_assert!(self.recording.is_none());
-        self.preflight(&entry.ops)?;
+        if let Err(e) = self.preflight(&entry.ops) {
+            // The entry is dropped, and its text stays in the files it
+            // wrote. The journal follows that text as the app's own, so
+            // the entry beneath that wrote one of those files is compared
+            // with it (review round 2, mine).
+            for op in &entry.ops {
+                self.journal.follow(op);
+            }
+            return Err(e);
+        }
         // Which held entries still matched their file before the replay
         // rewrote anything — the only ones `rekey_held_after_own_op` may
         // re-stamp below. Taken here, before the first inverse runs.
@@ -323,33 +321,8 @@ impl Project {
                 }))
             }
             Err(e) => {
-                let mut reversed = true;
                 for op in ops.iter().rev() {
-                    reversed &= self.apply_inverse_unrecorded(op).is_ok();
-                }
-                if matches!(e, Error::Conflict(_)) {
-                    // The entry is dropped, as one `preflight` refuses is:
-                    // a retry would find the same text. There is no
-                    // `reload_all`, since the inverses change only the disk
-                    // and are reversed above; if one did not reverse, the
-                    // next `poll` re-reads.
-                    if reversed {
-                        // A request file the replay rewrote and put back
-                        // has a new stamp. Its held entry, under the slug
-                        // the file is back at, is re-stamped as after a
-                        // replay that ran: only if it was clean going in.
-                        let stayed: Vec<(String, String)> = entry
-                            .meta
-                            .moves
-                            .iter()
-                            .map(|(old, new)| if redo { old } else { new })
-                            .map(|slug| (slug.clone(), slug.clone()))
-                            .collect();
-                        self.rekey_held_after_own_op(&stayed, &clean_before);
-                    } else {
-                        self.force_reload = true;
-                    }
-                    return Err(e);
+                    let _ = self.apply_inverse_unrecorded(op);
                 }
                 self.reload_all();
                 if redo {
@@ -568,11 +541,10 @@ mod tests {
         assert_eq!(read(&dir, "variables.toml").unwrap(), outside);
     }
 
-    /// The compare is made at each write, so by the time it refuses, the
-    /// replay may have reversed other ops of the entry. They are put back:
-    /// the cascade's environment file keeps what the op wrote.
+    /// The refusal comes before any inverse runs. The cascade's environment
+    /// file, whose inverse comes first, is not written.
     #[test]
-    fn a_refusal_after_other_inverses_ran_puts_them_back() {
+    fn a_refused_cascade_writes_none_of_its_files() {
         let (dir, mut p) = fixture();
         p.cascade("rename var", |p| {
             p.edit_variables(|doc| varedit::rename_var(doc, "host", "hostname"))?;
@@ -580,16 +552,20 @@ mod tests {
         })
         .unwrap();
         let dev = read(&dir, "environments/dev.toml").unwrap();
+        let written = || {
+            std::fs::metadata(dir.path().join("environments/dev.toml")).unwrap().modified().unwrap()
+        };
+        let before = written();
         let outside = edit_outside(&dir, "variables.toml");
         assert_edited_since(p.undo(), "variables.toml");
         assert_eq!(read(&dir, "variables.toml").unwrap(), outside);
         assert_eq!(read(&dir, "environments/dev.toml").unwrap(), dev);
+        assert_eq!(written(), before, "not rewritten");
         assert!(p.variables().vars.contains_key("hostname"), "memory is as it was");
         assert!(!p.can_undo(), "the entry was dropped");
     }
 
-    /// The same with a directory the replay had already taken out of the
-    /// trash: it goes back there.
+    /// The same for a space delete: the space stays in the trash.
     #[test]
     fn a_refused_undo_of_a_space_delete_leaves_the_space_in_the_trash() {
         let (dir, mut p) = fixture();
@@ -614,7 +590,7 @@ mod tests {
         assert_edited_since(p.undo(), "requests/main/people/.folder.toml");
         assert_eq!(read(&dir, "requests/main/people/.folder.toml").unwrap(), outside);
         assert!(!dir.path().join("requests/main/users").exists());
-        assert_eq!(read(&dir, "project.toml"), project, "the order it had reversed is back");
+        assert_eq!(read(&dir, "project.toml"), project);
     }
 
     /// The TUI's refresh completes an order list outside the journal when
@@ -673,31 +649,51 @@ mod tests {
     }
 
     /// A refused entry is dropped with its text still in the files it
-    /// wrote. The entry beneath that wrote one of them is refused too: here
-    /// its old `variables.toml` would name the variable `host` again while
-    /// the environment file keeps `hostname`.
+    /// wrote. The entry beneath that wrote `variables.toml` still undoes,
+    /// and the dropped entry's change to that file goes with its own. The
+    /// one beneath that wrote the environment file changed outside is
+    /// refused.
     #[test]
-    fn the_step_beneath_a_refused_one_that_wrote_the_same_file_is_refused_too() {
+    fn the_steps_beneath_a_refused_one_are_refused_only_over_the_changed_file() {
         let (dir, mut p) = fixture();
+        p.edit_env("dev", |doc| varedit::set_env_value(doc, "host", Some("dev2.local"))).unwrap();
+        let variables = read(&dir, "variables.toml");
         add_port(&mut p);
         p.cascade("rename var", |p| {
             p.edit_variables(|doc| varedit::rename_var(doc, "host", "hostname"))?;
             p.edit_env("dev", |doc| varedit::rename_env_var(doc, "host", "hostname"))
         })
         .unwrap();
-        edit_outside(&dir, "environments/dev.toml");
-        let variables = read(&dir, "variables.toml");
+        let outside = edit_outside(&dir, "environments/dev.toml");
         assert_edited_since(p.undo(), "environments/dev.toml");
-        assert_edited_since(p.undo(), "variables.toml");
+        p.undo().unwrap().unwrap();
         assert_eq!(read(&dir, "variables.toml"), variables);
-        assert!(p.variables().vars.contains_key("hostname"));
+        assert_edited_since(p.undo(), "environments/dev.toml");
+        assert_eq!(read(&dir, "environments/dev.toml").unwrap(), outside);
     }
 
-    /// A refused redo that rewrote an open request's file and put it back
-    /// (the rename's name, written before `project.toml` is compared)
-    /// leaves the request reporting no drift.
+    /// The same for a redo refused over a path: the redo beneath it, which
+    /// wrote `project.toml` too, still redoes.
     #[test]
-    fn a_refused_replay_that_rewrote_an_open_request_reports_no_drift() {
+    fn the_redo_beneath_a_refused_one_still_redoes() {
+        let (dir, mut p) = fixture();
+        p.complete_order().unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        p.rename_request("auth/login", "Signin").unwrap();
+        p.undo().unwrap().unwrap();
+        p.undo().unwrap().unwrap();
+        std::fs::write(dir.path().join("requests/main/pong.toml"), "url = \"u\"\n").unwrap();
+        let err = p.redo().unwrap_err();
+        assert!(matches!(err, Error::Conflict(ref m) if m.contains("already exists")), "{err}");
+        p.redo().unwrap().unwrap();
+        assert!(dir.path().join("requests/auth/signin.toml").is_file());
+    }
+
+    /// A refused redo writes nothing. The rename's inverse of the open
+    /// request's name comes before `project.toml`'s, and the request
+    /// reports no drift.
+    #[test]
+    fn a_refused_redo_leaves_an_open_request_reporting_no_drift() {
         let (dir, mut p) = fixture();
         p.complete_order().unwrap();
         p.open_request("main/ping").unwrap();
@@ -707,7 +703,7 @@ mod tests {
         let request = read(&dir, "requests/main/ping.toml");
         edit_outside(&dir, "project.toml");
         assert_edited_since(p.redo(), "project.toml");
-        assert_eq!(read(&dir, "requests/main/ping.toml"), request, "put back");
+        assert_eq!(read(&dir, "requests/main/ping.toml"), request);
         assert_eq!(p.held_request_drift("main/ping"), None);
     }
 

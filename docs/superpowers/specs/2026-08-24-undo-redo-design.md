@@ -250,19 +250,21 @@ an agent), writing the step's other text back would lose that change, so
 the step is refused like a file that vanished: the toast names the file
 ("… has been edited since (changed outside the app)"), the file is left as
 it is, and the step is dropped. It makes no difference whether the app has
-re-read the changed file. Anything else the step had already put back is
-reversed again, so a refused step changes nothing.
+re-read the changed file. The check is made before the step puts anything
+back, so a refused step changes nothing (review round 2, mine).
 
 Two kinds of file are not compared, because the app itself writes them
 outside the history and their text since the step can be the app's own:
 `.postui/state.toml` and request files (a save). Undoing a request rename
 over an outside edit of that request is task #285.
 
-Once a step is refused and dropped, for this or any other conflict, an
-older step that wrote a compared file the dropped step also wrote is
-refused too: that file holds the dropped step's text, or the outside
-change, and the older step's text would take it back. Steps that wrote
-other files still undo (review round 1, mine).
+A step that is refused and dropped, for this or any other conflict, leaves
+its text in the files it wrote. That text is the app's own, so an older
+step that wrote one of those files still undoes, as it did before this
+check existed: the file gets the older step's text back, and the dropped
+step's change to that file goes with it. An older step is refused only
+when its file holds a change made outside (review round 2, mine; round 1
+had refused every older step that wrote such a file).
 
 The sidebar also writes `project.toml` outside the history, when it finds
 requests or folders its order lists don't name (drag into folders D5a).

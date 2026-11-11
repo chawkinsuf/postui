@@ -231,17 +231,20 @@ enum Entry {
   step, as today.
   *Amended 2026-11-10 (task #283, mine):* a text op's inverse is also
   refused, as a conflict naming the file, when the file does not hold the
-  text the op left. That compare is made at the write, not before
-  touching disk, because only there is the file sure to be where the op
-  wrote it; a refusal reverses what the replay had already done, drops
-  the entry and re-reads no document. `state.toml` and request files are
-  not compared (see the undo spec, 2026-08-24, Failure handling).
+  text the op left. A refusal drops the entry and re-reads no document.
+  `state.toml` and request files are not compared (see the undo spec,
+  2026-08-24, Failure handling).
   Review round 1 (mine): a text write the app makes outside a
   transaction (the sidebar's order completion) is followed by the
   journal, so the entry that would next rewrite that file records the
-  new text as the text it left; and an open request whose file a refused
-  replay rewrote and put back is re-stamped, so it is not reported as
-  changed outside.
+  new text as the text it left.
+  Review round 2 (mine): the compare is one of the checks made before
+  touching disk, where the replay first meets the file's path; a path an
+  earlier inverse of the same replay writes or moves a file to is not
+  compared. (It was first made at each write, and a refusal reversed what
+  the replay had already done.) The journal follows the text ops of an
+  entry it drops as it follows an unjournaled write, so the entry beneath
+  that wrote the same file still replays.
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.

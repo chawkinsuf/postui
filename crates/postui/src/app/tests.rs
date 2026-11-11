@@ -6644,6 +6644,32 @@ fn the_step_beneath_a_refused_undo_still_undoes() {
     assert!(dir.path().join("requests/main/zeta.toml").is_file(), "the refused rename stays");
 }
 
+/// An undo refused because its request file was removed outside drops only
+/// its own step. The delete beneath it wrote `project.toml` too, and
+/// still undoes.
+#[test]
+fn a_delete_beneath_a_refused_undo_still_undoes() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    std::fs::remove_file(dir.path().join("requests/main/zeta.toml")).unwrap();
+
+    app.update(Action::Undo);
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("could not undo") && m.contains("zeta.toml no longer exists")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    app.toasts = Default::default();
+    app.update(Action::Undo);
+    assert_eq!(app.toasts.messages(), ["Restored alpha"]);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(slot_order(&dir), ["alpha", "gamma"]);
+}
+
 /// A save writes the request's file outside the journal, over the text a
 /// rename left there. That is the app's own write, so the rename still
 /// undoes after it (#283 compares no request file).
@@ -6707,9 +6733,8 @@ fn redo_still_works_after_the_refresh_completed_the_list_the_undo_put_back() {
     assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma", "added"]);
 }
 
-/// A refused redo of a rename had written the open request's name before
-/// it met the changed `project.toml`, and put the file back. The request
-/// is not reported as changed outside afterwards.
+/// A refused redo of a rename writes nothing, the open request's file
+/// included. The request is not reported as changed outside afterwards.
 #[test]
 fn a_refused_redo_leaves_the_open_request_clean() {
     let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);

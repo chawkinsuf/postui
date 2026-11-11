@@ -677,8 +677,8 @@ impl Project {
     ///
     /// Outside a transaction no entry holds the write, so the journal
     /// follows it ([`Journal::follow`]): an undo or redo compares the file
-    /// with the text its entry left (`apply_inverse`, #283), and this
-    /// write is the app's own.
+    /// with the text its entry left (`preflight`, #283), and this write is
+    /// the app's own.
     pub(crate) fn fs_write_text(
         &mut self,
         path: &RelPath,
