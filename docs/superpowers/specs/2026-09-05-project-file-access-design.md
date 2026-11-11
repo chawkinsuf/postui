@@ -229,6 +229,13 @@ enum Entry {
   the entry affects exists or is absent as expected, and refuses the
   whole entry naming the path on a conflict. The app toasts and drops the
   step, as today.
+  *Amended 2026-11-10 (task #283, mine):* a text op's inverse is also
+  refused, as a conflict naming the file, when the file does not hold the
+  text the op left. That compare is made at the write, not before
+  touching disk, because only there is the file sure to be where the op
+  wrote it; a refusal reverses what the replay had already done, drops
+  the entry and re-reads nothing. `state.toml` and request files are not
+  compared (see the undo spec, 2026-08-24, Failure handling).
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.

@@ -6557,6 +6557,119 @@ fn undo_of_a_rename_restores_the_order_slot() {
     assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma"]);
 }
 
+/// Appends a line to `project.toml` as another program would, and returns
+/// the file's new text.
+fn append_to_project_toml(dir: &tempfile::TempDir) -> String {
+    let path = dir.path().join("project.toml");
+    let text = format!("{}# added outside\n", std::fs::read_to_string(&path).unwrap());
+    std::fs::write(&path, &text).unwrap();
+    text
+}
+
+/// #283: `project.toml` changed outside the app after a rename wrote it.
+/// The undo is refused and says why; the file keeps the outside change and
+/// the rename stays. The same once the app has re-read the file.
+#[test]
+fn undo_over_a_project_toml_changed_outside_is_refused() {
+    for reload_first in [false, true] {
+        let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+        app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+        let outside = append_to_project_toml(&dir);
+        if reload_first {
+            app.update(Action::ReloadProjectFiles);
+        }
+        app.toasts = Default::default();
+        app.update(Action::Undo);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
+            outside,
+            "reload_first {reload_first}: the outside change is kept"
+        );
+        let msg = app.toasts.messages().join(" | ");
+        assert!(
+            msg.contains("could not undo") && msg.contains("project.toml"),
+            "reload_first {reload_first}: {msg}"
+        );
+        assert!(!msg.contains("Undid"), "reload_first {reload_first}: {msg}");
+        assert!(dir.path().join("requests/main/zeta.toml").is_file(), "the rename stays");
+        assert!(!dir.path().join("requests/main/beta.toml").exists());
+        assert_eq!(
+            app.proj().changed_on_disk(),
+            !reload_first,
+            "a change not re-read yet is still the next reload's"
+        );
+    }
+}
+
+/// #283: the redo is refused the same way, and says redo.
+#[test]
+fn redo_over_a_project_toml_changed_outside_is_refused() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").is_file());
+    let outside = append_to_project_toml(&dir);
+    app.toasts = Default::default();
+    app.update(Action::Redo);
+    assert_eq!(std::fs::read_to_string(dir.path().join("project.toml")).unwrap(), outside);
+    let msg = app.toasts.messages().join(" | ");
+    assert!(msg.contains("could not redo") && msg.contains("project.toml"), "{msg}");
+    assert!(dir.path().join("requests/main/beta.toml").is_file(), "nothing moved");
+}
+
+/// #283: a refused undo drops only its own step. The one beneath, which
+/// wrote no `project.toml` (a rename that keeps the slug rewrites the
+/// request file alone), still undoes.
+#[test]
+fn the_step_beneath_a_refused_undo_still_undoes() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    let alpha = dir.path().join("requests/main/alpha.toml");
+    let unnamed = std::fs::read_to_string(&alpha).unwrap();
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Alpha!".into() });
+    assert!(std::fs::read_to_string(&alpha).unwrap().contains("Alpha!"));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    let outside = append_to_project_toml(&dir);
+
+    app.update(Action::Undo);
+    assert!(app.toasts.messages().iter().any(|m| m.contains("could not undo")));
+    app.toasts = Default::default();
+    app.update(Action::Undo);
+    assert_eq!(std::fs::read_to_string(&alpha).unwrap(), unnamed);
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("Undid rename")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(std::fs::read_to_string(dir.path().join("project.toml")).unwrap(), outside);
+    assert!(dir.path().join("requests/main/zeta.toml").is_file(), "the refused rename stays");
+}
+
+/// A save writes the request's file outside the journal, over the text a
+/// rename left there. That is the app's own write, so the rename still
+/// undoes after it (#283 compares no request file).
+#[test]
+fn a_rename_still_undoes_after_the_renamed_request_is_saved() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.capture_undo();
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/edited");
+    app.capture_undo();
+    app.update(Action::SaveRequest);
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/zeta").unwrap().url,
+        "https://x/edited"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/1", "the edit");
+    app.toasts = Default::default();
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").is_file(), "{:?}", app.toasts.messages());
+    assert!(!dir.path().join("requests/main/zeta.toml").exists());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
 #[test]
 fn undo_of_a_create_drops_its_arrival() {
     let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);

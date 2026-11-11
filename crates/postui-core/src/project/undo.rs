@@ -22,6 +22,22 @@ pub struct Undone {
     pub warnings: Vec<Warning>,
 }
 
+/// What an undo or redo is refused with. The user never sees the
+/// machinery, only the cause: something changed the file after the op
+/// that is being replayed.
+fn conflict(path: &RelPath, what: &str) -> Error {
+    Error::Conflict(format!("{path} {what} (changed outside the app)"))
+}
+
+/// Whether the app also writes `path` outside the journal: `state.toml`
+/// (`persist_local`) and a request's file (`save_request`), taken to be
+/// any path under `requests/` but a folder's file.
+fn written_outside_journal(path: &RelPath) -> bool {
+    path.as_str() == STATE_TOML
+        || (path.as_str().starts_with(&format!("{REQUESTS_DIR}/"))
+            && path.file_name() != crate::storage::FOLDER_FILE)
+}
+
 impl Project {
     pub fn clear_journal(&mut self) {
         self.journal.clear();
@@ -45,11 +61,6 @@ impl Project {
     /// directory, and redo brings it back (spec 2026-11-03 create folders,
     /// review rounds 5 and 6; mine (approved: "A")).
     fn preflight(&mut self, ops: &[Op]) -> Result<(), Error> {
-        // The user never sees the machinery, only the cause: something
-        // changed the file after the op that is being replayed.
-        let conflict = |path: &RelPath, what: &str| {
-            Error::Conflict(format!("{path} {what} (changed outside the app)"))
-        };
         let mut overlay: std::collections::HashMap<RelPath, bool> =
             std::collections::HashMap::new();
         fn exists(
@@ -152,13 +163,34 @@ impl Project {
     }
 
     /// Reverses one op through the recording primitives.
+    ///
+    /// A text op's inverse writes the text from before the op, so it is
+    /// made only on the text the op left: text changed since would be
+    /// written over, so it is refused as a conflict instead (#283, mine).
+    /// The compare is here and not in `preflight` because here the file is
+    /// where the op wrote it, whatever this replay moved first. It peeks,
+    /// so a change `poll` has not read yet is still `poll`'s to read.
+    ///
+    /// Two kinds of file are not compared, because what they hold since the
+    /// op can be the app's own ([`written_outside_journal`]); a request
+    /// rename's undo over an outside edit of the request is #285.
+    /// `project.toml` is compared, though `complete_order` writes it
+    /// outside the journal too, when the TUI's refresh finds a list that
+    /// doesn't name what is on disk (drag into folders D5a): the undo or
+    /// redo of an entry that wrote `project.toml` before that write is
+    /// refused. That is the cost of comparing it.
     fn apply_inverse(&mut self, op: &Op) -> Result<(), Error> {
         match op {
             Op::Renamed { from, to } => self.fs_rename(to, from),
             Op::Created { path } => self.fs_trash(path).map(|_| ()),
             Op::Trashed { ticket } => self.fs_restore(ticket),
             Op::Restored { ticket } => self.fs_retrash(ticket),
-            Op::Text { path, before, .. } => self.fs_write_text(path, before.as_deref()),
+            Op::Text { path, before, after } => {
+                if !written_outside_journal(path) && self.disk.peek(path)? != *after {
+                    return Err(conflict(path, "has been edited since"));
+                }
+                self.fs_write_text(path, before.as_deref())
+            }
         }
     }
 
@@ -218,7 +250,10 @@ impl Project {
     /// still failed, e.g. a permission error): reverses the ops already
     /// applied (best effort, same loop as `run_transaction`'s Err path),
     /// reloads, and puts the *original* entry back on the stack it came
-    /// from so the user can retry — nothing is lost.
+    /// from so the user can retry — nothing is lost. A conflict found
+    /// mid-replay (a text op's inverse, see `apply_inverse`) reverses the
+    /// ops already applied the same way, but drops the entry as a refused
+    /// preflight does, and reloads nothing.
     fn replay(&mut self, entry: Entry, redo: bool) -> Result<Option<Undone>, Error> {
         debug_assert!(self.recording.is_none());
         self.preflight(&entry.ops)?;
@@ -283,8 +318,18 @@ impl Project {
                 }))
             }
             Err(e) => {
+                let mut reversed = true;
                 for op in ops.iter().rev() {
-                    let _ = self.apply_inverse_unrecorded(op);
+                    reversed &= self.apply_inverse_unrecorded(op).is_ok();
+                }
+                if matches!(e, Error::Conflict(_)) {
+                    // The entry is dropped, as one `preflight` refuses is:
+                    // a retry would find the same text. Nothing is re-read,
+                    // since the inverses change only the disk and are
+                    // reversed above; if one did not reverse, the next
+                    // `poll` re-reads.
+                    self.force_reload |= !reversed;
+                    return Err(e);
                 }
                 self.reload_all();
                 if redo {
@@ -435,6 +480,160 @@ mod tests {
         assert!(dir.path().join("requests/main/pong.toml").is_file(), "nothing moved");
         assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("hand made"));
         assert!(p.undo().unwrap().is_none(), "the entry was dropped");
+    }
+
+    /// The outside world appends a line to `file`. Returns its new text.
+    fn edit_outside(dir: &tempfile::TempDir, file: &str) -> String {
+        let text = format!("{}# outside\n", read(dir, file).unwrap());
+        std::fs::write(dir.path().join(file), &text).unwrap();
+        text
+    }
+
+    /// `r` is the conflict an undo or redo over changed text gives, naming
+    /// `file`.
+    #[track_caller]
+    fn assert_edited_since(r: Result<Option<Undone>, Error>, file: &str) {
+        let Err(Error::Conflict(m)) = &r else { panic!("{r:?}") };
+        assert!(m.starts_with(file) && m.contains("has been edited since"), "{m}");
+    }
+
+    fn add_port(p: &mut Project) {
+        p.edit_variables(|doc| varedit::upsert_var(doc, "port", None, Some("8080"))).unwrap();
+    }
+
+    /// #283: a file changed outside since the op wrote it refuses the undo,
+    /// which would write the op's old text over the change. The file keeps
+    /// the change, the entry is dropped, and nothing is read: a change the
+    /// project has not re-read yet is still the next `poll`'s.
+    #[test]
+    fn undo_over_text_changed_outside_is_refused_and_keeps_it() {
+        for polled in [false, true] {
+            let (dir, mut p) = fixture();
+            add_port(&mut p);
+            let outside = edit_outside(&dir, "variables.toml");
+            if polled {
+                assert!(p.poll().0);
+            }
+            assert_edited_since(p.undo(), "variables.toml");
+            assert_eq!(read(&dir, "variables.toml").unwrap(), outside, "polled {polled}");
+            assert!(!p.can_undo() && !p.can_redo(), "polled {polled}: the entry was dropped");
+            assert_eq!(p.changed_on_disk(), !polled);
+        }
+    }
+
+    #[test]
+    fn redo_over_text_changed_outside_is_refused_and_keeps_it() {
+        let (dir, mut p) = fixture();
+        add_port(&mut p);
+        p.undo().unwrap().unwrap();
+        let outside = edit_outside(&dir, "variables.toml");
+        assert_edited_since(p.redo(), "variables.toml");
+        assert_eq!(read(&dir, "variables.toml").unwrap(), outside);
+        assert!(!p.can_undo() && !p.can_redo(), "the entry was dropped");
+    }
+
+    /// An op made after the outside change took that text in, so its undo
+    /// puts it back. The op before the change left other text, so its undo
+    /// is refused.
+    #[test]
+    fn the_step_before_an_outside_change_is_refused_after_the_one_made_on_it_undoes() {
+        let (dir, mut p) = fixture();
+        add_port(&mut p);
+        let outside = edit_outside(&dir, "variables.toml");
+        p.poll();
+        p.edit_variables(|doc| varedit::upsert_var(doc, "path", None, Some("/v1"))).unwrap();
+        p.undo().unwrap().unwrap();
+        assert_eq!(read(&dir, "variables.toml").unwrap(), outside);
+        assert_edited_since(p.undo(), "variables.toml");
+        assert_eq!(read(&dir, "variables.toml").unwrap(), outside);
+    }
+
+    /// The compare is made at each write, so by the time it refuses, the
+    /// replay may have reversed other ops of the entry. They are put back:
+    /// the cascade's environment file keeps what the op wrote.
+    #[test]
+    fn a_refusal_after_other_inverses_ran_puts_them_back() {
+        let (dir, mut p) = fixture();
+        p.cascade("rename var", |p| {
+            p.edit_variables(|doc| varedit::rename_var(doc, "host", "hostname"))?;
+            p.edit_env("dev", |doc| varedit::rename_env_var(doc, "host", "hostname"))
+        })
+        .unwrap();
+        let dev = read(&dir, "environments/dev.toml").unwrap();
+        let outside = edit_outside(&dir, "variables.toml");
+        assert_edited_since(p.undo(), "variables.toml");
+        assert_eq!(read(&dir, "variables.toml").unwrap(), outside);
+        assert_eq!(read(&dir, "environments/dev.toml").unwrap(), dev);
+        assert!(p.variables().vars.contains_key("hostname"), "memory is as it was");
+        assert!(!p.can_undo(), "the entry was dropped");
+    }
+
+    /// The same with a directory the replay had already taken out of the
+    /// trash: it goes back there.
+    #[test]
+    fn a_refused_undo_of_a_space_delete_leaves_the_space_in_the_trash() {
+        let (dir, mut p) = fixture();
+        p.delete_space("auth").unwrap();
+        let outside = edit_outside(&dir, "project.toml");
+        assert_edited_since(p.undo(), "project.toml");
+        assert_eq!(read(&dir, "project.toml").unwrap(), outside);
+        assert!(!dir.path().join("requests/auth").exists());
+        assert!(dir.path().join(TRASH_DIR).join("1/requests/auth/login.toml").is_file());
+        assert_eq!(p.spaces(), ["main"]);
+    }
+
+    /// A folder's file is compared like any document: a rename's undo is
+    /// refused over a change to it, and the folder keeps its new directory.
+    #[test]
+    fn undo_of_a_folder_rename_over_its_changed_file_is_refused() {
+        let (dir, mut p) = fixture();
+        p.create_folder("main", "Users", None).unwrap();
+        p.rename_folder("main/users", "People").unwrap();
+        let outside = edit_outside(&dir, "requests/main/people/.folder.toml");
+        let project = read(&dir, "project.toml");
+        assert_edited_since(p.undo(), "requests/main/people/.folder.toml");
+        assert_eq!(read(&dir, "requests/main/people/.folder.toml").unwrap(), outside);
+        assert!(!dir.path().join("requests/main/users").exists());
+        assert_eq!(read(&dir, "project.toml"), project, "the order it had reversed is back");
+    }
+
+    /// The cost of comparing `project.toml` (`apply_inverse`): the TUI's
+    /// refresh completes an order list outside the journal when a request
+    /// appears from outside, and an entry from before that write is refused.
+    #[test]
+    fn undo_past_an_order_completion_outside_the_journal_is_refused() {
+        let (dir, mut p) = fixture();
+        p.complete_order().unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        std::fs::write(dir.path().join("requests/main/added.toml"), "url = \"u\"\n").unwrap();
+        assert!(p.complete_order().unwrap(), "the refresh writes the new entry");
+        assert_edited_since(p.undo(), "project.toml");
+        assert!(dir.path().join("requests/main/pong.toml").is_file());
+    }
+
+    /// A save writes a request's file outside the journal. Its text is not
+    /// compared, so the app's own save never refuses a rename's undo.
+    #[test]
+    fn a_save_after_a_rename_never_refuses_its_undo() {
+        let (dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let mut req = p.read_request("main/pong").unwrap();
+        req.url = "https://saved".into();
+        p.save_request("main/pong", &req).unwrap();
+        p.undo().unwrap().unwrap();
+        assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("name = \"Ping\""));
+    }
+
+    /// The same for `state.toml`, which every UI change writes outside the
+    /// journal.
+    #[test]
+    fn a_ui_change_after_a_space_rename_never_refuses_its_undo() {
+        let (_dir, mut p) = fixture();
+        p.set_active_space("auth");
+        p.rename_space("auth", "Login").unwrap();
+        p.set_expanded(["login/deep".to_string()].into_iter().collect());
+        p.undo().unwrap().unwrap();
+        assert_eq!(p.local().active_space, "auth");
     }
 
     /// A directory an op made is taken back whole, so a file written into

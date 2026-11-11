@@ -243,6 +243,25 @@ Variable Manager) is refreshed to match what's now on disk, and the step
 itself is dropped rather than retried. Editor steps are pure memory and
 either fully apply or not at all.
 
+*Amended 2026-11-10 (task #283, mine):* a step that wrote a file's text is
+undone or redone only while the file still holds the text the step left.
+If the file was changed outside the app since (a `git pull`, a hand edit,
+an agent), writing the step's other text back would lose that change, so
+the step is refused like a file that vanished: the toast names the file
+("… has been edited since (changed outside the app)"), the file is left as
+it is, the step is dropped, and the rest of history stays usable. It makes
+no difference whether the app has re-read the changed file. Anything else
+the step had already put back is reversed again, so a refused step changes
+nothing.
+
+Two kinds of file are not compared, because the app itself writes them
+outside the history and their text since the step can be the app's own:
+`.postui/state.toml` and request files (a save). Undoing a request rename
+over an outside edit of that request is task #285. One cost: the sidebar
+also writes `project.toml` outside the history, when it finds requests or
+folders its order lists don't name (drag into folders D5a), and a step
+that wrote `project.toml` before that write is refused too.
+
 **Empty stack**: quiet "Nothing to undo" / "Nothing to redo" toast.
 
 ## Testing
