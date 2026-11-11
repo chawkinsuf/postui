@@ -30105,7 +30105,7 @@ fn dragging_an_environment_row_reorders_and_persists() {
     );
 }
 
-// -- #284: an environment reorder reads the order on disk first ----------
+// -- #284: an environment reorder re-reads the project first -------------
 
 /// Rewrites `environments = [...]` in `project.toml` by hand, as another
 /// program would (a `git pull`), under a new comment line.
@@ -30119,7 +30119,7 @@ fn hand_order_envs(dir: &tempfile::TempDir, order: &[&str]) {
 /// The Environments tab showing `prod`, `qa`, `dev` over a `project.toml`
 /// reordered by hand to `qa`, `prod`, `dev`. With `taken_in`, another op
 /// of the app (a TLS setting) has read and rewritten `project.toml` since,
-/// which leaves the rows as they were.
+/// which leaves the rows as they were and the re-read due.
 fn manage_envs_app_reordered_by_hand(taken_in: bool) -> (App, tempfile::TempDir) {
     let (mut app, dir) = manage_envs_app();
     hand_order_envs(&dir, &["qa", "prod", "dev"]);
@@ -30129,11 +30129,7 @@ fn manage_envs_app_reordered_by_hand(taken_in: bool) -> (App, tempfile::TempDir)
     }
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"], "the rows are the old ones");
     assert_eq!(listed_envs(&dir), ["qa", "prod", "dev"]);
-    assert_eq!(
-        app.proj().changed_on_disk(),
-        !taken_in,
-        "once an op has taken the file in, no stamp says it changed"
-    );
+    assert!(app.proj().changed_on_disk(), "taken in {taken_in}: the re-read is due");
     (app, dir)
 }
 
@@ -30159,9 +30155,9 @@ fn a_keyboard_environment_move_runs_over_the_order_on_disk() {
     }
 }
 
-/// The rows a drag rearranged are not the order on disk any more, so the
-/// drop writes nothing and the rows show the order on disk. The same drag
-/// over those rows then lands.
+/// The drop's re-read finds the change, so the drop writes nothing and
+/// the rows show the order on disk. The same drag over those rows then
+/// lands.
 #[test]
 fn an_environment_drop_over_an_order_changed_on_disk_writes_nothing() {
     for taken_in in [false, true] {

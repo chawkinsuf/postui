@@ -8247,13 +8247,13 @@ impl App {
                 true
             }
             Action::MoveEnv { name, delta } => {
+                // As `MoveSpace`: re-read first (#284), so the move runs
+                // over the rows the re-read shows.
+                self.apply(Action::ReloadProjectFiles);
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
-                // No reload here as `MoveSpace` has: core reads the order
-                // on disk first (#284), and the move is one step from the
-                // named row in that order.
                 match p.move_environment(&name, delta) {
                     Ok(_) => {
                         // As `MoveSpace`: the list lands on the moved
@@ -10795,13 +10795,14 @@ impl App {
             return false;
         };
         let mut reordered = None;
-        // As `CreateSpace`: a space order re-reads first (#274). A re-read
-        // that found a change makes the drop a cancel, as a reload cancels
-        // a live drag: whichever file changed, and with no toast of its own.
+        // As `CreateSpace`: the drop re-reads first, on either tab (#274,
+        // #284). A re-read that found a change makes the drop a cancel, as
+        // a reload cancels a live drag: whichever file changed, and with no
+        // toast of its own.
         let commit = commit
             && drag.working != drag.original
             && self.project.is_some()
-            && (drag.tab != ManageTab::Spaces || !self.apply(Action::ReloadProjectFiles));
+            && !self.apply(Action::ReloadProjectFiles);
         if commit {
             // The cursor holds the dragged item's name from `begin_drag`
             // on, so the step's before-view already records that row.
@@ -10815,11 +10816,8 @@ impl App {
                         self.space_name(&drag.name)
                     )),
                 ),
-                // Core reads the order on disk first, and writes nothing
-                // when it is not the order this drag started from (#284):
-                // the rows then show the order on disk, with no toast.
                 _ => (
-                    p.set_environment_order(&drag.original, &drag.working),
+                    p.set_environment_order(&drag.working),
                     crate::undo::StepLabel::reorder(format!(
                         "environment {}",
                         self.env_name(&drag.name)

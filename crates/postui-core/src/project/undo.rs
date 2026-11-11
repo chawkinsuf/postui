@@ -360,8 +360,7 @@ mod tests {
         p.redo().unwrap();
         assert_eq!(p.meta().environments, ["qa", "dev"]);
 
-        p.set_environment_order(&["qa".into(), "dev".into()], &["dev".into(), "qa".into()])
-            .unwrap();
+        p.set_environment_order(&["dev".into(), "qa".into()]).unwrap();
         let u = p.undo().unwrap().unwrap();
         assert_eq!(u.label, "reorder environments");
         assert_eq!(p.meta().environments, ["qa", "dev"]);
