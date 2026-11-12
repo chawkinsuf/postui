@@ -20,8 +20,8 @@ path, are `a-z 0-9 - _` (lowercase). A request's slug is its path under
 empty; its `.folder.toml` holds its display name, and a folder without one
 is named by its directory. When you make a folder, write its
 `.folder.toml` too, as postui does: git keeps no empty directory, so it
-keeps an empty folder. A file or folder whose name starts with `.` is
-ignored; any other invalid name is an error in `check`.
+keeps an empty folder. Other names starting with `.` are ignored; any
+other invalid name is an error in `check`.
 
 Run `postui check` after every change.
 
@@ -58,10 +58,9 @@ name = "Staging"
   and folder paths ending in `/` (`["login", "orders/", "orders/list-orders",
   "users/"]`). Each level (the space's root or one folder) shows its
   requests and folders mixed, in `order`'s order. postui keeps every
-  request and folder listed: something new goes last in its level, and a
-  request file or folder added by hand is written in at the end of its
-  level the next time postui's TUI sees it. Leave `order` alone unless
-  asked.
+  request and folder listed: a request file or folder added by hand is
+  written in at the end of its level the next time postui's TUI sees it.
+  Leave `order` alone unless asked.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
 

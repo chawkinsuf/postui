@@ -26,8 +26,14 @@ The header's project chip switches between the projects you've opened.
 Requests are grouped into **spaces**: top-level folders under `requests/`.
 One space shows at a time, and each remembers the request you had open; the
 header's space chip switches between them. Inside a space, requests can sit in
-folders, which fold. Requests and folders can be moved, into and out of
-folders too, by key or by dragging, and requests moved to another space.
+folders, which fold. "Folder: new" in the palette makes one, as does
+`+ Folder` at the top of a wide enough sidebar; a folder's menu renames or
+deletes it.
+
+Drag a request or a folder to move it, into and out of folders too; resting
+on a closed folder opens it. From the keyboard, the move key picks a row up,
+the arrows step it, Enter drops it and Esc puts it back. A request can also be
+moved to another space.
 
 The **Manage** screen (`alt+r`) edits a project's variables, environments and
 spaces, and has a Settings tab for postui itself.
@@ -54,6 +60,12 @@ request can also turn off TLS verification.
 
 Everything undoes: edits, deletes, renames, moves and reorders, including ones
 made in another request or on the Manage screen.
+
+If `project.toml`, `variables.toml`, an environment file,
+`.postui/secrets.toml` or a folder's `.folder.toml` was edited outside postui
+(by a `git pull`, say), the undo or redo that would write over it takes that
+edit back instead, as a step of its own, and a warning names the file. Undo and
+redo treat that step like any other, so the outside edit can be brought back.
 
 ## Environments, variables and secrets
 
@@ -127,9 +139,8 @@ postui can also tell you when the clipboard holds a curl command, with a
 notice in the corner. Its Import button imports the command, as a paste into
 the sidebar does, and × closes it. It stays while the pointer is on it, and it
 shows once for each new command. It's off by default, because it means reading
-the clipboard unasked,
-which on macOS can bring up the pasteboard privacy notice. Turn it on with
-`curl_button` ([configuration](configuration.md)).
+the clipboard unasked, which on macOS can bring up the pasteboard privacy
+notice. Turn it on with `curl_button` ([configuration](configuration.md)).
 
 ## Mouse
 
