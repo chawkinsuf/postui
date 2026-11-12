@@ -249,7 +249,7 @@ enum Entry {
   before and after (`None` = no `name` key), not the file's text. The
   rename and the inverse set only that key with `toml_edit`, the rest of
   the text as the file holds it, so a change made to the request since
-  stays. A file that is not TOML is left as it is.
+  stays. A file that does not parse as a request is left as it is.
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.

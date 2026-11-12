@@ -1176,11 +1176,14 @@ impl Project {
             if to_slug != from_slug {
                 p.fs_rename(&from_path, &to_path)?;
             }
-            if let Some(text) = p.disk.read(&to_path)?
-                && let Ok(req) = HttpRequest::from_toml_str(&text)
-                && req.name.as_deref() != Some(leaf.as_str())
+            if let Some(from) = p.set_name(&to_path, Some(&leaf))?
+                && from.as_deref() != Some(leaf.as_str())
             {
-                p.fs_write_name(&to_path, req.name.as_deref(), Some(&leaf))?;
+                p.record(Op::Named {
+                    path: to_path.clone(),
+                    before: from,
+                    after: Some(leaf.clone()),
+                });
             }
             // A rename can rewrite the file's `name` (above), so this op
             // owns a write the app must never see as an outside edit —
@@ -1770,12 +1773,10 @@ impl Project {
         let file = rel(&format!("{dir}/{}", crate::storage::FOLDER_FILE))?;
         match self.disk.read(&file)? {
             Some(text) => {
-                let mut doc: toml_edit::DocumentMut = text
-                    .parse()
-                    .map_err(|e: toml_edit::TomlError| Error::BadName(e.to_string()))?;
-                doc["name"] = toml_edit::value(name);
-                if doc.to_string() != text {
-                    self.fs_write_text(&file, Some(&doc.to_string()))?;
+                let after = super::toml_with_name(&text, Some(name))
+                    .map_err(|e| Error::BadName(e.to_string()))?;
+                if after != text {
+                    self.fs_write_text(&file, Some(&after))?;
                 }
                 Ok(())
             }

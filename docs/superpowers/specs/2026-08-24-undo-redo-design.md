@@ -281,8 +281,8 @@ treat loading external edits as its own undo step?").
   `name` key in the request's file, the rest of its text as it is, and its
   undo and redo do the same with the name from before and after the
   rename, in whatever text the file holds then: a save or an outside edit
-  made since stays, and no toast says so. A file that is no longer TOML
-  moves back as it is.
+  made since stays, and no toast says so. A file that no longer parses as
+  a request moves back as it is.
 - The sidebar also writes `project.toml` outside the history, when it
   finds requests or folders its order lists don't name (drag into folders
   D5a). The history follows that write: the step that would next rewrite

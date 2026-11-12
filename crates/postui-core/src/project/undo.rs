@@ -196,7 +196,9 @@ impl Project {
                     overlay.insert(path.clone(), before.is_some());
                 }
                 // Not compared: the inverse sets only the name in what the
-                // file holds.
+                // file holds. A file that no longer parses as a request is
+                // moved without its name set, as the rename moves one, and
+                // no toast says so.
                 Op::Named { path, .. } => {
                     if !exists(&self.disk, &overlay, path) {
                         return Err(conflict(path, "no longer exists"));
@@ -216,8 +218,18 @@ impl Project {
             Op::Trashed { ticket } => self.fs_restore(ticket),
             Op::Restored { ticket } => self.fs_retrash(ticket),
             Op::Text { path, before, .. } => self.fs_write_text(path, before.as_deref()),
+            // The opposite op holds this op's names, not the one the file
+            // held. A file that is no longer a request is left as it is
+            // and nothing is recorded for it.
             Op::Named { path, before, after } => {
-                self.fs_write_name(path, after.as_deref(), before.as_deref())
+                if self.set_name(path, before.as_deref())?.is_some() {
+                    self.record(Op::Named {
+                        path: path.clone(),
+                        before: after.clone(),
+                        after: before.clone(),
+                    });
+                }
+                Ok(())
             }
         }
     }
@@ -1079,12 +1091,12 @@ mod tests {
     }
 
     /// The rename sets only the name, so its undo and redo give back the
-    /// exact bytes, a comment and the key order included.
+    /// exact bytes, the comments and the key order included.
     #[test]
     fn undo_and_redo_of_a_rename_give_back_the_exact_text() {
         let (dir, _p) = fixture();
         let original =
-            "# kept\nurl = \"https://{{host}}/ping\"\nname = \"Ping\"\nmethod = \"GET\"\n";
+            "# kept\nurl = \"https://{{host}}/ping\"\nname = \"Ping\"  # shown\nmethod = \"GET\"\n";
         std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.rename_request("main/ping", "Pong").unwrap();
@@ -1110,16 +1122,21 @@ mod tests {
         assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
     }
 
-    /// A request file that is no longer TOML gets no name: the undo moves
-    /// it back with its text as it is, as the rename moves a broken file.
+    /// A request file that no longer parses as a request gets no name: the
+    /// undo and the redo move it with its text as it is, as the rename
+    /// moves such a file.
     #[test]
     fn undo_of_a_rename_moves_a_request_that_no_longer_parses_back_as_it_is() {
-        let (dir, mut p) = fixture();
-        p.rename_request("main/ping", "Pong").unwrap();
-        std::fs::write(dir.path().join("requests/main/pong.toml"), "url = [\n").unwrap();
-        assert_replayed(p.undo(), "rename request");
-        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), "url = [\n");
-        assert!(!dir.path().join("requests/main/pong.toml").exists());
+        for broken in ["url = [\n", "name = \"Pong\"\nunknown = 1\n"] {
+            let (dir, mut p) = fixture();
+            p.rename_request("main/ping", "Pong").unwrap();
+            std::fs::write(dir.path().join("requests/main/pong.toml"), broken).unwrap();
+            assert_replayed(p.undo(), "rename request");
+            assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), broken);
+            assert!(!dir.path().join("requests/main/pong.toml").exists());
+            assert_replayed(p.redo(), "rename request");
+            assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), broken);
+        }
     }
 
     /// The same for `state.toml`, which every UI change writes outside the

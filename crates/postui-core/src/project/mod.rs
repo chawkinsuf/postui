@@ -308,6 +308,31 @@ fn parse_err(file: &str) -> impl Fn(&dyn std::fmt::Display) -> Error + '_ {
     move |e| Error::Parse { file: file.to_string(), error: e.to_string() }
 }
 
+/// The TOML `text` with its `name` key set to `name` (`None` removes it),
+/// the rest of the text as it is. A name that replaces another keeps the
+/// old value's spacing and trailing comment; a new key goes last.
+pub(crate) fn toml_with_name(
+    text: &str,
+    name: Option<&str>,
+) -> Result<String, toml_edit::TomlError> {
+    let mut doc: toml_edit::DocumentMut = text.parse()?;
+    match name {
+        Some(n) => {
+            if let Some(v) = doc.get_mut("name").and_then(toml_edit::Item::as_value_mut) {
+                let decor = v.decor().clone();
+                *v = n.into();
+                *v.decor_mut() = decor;
+            } else {
+                doc["name"] = toml_edit::value(n);
+            }
+        }
+        None => {
+            doc.remove("name");
+        }
+    }
+    Ok(doc.to_string())
+}
+
 impl Project {
     pub fn is_project(root: &Path) -> bool {
         root.join(PROJECT_TOML).is_file()
@@ -668,47 +693,30 @@ impl Project {
                 Some(t) => self.disk.write(path, t)?,
                 None => self.disk.remove(path)?,
             },
-            Op::Named { path, before, .. } => self.set_name(path, before.as_deref())?,
-        }
-        Ok(())
-    }
-
-    /// Sets the request's `name` in the text the file at `path` holds
-    /// (`None` removes the key), the rest of the text kept as it is.
-    /// Writes only when that changes the text. A file that is absent or is
-    /// not TOML is left as it is.
-    fn set_name(&mut self, path: &RelPath, name: Option<&str>) -> Result<(), Error> {
-        let Some(text) = self.disk.read(path)? else { return Ok(()) };
-        let Ok(mut doc) = text.parse::<toml_edit::DocumentMut>() else { return Ok(()) };
-        match name {
-            Some(n) => doc["name"] = toml_edit::value(n),
-            None => {
-                doc.remove("name");
+            Op::Named { path, before, .. } => {
+                self.set_name(path, before.as_deref())?;
             }
         }
-        let after = doc.to_string();
-        if after != text {
-            self.disk.write(path, &after)?;
-        }
         Ok(())
     }
 
-    /// [`Self::set_name`] to `to`, recorded as [`Op::Named`] from `from`,
-    /// the name its inverse sets back. Recorded even when the file was left
-    /// as it is, so the opposite step still sets its name.
-    pub(crate) fn fs_write_name(
+    /// Sets `name` in the request file at `path` (`None` removes the key),
+    /// the rest of its text as it is ([`toml_with_name`]), writing only
+    /// when the name differs. Answers the name the file held, or `None`
+    /// for a file that is absent or does not parse as a request, which is
+    /// left as it is. Records nothing: the caller records [`Op::Named`].
+    pub(crate) fn set_name(
         &mut self,
         path: &RelPath,
-        from: Option<&str>,
-        to: Option<&str>,
-    ) -> Result<(), Error> {
-        self.set_name(path, to)?;
-        self.record(Op::Named {
-            path: path.clone(),
-            before: from.map(str::to_string),
-            after: to.map(str::to_string),
-        });
-        Ok(())
+        name: Option<&str>,
+    ) -> Result<Option<Option<String>>, Error> {
+        let Some(text) = self.disk.read(path)? else { return Ok(None) };
+        let Ok(req) = crate::model::HttpRequest::from_toml_str(&text) else { return Ok(None) };
+        if req.name.as_deref() != name {
+            let Ok(after) = toml_with_name(&text, name) else { return Ok(None) };
+            self.disk.write(path, &after)?;
+        }
+        Ok(Some(req.name))
     }
 
     /// Reads the current text (for the op's `before`) and writes `after`
