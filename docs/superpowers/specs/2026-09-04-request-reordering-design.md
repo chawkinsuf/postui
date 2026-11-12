@@ -422,23 +422,38 @@ environment keep their slot, and the displayed order is dealt back out
 over the slots the project's own environments occupy. The Environments
 row menu has no "Move all requests…" item; everything else matches.
 
-*(2026-11-10, #284, mine.)* Both environment reorders re-read the
-project files first (`ReloadProjectFiles`), as the space reorders do
-since #274, so they act on the order on disk even when it was changed
-outside and the app has not re-read it (a `git pull`). A keyboard move
-is one step from the named row in that order. A drop is cancelled when
-there was anything to re-read (`Project::changed_on_disk`), not only a
-changed environment order, as on the Spaces tab: nothing is written,
-the rows show what was re-read, and there is no toast. An op that edits
-`project.toml` (a TLS setting) reads the file and so records its stamp;
-when the file had changed outside, `edit_project_toml` leaves the
-re-read due, so a reorder after such an op still re-reads.
+*(2026-11-11, #284, mine (approved).)* An environment reorder takes
+the order it writes from `project.toml` at the write, not from the
+app's last read of the file. An order changed outside that the app has
+not re-read (a `git pull`) is kept, and the one row moves in it. Both
+reorders go through one place in core: inside `edit_project_toml` the
+`environments` list is built from the document just read, and the row
+is moved among the environments the tab shows. A keyboard move is one
+place from the row's place in that order. A drop puts the dragged row
+at the place it was dropped on, so the writer takes the row and its
+place, not the finished order: `place_environment(name, to)` replaces
+`set_environment_order(displayed)`. Nothing is re-read before a
+reorder, nothing checks whether a re-read is due, and no drop is
+cancelled. The rows are listed again after the write, as before. A
+reorder that moves nothing in the file's order writes nothing and
+records no step; the rows still show the file's order afterwards. Undo
+writes back the text the reorder read, so it restores the outside
+order exactly.
 
-*(2026-11-11, #284, mine (approved).)* A selector fields edit or rename
-rewrites environment files. It lists `environments/` again afterwards,
-as an environment value edit does, so those writes are not something to
-re-read and the drop after them lands, on either tab. An op that is
-rolled back lists it again too *(mine)*.
+The costs accepted with it:
+
+- A drop keeps its place, not its neighbours. When an environment was
+  added or removed outside, the row can land on the other side of a
+  neighbour than the drag showed: with a new environment listed first
+  in the file, a row dropped on the top row ends second, under it.
+- The reorder re-reads nothing else. The rest of an outside change
+  (`variables.toml`, the requests) waits for the next focus change or
+  Send, as after any other op.
+- The Spaces tab keeps #274's rule (re-read first, and a drop is
+  cancelled when anything was re-read), so the two tabs differ.
+- A row whose file was deleted outside can be moved until the next
+  re-read. Its name is written into the list, where it shows nothing,
+  as before.
 
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)
