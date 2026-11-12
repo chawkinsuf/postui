@@ -47,8 +47,8 @@ sharing a project should upgrade together.
   outside postui (by a `git pull`, say) no longer writes over it silently:
   that press takes the outside change back, as a step of its own, with a
   warning, and undo and redo can bring it back like any other step.
-- jq, `postui run --jq` and the suite treat a body with comments or NaN as
-  not JSON, as the Tree tab does.
+- jq and `postui run --jq` treat a body with comments or NaN as not JSON,
+  as the Tree tab does.
 
 ### Fixed
 

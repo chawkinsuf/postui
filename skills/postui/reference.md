@@ -20,8 +20,8 @@ path, are `a-z 0-9 - _` (lowercase). A request's slug is its path under
 empty; its `.folder.toml` holds its display name, and a folder without one
 is named by its directory. When you make a folder, write its
 `.folder.toml` too, as postui does: git keeps no empty directory, so it
-keeps an empty folder. A file or folder whose name starts with `.` is
-ignored; any other invalid name is an error in `check`.
+keeps an empty folder. Other names starting with `.` are ignored; any
+other invalid name is an error in `check`.
 
 Run `postui check` after every change.
 
