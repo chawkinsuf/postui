@@ -6557,6 +6557,330 @@ fn undo_of_a_rename_restores_the_order_slot() {
     assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma"]);
 }
 
+/// Appends a line to `project.toml` as another program would, and returns
+/// the file's new text.
+fn append_to_project_toml(dir: &tempfile::TempDir) -> String {
+    let path = dir.path().join("project.toml");
+    let text = format!("{}# added outside\n", std::fs::read_to_string(&path).unwrap());
+    std::fs::write(&path, &text).unwrap();
+    text
+}
+
+/// The toasts `action` pushes, oldest first.
+fn toasts_of(app: &mut App, action: Action) -> Vec<String> {
+    app.toasts = Default::default();
+    app.update(action);
+    app.toasts.messages().iter().map(|m| m.to_string()).collect()
+}
+
+/// What the press that finds a change made outside to `project.toml` says
+/// first, and what a later undo or redo of that step says.
+const TOOK_BACK: &str = "Took back changes made outside the app to project.toml";
+const PUT_BACK: &str = "Put back changes made outside the app to project.toml";
+
+/// #283, the ticket's steps: a rename, then another program appends a line
+/// to `project.toml`. The first undo takes the line back and warns, and
+/// the rename stays. The second undoes the rename. Two redos bring back the
+/// rename, then the line. The same once the app has re-read the file. Both
+/// steps then undo again, and a new op clears the redo of both.
+#[test]
+fn undo_takes_back_a_change_made_outside_before_it_undoes_the_step() {
+    for reload_first in [false, true] {
+        let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+        let start = project_toml(&dir);
+        app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+        let left = project_toml(&dir);
+        let outside = append_to_project_toml(&dir);
+        if reload_first {
+            app.update(Action::ReloadProjectFiles);
+        }
+        let (undo, redo) = (app.history.undo_len(), app.history.redo_len());
+
+        app.toasts = Default::default();
+        app.update(Action::Undo);
+        assert_eq!(
+            app.toasts.entries(),
+            [(format!("{TOOK_BACK}. Redo brings them back.").as_str(), &ToastKind::Warning)],
+            "reload_first {reload_first}"
+        );
+        assert_eq!(project_toml(&dir), left, "reload_first {reload_first}");
+        assert!(dir.path().join("requests/main/zeta.toml").is_file(), "the rename stays");
+        assert_eq!((app.history.undo_len(), app.history.redo_len()), (undo, redo + 1));
+        assert!(!app.proj().changed_on_disk(), "reload_first {reload_first}");
+
+        assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to zeta"]);
+        assert_eq!(project_toml(&dir), start, "reload_first {reload_first}");
+        assert!(dir.path().join("requests/main/beta.toml").is_file());
+
+        assert_eq!(toasts_of(&mut app, Action::Redo), ["Redid rename to zeta"]);
+        assert_eq!(project_toml(&dir), left, "reload_first {reload_first}");
+        assert_eq!(toasts_of(&mut app, Action::Redo), [PUT_BACK]);
+        assert_eq!(project_toml(&dir), outside, "reload_first {reload_first}");
+        assert_eq!(toasts_of(&mut app, Action::Redo), ["Nothing to redo"]);
+
+        assert_eq!(toasts_of(&mut app, Action::Undo), [TOOK_BACK]);
+        assert_eq!(project_toml(&dir), left, "reload_first {reload_first}");
+        assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to zeta"]);
+        assert_eq!(project_toml(&dir), start, "reload_first {reload_first}");
+
+        app.update(Action::RenameRequest { from: "main/alpha".into(), to: "eta".into() });
+        assert_eq!(toasts_of(&mut app, Action::Redo), ["Nothing to redo"]);
+        assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to eta"]);
+        assert_eq!(project_toml(&dir), start, "reload_first {reload_first}");
+    }
+}
+
+/// #283, the redo side: the redo takes the line back and warns, and the
+/// rename is not redone. The next redo redoes it. Two undos bring the line
+/// back, and a redo takes it back again.
+#[test]
+fn redo_takes_back_a_change_made_outside_before_it_redoes_the_step() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    let left = project_toml(&dir);
+    app.update(Action::Undo);
+    let start = project_toml(&dir);
+    let outside = append_to_project_toml(&dir);
+
+    app.toasts = Default::default();
+    app.update(Action::Redo);
+    assert_eq!(
+        app.toasts.entries(),
+        [(format!("{TOOK_BACK}. Undo brings them back.").as_str(), &ToastKind::Warning)]
+    );
+    assert_eq!(project_toml(&dir), start);
+    assert!(dir.path().join("requests/main/beta.toml").is_file(), "the rename is not redone");
+
+    assert_eq!(toasts_of(&mut app, Action::Redo), ["Redid rename to zeta"]);
+    assert_eq!(project_toml(&dir), left);
+    assert_eq!(toasts_of(&mut app, Action::Redo), ["Nothing to redo"]);
+
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to zeta"]);
+    assert_eq!(toasts_of(&mut app, Action::Undo), [PUT_BACK]);
+    assert_eq!(project_toml(&dir), outside);
+    assert_eq!(toasts_of(&mut app, Action::Redo), [TOOK_BACK]);
+    assert_eq!(project_toml(&dir), start);
+}
+
+/// #283: the steps beneath the one that met the outside change undo as
+/// usual: three presses take back the line, the rename that wrote
+/// `project.toml`, and the rename before it that wrote the request file
+/// alone (it keeps the slug).
+#[test]
+fn the_steps_beneath_an_outside_change_undo_after_it_is_taken_back() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    let start = project_toml(&dir);
+    let alpha = dir.path().join("requests/main/alpha.toml");
+    let unnamed = std::fs::read_to_string(&alpha).unwrap();
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "Alpha!".into() });
+    assert!(std::fs::read_to_string(&alpha).unwrap().contains("Alpha!"));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    append_to_project_toml(&dir);
+
+    assert_eq!(toasts_of(&mut app, Action::Undo), [format!("{TOOK_BACK}. Redo brings them back.")]);
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to zeta"]);
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to Alpha!"]);
+    assert_eq!(std::fs::read_to_string(&alpha).unwrap(), unnamed);
+    assert_eq!(project_toml(&dir), start);
+    assert!(dir.path().join("requests/main/beta.toml").is_file());
+}
+
+/// Deletes never confirm because undo restores. A request is deleted and
+/// `project.toml` then changes outside: two undos restore the request.
+#[test]
+fn a_delete_is_restored_after_a_change_made_outside() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    append_to_project_toml(&dir);
+
+    assert_eq!(toasts_of(&mut app, Action::Undo), [format!("{TOOK_BACK}. Redo brings them back.")]);
+    assert!(!dir.path().join("requests/main/alpha.toml").exists(), "not restored yet");
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Restored alpha"]);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"]);
+}
+
+/// A request is deleted and `project.toml` is then left unreadable as
+/// text. The undo fails and says so, and its step stays: with the file
+/// readable again, the next undo restores the request.
+#[test]
+fn a_delete_is_restored_once_a_file_that_was_not_text_is_readable_again() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    let left = project_toml(&dir);
+    std::fs::write(dir.path().join("project.toml"), [0xff, 0xfe, 0xfd]).unwrap();
+
+    let failed = toasts_of(&mut app, Action::Undo);
+    assert!(failed.iter().any(|m| m.contains("could not undo")), "{failed:?}");
+    assert!(!dir.path().join("requests/main/alpha.toml").exists());
+    std::fs::write(dir.path().join("project.toml"), &left).unwrap();
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Restored alpha"]);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
+/// An undo refused because its request file was removed outside drops only
+/// its own step, and what that step wrote to `project.toml` stays there.
+/// The delete beneath it wrote `project.toml` too: its undo takes that text
+/// back first, in the words for a change made outside, and the next undo
+/// restores the request.
+#[test]
+fn a_delete_beneath_a_refused_undo_is_restored_in_two_presses() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    std::fs::remove_file(dir.path().join("requests/main/zeta.toml")).unwrap();
+
+    let refused = toasts_of(&mut app, Action::Undo);
+    assert!(
+        refused
+            .iter()
+            .any(|m| m.contains("could not undo") && m.contains("zeta.toml no longer exists")),
+        "{refused:?}"
+    );
+    assert_eq!(toasts_of(&mut app, Action::Undo), [format!("{TOOK_BACK}. Redo brings them back.")]);
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Restored alpha"]);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(slot_order(&dir), ["alpha", "gamma"]);
+}
+
+/// The press that takes back a change made outside is one step of a
+/// counted undo: vim's `2u` takes the line back, then undoes the rename.
+#[test]
+fn a_counted_undo_counts_the_outside_step_as_one() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.focus = PaneId::Sidebar;
+    let start = project_toml(&dir);
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    append_to_project_toml(&dir);
+
+    app.toasts = Default::default();
+    type_keys(&mut app, "2u");
+    assert_eq!(
+        app.toasts.messages(),
+        [format!("{TOOK_BACK}. Redo brings them back.").as_str(), "Undid rename to zeta"]
+    );
+    assert_eq!(project_toml(&dir), start);
+}
+
+/// Comment 1290's steps: Move up on gamma; another program rewrites
+/// `project.toml`; with no re-read in between, Move up on gamma again and
+/// then Move down, which net to nothing and leave no step. Undo reaches
+/// the first move, whose file now holds the rewrite. The first press takes
+/// the rewrite back, the second undoes the move, and two redos bring back
+/// the move, then the rewrite.
+#[test]
+fn undo_after_moves_that_netted_to_nothing_takes_an_outside_rewrite_back_first() {
+    let (mut app, dir) = three_row_app();
+    let start = project_toml(&dir);
+    pick_from_sidebar_row_menu(&mut app, 2, "Move up");
+    let left = project_toml(&dir);
+    assert_eq!(saved_order(&dir), ["alpha", "gamma", "beta"]);
+    let steps = app.history.undo_len();
+
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/gamma", "main/beta"], "not re-read");
+    pick_from_sidebar_row_menu(&mut app, 1, "Move up");
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"]);
+    pick_from_sidebar_row_menu(&mut app, 1, "Move down");
+    assert_eq!(project_toml(&dir), outside, "up and down net to nothing");
+    assert_eq!(app.history.undo_len(), steps, "and leave no step");
+
+    assert_eq!(toasts_of(&mut app, Action::Undo), [format!("{TOOK_BACK}. Redo brings them back.")]);
+    assert_eq!(project_toml(&dir), left);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/gamma", "main/beta"]);
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid reorder of gamma"]);
+    assert_eq!(project_toml(&dir), start);
+
+    assert_eq!(toasts_of(&mut app, Action::Redo), ["Redid reorder of gamma"]);
+    assert_eq!(toasts_of(&mut app, Action::Redo), [PUT_BACK]);
+    assert_eq!(project_toml(&dir), outside);
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"]);
+}
+
+/// A save writes the request's file outside the journal, over the text a
+/// rename left there. That is the app's own write, so the rename still
+/// undoes after it (#283 compares no request file).
+#[test]
+fn a_rename_still_undoes_after_the_renamed_request_is_saved() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.capture_undo();
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/edited");
+    app.capture_undo();
+    app.update(Action::SaveRequest);
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/zeta").unwrap().url,
+        "https://x/edited"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/1", "the edit");
+    app.toasts = Default::default();
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").is_file(), "{:?}", app.toasts.messages());
+    assert!(!dir.path().join("requests/main/zeta.toml").exists());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
+/// A request made outside is listed by the sidebar's refresh, which writes
+/// it into `project.toml` outside the history. That write is the app's
+/// own, so the steps from before it still undo: the rename, and the delete
+/// beneath it.
+#[test]
+fn undo_still_works_after_the_refresh_listed_a_request_made_outside() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    postui_core::fixtures::save_request(dir.path(), "main/added", &req("https://x/9")).unwrap();
+    app.update(Action::RefreshSidebar);
+    assert_eq!(slot_order(&dir), ["zeta", "gamma", "added"]);
+
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/beta.toml").is_file(), "{:?}", app.toasts.messages());
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file(), "{:?}", app.toasts.messages());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "added"]);
+}
+
+/// The same when the rename itself is what first lists the request made
+/// outside: its undo puts the list back without it, the refresh after the
+/// undo writes it in again, and the redo still works.
+#[test]
+fn redo_still_works_after_the_refresh_completed_the_list_the_undo_put_back() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    postui_core::fixtures::save_request(dir.path(), "main/added", &req("https://x/9")).unwrap();
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma", "added"]);
+
+    app.toasts = Default::default();
+    app.update(Action::Redo);
+    assert!(dir.path().join("requests/main/zeta.toml").is_file(), "{:?}", app.toasts.messages());
+    assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma", "added"]);
+}
+
+/// A redo of a rename that finds `project.toml` changed outside writes
+/// that file alone. The open request stays open under its old name and is
+/// not reported as changed outside. The next redo renames it.
+#[test]
+fn a_redo_that_takes_outside_text_back_leaves_the_open_request_clean() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    app.update(Action::Undo);
+    append_to_project_toml(&dir);
+    assert_eq!(toasts_of(&mut app, Action::Redo), [format!("{TOOK_BACK}. Undo brings them back.")]);
+    assert_eq!(app.proj().held_request_drift("main/beta"), None);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(toasts_of(&mut app, Action::Redo), ["Redid rename to zeta"]);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/zeta"));
+    assert_eq!(app.proj().held_request_drift("main/zeta"), None);
+}
+
 #[test]
 fn undo_of_a_create_drops_its_arrival() {
     let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);

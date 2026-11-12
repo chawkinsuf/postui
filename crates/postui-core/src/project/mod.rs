@@ -674,6 +674,11 @@ impl Project {
 
     /// Reads the current text (for the op's `before`) and writes `after`
     /// (`None` removes). The only way a document's text changes.
+    ///
+    /// Outside a transaction no entry holds the write, so the journal
+    /// follows it ([`Journal::follow`]): an undo or redo compares the file
+    /// with the text its entry left (`preflight`, #283), and this write is
+    /// the app's own.
     pub(crate) fn fs_write_text(
         &mut self,
         path: &RelPath,
@@ -692,7 +697,11 @@ impl Project {
             }
             None => self.disk.remove(path)?,
         }
-        self.record(Op::Text { path: path.clone(), before, after: after.map(str::to_string) });
+        let op = Op::Text { path: path.clone(), before, after: after.map(str::to_string) };
+        if self.recording.is_none() {
+            self.journal.follow(&op);
+        }
+        self.record(op);
         Ok(())
     }
 

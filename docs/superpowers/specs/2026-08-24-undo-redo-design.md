@@ -243,6 +243,58 @@ Variable Manager) is refreshed to match what's now on disk, and the step
 itself is dropped rather than retried. Editor steps are pure memory and
 either fully apply or not at all.
 
+*Amended 2026-11-11 (task #283; design and rules in
+`2026-11-11-outside-edit-undo-step-design.md`):* text changed outside the
+app is not a reason to refuse an undo or redo. It becomes a step of its
+own (you, as a question on the task: "Should we scrap all this and just
+treat loading external edits as its own undo step?").
+
+- A step that wrote a file's text expects the file to still hold that
+  text. When an undo or redo finds other text there (a `git pull`, a hand
+  edit, an agent), that press does not replay the step. It writes the
+  step's text back into those files, and the text it found goes onto the
+  other stack as a step. A warning toast names the files: "Took back
+  changes made outside the app to project.toml. Redo brings them back."
+  (found by a redo: "Undo brings them back."). The next press replays the
+  step as usual. When the step is made and what the press does are mine
+  (approved): the user answered "1: A" and "2: A" to the two questions on
+  the task.
+- The step for the outside text is undone and redone like any other. Its
+  toasts are "Put back changes made outside the app to …" and "Took back
+  changes made outside the app to …" (mine).
+- It makes no difference whether the app has re-read the changed file,
+  and a re-read does not touch the history.
+- Nothing is refused over text. A file that does not parse is taken back
+  like any other. The refusals over paths stay as they were (a file that
+  vanished, a name taken), and a refused step is still dropped. A file
+  that cannot be read as text fails the undo or redo, which writes
+  nothing to it and keeps its step for a retry (mine).
+- A dropped step leaves its text in the files it wrote. The step beneath
+  that wrote one of those files finds that text the same way: its first
+  press takes it back, with the same toast although the text was the
+  app's, and the next press replays the step (mine).
+- Two kinds of file are not compared, because the app itself writes them
+  outside the history and their text since the step can be the app's own:
+  `.postui/state.toml` and request files (a save). Undoing a request
+  rename over an outside edit of that request is task #285 (mine).
+- The sidebar also writes `project.toml` outside the history, when it
+  finds requests or folders its order lists don't name (drag into folders
+  D5a). The history follows that write: the step that would next rewrite
+  the file is taken to have left the text the sidebar wrote, so that
+  write is not met as a change made outside. A sidebar write over text
+  that was changed outside is not followed, and both are taken back
+  together (mine).
+
+The user's reason, with the answers (task #283, comment 1296): "Again,
+this is talking about outside edits, which should be a rare case. This at
+least lets the user know what happened, without messing up what they were
+doing. And with these files often in git anyway, likely they could recover
+the edits later if they wanted to."
+
+What it costs: the first press writes over the outside edit on disk. After
+that the edit is kept only in the history: a new change clears the redo
+stack, and quitting or switching projects clears everything.
+
 **Empty stack**: quiet "Nothing to undo" / "Nothing to redo" toast.
 
 ## Testing
