@@ -668,7 +668,37 @@ impl Project {
                 Some(t) => self.disk.write(path, t)?,
                 None => self.disk.remove(path)?,
             },
+            Op::Named { path, before, .. } => self.disk.write(path, before)?,
         }
+        Ok(())
+    }
+
+    /// Sets the `name` of the request at `path` to `name` in the text the
+    /// file holds, or writes `exact.1` whole when the file holds `exact.0`.
+    /// A file that is absent, does not parse or already has that name is
+    /// left as it is. Recorded as [`Op::Named`].
+    pub(crate) fn fs_write_name(
+        &mut self,
+        path: &RelPath,
+        name: Option<&str>,
+        exact: Option<(&str, &str)>,
+    ) -> Result<(), Error> {
+        let Some(before) = self.disk.read(path)? else { return Ok(()) };
+        let after = match exact {
+            Some((held, text)) if before == held => text.to_string(),
+            _ => match crate::model::HttpRequest::from_toml_str(&before) {
+                Ok(mut req) if req.name.as_deref() != name => {
+                    req.name = name.map(str::to_string);
+                    req.to_toml_string()
+                }
+                _ => return Ok(()),
+            },
+        };
+        if after == before {
+            return Ok(());
+        }
+        self.disk.write(path, &after)?;
+        self.record(Op::Named { path: path.clone(), before, after });
         Ok(())
     }
 

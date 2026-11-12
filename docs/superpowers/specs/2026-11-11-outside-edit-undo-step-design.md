@@ -271,6 +271,12 @@ check cannot read fails the undo or redo and keeps the step, as on main
 (R13, changed in review round 1); the press that finds an outside edit
 counts as one step of a counted undo; the work goes on top of this branch.
 
+*Amended 2026-11-12 (task #285, mine):* R9 stands: request files are still
+not compared, and no outside step is made for one. A request rename's
+undo or redo instead sets only the name in the text the file holds when
+that is not the text the rename or the app's save left, so the change
+stays where it is (`Op::Named`; the undo spec's Failure handling).
+
 Not in this design: #285 (request files) and #286 (a folder rename's redo
 refused on main) are unchanged. #286's fix has to keep the compare from
 running on a path under a directory the same replay moves.

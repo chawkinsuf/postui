@@ -6824,6 +6824,35 @@ fn a_rename_still_undoes_after_the_renamed_request_is_saved() {
     assert!(dir.path().join("requests/main/beta.toml").is_file(), "{:?}", app.toasts.messages());
     assert!(!dir.path().join("requests/main/zeta.toml").exists());
     assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+    // The undo gives back the file from before the rename, which is what
+    // the editor holds after its own step was undone (#285).
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/beta").unwrap().url,
+        "https://x/1"
+    );
+    assert_eq!((app.editor.url.text(), app.editor.is_dirty()), ("https://x/1", false));
+}
+
+/// #285: a change made to a renamed request outside the app (an agent, a
+/// `git pull`) stays through the rename's undo and redo; only the name goes
+/// back and forth.
+#[test]
+fn undo_and_redo_of_a_rename_keep_a_change_made_outside_to_the_request() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
+    let mut outside = postui_core::fixtures::load_request(dir.path(), "main/zeta").unwrap();
+    outside.url = "https://x/outside".into();
+    postui_core::fixtures::save_request(dir.path(), "main/zeta", &outside).unwrap();
+
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Undid rename to zeta"]);
+    let back = postui_core::fixtures::load_request(dir.path(), "main/beta").unwrap();
+    assert_eq!((back.name.as_deref(), back.url.as_str()), (None, "https://x/outside"), "nameless");
+    assert!(!dir.path().join("requests/main/zeta.toml").exists());
+
+    assert_eq!(toasts_of(&mut app, Action::Redo), ["Redid rename to zeta"]);
+    let again = postui_core::fixtures::load_request(dir.path(), "main/zeta").unwrap();
+    assert_eq!((again.name.as_deref(), again.url.as_str()), (Some("zeta"), "https://x/outside"));
+    assert_eq!(slot_order(&dir), ["zeta", "alpha", "gamma"]);
 }
 
 /// A request made outside is listed by the sidebar's refresh, which writes
