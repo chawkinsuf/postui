@@ -252,8 +252,9 @@ enum Entry {
   stays; a new key goes first, after a leading byte order mark. A file
   that does not parse as a request is left as it is, and the inverse
   still records its opposite. Costs: a key added to a CRLF file ends in
-  LF (it parses, and its undo gives back the exact bytes), and a
-  hand-quoted name comes back in basic quotes. This splice is for request
+  LF (it parses, and its undo gives back the exact bytes), a
+  hand-quoted name comes back in basic quotes, and an undo or redo sets
+  the step's name over a name given in the file since. This splice is for request
   files only: a folder rename names its `.folder.toml` as before, with
   `toml_edit`'s `doc["name"]` (mine (approved), after review block 1).
 - Cascades are part of the entry: a request move carries its order-list

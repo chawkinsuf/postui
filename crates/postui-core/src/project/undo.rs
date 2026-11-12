@@ -196,7 +196,8 @@ impl Project {
                     overlay.insert(path.clone(), before.is_some());
                 }
                 // Not compared: the inverse sets only the name in what the
-                // file holds. A file that does not parse as a request is
+                // file holds, so a name given there since is replaced by
+                // the step's. A file that does not parse as a request is
                 // left as it is, as the rename leaves one.
                 Op::Named { path, .. } => {
                     if !exists(&self.disk, &overlay, path) {
