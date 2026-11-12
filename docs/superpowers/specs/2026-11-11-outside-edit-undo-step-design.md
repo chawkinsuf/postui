@@ -119,7 +119,7 @@ without it an undo cannot get past an order completion).
 | R3 | The step holds, for each such file, the text the replayed step left and the text the file holds now. Only the files that differ are in it. | mine |
 | R4 | The press that finds it takes the outside text back: those files get the text the step left, the outside step goes on the other stack, and the step that was about to be replayed stays where it was. The next press replays it. | mine (approved): question 2, "2: A" (comment 1296) |
 | R5 | Redo does the same in its direction: the outside step goes on the undo stack, and undo brings the outside text back. | mine |
-| R6 | The toast is a warning that names the files and says which key brings the text back, for example "Took back changes made outside the app to project.toml. Redo brings them back." Replayed later as an ordinary step it says "Put back…" or "Took back…". | mine |
+| R6 | The toast is a warning that names the files and says whether undo or redo brings the text back: "Took back changes made outside the app to project.toml. Redo brings them back." (found by a redo: "Undo brings them back."). Replayed later as an ordinary step it says "Put back changes made outside the app to project.toml" or "Took back changes made outside the app to project.toml", as an info toast. Several files read "a.toml and b.toml" or "a, b and c". | mine |
 | R7 | Nothing is refused over text. The path refusals stay as on main (a file gone, a path already taken, a made directory that holds something added since, the trash), and a refused step is dropped as on main. | mine |
 | R8 | The step beneath a dropped one meets the dropped step's text as a difference and takes it back the same way, then undoes. The toast then says "outside the app" although the text was the app's. | mine |
 | R9 | `.postui/state.toml` and request files are not compared, as on this branch: the app writes both outside the history. #285 stays its own task. | mine |
@@ -165,9 +165,15 @@ would add. It came with #239 (finding 6) and is not built again.
 instead of an error for them: `Result<Vec<Op>, Error>`. `replay`, when the
 list is not empty, pushes the popped entry back on the stack it came from,
 builds an entry from the list with a new id and no merge key, and replays
-that entry in the same direction through the same code. Its own pre-flight
-passes by construction. The loop that calls `Journal::follow` for a dropped
-entry's ops is removed.
+that entry in the same direction through the same code. It is not
+pre-flighted again: it is made of the files as the pre-flight just read
+them. If one of its writes fails, what it wrote is put back and it is
+discarded, since the popped entry is already back on its stack. The loop
+that calls `Journal::follow` for a dropped entry's ops is removed.
+
+*As built (2026-11-11):* the probe replayed the new entry by calling
+`replay` again, pre-flight included. The build branches inside the one
+`replay` instead, so there is no second pre-flight and no recursion.
 
 **Core, `journal.rs`.** A way to take a new id. `Journal::follow` and its
 call in `fs_write_text` stay (R10). `try_merge` is not touched: its
@@ -177,12 +183,16 @@ condition that the new op starts from the text the burst left came with
 **Contract, core to app.** Before: `Project::undo` / `redo` return the
 `Undone` of the entry the app's marker named, or an error. After: they may
 return the `Undone` of a step the app has no marker for. `Undone` gains
-`outside: Vec<String>`, the files taken back, empty for an ordinary step.
+`outside: Vec<String>`, the files taken back. It is not empty only for the
+press that found them; a later undo or redo of the outside step returns
+it empty, like any step.
 
 **App, `apply_undo_step`.** When `outside` is not empty: refresh as after
 any replay (`after_replay` with the present view on both sides), toast R6,
 put the popped marker back on its own stack, and put a marker for the
-outside step on the other one. A new `Verb` words its toasts.
+outside step on the other one. A new `Verb` (`Outside`) words its toasts.
+The press reports a step taken, so a counted undo (vim's `3u`) counts it
+as one of its steps and goes on.
 
 **Removed from this branch:** the "has been edited since" refusal in both
 directions; the second `follow` call (in `replay`); the expectations of
@@ -254,8 +264,9 @@ the redo side mirrors undo (R5); a broken file is taken back like any
 other (R12); the wording (R6); a refused step is still dropped (R7); the
 untrue label in R8 is left as it is; state and request files are still not
 compared (R9); the order completion is still followed (R10); a file the
-check cannot read still refuses the step (R13); the work goes on top of
-this branch.
+check cannot read still refuses the step (R13); the press that finds an
+outside edit counts as one step of a counted undo; the work goes on top
+of this branch.
 
 Not in this design: #285 (request files) and #286 (a folder rename's redo
 refused on main) are unchanged. #286's fix has to keep the compare from

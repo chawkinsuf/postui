@@ -13662,6 +13662,11 @@ impl App {
     /// Applies one popped step in the given direction and pushes it onto
     /// the opposite stack. Returns false when the step could not be
     /// applied (it is then dropped — spec: failure handling).
+    ///
+    /// A project step whose files held text it did not leave is not
+    /// applied: that text is taken back in its place, as a step pushed
+    /// onto the opposite stack, the popped step goes back on its own, and
+    /// the call returns true (#283).
     fn apply_undo_step(&mut self, step: crate::undo::Step, redo: bool) -> bool {
         use crate::undo::StepKind;
         match &step.kind {
@@ -13724,6 +13729,47 @@ impl App {
                 let verb = if redo { "redo" } else { "undo" };
                 let reorder = matches!(label.verb, crate::undo::Verb::Reorder);
                 match result {
+                    // The step's files held text it did not leave, and the
+                    // project took that text back in place of replaying
+                    // the step (#283; spec 2026-11-11 outside edit undo
+                    // step, R4 to R6). The step goes back where it was
+                    // popped from, and a step for the text taken back goes
+                    // on the other stack, with one view for both sides.
+                    Ok(Some(u)) if !u.outside.is_empty() => {
+                        let view = Box::new(self.view());
+                        self.after_replay(
+                            &u,
+                            &view,
+                            &view,
+                            false,
+                            &space_before,
+                            env_before.as_deref(),
+                        );
+                        self.sync_marked_entry();
+                        let taken = crate::undo::StepLabel::outside(&u.outside, redo);
+                        let back = if redo { "Undo" } else { "Redo" };
+                        self.toasts.push(
+                            format!("{}. {back} brings them back.", taken.toast(redo)),
+                            ToastKind::Warning,
+                        );
+                        let found = crate::undo::Step {
+                            kind: StepKind::Project {
+                                id: u.id,
+                                label: taken,
+                                before: view.clone(),
+                                after: view,
+                            },
+                            context: crate::undo::Context { slug: self.editor.slug.clone() },
+                        };
+                        if redo {
+                            self.history.push_redo(step.clone());
+                            self.history.push_undo_no_coalesce(found);
+                        } else {
+                            self.history.push_undo_no_coalesce(step.clone());
+                            self.history.push_redo(found);
+                        }
+                        true
+                    }
                     Ok(Some(u)) => {
                         self.after_replay(
                             &u,

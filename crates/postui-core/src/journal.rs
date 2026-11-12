@@ -67,6 +67,7 @@ pub struct EntryId(pub u64);
 #[derive(Debug, Clone)]
 pub struct Entry {
     /// Assigned by `Journal::push`; a value given by the caller is replaced.
+    /// An entry that reaches a stack another way takes `Journal::take_id`'s.
     pub id: EntryId,
     pub label: String,
     pub ops: Vec<Op>,
@@ -152,12 +153,19 @@ impl Journal {
             }
             return;
         }
-        entry.id = EntryId(self.next_id);
-        self.next_id += 1;
+        entry.id = self.take_id();
         self.undo.push(entry);
         if self.undo.len() > self.cap {
             self.undo.remove(0);
         }
+    }
+
+    /// The next id: `push`'s, and that of an entry `Project`'s replay
+    /// makes and puts on a stack itself.
+    pub fn take_id(&mut self) -> EntryId {
+        let id = EntryId(self.next_id);
+        self.next_id += 1;
+        id
     }
 
     pub fn pop_undo(&mut self) -> Option<Entry> {

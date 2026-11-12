@@ -155,6 +155,11 @@ pub enum ListRow {
 }
 
 /// What a project step did, for its undo/redo toast (spec R2).
+///
+/// `Outside` is not an op: it is text an undo or redo found in the
+/// subject's files in place of the text its step left there, and took
+/// back (#283). `found_by_redo` is the direction of the press that found
+/// it: that direction takes the text back, the other puts it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verb {
     Create,
@@ -164,6 +169,7 @@ pub enum Verb {
     Change,
     Delete,
     ProjectChange,
+    Outside { found_by_redo: bool },
 }
 
 /// A project step's toast wording, captured when the op ran so it never
@@ -203,6 +209,14 @@ impl StepLabel {
     pub fn delete_option(name: &str, env: &str) -> Self {
         Self::delete(format!("option \"{name}\" in {env}"))
     }
+    /// `files` as "a", "a and b" or "a, b and c".
+    pub fn outside(files: &[String], found_by_redo: bool) -> Self {
+        let subject = match files {
+            [head @ .., last] if !head.is_empty() => format!("{} and {last}", head.join(", ")),
+            _ => files.concat(),
+        };
+        Self::of(Verb::Outside { found_by_redo }, subject)
+    }
 }
 
 impl StepLabel {
@@ -211,6 +225,10 @@ impl StepLabel {
         let done = if redo { "Redid" } else { "Undid" };
         let s = &self.subject;
         match &self.verb {
+            Verb::Outside { found_by_redo } if *found_by_redo == redo => {
+                format!("Took back changes made outside the app to {s}")
+            }
+            Verb::Outside { .. } => format!("Put back changes made outside the app to {s}"),
             Verb::Delete if redo => format!("Deleted {s} again"),
             Verb::Delete => format!("Restored {s}"),
             Verb::Create => format!("{done} create of {s}"),
@@ -794,6 +812,21 @@ mod tests {
                 StepLabel::delete_option("alice", "QA"),
                 "Restored option \"alice\" in QA",
                 "Deleted option \"alice\" in QA again",
+            ),
+            (
+                StepLabel::outside(&["project.toml".to_string()], false),
+                "Took back changes made outside the app to project.toml",
+                "Put back changes made outside the app to project.toml",
+            ),
+            (
+                StepLabel::outside(&["a.toml".to_string(), "b.toml".to_string()], true),
+                "Put back changes made outside the app to a.toml and b.toml",
+                "Took back changes made outside the app to a.toml and b.toml",
+            ),
+            (
+                StepLabel::outside(&["a".to_string(), "b".to_string(), "c".to_string()], false),
+                "Took back changes made outside the app to a, b and c",
+                "Put back changes made outside the app to a, b and c",
             ),
         ];
         for (label, undo, redo) in cases {

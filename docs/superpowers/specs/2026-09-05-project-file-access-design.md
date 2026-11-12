@@ -229,22 +229,21 @@ enum Entry {
   the entry affects exists or is absent as expected, and refuses the
   whole entry naming the path on a conflict. The app toasts and drops the
   step, as today.
-  *Amended 2026-11-10 (task #283, mine):* a text op's inverse is also
-  refused, as a conflict naming the file, when the file does not hold the
-  text the op left. A refusal drops the entry and re-reads no document.
-  `state.toml` and request files are not compared (see the undo spec,
-  2026-08-24, Failure handling).
-  Review round 1 (mine): a text write the app makes outside a
-  transaction (the sidebar's order completion) is followed by the
-  journal, so the entry that would next rewrite that file records the
-  new text as the text it left.
-  Review round 2 (mine): the compare is one of the checks made before
-  touching disk, where the replay first meets the file's path; a path an
-  earlier inverse of the same replay writes or moves a file to is not
-  compared. (It was first made at each write, and a refusal reversed what
-  the replay had already done.) The journal follows the text ops of an
-  entry it drops as it follows an unjournaled write, so the entry beneath
-  that wrote the same file still replays.
+  *Amended 2026-11-11 (task #283; design and who decided what in
+  `2026-11-11-outside-edit-undo-step-design.md`):* the same check also
+  compares each file a text op wrote with the text the op left, where the
+  replay first meets the file's path; a path an earlier inverse of the
+  same replay writes or moves a file to is not compared, and neither are
+  `state.toml` and request files (see the undo spec, 2026-08-24, Failure
+  handling). A file that holds other text refuses nothing. The entry goes
+  back on its stack unreplayed, and a new entry made of those files, from
+  the text the op left to the text found, is replayed in its place: the
+  files get the text the op left, and the opposite stack gets the text
+  found. `Undone` names the files (`outside`), and the app pushes a marker
+  for the new entry. The next undo or redo replays the entry itself.
+  A text write the app makes outside a transaction (the sidebar's order
+  completion) is followed by the journal, so the entry that would next
+  rewrite that file records the new text as the text it left.
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.
