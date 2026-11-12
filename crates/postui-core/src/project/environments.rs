@@ -179,8 +179,7 @@ impl Project {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.environment_slug_for(&display, None);
-        // The rows shown, then the new one: the file's list gains the ones
-        // it lacks, the new one last.
+        // The rows shown, then the new one.
         let mut shown = existing;
         shown.push(slug.clone());
         // Creating an environment switches to it, as today's app does;
@@ -669,6 +668,8 @@ mod tests {
         p.delete_environment("dev").unwrap();
         let text = read(&dir, "project.toml").unwrap();
         assert!(!text.contains("environments"), "{text}");
+        assert!(p.meta().environments.is_empty());
+        assert_eq!(p.environments(), ["staging"]);
     }
 
     #[test]

@@ -484,8 +484,8 @@ The costs accepted with it:
 
 *(2026-11-12, #287, mine.)* An environment create, rename and delete
 build the list they write the same way, inside `edit_project_toml`
-from the document just read: create adds the new environment last,
-rename puts the new name in the old one's slot, delete drops the name.
+from the document just read: create adds the new environment last
+unless the file already names it, rename puts the new name in the old one's slot, delete drops the name.
 An order changed outside, and an environment added to the list
 outside, are kept. A rename or delete rewrites the list only when the
 file lists that environment at the write, not when the last read did,
