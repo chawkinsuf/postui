@@ -776,7 +776,9 @@ impl Project {
     /// Rewrites `project.toml` through `f`, preserving comments and
     /// everything `f` does not touch, journaled as a text op, and reloads
     /// `meta`. A `project.toml` that will not parse is an error, never an
-    /// empty document.
+    /// empty document. When the edited document's text is the text read,
+    /// nothing is written, so an edit that changes nothing makes no file
+    /// where there was none.
     pub(crate) fn edit_project_toml(
         &mut self,
         f: impl FnOnce(&mut toml_edit::DocumentMut),
@@ -791,7 +793,9 @@ impl Project {
         // `self.meta` untouched, not a document `ProjectMeta` can't parse.
         let parsed: ProjectMeta =
             toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
-        self.fs_write_text(&path, Some(&new_text))?;
+        if new_text != text {
+            self.fs_write_text(&path, Some(&new_text))?;
+        }
         self.meta = parsed;
         Ok(())
     }

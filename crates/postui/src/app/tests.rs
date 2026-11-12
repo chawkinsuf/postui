@@ -30595,6 +30595,28 @@ fn an_environment_drop_after_a_selector_fields_edit_lands() {
     assert_eq!(app.proj().environments(), ["dev", "prod", "qa"]);
 }
 
+/// In a directory with no `project.toml`, alt+up on the top environment
+/// row moves nothing: no `project.toml` is made and no step is recorded.
+#[test]
+fn an_environment_move_that_moves_nothing_makes_no_project_toml() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+    for name in ["dev", "qa"] {
+        std::fs::write(dir.path().join(format!("environments/{name}.toml")), "").unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    render_once(&mut app);
+    assert_eq!(app.proj().environments(), ["dev", "qa"]);
+    let steps = app.history.undo_len();
+
+    app.select_list_row(ManageTab::Environments, "dev");
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert!(!dir.path().join("project.toml").exists());
+    assert_eq!(app.history.undo_len(), steps);
+}
+
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up

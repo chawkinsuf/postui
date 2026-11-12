@@ -8247,6 +8247,8 @@ impl App {
                 true
             }
             Action::MoveEnv { name, delta } => {
+                // No re-read first, unlike `MoveSpace`: core moves the row
+                // in the order `project.toml` holds at the write (#284).
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -10818,9 +10820,13 @@ impl App {
                         self.space_name(&drag.name)
                     )),
                 ),
-                // Core takes the dragged row and its place in the working
-                // order, and moves it in the list `project.toml` holds
-                // then (#284).
+                // Core takes the dragged row and its place among the rows
+                // shown, and puts it at that place in the order
+                // `project.toml` holds then (#284), so its neighbours are
+                // the file's, not the drag's. Unlike a space order,
+                // nothing is re-read first, so no re-read cancels the
+                // drop (spec 2026-09-04 request reordering, the #284
+                // paragraph and its costs).
                 _ => (
                     p.place_environment(
                         &drag.name,

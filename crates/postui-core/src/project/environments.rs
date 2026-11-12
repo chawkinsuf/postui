@@ -84,7 +84,9 @@ impl Project {
     /// file holds at this write and an outside edit postui hasn't read
     /// yet is kept (#284). Entries that name no displayed environment
     /// keep their slots. When the row is already at that place, the
-    /// document is left as it was read.
+    /// document is left as it was read. The rows are listed again either
+    /// way, from the `meta` that edit loaded, so they then show the
+    /// file's order.
     fn reorder_environment(
         &mut self,
         label: &str,
@@ -92,6 +94,9 @@ impl Project {
         name: &str,
         place: impl FnOnce(usize) -> usize,
     ) -> Result<Option<ListChange>, Error> {
+        // The rows the tab shows, from the last listing: the places are
+        // counted among them. A row whose file was removed outside since
+        // is still one, so the list written names it.
         let shown = self.environments.clone();
         if !shown.iter().any(|e| e == name) {
             return Err(Error::NotFound(name.to_string()));
@@ -536,6 +541,20 @@ mod tests {
         assert!(matches!(p.move_environment("dev", 1), Err(Error::Parse { .. })));
         assert!(matches!(p.place_environment("qa", 0), Err(Error::Parse { .. })));
         assert_eq!(read(&dir, "project.toml").unwrap(), text);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    /// In a directory with no `project.toml`, a reorder that moves nothing
+    /// makes no file and records no entry.
+    #[test]
+    fn a_reorder_that_moves_nothing_makes_no_project_toml() {
+        let (dir, _p) = fixture();
+        std::fs::remove_file(dir.path().join("project.toml")).unwrap();
+        let (mut p, _warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p.environments(), ["dev", "qa"]);
+        assert!(p.move_environment("dev", -1).unwrap().is_none());
+        assert!(p.place_environment("qa", 1).unwrap().is_none());
+        assert!(!dir.path().join("project.toml").exists());
         assert_eq!(p.journal_len(), 0);
     }
 
