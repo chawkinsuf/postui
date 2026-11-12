@@ -35,7 +35,8 @@ sharing a project should upgrade together.
   request here…" and "New folder here…" put it last in that folder. A curl
   import, or a request moved to another space, goes last.
 - The New request prompt and a request's Rename prompt take a name only: a
-  `/` typed there is part of the name. A curl import's `# @name` can still put it in a folder.
+  `/` typed there is part of the name. A curl import's `# @name` can still
+  put it in a folder.
 - Manage's "Move all requests…" moves the folders too.
 - `alt+↑`/`alt+↓` no longer move sidebar rows; `m` and the row menu's Move
   up and Move down do. Move to space is now `M`.
