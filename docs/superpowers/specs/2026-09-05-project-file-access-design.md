@@ -247,9 +247,10 @@ enum Entry {
   *Amended 2026-11-12 (task #285, mine):* the `name` a request rename
   sets in the request's file is its own op, `Op::Named`, holding the name
   before and after (`None` = no `name` key), not the file's text. The
-  rename and the inverse set only that key with `toml_edit`, the rest of
-  the text as the file holds it, so a change made to the request since
-  stays. A file that does not parse as a request is left as it is.
+  rename and the inverse set only that key, found with `toml_edit`, every
+  other byte as the file holds it, so a change made to the request since
+  stays; a new key goes first. A file that does not parse as a request is
+  left as it is, and the inverse still records its opposite.
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.

@@ -4121,7 +4121,7 @@ mod tests {
         assert_eq!(new, "main/f-2");
         assert_eq!(
             read(&dir, "requests/main/f-2/.folder.toml").as_deref(),
-            Some("color = \"red\"\nname = \"f\"\n")
+            Some("name = \"f\"\ncolor = \"red\"\n")
         );
     }
 

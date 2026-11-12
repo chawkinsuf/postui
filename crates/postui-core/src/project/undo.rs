@@ -196,9 +196,8 @@ impl Project {
                     overlay.insert(path.clone(), before.is_some());
                 }
                 // Not compared: the inverse sets only the name in what the
-                // file holds. A file that no longer parses as a request is
-                // moved without its name set, as the rename moves one, and
-                // no toast says so.
+                // file holds. A file that does not parse as a request is
+                // left as it is, as the rename leaves one.
                 Op::Named { path, .. } => {
                     if !exists(&self.disk, &overlay, path) {
                         return Err(conflict(path, "no longer exists"));
@@ -219,16 +218,16 @@ impl Project {
             Op::Restored { ticket } => self.fs_retrash(ticket),
             Op::Text { path, before, .. } => self.fs_write_text(path, before.as_deref()),
             // The opposite op holds this op's names, not the one the file
-            // held. A file that is no longer a request is left as it is
-            // and nothing is recorded for it.
+            // held, and is recorded even when the file was left as it is
+            // (it does not parse as a request), so the opposite step sets
+            // its name in the file it finds then.
             Op::Named { path, before, after } => {
-                if self.set_name(path, before.as_deref())?.is_some() {
-                    self.record(Op::Named {
-                        path: path.clone(),
-                        before: after.clone(),
-                        after: before.clone(),
-                    });
-                }
+                self.set_name(path, before.as_deref())?;
+                self.record(Op::Named {
+                    path: path.clone(),
+                    before: after.clone(),
+                    after: before.clone(),
+                });
                 Ok(())
             }
         }
@@ -1117,9 +1116,52 @@ mod tests {
         std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.rename_request("main/ping", "Pong").unwrap();
-        assert_eq!(p.read_request("main/pong").unwrap().name.as_deref(), Some("Pong"));
+        assert_eq!(
+            read(&dir, "requests/main/pong.toml").unwrap(),
+            format!("name = \"Pong\"\n{original}"),
+            "the name goes first, where a save puts it"
+        );
         assert_replayed(p.undo(), "rename request");
         assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+    }
+
+    /// Taking out a name the rename added leaves a comment written above
+    /// it since.
+    #[test]
+    fn undo_of_a_rename_keeps_a_comment_written_above_the_name_it_added() {
+        let (dir, _p) = fixture();
+        let original = "# top\nmethod = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let outside =
+            format!("# owner: payments\n{}", read(&dir, "requests/main/pong.toml").unwrap());
+        std::fs::write(dir.path().join("requests/main/pong.toml"), &outside).unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            format!("# owner: payments\n{original}")
+        );
+    }
+
+    /// A step that found the file not parsing as a request still records
+    /// its opposite, so once the file parses again the next undo or redo
+    /// sets the name.
+    #[test]
+    fn a_name_skipped_over_a_broken_file_is_set_by_the_next_replay() {
+        let (dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        std::fs::write(dir.path().join("requests/main/pong.toml"), "url = [\n").unwrap();
+        assert_replayed(p.undo(), "rename request");
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "name = \"Pong\"\nmethod = \"GET\"\nurl = \"https://fixed\"\n",
+        )
+        .unwrap();
+        assert_replayed(p.redo(), "rename request");
+        assert_replayed(p.undo(), "rename request");
+        let back = p.read_request("main/ping").unwrap();
+        assert_eq!((back.name.as_deref(), back.url.as_str()), (Some("Ping"), "https://fixed"));
     }
 
     /// A request file that no longer parses as a request gets no name: the

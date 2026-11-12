@@ -308,29 +308,36 @@ fn parse_err(file: &str) -> impl Fn(&dyn std::fmt::Display) -> Error + '_ {
     move |e| Error::Parse { file: file.to_string(), error: e.to_string() }
 }
 
-/// The TOML `text` with its `name` key set to `name` (`None` removes it),
-/// the rest of the text as it is. A name that replaces another keeps the
-/// old value's spacing and trailing comment; a new key goes last.
+/// The TOML `text` with its root `name` key set to `name` (`None` removes
+/// it), every other byte as it is. A name that replaces another takes the
+/// old value's place; a new key goes first, where a request's save puts
+/// it; a removed key takes its own line with it.
+///
+/// The value written is toml_edit's quoting of the name, so a name that
+/// was hand-quoted another way (`'Ping'`) comes back as `"Ping"`: the same
+/// name in other quotes.
 pub(crate) fn toml_with_name(
     text: &str,
     name: Option<&str>,
 ) -> Result<String, toml_edit::TomlError> {
-    let mut doc: toml_edit::DocumentMut = text.parse()?;
-    match name {
-        Some(n) => {
-            if let Some(v) = doc.get_mut("name").and_then(toml_edit::Item::as_value_mut) {
-                let decor = v.decor().clone();
-                *v = n.into();
-                *v.decor_mut() = decor;
-            } else {
-                doc["name"] = toml_edit::value(n);
-            }
-        }
+    let doc = toml_edit::Document::parse(text)?;
+    let new = name.map(|n| toml_edit::Value::from(n).to_string());
+    let Some((key, value)) = doc.as_table().get_key_value("name") else {
+        return Ok(match new {
+            Some(v) => format!("name = {v}\n{text}"),
+            None => text.to_string(),
+        });
+    };
+    let key = key.span().expect("a parsed document has spans");
+    let value = value.span().expect("a parsed document has spans");
+    Ok(match new {
+        Some(v) => format!("{}{v}{}", &text[..value.start], &text[value.end..]),
         None => {
-            doc.remove("name");
+            let start = text[..key.start].rfind('\n').map_or(0, |i| i + 1);
+            let end = text[value.end..].find('\n').map_or(text.len(), |i| value.end + i + 1);
+            format!("{}{}", &text[..start], &text[end..])
         }
-    }
-    Ok(doc.to_string())
+    })
 }
 
 impl Project {
