@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{EndSynchronizedUpdate, SetTitle};
+use ratatui::crossterm::terminal::{EndSynchronizedUpdate, EnterAlternateScreen, SetTitle};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -58,14 +58,7 @@ async fn main() -> anyhow::Result<ExitCode> {
 
     let result = run(&mut terminal, cli_root, debug_ai).await;
     reset_pointer_shape();
-    let _ = execute!(
-        std::io::stdout(),
-        SetCursorStyle::DefaultUserShape,
-        PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
-        DisableFocusChange,
-        DisableBracketedPaste
-    );
+    disable_terminal_modes();
     drain_pending_input();
     ratatui::restore();
     result.map(|()| ExitCode::SUCCESS)
@@ -146,13 +139,25 @@ fn enable_terminal_modes() {
     }
 }
 
+/// Turns off the modes `enable_terminal_modes` turns on and puts back the
+/// user's own cursor shape.
+fn disable_terminal_modes() {
+    let _ = execute!(
+        std::io::stdout(),
+        SetCursorStyle::DefaultUserShape,
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture,
+        DisableFocusChange,
+        DisableBracketedPaste
+    );
+}
+
 /// Wraps the panic hook `ratatui::init()` installed: that hook restores the
 /// terminal but knows nothing about the modes `enable_terminal_modes` turns
 /// on, so turn those off first and then delegate to it. Called once, at
 /// start-up: `take_hook` + `set_hook` adds a layer each time, so a second
 /// call would run the restore sequence twice on a panic. The `$EDITOR`
-/// round trip rebuilds the terminal with `reenter_terminal`, which installs
-/// no hook, so these two layers cover it too (#171).
+/// round trip gets the terminal back without installing a hook (#171).
 fn wrap_panic_hook() {
     let prev_hook = std::panic::take_hook();
     let main_thread = std::thread::current().id();
@@ -183,14 +188,7 @@ fn wrap_panic_hook() {
         // follows is unambiguously outside a synchronized update.
         let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
         reset_pointer_shape();
-        let _ = execute!(
-            std::io::stdout(),
-            SetCursorStyle::DefaultUserShape,
-            PopKeyboardEnhancementFlags,
-            DisableMouseCapture,
-            DisableFocusChange,
-            DisableBracketedPaste
-        );
+        disable_terminal_modes();
         prev_hook(info);
     }));
 }
@@ -454,20 +452,18 @@ fn spawn_editor(
     let program = parts.next().unwrap_or("vi").to_string();
     let args: Vec<&str> = parts.collect();
 
-    let _ = execute!(
-        std::io::stdout(),
-        SetCursorStyle::DefaultUserShape,
-        PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
-        DisableFocusChange,
-        DisableBracketedPaste
-    );
+    disable_terminal_modes();
     drain_pending_input();
     ratatui::restore();
 
     let status = std::process::Command::new(&program).args(&args).arg(path).status();
 
-    *terminal = reenter_terminal()?;
+    // Raw mode and the alternate screen back, on the same `Terminal`, but
+    // not `ratatui::init()`: its panic hook would add a layer to the chain
+    // `main` installed (#171). If the terminal can't be got back, the
+    // error ends the app.
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
     enable_terminal_modes();
     terminal.clear()?;
 
@@ -485,16 +481,6 @@ fn spawn_editor(
             Ok(false)
         }
     }
-}
-
-/// `ratatui::try_init()` without its `set_panic_hook()`: raw mode, the
-/// alternate screen and a fresh `Terminal`. The hooks `main` installed once
-/// stay in place across the round trip, so the rebuild adds no layer to
-/// the panic hook chain (#171).
-fn reenter_terminal() -> std::io::Result<ratatui::DefaultTerminal> {
-    ratatui::crossterm::terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), ratatui::crossterm::terminal::EnterAlternateScreen)?;
-    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
 }
 
 /// Hands a config file to `$EDITOR` as a temp *copy*, then applies it
@@ -562,33 +548,4 @@ fn edit_config_externally(
     // caret warnings show up without any extra code here.
     app.update(Action::ReloadFromDisk);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    /// #171: each `take_hook` + `set_hook` adds a layer to the panic hook
-    /// chain, so ratatui's hook and ours are installed once, at start-up,
-    /// and the `$EDITOR` round trip rebuilds the terminal without either.
-    /// The hooks are process-global and the round trip needs a real
-    /// terminal, so this reads the code (comment lines left out) instead.
-    #[test]
-    fn panic_hooks_are_installed_once() {
-        let code: String = include_str!("main.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap()
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        for (call, times) in [
-            ("ratatui::init(", 1),
-            ("ratatui::try_init(", 0),
-            ("init_with_options(", 0),
-            ("wrap_panic_hook();", 1),
-            ("set_hook(", 1),
-        ] {
-            assert_eq!(code.matches(call).count(), times, "{call}");
-        }
-    }
 }

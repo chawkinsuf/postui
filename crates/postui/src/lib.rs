@@ -124,6 +124,38 @@ mod width_measure_test {
     }
 }
 
+/// Each `take_hook` + `set_hook` adds a layer to the panic hook chain, so
+/// ratatui's hook and `main`'s are installed once, at start-up, and the
+/// `$EDITOR` round trip gets the terminal back without either (#171). The
+/// hooks are process-global and the round trip needs a real terminal, so
+/// this reads the code.
+#[cfg(test)]
+mod panic_hook_test {
+    use super::source_scan::{code_lines, sources};
+
+    #[test]
+    fn panic_hooks_are_installed_once() {
+        let texts: Vec<String> = sources().into_iter().map(|(_, text)| text).collect();
+        let count = |word: &str| -> usize {
+            texts
+                .iter()
+                .flat_map(|text| code_lines(text))
+                .map(|(_, line)| line.matches(word).count())
+                .sum()
+        };
+        for (word, times) in [
+            ("ratatui::init(", 1),
+            ("try_init", 0),
+            ("init_with_options(", 0),
+            ("set_hook(", 1),
+            // its definition and its one call
+            ("wrap_panic_hook", 2),
+        ] {
+            assert_eq!(count(word), times, "`{word}` in the crate's code");
+        }
+    }
+}
+
 /// The crate's own source, for the tests that hold it to a rule.
 #[cfg(test)]
 mod source_scan {
