@@ -44,47 +44,39 @@ fn written_outside_journal(path: &RelPath) -> bool {
             && path.file_name() != crate::storage::FOLDER_FILE)
 }
 
-/// What [`Project::preflight`] knows of a path the replay has touched, at
-/// that path or at a directory above it.
+/// Where a path stands at a point of [`Project::preflight`]'s replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Node {
-    /// It holds what is on disk at this path (moved here by the replay).
-    At(RelPath),
-    /// An inverse made it present or absent.
-    Set(bool),
-}
-
-/// Where a path stands at a point of the replay.
-enum Held {
-    /// What is on disk at this path.
+    /// It holds what is on disk at this path before the replay.
     Disk(RelPath),
+    /// An inverse made it present or absent.
     Set(bool),
 }
 
 /// The paths the replay has touched so far, by the path they will have.
 /// A path is looked up at itself, then at each directory above it, so a
-/// path inside a moved directory is found where the directory is on disk
-/// (#286).
+/// path inside a directory the replay renames is found where the
+/// directory is on disk (#286).
 #[derive(Default)]
 struct Overlay(std::collections::HashMap<RelPath, Node>);
 
 impl Overlay {
-    fn resolve(&self, p: &RelPath) -> Held {
+    fn resolve(&self, p: &RelPath) -> Node {
         let mut at = Some(p.clone());
         while let Some(a) = at {
             match self.0.get(&a) {
-                Some(Node::At(disk)) => {
-                    let rest = &p.as_str()[a.as_str().len()..];
-                    return match RelPath::new(format!("{disk}{rest}")) {
-                        Ok(on_disk) => Held::Disk(on_disk),
-                        Err(_) => Held::Set(false),
-                    };
+                Some(Node::Disk(disk)) => {
+                    return Node::Disk(p.rebase(&a, disk).unwrap_or_else(|| p.clone()));
                 }
-                // Nothing is under a file or a path taken out.
-                Some(Node::Set(present)) => return Held::Set(*present && a == *p),
+                Some(Node::Set(present)) if a == *p => return Node::Set(*present),
+                // Nothing is under a path taken out.
+                Some(Node::Set(false)) => return Node::Set(false),
+                // What is under a path made present is looked up on disk.
+                Some(Node::Set(true)) => break,
                 None => at = a.parent(),
             }
         }
-        Held::Disk(p.clone())
+        Node::Disk(p.clone())
     }
 
     /// Takes `p` and everything under it out of the map.
@@ -98,21 +90,15 @@ impl Overlay {
         self.0.insert(p.clone(), Node::Set(present));
     }
 
-    /// An inverse moves what is at `from` to `to`, with what is under it.
+    /// A rename's inverse moves what is at `from` to `to`, with what is
+    /// under it.
     fn moved(&mut self, from: &RelPath, to: &RelPath) {
-        let node = match self.resolve(from) {
-            Held::Disk(on_disk) => Node::At(on_disk),
-            Held::Set(present) => Node::Set(present),
-        };
+        let node = self.resolve(from);
         let under = self.take_under(from);
         self.set(from, false);
         self.take_under(to);
         for (k, n) in under {
-            if k == *from {
-                continue;
-            }
-            let rest = &k.as_str()[from.as_str().len()..];
-            if let Ok(k) = RelPath::new(format!("{to}{rest}")) {
+            if let Some(k) = k.rebase(from, to) {
                 self.0.insert(k, n);
             }
         }
@@ -159,11 +145,14 @@ impl Project {
         };
         let mut differing = Vec::new();
         let mut overlay = Overlay::default();
-        fn exists(disk: &crate::disk::Disk, overlay: &Overlay, p: &RelPath) -> bool {
-            match overlay.resolve(p) {
-                Held::Disk(at) => disk.exists(&at),
-                Held::Set(present) => present,
+        fn present(disk: &crate::disk::Disk, node: &Node) -> bool {
+            match node {
+                Node::Disk(at) => disk.exists(at),
+                Node::Set(present) => *present,
             }
+        }
+        fn exists(disk: &crate::disk::Disk, overlay: &Overlay, p: &RelPath) -> bool {
+            present(disk, &overlay.resolve(p))
         }
         for op in ops.iter().rev() {
             match op {
@@ -177,10 +166,11 @@ impl Project {
                     overlay.moved(to, from);
                 }
                 Op::Created { path } => {
-                    if !exists(&self.disk, &overlay, path) {
+                    let node = overlay.resolve(path);
+                    if !present(&self.disk, &node) {
                         return Err(conflict(path, "no longer exists"));
                     }
-                    if let Held::Disk(at) = overlay.resolve(path)
+                    if let Node::Disk(at) = node
                         && self.disk.is_dir(&at)
                     {
                         // What it holds that postui shows (a folder, a
@@ -219,7 +209,8 @@ impl Project {
                     if exists(&self.disk, &overlay, &ticket.original) {
                         return Err(conflict(&ticket.original, "already exists"));
                     }
-                    overlay.moved(&ticket.slot, &ticket.original);
+                    overlay.set(&ticket.slot, false);
+                    overlay.set(&ticket.original, true);
                 }
                 Op::Restored { ticket } => {
                     // Known gap, left for #243: a restored directory (a
@@ -239,11 +230,13 @@ impl Project {
                     if exists(&self.disk, &overlay, &ticket.slot) {
                         return Err(conflict(&ticket.slot, "is occupied in the trash"));
                     }
-                    overlay.moved(&ticket.original, &ticket.slot);
+                    overlay.set(&ticket.original, false);
+                    overlay.set(&ticket.slot, true);
                 }
                 Op::Text { path, before, after } => {
                     let expect_present = after.is_some();
-                    if expect_present != exists(&self.disk, &overlay, path) {
+                    let node = overlay.resolve(path);
+                    if expect_present != present(&self.disk, &node) {
                         return Err(conflict(
                             path,
                             if expect_present { "no longer exists" } else { "already exists" },
@@ -259,7 +252,7 @@ impl Project {
                     // compared: the inverse reads it before it writes
                     // (`fs_write_text`) and fails there, which keeps the
                     // entry on its stack.
-                    if let Held::Disk(at) = overlay.resolve(path)
+                    if let Node::Disk(at) = node
                         && !written_outside_journal(path)
                         && let Ok(held) = self.disk.peek(&at)
                         && held != *after
@@ -1366,6 +1359,34 @@ mod tests {
         p.redo().unwrap();
         assert!(dir.path().join("requests/main/pong.toml").is_file());
         assert!(!dir.path().join("requests/main/ping.toml").exists());
+    }
+
+    /// What the overlay knew under a renamed directory is found under its
+    /// new path, a path inside it is looked up where it is on disk, and
+    /// nothing is left at the old path; through a second rename too.
+    #[test]
+    fn the_overlay_follows_a_renamed_directory() {
+        let r = |s: &str| RelPath::new(s).unwrap();
+        let mut o = Overlay::default();
+        o.set(&r("a/gone.toml"), false);
+        o.set(&r("a/made.toml"), true);
+        o.moved(&r("a"), &r("b"));
+        assert_eq!(o.resolve(&r("b/gone.toml")), Node::Set(false));
+        assert_eq!(o.resolve(&r("b/made.toml")), Node::Set(true));
+        assert_eq!(o.resolve(&r("b/kept.toml")), Node::Disk(r("a/kept.toml")));
+        assert_eq!(o.resolve(&r("a/kept.toml")), Node::Set(false));
+
+        o.moved(&r("b/kept.toml"), &r("c.toml"));
+        assert_eq!(o.resolve(&r("c.toml")), Node::Disk(r("a/kept.toml")));
+        o.moved(&r("b"), &r("d"));
+        assert_eq!(o.resolve(&r("d/kept.toml")), Node::Set(false));
+        assert_eq!(o.resolve(&r("d/made.toml")), Node::Set(true));
+        assert_eq!(o.resolve(&r("d/other.toml")), Node::Disk(r("a/other.toml")));
+        assert_eq!(o.resolve(&r("b")), Node::Set(false));
+
+        // Under a path made present, what is there is looked up on disk.
+        o.set(&r("e"), true);
+        assert_eq!(o.resolve(&r("e/x.toml")), Node::Disk(r("e/x.toml")));
     }
 
     #[test]
