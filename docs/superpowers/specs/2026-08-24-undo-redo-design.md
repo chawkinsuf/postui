@@ -277,13 +277,12 @@ treat loading external edits as its own undo step?").
   outside the history and their text since the step can be the app's own:
   `.postui/state.toml` and request files (a save). Undoing a request
   rename over an outside edit of that request is task #285 (mine).
-  *Amended 2026-11-12 (task #285, mine):* the undo or redo of a request
-  rename puts back only the request's name when its file holds other text
-  than the rename (or the app's own save since) left: the text found
-  stays, with the other name, and no toast says so. A file that no longer
-  parses moves back as it is. When the file holds what the rename or the
-  app's save left, the undo writes the text from before the rename, as
-  before.
+  *Amended 2026-11-12 (task #285, mine):* a request rename sets only the
+  `name` key in the request's file, the rest of its text as it is, and its
+  undo and redo do the same with the name from before and after the
+  rename, in whatever text the file holds then: a save or an outside edit
+  made since stays, and no toast says so. A file that is no longer TOML
+  moves back as it is.
 - The sidebar also writes `project.toml` outside the history, when it
   finds requests or folders its order lists don't name (drag into folders
   D5a). The history follows that write: the step that would next rewrite

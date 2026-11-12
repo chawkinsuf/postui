@@ -195,7 +195,8 @@ impl Project {
                     }
                     overlay.insert(path.clone(), before.is_some());
                 }
-                // Not compared: the inverse keeps what the file holds.
+                // Not compared: the inverse sets only the name in what the
+                // file holds.
                 Op::Named { path, .. } => {
                     if !exists(&self.disk, &overlay, path) {
                         return Err(conflict(path, "no longer exists"));
@@ -216,9 +217,7 @@ impl Project {
             Op::Restored { ticket } => self.fs_retrash(ticket),
             Op::Text { path, before, .. } => self.fs_write_text(path, before.as_deref()),
             Op::Named { path, before, after } => {
-                let name =
-                    crate::model::HttpRequest::from_toml_str(before).ok().and_then(|r| r.name);
-                self.fs_write_name(path, name.as_deref(), Some((after, before)))
+                self.fs_write_name(path, after.as_deref(), before.as_deref())
             }
         }
     }
@@ -986,76 +985,133 @@ mod tests {
 
     /// A save writes a request's file outside the journal. Its text is not
     /// compared, so the app's own save is not taken for an outside change:
-    /// the rename undoes at the first press. The journal follows the save,
-    /// so the undo gives back the text from before the rename and the redo
-    /// the saved text, as for the app's other writes (#285).
+    /// the rename undoes at the first press, and the undo and the redo set
+    /// only the name in the saved text (#285).
     #[test]
     fn a_save_after_a_rename_is_not_taken_for_an_outside_change() {
         let (dir, mut p) = fixture();
-        let original = read(&dir, "requests/main/ping.toml").unwrap();
         p.rename_request("main/ping", "Pong").unwrap();
         let mut req = p.read_request("main/pong").unwrap();
         req.url = "https://saved".into();
         p.save_request("main/pong", &req).unwrap();
         let saved = read(&dir, "requests/main/pong.toml").unwrap();
         assert_replayed(p.undo(), "rename request");
-        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            saved.replace("\"Pong\"", "\"Ping\"")
+        );
         assert_replayed(p.redo(), "rename request");
         assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), saved);
     }
 
+    /// The same for a save made after the undo: the redo keeps it.
+    #[test]
+    fn a_save_after_a_rename_is_undone_stays_through_the_redo() {
+        let (_dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        assert_replayed(p.undo(), "rename request");
+        let mut req = p.read_request("main/ping").unwrap();
+        req.url = "https://saved".into();
+        p.save_request("main/ping", &req).unwrap();
+        assert_replayed(p.redo(), "rename request");
+        let again = p.read_request("main/pong").unwrap();
+        assert_eq!((again.name.as_deref(), again.url.as_str()), (Some("Pong"), "https://saved"));
+    }
+
     /// The name a request rename wrote is put back in the text the file
-    /// holds at the undo, so a change made to the request since (an agent,
-    /// a hand edit, a `git pull`) stays. The redo does the same (#285).
+    /// holds at the undo, the rest of that text as it is, so a change made
+    /// to the request since (an agent, a hand edit, a `git pull`) stays.
+    /// The redo does the same (#285).
     #[test]
     fn undo_and_redo_of_a_rename_keep_a_change_made_to_the_request_since() {
         let (dir, mut p) = fixture();
         p.rename_request("main/ping", "Pong").unwrap();
+        let outside =
+            "# auth notes\nmethod = \"GET\"\nname = \"Pong\"\nurl = \"https://outside/1\"\n";
+        std::fs::write(dir.path().join("requests/main/pong.toml"), outside).unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            outside.replace("\"Pong\"", "\"Ping\"")
+        );
+        assert!(!dir.path().join("requests/main/pong.toml").exists());
+
+        let outside =
+            "# auth notes\nmethod = \"GET\"\nname = \"Ping\"\nurl = \"https://outside/2\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), outside).unwrap();
+        assert_replayed(p.redo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/pong.toml").unwrap(),
+            outside.replace("\"Ping\"", "\"Pong\"")
+        );
+        assert!(!dir.path().join("requests/main/ping.toml").exists());
+    }
+
+    /// The undo and the redo set the names the rename went between, not a
+    /// name the file was given since.
+    #[test]
+    fn undo_and_redo_of_a_rename_set_the_rename_s_names_over_one_given_outside() {
+        let (dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
         std::fs::write(
             dir.path().join("requests/main/pong.toml"),
-            "name = \"Pong\"\nmethod = \"GET\"\nurl = \"https://outside/1\"\n",
+            "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://outside/1\"\n",
         )
         .unwrap();
         assert_replayed(p.undo(), "rename request");
-        let back = p.read_request("main/ping").unwrap();
-        assert_eq!((back.name.as_deref(), back.url.as_str()), (Some("Ping"), "https://outside/1"));
-        assert!(!dir.path().join("requests/main/pong.toml").exists());
+        assert_eq!(p.read_request("main/ping").unwrap().name.as_deref(), Some("Ping"));
+        assert_replayed(p.redo(), "rename request");
+        assert_eq!(p.read_request("main/pong").unwrap().name.as_deref(), Some("Pong"));
 
         std::fs::write(
-            dir.path().join("requests/main/ping.toml"),
-            "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://outside/2\"\n",
+            dir.path().join("requests/main/pong.toml"),
+            "name = \"Other\"\nmethod = \"GET\"\nurl = \"https://outside/2\"\n",
         )
         .unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(p.read_request("main/ping").unwrap().name.as_deref(), Some("Ping"));
         assert_replayed(p.redo(), "rename request");
         let again = p.read_request("main/pong").unwrap();
         assert_eq!(
             (again.name.as_deref(), again.url.as_str()),
             (Some("Pong"), "https://outside/2")
         );
-        assert!(!dir.path().join("requests/main/ping.toml").exists());
     }
 
-    /// When nothing changed the file since, the undo and the redo give
-    /// back the exact bytes, which the rename's rewrite does not keep.
+    /// The rename sets only the name, so its undo and redo give back the
+    /// exact bytes, a comment and the key order included.
     #[test]
-    fn undo_and_redo_of_a_rename_give_back_the_exact_text_when_nothing_changed_it() {
+    fn undo_and_redo_of_a_rename_give_back_the_exact_text() {
         let (dir, _p) = fixture();
         let original =
             "# kept\nurl = \"https://{{host}}/ping\"\nname = \"Ping\"\nmethod = \"GET\"\n";
         std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.rename_request("main/ping", "Pong").unwrap();
-        let renamed = read(&dir, "requests/main/pong.toml").unwrap();
-        assert_ne!(renamed.replace("Pong", "Ping"), original, "the rename rewrites the file");
+        let renamed = original.replace("\"Ping\"", "\"Pong\"");
+        assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), renamed);
         assert_replayed(p.undo(), "rename request");
         assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
         assert_replayed(p.redo(), "rename request");
         assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), renamed);
     }
 
-    /// A request that no longer parses has no name to put back: the undo
-    /// moves it back with its text as it is, as the rename moves a broken
-    /// file.
+    /// A request with no `name` gets one from the rename, and the undo
+    /// takes the key out again.
+    #[test]
+    fn undo_of_a_rename_takes_out_a_name_the_rename_added() {
+        let (dir, _p) = fixture();
+        let original = "method = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        assert_eq!(p.read_request("main/pong").unwrap().name.as_deref(), Some("Pong"));
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+    }
+
+    /// A request file that is no longer TOML gets no name: the undo moves
+    /// it back with its text as it is, as the rename moves a broken file.
     #[test]
     fn undo_of_a_rename_moves_a_request_that_no_longer_parses_back_as_it_is() {
         let (dir, mut p) = fixture();

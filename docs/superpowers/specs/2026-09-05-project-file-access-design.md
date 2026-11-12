@@ -245,15 +245,11 @@ enum Entry {
   completion) is followed by the journal, so the entry that would next
   rewrite that file records the new text as the text it left.
   *Amended 2026-11-12 (task #285, mine):* the `name` a request rename
-  writes into the request's file is its own op, `Op::Named`, holding the
-  file's text before and after. Its inverse writes the text from before
-  when the file still holds the text the op left, and otherwise sets only
-  the name from before in the text the file holds, so a change made to the
-  request since stays. A file that no longer parses is left as it is, as
-  the rename leaves one. The app's save of a request is followed by the
-  journal for these ops, as the order completion is for text ops, so a
-  rename, a save and an undo still give back the text from before the
-  rename.
+  sets in the request's file is its own op, `Op::Named`, holding the name
+  before and after (`None` = no `name` key), not the file's text. The
+  rename and the inverse set only that key with `toml_edit`, the rest of
+  the text as the file holds it, so a change made to the request since
+  stays. A file that is not TOML is left as it is.
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.

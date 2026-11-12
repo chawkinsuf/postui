@@ -6824,13 +6824,11 @@ fn a_rename_still_undoes_after_the_renamed_request_is_saved() {
     assert!(dir.path().join("requests/main/beta.toml").is_file(), "{:?}", app.toasts.messages());
     assert!(!dir.path().join("requests/main/zeta.toml").exists());
     assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
-    // The undo gives back the file from before the rename, which is what
-    // the editor holds after its own step was undone (#285).
-    assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/beta").unwrap().url,
-        "https://x/1"
-    );
-    assert_eq!((app.editor.url.text(), app.editor.is_dirty()), ("https://x/1", false));
+    // The undo sets only the name in the saved file (#285), and the editor
+    // shows that file.
+    let back = postui_core::fixtures::load_request(dir.path(), "main/beta").unwrap();
+    assert_eq!((back.name.as_deref(), back.url.as_str()), (None, "https://x/edited"));
+    assert_eq!((app.editor.url.text(), app.editor.is_dirty()), ("https://x/edited", false));
 }
 
 /// #285: a change made to a renamed request outside the app (an agent, a

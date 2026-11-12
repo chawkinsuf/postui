@@ -352,17 +352,10 @@ impl Project {
 
     /// Writes the request, refreshes the held copy and its listing row.
     /// Not journaled: undoing past a save is the editor's memory-only
-    /// step, as today. The journal follows the write
-    /// ([`crate::journal::Journal::follow_save`]), so a rename's undo
-    /// takes the saved text for the app's own (#285).
+    /// step, as today.
     pub fn save_request(&mut self, slug: &str, req: &HttpRequest) -> Result<(), Error> {
         let path = request_rel(slug)?;
-        let before = self.disk.peek(&path).ok().flatten();
-        let text = req.to_toml_string();
-        self.disk.write(&path, &text)?;
-        if let Some(before) = before {
-            self.journal.follow_save(&path, &before, &text);
-        }
+        self.disk.write(&path, &req.to_toml_string())?;
         if self.open_requests.contains_key(slug) {
             // The stamp the write itself recorded (taken from the staged
             // file before the rename), not a fresh stat: an outside write
@@ -1183,7 +1176,12 @@ impl Project {
             if to_slug != from_slug {
                 p.fs_rename(&from_path, &to_path)?;
             }
-            p.fs_write_name(&to_path, Some(&leaf), None)?;
+            if let Some(text) = p.disk.read(&to_path)?
+                && let Ok(req) = HttpRequest::from_toml_str(&text)
+                && req.name.as_deref() != Some(leaf.as_str())
+            {
+                p.fs_write_name(&to_path, req.name.as_deref(), Some(&leaf))?;
+            }
             // A rename can rewrite the file's `name` (above), so this op
             // owns a write the app must never see as an outside edit —
             // hence the shared re-key, which re-stamps only an entry that
