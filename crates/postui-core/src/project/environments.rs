@@ -18,6 +18,15 @@ fn write_list_over(listed: &[String], shown: &[String]) -> Vec<String> {
     out
 }
 
+/// `doc`'s `environments` list as `ProjectMeta` parses it, not the array
+/// read from the document: `None` for a document that parse rejects,
+/// whose write `edit_project_toml` then refuses. Environment ops build
+/// the list they write from this, inside `edit_project_toml`, so an
+/// outside edit postui hasn't read yet is kept (#284, #287).
+fn listed_in(doc: &toml_edit::DocumentMut) -> Option<Vec<String>> {
+    toml::from_str::<ProjectMeta>(&doc.to_string()).ok().map(|m| m.environments)
+}
+
 impl Project {
     /// The slug `display` gets as an environment's file: `slugify`, then
     /// `-2`, `-3`, … while the disk says `environments/<slug>.toml`
@@ -30,17 +39,6 @@ impl Project {
             |slug| env_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false),
             exclude,
         )
-    }
-
-    /// [`write_list_over`] `meta.environments`, the array as last read:
-    /// the list create, rename and delete write back.
-    ///
-    /// Unlike the spaces `write_list`, this works from `self.environments`
-    /// — the last `refresh_environments` listing — rather than re-listing
-    /// disk. A file that appeared since that refresh simply stays
-    /// unlisted until the next reload.
-    fn env_write_list(&self) -> Vec<String> {
-        write_list_over(&self.meta.environments, &self.environments)
     }
 
     /// Re-lists from `meta` and disk; a listing that fails keeps the list
@@ -106,12 +104,8 @@ impl Project {
         let mut change = None;
         self.run_transaction(label, EntryMeta::default(), merge, |p| {
             p.edit_project_toml(|doc| {
-                // The list as `ProjectMeta` parses it, not the array read
-                // from the document: a document that parse rejects gets
-                // no list here, and `edit_project_toml` then refuses the
-                // write.
-                let Ok(meta) = toml::from_str::<ProjectMeta>(&doc.to_string()) else { return };
-                let mut envs = write_list_over(&meta.environments, &shown);
+                let Some(listed) = listed_in(doc) else { return };
+                let mut envs = write_list_over(&listed, &shown);
                 let slots: Vec<usize> =
                     (0..envs.len()).filter(|i| shown.contains(&envs[*i])).collect();
                 let before: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
@@ -180,13 +174,13 @@ impl Project {
     pub fn create_environment(&mut self, display: &str) -> Result<String, Error> {
         let display = meta::display_name_of(display)?;
         let meta = self.meta.clone();
-        let existing = self.environments.clone();
-        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), None) {
+        let mut shown = self.environments.clone();
+        if meta::display_taken(&display, &shown, |s| meta::env_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.environment_slug_for(&display, None);
-        let mut envs = self.env_write_list();
-        envs.push(slug.clone());
+        // The rows shown, then the new one.
+        shown.push(slug.clone());
         // Creating an environment switches to it, as today's app does;
         // the transition is recorded so undo puts the old one back.
         let entry_meta = EntryMeta {
@@ -196,7 +190,10 @@ impl Project {
         self.transaction("create environment", entry_meta, |p| {
             p.fs_create_file(&env_rel(&slug)?, "")?;
             p.edit_project_toml(|doc| {
-                doc["environments"] = toml_edit::value(meta::slug_array(&envs));
+                if let Some(listed) = listed_in(doc) {
+                    let envs = write_list_over(&listed, &shown);
+                    doc["environments"] = toml_edit::value(meta::slug_array(&envs));
+                }
                 meta::set_item_name(doc, meta::Kind::Environment, &slug, &display);
             })?;
             p.refresh_environments();
@@ -215,28 +212,12 @@ impl Project {
             return Err(Error::NotFound(from.to_string()));
         }
         let meta = self.meta.clone();
-        let existing = self.environments.clone();
-        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), Some(from)) {
+        let shown = self.environments.clone();
+        if meta::display_taken(&display, &shown, |s| meta::env_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.environment_slug_for(&display, Some(from));
         let from = from.to_string();
-        // Only rewritten when `project.toml` already lists `from`: a
-        // rename never creates an order list the project did without.
-        // When no array is present, the renamed environment re-sorts
-        // within the alphabetical unlisted tail rather than keeping the
-        // slot `from` held — the tail is alphabetical by definition, so
-        // there is no slot to keep. This is deliberate: unlike
-        // `rename_space`, which always writes the full list, an
-        // environment rename does not promote a project into having an
-        // order array just because one entry changed name.
-        let order = self.meta.environments.contains(&from).then(|| {
-            let mut envs = self.env_write_list();
-            if let Some(i) = envs.iter().position(|n| *n == from) {
-                envs[i] = to.clone();
-            }
-            envs
-        });
         let was_active = self.active_env.as_deref() == Some(from.as_str());
         let entry_meta = EntryMeta {
             active_env: (to != from && was_active).then(|| (Some(from.clone()), Some(to.clone()))),
@@ -247,8 +228,14 @@ impl Project {
                 p.fs_rename(&from_path, &env_rel(&to)?)?;
             }
             p.edit_project_toml(|doc| {
-                if let Some(envs) = &order {
-                    doc["environments"] = toml_edit::value(meta::slug_array(envs));
+                // Rewritten only when `project.toml` lists `from` at this
+                // write.
+                if let Some(listed) = listed_in(doc).filter(|l| l.contains(&from)) {
+                    let renamed = |l: &[String]| -> Vec<String> {
+                        l.iter().map(|n| if *n == from { to.clone() } else { n.clone() }).collect()
+                    };
+                    let envs = write_list_over(&renamed(&listed), &renamed(&shown));
+                    doc["environments"] = toml_edit::value(meta::slug_array(&envs));
                 }
                 meta::move_item_table(doc, meta::Kind::Environment, &from, &to);
                 meta::set_item_name(doc, meta::Kind::Environment, &to, &display);
@@ -285,13 +272,7 @@ impl Project {
             return Err(Error::LastEnvironment);
         }
         let name = name.to_string();
-        // As in `rename_environment`: the list is only rewritten when the
-        // project already has one naming this environment.
-        let order = self.meta.environments.contains(&name).then(|| {
-            let mut envs = self.env_write_list();
-            envs.retain(|n| *n != name);
-            envs
-        });
+        let shown = self.environments.clone();
         let was_active = self.active_env.as_deref() == Some(name.as_str());
         let fallback = self.environments.iter().find(|e| **e != name).cloned();
         let entry_meta = EntryMeta {
@@ -300,8 +281,12 @@ impl Project {
         };
         self.transaction("delete environment", entry_meta, |p| {
             p.edit_project_toml(|doc| {
-                if let Some(envs) = &order {
-                    doc["environments"] = toml_edit::value(meta::slug_array(envs));
+                // Rewritten only when `project.toml` lists `name` at this
+                // write.
+                if let Some(listed) = listed_in(doc).filter(|l| l.contains(&name)) {
+                    let mut envs = write_list_over(&listed, &shown);
+                    envs.retain(|n| *n != name);
+                    doc["environments"] = toml_edit::value(meta::slug_array(&envs));
                 }
                 meta::remove_item_table(doc, meta::Kind::Environment, &name);
             })?;
@@ -616,6 +601,76 @@ mod tests {
         assert_eq!(p.meta().environments, ["dev", "prod"]);
         assert_eq!(p.environments(), ["dev", "prod"]);
         assert!(!read(&dir, "project.toml").unwrap().contains("staging"));
+    }
+
+    /// #287: create, rename and delete change the list `project.toml`
+    /// holds at the write, not the list as last read: an order changed
+    /// outside is kept, and so is an environment added outside. Undo puts
+    /// the file's text back.
+    #[test]
+    fn create_rename_and_delete_change_the_list_the_file_holds() {
+        let (dir, mut p) = ordered_fixture();
+        p.create_environment("Prod").unwrap();
+        assert_eq!(p.environments(), ["dev", "qa", "prod"]);
+        std::fs::write(dir.path().join("environments/stage.toml"), "").unwrap();
+
+        let outside = hand_order(&dir, &["qa", "stage", "prod", "dev"]);
+        p.create_environment("New").unwrap();
+        assert_eq!(p.meta().environments, ["qa", "stage", "prod", "dev", "new"]);
+        assert_eq!(p.environments(), ["qa", "stage", "prod", "dev", "new"]);
+        p.undo().unwrap().unwrap();
+        assert_eq!(read(&dir, "project.toml").unwrap(), outside);
+        p.redo().unwrap().unwrap();
+
+        hand_order(&dir, &["new", "qa", "stage", "prod", "dev"]);
+        p.rename_environment("dev", "Dev2").unwrap();
+        assert_eq!(p.meta().environments, ["new", "qa", "stage", "prod", "dev2"]);
+        assert_eq!(p.environments(), ["new", "qa", "stage", "prod", "dev2"]);
+
+        hand_order(&dir, &["dev2", "new", "qa", "stage", "prod"]);
+        p.delete_environment("qa").unwrap();
+        assert_eq!(p.meta().environments, ["dev2", "new", "stage", "prod"]);
+        assert_eq!(p.environments(), ["dev2", "new", "stage", "prod"]);
+    }
+
+    /// #287: a rename or delete rewrites the list when `project.toml`
+    /// lists the environment at the write, whatever the last read held.
+    #[test]
+    fn a_rename_or_a_delete_rewrites_the_list_only_when_the_file_lists_it() {
+        // Listed outside since the last read: the rename keeps its slot.
+        let (dir, mut p) = fixture();
+        assert!(p.meta().environments.is_empty());
+        hand_order(&dir, &["qa", "dev"]);
+        p.rename_environment("qa", "Staging").unwrap();
+        assert_eq!(p.meta().environments, ["staging", "dev"]);
+        p.delete_environment("staging").unwrap();
+        assert_eq!(p.meta().environments, ["dev"]);
+
+        // The list removed outside since the last read: none comes back.
+        let (dir, mut p) = ordered_fixture();
+        let path = dir.path().join("project.toml");
+        let mut doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        doc.remove("environments");
+        std::fs::write(&path, doc.to_string()).unwrap();
+        assert_eq!(p.meta().environments, ["dev", "qa"]);
+        p.rename_environment("qa", "Staging").unwrap();
+        p.delete_environment("dev").unwrap();
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(!text.contains("environments"), "{text}");
+        assert!(p.meta().environments.is_empty());
+        assert_eq!(p.environments(), ["staging"]);
+    }
+
+    /// A rename to a name the file already lists, with no file of that
+    /// name, writes the name once.
+    #[test]
+    fn a_rename_to_a_name_the_file_already_lists_writes_it_once() {
+        let (dir, mut p) = fixture();
+        hand_order(&dir, &["staging", "qa", "dev"]);
+        p.rename_environment("qa", "Staging").unwrap();
+        assert_eq!(p.meta().environments, ["staging", "dev"]);
+        assert_eq!(p.environments(), ["staging", "dev"]);
     }
 
     #[test]
