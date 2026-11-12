@@ -19956,8 +19956,8 @@ fn an_option_rows_menu_acts_on_nothing_once_no_option_row_is_drawn() {
 /// opened on, whatever the keyboard is on when it is picked. A reload that
 /// renames the selector outside opens the renamed one in its place, with
 /// the left list's focus; a Delete that followed the keyboard there would
-/// delete that selector. Since task #212 that reload closes the menu, so
-/// nothing is left to pick.
+/// delete that selector. The menu's Delete names the option, so it can't
+/// follow the keyboard; since task #212 that reload also closes the menu.
 #[test]
 fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let dir = tempfile::tempdir().unwrap();
@@ -19969,7 +19969,15 @@ fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let cell =
         app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).expect("row 0 is drawn");
     app.handle_mouse(right_down(cell.x, cell.y));
-    assert!(menu_labels(&app).iter().any(|l| l == "Delete"), "the item is listed");
+    assert_eq!(
+        menu_action(&app, "Delete"),
+        Some(Action::OptionMenu(Box::new(Action::DeleteEntry {
+            env: "qa".into(),
+            selector: "user".into(),
+            name: "alice".into(),
+        }))),
+        "Delete carries alice's name"
+    );
 
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
