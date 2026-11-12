@@ -30758,6 +30758,236 @@ fn dragging_an_environment_row_reorders_and_persists() {
     );
 }
 
+// -- #284: an environment reorder moves the row in the file's order ------
+
+/// Rewrites `environments = [...]` in `project.toml` by hand, as another
+/// program would (a `git pull`), under a new comment line.
+fn hand_order_envs(dir: &tempfile::TempDir, order: &[&str]) {
+    let path = dir.path().join("project.toml");
+    let mut doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    doc["environments"] = toml_edit::value(toml_edit::Array::from_iter(order.iter().copied()));
+    std::fs::write(&path, format!("# pulled\n{doc}")).unwrap();
+}
+
+/// The Environments tab showing `prod`, `qa`, `dev` over a `project.toml`
+/// reordered by hand to `qa`, `prod`, `dev`. With `taken_in`, another op
+/// of the app (a TLS setting) has read and rewritten `project.toml` since,
+/// which leaves the rows as they were.
+fn manage_envs_app_reordered_by_hand(taken_in: bool) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = manage_envs_app();
+    hand_order_envs(&dir, &["qa", "prod", "dev"]);
+    if taken_in {
+        let policy = Some(postui_core::project::TlsPolicy::Verify);
+        app.update(Action::SetEnvTls { env: "prod".into(), policy });
+    }
+    assert_eq!(app.proj().environments(), ["prod", "qa", "dev"], "the rows are the old ones");
+    assert_eq!(listed_envs(&dir), ["qa", "prod", "dev"]);
+    (app, dir)
+}
+
+/// alt+up on `dev` moves it one place up in the order the file holds. It
+/// is one undo step, and Undo puts the file's text back.
+#[test]
+fn a_keyboard_environment_move_runs_over_the_order_on_disk() {
+    for taken_in in [false, true] {
+        let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
+        let before = project_toml(&dir);
+        let steps = app.history.undo_len();
+        app.select_list_row(ManageTab::Environments, "dev");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(
+            listed_envs(&dir),
+            ["qa", "dev", "prod"],
+            "taken in {taken_in}: dev moved one up in the order on disk"
+        );
+        assert_eq!(app.proj().environments(), ["qa", "dev", "prod"], "taken in {taken_in}");
+        assert_eq!(
+            app.manage_selected(ManageTab::Environments).as_deref(),
+            Some("dev"),
+            "taken in {taken_in}"
+        );
+        assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
+
+        app.update(Action::Undo);
+        assert_eq!(project_toml(&dir), before, "taken in {taken_in}: undo");
+        assert_eq!(app.proj().environments(), ["qa", "prod", "dev"], "taken in {taken_in}");
+    }
+}
+
+/// An outside rewrite between two alt+up presses on one row: the second
+/// move runs over the order the file holds then and is its own undo step,
+/// so Undo puts `project.toml` back as the other program left it.
+#[test]
+fn an_environment_move_after_an_outside_change_does_not_join_the_burst_before_it() {
+    let (mut app, dir) = manage_envs_app();
+    let steps = app.history.undo_len();
+    app.select_list_row(ManageTab::Environments, "dev");
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(listed_envs(&dir), ["prod", "dev", "qa"]);
+
+    hand_order_envs(&dir, &["qa", "prod", "dev"]);
+    let outside = project_toml(&dir);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(listed_envs(&dir), ["qa", "dev", "prod"]);
+    assert_eq!(app.history.undo_len(), steps + 2);
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+}
+
+/// Drags the third row, `dev`, to the top of the list and drops it there.
+fn drag_dev_to_the_top(app: &mut App) {
+    let r0 = manage_row(app, 0);
+    let r2 = manage_row(app, 2);
+    app.handle_mouse(left_down(r2.x + 2, r2.y));
+    app.handle_mouse(moved(r2.x + 2, r0.y));
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working[0], "dev");
+    app.handle_mouse(left_up(r2.x + 2, r0.y));
+    assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+}
+
+/// A drop of `dev` on the top row puts it first in the order the file
+/// holds, at the first drop. It is one undo step, and Undo puts the
+/// file's text back.
+#[test]
+fn an_environment_drop_lands_in_the_order_on_disk() {
+    for taken_in in [false, true] {
+        let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
+        let before = project_toml(&dir);
+        let steps = app.history.undo_len();
+
+        drag_dev_to_the_top(&mut app);
+        assert_eq!(listed_envs(&dir), ["dev", "qa", "prod"], "taken in {taken_in}");
+        assert_eq!(app.proj().environments(), ["dev", "qa", "prod"], "taken in {taken_in}");
+        assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
+        assert_eq!(
+            app.manage_selected(ManageTab::Environments).as_deref(),
+            Some("dev"),
+            "taken in {taken_in}: the cursor stays on the dragged row"
+        );
+
+        app.update(Action::Undo);
+        assert_eq!(project_toml(&dir), before, "taken in {taken_in}: undo");
+        assert_eq!(app.proj().environments(), ["qa", "prod", "dev"], "taken in {taken_in}");
+    }
+}
+
+/// A drop keeps its place, not its neighbours, over a set of environments
+/// changed outside and not yet re-read.
+#[test]
+fn an_environment_drop_keeps_its_place_over_a_set_changed_outside() {
+    // `stage` was added outside and listed first. `dev`, dropped on the
+    // top row, goes first among the rows the tab showed, under `stage`.
+    let (mut app, dir) = manage_envs_app();
+    std::fs::write(dir.path().join("environments/stage.toml"), "").unwrap();
+    hand_order_envs(&dir, &["stage", "prod", "qa", "dev"]);
+    drag_dev_to_the_top(&mut app);
+    assert_eq!(listed_envs(&dir), ["stage", "dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["stage", "dev", "prod", "qa"]);
+
+    // `qa` was removed outside, its file and its entry. `dev` goes first,
+    // and `qa`, still a row at the drop, is written after the listed ones.
+    let (mut app, dir) = manage_envs_app();
+    std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
+    hand_order_envs(&dir, &["prod", "dev"]);
+    drag_dev_to_the_top(&mut app);
+    assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["dev", "prod"]);
+}
+
+/// A selector fields edit rewrites the environment files. With nothing
+/// changed outside, the drop after it lands at the first drop.
+#[test]
+fn an_environment_drop_after_a_selector_fields_edit_lands() {
+    let (mut app, dir) = manage_envs_app();
+    std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"id\"]\n")
+        .unwrap();
+    let dev = dir.path().join("environments/dev.toml");
+    std::fs::write(&dev, "[options.user.alice]\nid = \"1\"\n").unwrap();
+    app.resync_project();
+    assert!(app.proj().variables().selectors.contains_key("user"));
+
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    app.update(Action::ApplyGroupFields { selector: "user".into(), slots: vec!["user_id".into()] });
+    assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id"]);
+    assert!(std::fs::read_to_string(&dev).unwrap().contains("user_id"), "dev.toml was rewritten");
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+
+    drag_dev_to_the_top(&mut app);
+    assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["dev", "prod", "qa"]);
+}
+
+/// In a directory with no `project.toml`, alt+up on the top environment
+/// row moves nothing: no `project.toml` is made and no step is recorded.
+#[test]
+fn an_environment_move_that_moves_nothing_makes_no_project_toml() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+    for name in ["dev", "qa"] {
+        std::fs::write(dir.path().join(format!("environments/{name}.toml")), "").unwrap();
+    }
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    render_once(&mut app);
+    assert_eq!(app.proj().environments(), ["dev", "qa"]);
+    let steps = app.history.undo_len();
+
+    app.select_list_row(ManageTab::Environments, "dev");
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert!(!dir.path().join("project.toml").exists());
+    assert_eq!(app.history.undo_len(), steps);
+}
+
+/// Over a `project.toml` that `toml_edit` would print differently (no
+/// final newline, CRLF endings, a byte-order mark), alt+up on the top
+/// environment row leaves the file's bytes as they were, records no step
+/// and keeps a waiting redo.
+#[test]
+fn an_environment_move_that_moves_nothing_leaves_a_file_toml_edit_would_reprint() {
+    let good = "environments = [\"dev\", \"qa\"]\nname = \"Demo\"\nspaces = [\"main\"]\n";
+    let texts = [
+        good.trim_end_matches('\n').to_string(),
+        good.replace('\n', "\r\n"),
+        format!("\u{feff}{good}"),
+    ];
+    for text in texts {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.toml");
+        std::fs::write(&path, &text).unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        for name in ["dev", "qa"] {
+            std::fs::write(dir.path().join(format!("environments/{name}.toml")), "").unwrap();
+        }
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+        render_once(&mut app);
+        assert_eq!(app.proj().environments(), ["dev", "qa"], "{text:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+
+        // A real move and its undo leave a redo waiting and the bytes as
+        // they were.
+        app.select_list_row(ManageTab::Environments, "dev");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_ne!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        app.update(Action::Undo);
+        render_once(&mut app);
+        assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        assert_eq!(app.proj().environments(), ["dev", "qa"], "{text:?}");
+        let steps = (app.history.undo_len(), app.history.redo_len());
+        assert_eq!(steps.1, 1, "{text:?}");
+
+        app.select_list_row(ManageTab::Environments, "dev");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        assert_eq!((app.history.undo_len(), app.history.redo_len()), steps, "{text:?}");
+    }
+}
+
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up
