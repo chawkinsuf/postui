@@ -1,4 +1,3 @@
-use anyhow::Context as _;
 use futures::StreamExt;
 use postui::action::Action;
 use postui::app::App;
@@ -51,8 +50,10 @@ async fn main() -> anyhow::Result<ExitCode> {
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
 
+    // The hook goes in once the terminal is entered. If entering fails,
+    // `ratatui::restore` undoes what was done before the panic.
+    enter_terminal().inspect_err(|_| ratatui::restore()).expect("failed to initialize terminal");
     install_panic_hook();
-    enter_terminal().expect("failed to initialize terminal");
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
             .expect("failed to initialize terminal");
@@ -130,7 +131,7 @@ fn enter_terminal() -> std::io::Result<()> {
     // The terminal cursor is hidden everywhere but the focused jq filter
     // bar (`ui::draw`), where it stands in for the painted caret so the
     // completion ghost can trail a thin bar. Shaped once here — the shape
-    // persists — and put back to the user's own on every exit path below.
+    // persists — and put back to the user's own by `disable_terminal_modes`.
     let _ = execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
     // Ctrl+Shift+Z is only distinguishable from Ctrl+Z with the kitty
     // keyboard protocol; without it Ctrl+Y is the redo binding that works.
@@ -162,9 +163,14 @@ fn disable_terminal_modes() {
 }
 
 /// Installs the panic hook that gives the terminal back before the panic
-/// report prints. Called once, from `main`: `take_hook` + `set_hook` adds a
-/// layer each time (#171).
+/// report prints. Only the first call installs it: `take_hook` + `set_hook`
+/// would add a layer each time (#171).
 fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(wrap_panic_hook);
+}
+
+fn wrap_panic_hook() {
     let prev_hook = std::panic::take_hook();
     let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
@@ -207,9 +213,9 @@ async fn run(
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
-    // Same probe `enter_terminal` keys the enhancement
-    // push off: where the terminal can report Shift+Enter, advertise it as
-    // the send key; elsewhere the footer keeps showing ^R.
+    // Same probe `enter_terminal` keys the enhancement push off: where the
+    // terminal can report Shift+Enter, advertise it as the send key;
+    // elsewhere the footer keeps showing ^R.
     app.shift_enter_send =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     let mut events = EventStream::new();
@@ -465,14 +471,15 @@ fn spawn_editor(
 
     let status = std::process::Command::new(&program).args(&args).arg(path).status();
 
-    // If the terminal can't be got back, the error ends the app. The file
-    // is left in place and the error names it.
-    enter_terminal().and_then(|()| terminal.clear()).with_context(|| {
-        format!(
-            "could not get the terminal back from {program}; the file is kept at {}",
+    // A terminal that can't be entered again panics, as at start-up; the
+    // panic names the file, which is left in place.
+    if let Err(e) = enter_terminal() {
+        panic!(
+            "could not get the terminal back from {program}: {e}; the file is at {}",
             path.display()
-        )
-    })?;
+        );
+    }
+    terminal.clear()?;
 
     match status {
         Ok(s) if s.success() => Ok(true),
@@ -555,4 +562,28 @@ fn edit_config_externally(
     // caret warnings show up without any extra code here.
     app.update(Action::ReloadFromDisk);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// The address of the installed hook's closure, put back after reading.
+    fn installed_hook_addr() -> usize {
+        let hook = std::panic::take_hook();
+        let addr = std::ptr::from_ref(&*hook).cast::<()>() as usize;
+        std::panic::set_hook(hook);
+        addr
+    }
+
+    /// #171: a second install leaves the hook as it was instead of wrapping
+    /// it in a new layer.
+    #[test]
+    fn a_second_install_adds_no_layer() {
+        super::install_panic_hook();
+        let first = installed_hook_addr();
+        super::install_panic_hook();
+        let second = installed_hook_addr();
+        // Back to the default hook, so a failed assert below prints plainly.
+        drop(std::panic::take_hook());
+        assert_eq!(first, second);
+    }
 }
