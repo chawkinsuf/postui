@@ -58,11 +58,12 @@ name = "Staging"
   and folder paths ending in `/` (`["login", "orders/", "orders/list-orders",
   "users/"]`). Each level (the space's root or one folder) shows its
   requests and folders mixed, in `order`'s order. postui keeps every
-  request and folder listed. One made in postui's TUI goes right after the
-  selected row; a curl import, or a request moved to another space, goes
-  last in its level; and a request file or folder added by hand is written
-  in at the end of its level the next time postui's TUI sees it. Leave `order` alone unless
-  asked.
+  request and folder listed. One made in postui's TUI usually goes right
+  after the selected row ("New request here…" and "New folder here…" put it
+  last in that folder); a curl import, or a request moved to another space,
+  goes last in its level; and a request file or folder added by hand is
+  written in at the end of its level the next time postui's TUI sees it.
+  Leave `order` alone unless asked.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
 

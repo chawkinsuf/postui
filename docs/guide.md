@@ -26,8 +26,8 @@ The header's project chip switches between the projects you've opened.
 Requests are grouped into **spaces**: top-level folders under `requests/`.
 One space shows at a time, and each remembers the request you had open; the
 header's space chip switches between them. Inside a space, requests can sit in
-folders, which fold. `+ Folder` at the top of the sidebar makes one, and a
-folder's menu renames or deletes it.
+folders, which fold. `+ Folder` at the top of the sidebar, or "Folder: new"
+in the palette, makes one, and a folder's menu renames or deletes it.
 
 Drag a request or a folder to move it, into and out of folders too; resting
 on a closed folder opens it. From the keyboard, the move key picks a row up,
@@ -60,11 +60,12 @@ request can also turn off TLS verification.
 Everything undoes: edits, deletes, renames, moves and reorders, including ones
 made in another request or on the Manage screen.
 
-If a file like `project.toml` or `variables.toml` was changed outside postui
-(by a `git pull`, say), the undo that reaches it first takes that change back,
-as a step of its own, and a warning names the file. The next undo goes on, and
-redo puts the outside change back. A redo that reaches such a file does the
-same, and undo puts the change back.
+If `project.toml`, `variables.toml`, an environment file or a folder's
+`.folder.toml` was changed outside postui (by a `git pull`, say), the undo
+that reaches it first takes that change back, as a step of its own, and a
+warning names the file. The next undo goes on, and redo puts the outside
+change back. A redo that reaches such a file does the same, and undo puts the
+change back.
 
 ## Environments, variables and secrets
 

@@ -8,12 +8,14 @@ change the project file format.
 
 Request folders can now be made, renamed and deleted in the sidebar, and
 requests and folders moved in and out of them, by mouse or by keyboard.
+postui 0.3.0 lists a folder's `.folder.toml` as a broken request, so a team
+sharing a project should upgrade together.
 
 ### Added
 
-- `+ Folder` in the sidebar makes a folder, and a folder's menu renames and
-  deletes it. Empty folders show and stay. A folder keeps its name in a small
-  `.folder.toml`. All of it undoes.
+- `+ Folder` in the sidebar (or `A`) makes a folder, and a folder's menu
+  renames and deletes it. Empty folders show and stay. A folder keeps its
+  name in a small `.folder.toml`. All of it undoes.
 - Requests and folders drag into and out of folders. A closed folder opens
   when the drag rests on it, and where several folders end on one row, the
   pointer's column picks the level.
@@ -29,19 +31,22 @@ requests and folders moved in and out of them, by mouse or by keyboard.
   command, and not for curl that postui copied itself.
 - Requests and folders share one order in each folder, so they can be mixed.
   `postui requests` and `postui suite` follow it.
-- A new request goes right after the cursor's row. A curl import, or a
-  request moved to another space, goes last.
-- The New request and Rename prompts take a name only: a `/` typed there is
-  part of the name. A curl import's `# @name` can still put it in a folder.
+- A new request or folder usually goes right after the selected row; "New
+  request here…" and "New folder here…" put it last in that folder. A curl
+  import, or a request moved to another space, goes last.
+- The New request prompt and a request's Rename prompt take a name only: a
+  `/` typed there is part of the name. A curl import's `# @name` can still put it in a folder.
+- Manage's "Move all requests…" moves the folders too.
 - `alt+↑`/`alt+↓` no longer move sidebar rows; `m` and the row menu's Move
   up and Move down do. Move to space is now `M`.
 - A click on a request row opens it when the button comes up, so dragging a
   row never asks about unsaved edits.
-- An undo or redo that reaches a file like `project.toml` changed outside
-  postui (by a `git pull`, say) no longer writes over it silently: that press
-  takes the outside change back, as a step of its own, with a warning. The
-  next press goes on to your own steps, and the other key (redo after an
-  undo, undo after a redo) brings the outside change back.
+- An undo or redo that reaches `project.toml`, `variables.toml`, an
+  environment file or a `.folder.toml` changed outside postui (by a
+  `git pull`, say) no longer writes over it silently: that press takes the
+  outside change back, as a step of its own, with a warning. The next press
+  goes on to your own steps, and the other key (redo after an undo, undo
+  after a redo) brings the outside change back.
 - jq, `postui run --jq` and the suite treat a body with comments or NaN as
   not JSON, as the Tree tab does.
 
