@@ -1,11 +1,12 @@
 # An edit made outside is its own undo step — Design
 
 Date: 2026-11-11
-Status: proposed, waiting on the user (task #283, comment 1284)
+Status: approved by the user 2026-11-11 (task #283, comment 1296)
 Task: #283 "Undo writes a file's old text over a change made outside since the op"
 
-This would be the second rework on #283. Nothing here is built. The branch
-`undo-outside-change` is at `e9383aa` plus this file.
+This is the second rework on #283. It is built on the branch
+`undo-outside-change` on top of `e9383aa`, after `main` was merged in
+(`9770512`, which brought #239).
 
 ## The question
 
@@ -76,14 +77,17 @@ in the worktree, all reverted.
      call stays.
    - No test from main fails with the probe in. The 15 that fail are tests
      this branch added to pin a refusal.
-6. **One more path loses an outside edit, on main and on this branch.**
-   `Entry::try_merge` folds a keyboard burst (2 s) into one entry without
-   checking that the new op started from the text the burst left. An
-   outside write between two key presses of a burst is merged into the
-   entry and undone with it, with the usual toast (probe on `e9383aa`:
-   `move_environment`, outside append, `move_environment`, undo: the file
-   is the text from before the burst). One condition in `try_merge` closes
-   it.
+6. **One more path lost an outside edit: a keyboard burst. Closed by
+   #239, not by this task.** At `e9383aa`, `Entry::try_merge` folded a
+   keyboard burst (2 s) into one entry without checking that the new op
+   started from the text the burst left, so an outside write between two
+   key presses of a burst was merged into the entry and undone with it
+   (probe on `e9383aa`: `move_environment`, outside append,
+   `move_environment`, undo: the file is the text from before the burst).
+   #239 added that condition to `try_merge` on `main`, with a unit test
+   (`a_burst_step_that_starts_from_another_text_is_its_own_entry`) and an
+   app test (`a_move_after_an_outside_change_does_not_join_the_burst_before_it`).
+   It reached this branch with the merge of `main`.
 
 ## Where the information is lost (what the designs had in common)
 
@@ -110,19 +114,27 @@ without it an undo cannot get past an order completion).
 
 | # | Rule | From |
 |---|---|---|
-| R1 | An edit made outside the app is a step in the undo order, not a reason to refuse an undo or redo. | you, as a question: "Should we scrap all this and just treat loading external edits as its own undo step?" |
-| R2 | The step is made when an undo or redo is about to rewrite a file that does not hold the text its step left there, not when the app loads the file. A reload does not touch the history, as on main. Undo and redo do not reload first. | mine (question 1) |
+| R1 | An edit made outside the app is a step in the undo order, not a reason to refuse an undo or redo. | you, as a question (comment 1284): "Should we scrap all this and just treat loading external edits as its own undo step?" |
+| R2 | The step is made when an undo or redo is about to rewrite a file that does not hold the text its step left there, not when the app loads the file. A reload does not touch the history, as on main. Undo and redo do not reload first. | mine (approved): question 1, "1: A" (comment 1296) |
 | R3 | The step holds, for each such file, the text the replayed step left and the text the file holds now. Only the files that differ are in it. | mine |
-| R4 | The press that finds it takes the outside text back: those files get the text the step left, the outside step goes on the other stack, and the step that was about to be replayed stays where it was. The next press replays it. | mine (question 2) |
+| R4 | The press that finds it takes the outside text back: those files get the text the step left, the outside step goes on the other stack, and the step that was about to be replayed stays where it was. The next press replays it. | mine (approved): question 2, "2: A" (comment 1296) |
 | R5 | Redo does the same in its direction: the outside step goes on the undo stack, and undo brings the outside text back. | mine |
 | R6 | The toast is a warning that names the files and says which key brings the text back, for example "Took back changes made outside the app to project.toml. Redo brings them back." Replayed later as an ordinary step it says "Put back…" or "Took back…". | mine |
 | R7 | Nothing is refused over text. The path refusals stay as on main (a file gone, a path already taken, a made directory that holds something added since, the trash), and a refused step is dropped as on main. | mine |
 | R8 | The step beneath a dropped one meets the dropped step's text as a difference and takes it back the same way, then undoes. The toast then says "outside the app" although the text was the app's. | mine |
 | R9 | `.postui/state.toml` and request files are not compared, as on this branch: the app writes both outside the history. #285 stays its own task. | mine |
 | R10 | The sidebar's order completion stays followed by the journal (`Journal::follow` from `fs_write_text`). | mine |
-| R11 | A keyboard burst merges only when the new op started from the text the burst left. | mine |
 | R12 | A file that does not parse is taken back like any other: the app writes the step's text over it and keeps its text in the outside step. | mine |
 | R13 | A file the check cannot read (unreadable, not UTF-8) refuses the step and drops it, as on this branch. | mine |
+
+The reason the user gave with the answers to questions 1 and 2 (you,
+comment 1296):
+
+> Again, this is talking about outside edits, which should be a rare case. This at least lets the user know what happened, without messing up what they were doing. And with these files often in git anyway, likely they could recover the edits later if they wanted to.
+
+There is no R11. It was "a keyboard burst merges only when the new op
+started from the text the burst left", listed here as something this task
+would add. It came with #239 (finding 6) and is not built again.
 
 ## Standing rules it touches
 
@@ -142,7 +154,10 @@ without it an undo cannot get past an order completion).
   file-access refactor, that an undo writes its text over edits made
   outside since the op, with no content check. It is a note, not a quote.
   The ticket and the ranking of 2026-11-09 ("data loss would be the most
-  important") reverse it, and this design follows the newer one.
+  important") reverse it, and this design follows the newer one. Comment
+  1289 put that to the user ("If the older ruling still stands, say so
+  and the task is scrapped"). The answer (comment 1296) picks 1: A and
+  2: A and does not say so.
 
 ## Design
 
@@ -154,9 +169,10 @@ that entry in the same direction through the same code. Its own pre-flight
 passes by construction. The loop that calls `Journal::follow` for a dropped
 entry's ops is removed.
 
-**Core, `journal.rs`.** A way to take a new id. `try_merge` also requires
-`self.after == next.before` (R11). `Journal::follow` and its call in
-`fs_write_text` stay (R10).
+**Core, `journal.rs`.** A way to take a new id. `Journal::follow` and its
+call in `fs_write_text` stay (R10). `try_merge` is not touched: its
+condition that the new op starts from the text the burst left came with
+#239.
 
 **Contract, core to app.** Before: `Project::undo` / `redo` return the
 `Undone` of the entry the app's marker named, or an error. After: they may
@@ -196,18 +212,19 @@ again at round 1.
 - R8, and a file put back outside to an older text: one extra press, and
   for R8 a label that is not true.
 
-## Open questions (on the ticket)
+## The two questions, answered (comment 1296)
 
-1. **When the step is made.** A: when an undo or redo reaches the file
-   (R2, recommended). B: also when the app loads the change, as worded,
-   which adds finding 4's costs and clears redo at every such load, and
-   still needs A. C: keep refusing, in which case options A and B of
-   comment 1283 are the choices left.
-2. **What the press that finds it does.** A: takes the outside text back
-   at once (R4, recommended). B: only tells; the outside step goes on top
-   of the same stack and the next press takes it back. B never writes
-   before a warning, and costs one more press, a press that changes
-   nothing, and a third outcome in the core's contract.
+Comment 1289 asked two questions with options. The user answered "1: A"
+and "2: A", so both rules are mine (approved).
+
+1. **When the step is made:** when an undo or redo reaches the file (R2).
+   Its cost, as put to the user: an outside edit that no undo ever crosses
+   never shows up as a step, so undo cannot take back a `git pull` by
+   itself.
+2. **What the press that finds it does:** it takes the outside text back
+   at once, with the warning toast (R4). Its cost, as put to the user: the
+   file is written before the user has seen a warning, and redo is the
+   only way back.
 
 ## Tests
 
@@ -220,20 +237,25 @@ dropped one (R8); both cases of comment 1283; an outside edit between two
 undos, then the redos; an unparsable file (R12); state and request files
 never compared, the order completion followed (R9, R10, kept tests); the
 path refusals (R7, main's tests).
-Core, `journal.rs`: a burst does not merge over other text (R11).
+Core, `journal.rs`: nothing new. The burst rule's tests came with #239.
 App, `tests.rs`: the ticket's steps with the toasts and both stacks walked
 down, up, down and past a new op (R4, R6); the redo side (R5); a delete
 restored after an outside change; a refused step, then the one beneath
-(R8); rename, save, undo and the refresh tests (kept).
+(R8); the steps of comment 1290 (a move, an outside rewrite, a move up and
+down that net to nothing, undo); rename, save, undo and the refresh tests
+(kept).
 
 ## Mine, for veto
 
-R2 to R13 are mine. The two I would not build without an answer are R2 and
-R4 (the open questions). The rest: the redo side mirrors undo (R5); the
-wording (R6); a refused step is still dropped (R7); the untrue label in R8
-is left as it is; a broken file is taken back like any other (R12); the
-burst condition (R11) is in this task because it is the same loss by
-another path; the work goes on top of this branch.
+R2 and R4 are mine (approved). R3 and R5 to R13 are mine, not put to the
+user as questions; comment 1289 pointed at the first three of this list
+and they drew no objection, which does not make them the user's. They are:
+the redo side mirrors undo (R5); a broken file is taken back like any
+other (R12); the wording (R6); a refused step is still dropped (R7); the
+untrue label in R8 is left as it is; state and request files are still not
+compared (R9); the order completion is still followed (R10); a file the
+check cannot read still refuses the step (R13); the work goes on top of
+this branch.
 
 Not in this design: #285 (request files) and #286 (a folder rename's redo
 refused on main) are unchanged. #286's fix has to keep the compare from
