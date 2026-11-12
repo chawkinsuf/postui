@@ -1176,12 +1176,12 @@ impl Project {
             if to_slug != from_slug {
                 p.fs_rename(&from_path, &to_path)?;
             }
-            if let Some(text) = p.disk.read(&to_path)?
-                && let Ok(mut req) = HttpRequest::from_toml_str(&text)
-                && req.name.as_deref() != Some(leaf.as_str())
-            {
-                req.name = Some(leaf.clone());
-                p.fs_write_text(&to_path, Some(&req.to_toml_string()))?;
+            if let Some(from) = p.set_name(&to_path, Some(&leaf))? {
+                p.record(Op::Named {
+                    path: to_path.clone(),
+                    before: from,
+                    after: Some(leaf.clone()),
+                });
             }
             // A rename can rewrite the file's `name` (above), so this op
             // owns a write the app must never see as an outside edit —
@@ -2088,7 +2088,12 @@ mod tests {
         let e = p.journal.pop_undo().unwrap();
         assert_eq!(e.meta.moves, vec![("main/ping".to_string(), "main/pong".to_string())]);
         assert!(e.ops.iter().any(|o| matches!(o, Op::Renamed { .. })));
-        assert!(e.ops.iter().any(|o| matches!(o, Op::Text { .. })), "the name rewrite");
+        assert!(
+            e.ops.iter().any(
+                |o| matches!(o, Op::Named { path, .. } if path.as_str() == "requests/main/pong.toml")
+            ),
+            "the name rewrite"
+        );
     }
 
     #[test]

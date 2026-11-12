@@ -244,6 +244,19 @@ enum Entry {
   A text write the app makes outside a transaction (the sidebar's order
   completion) is followed by the journal, so the entry that would next
   rewrite that file records the new text as the text it left.
+  *Amended 2026-11-12 (task #285, mine):* the `name` a request rename
+  sets in the request's file is its own op, `Op::Named`, holding the name
+  before and after (`None` = no `name` key), not the file's text. The
+  rename and the inverse set only that key, found with `toml_edit`, every
+  other byte as the file holds it, so a change made to the request since
+  stays; a new key goes first, after a leading byte order mark. A file
+  that does not parse as a request is left as it is, and the inverse
+  still records its opposite. Costs: a key added to a CRLF file ends in
+  LF (it parses, and its undo gives back the exact bytes), a
+  hand-quoted name comes back in basic quotes, and an undo or redo sets
+  the step's name over a name given in the file since. This splice is for request
+  files only: a folder rename names its `.folder.toml` as before, with
+  `toml_edit`'s `doc["name"]` (mine (approved), after review block 1).
 - Cascades are part of the entry: a request move carries its order-list
   edits, a space rename carries the local-state re-keying, an environment
   rename carries its secrets rename.

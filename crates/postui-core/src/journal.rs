@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 pub const MERGE_WINDOW: Duration = Duration::from_secs(2);
 
 /// Everything undo needs to reverse an operation, and nothing more.
-/// Request ops carry paths and trash tickets; only the small fixed-count
-/// documents carry text.
+/// Request ops carry paths, trash tickets and names; only the small
+/// fixed-count documents carry text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     /// A file or directory moved. Inverse: move it back.
@@ -26,6 +26,10 @@ pub enum Op {
     /// A document's text went from `before` to `after` (`None` = absent).
     /// Inverse: write `before` (or remove).
     Text { path: RelPath, before: Option<String>, after: Option<String> },
+    /// A request's `name` went from `before` to `after` (`None` = no `name`
+    /// key) in its file. Inverse: set `before` in the text the file holds,
+    /// so a change made to the request since stays (#285).
+    Named { path: RelPath, before: Option<String>, after: Option<String> },
 }
 
 impl Op {
@@ -37,7 +41,7 @@ impl Op {
             Op::Trashed { ticket } | Op::Restored { ticket } => {
                 vec![&ticket.original, &ticket.slot]
             }
-            Op::Text { path, .. } => vec![path],
+            Op::Text { path, .. } | Op::Named { path, .. } => vec![path],
         }
     }
 }

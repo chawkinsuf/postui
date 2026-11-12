@@ -135,8 +135,7 @@ impl Project {
     /// to the file's, which [`Self::replay`] reverses as an entry of its
     /// own before this one (#283, spec 2026-11-11 outside edit undo step).
     /// Two kinds of file are not compared, because what they hold since
-    /// the op can be the app's own ([`written_outside_journal`]); a request
-    /// rename's undo over an outside edit of the request is #285.
+    /// the op can be the app's own ([`written_outside_journal`]).
     fn preflight(&mut self, ops: &[Op]) -> Result<Vec<Op>, Error> {
         // The user never sees the machinery, only the cause: something
         // changed the file after the op that is being replayed.
@@ -261,6 +260,16 @@ impl Project {
                     }
                     overlay.set(path, before.is_some());
                 }
+                // Not compared: the inverse sets only the name in what the
+                // file holds, so a name given there since is replaced by
+                // the step's. A file that does not parse as a request is
+                // left as it is, as the rename leaves one.
+                Op::Named { path, .. } => {
+                    if !exists(&self.disk, &overlay, path) {
+                        return Err(conflict(path, "no longer exists"));
+                    }
+                    overlay.set(path, true);
+                }
             }
         }
         Ok(differing)
@@ -274,6 +283,19 @@ impl Project {
             Op::Trashed { ticket } => self.fs_restore(ticket),
             Op::Restored { ticket } => self.fs_retrash(ticket),
             Op::Text { path, before, .. } => self.fs_write_text(path, before.as_deref()),
+            // The opposite op holds this op's names, not the one the file
+            // held, and is recorded even when the file was left as it is
+            // (it does not parse as a request), so the opposite step sets
+            // its name in the file it finds then.
+            Op::Named { path, before, after } => {
+                self.set_name(path, before.as_deref())?;
+                self.record(Op::Named {
+                    path: path.clone(),
+                    before: after.clone(),
+                    after: before.clone(),
+                });
+                Ok(())
+            }
         }
     }
 
@@ -1087,7 +1109,8 @@ mod tests {
 
     /// A save writes a request's file outside the journal. Its text is not
     /// compared, so the app's own save is not taken for an outside change:
-    /// the rename undoes at the first press.
+    /// the rename undoes at the first press, and the undo and the redo set
+    /// only the name in the saved text (#285).
     #[test]
     fn a_save_after_a_rename_is_not_taken_for_an_outside_change() {
         let (dir, mut p) = fixture();
@@ -1095,8 +1118,219 @@ mod tests {
         let mut req = p.read_request("main/pong").unwrap();
         req.url = "https://saved".into();
         p.save_request("main/pong", &req).unwrap();
+        let saved = read(&dir, "requests/main/pong.toml").unwrap();
         assert_replayed(p.undo(), "rename request");
-        assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("name = \"Ping\""));
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            saved.replace("\"Pong\"", "\"Ping\"")
+        );
+        assert_replayed(p.redo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), saved);
+    }
+
+    /// The same for a save made after the undo: the redo keeps it.
+    #[test]
+    fn a_save_after_a_rename_is_undone_stays_through_the_redo() {
+        let (_dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        assert_replayed(p.undo(), "rename request");
+        let mut req = p.read_request("main/ping").unwrap();
+        req.url = "https://saved".into();
+        p.save_request("main/ping", &req).unwrap();
+        assert_replayed(p.redo(), "rename request");
+        let again = p.read_request("main/pong").unwrap();
+        assert_eq!((again.name.as_deref(), again.url.as_str()), (Some("Pong"), "https://saved"));
+    }
+
+    /// The name a request rename wrote is put back in the text the file
+    /// holds at the undo, the rest of that text as it is, so a change made
+    /// to the request since (an agent, a hand edit, a `git pull`) stays.
+    /// The redo does the same (#285).
+    #[test]
+    fn undo_and_redo_of_a_rename_keep_a_change_made_to_the_request_since() {
+        let (dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let outside =
+            "# auth notes\nmethod = \"GET\"\nname = \"Pong\"\nurl = \"https://outside/1\"\n";
+        std::fs::write(dir.path().join("requests/main/pong.toml"), outside).unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            outside.replace("\"Pong\"", "\"Ping\"")
+        );
+        assert!(!dir.path().join("requests/main/pong.toml").exists());
+
+        let outside =
+            "# auth notes\nmethod = \"GET\"\nname = \"Ping\"\nurl = \"https://outside/2\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), outside).unwrap();
+        assert_replayed(p.redo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/pong.toml").unwrap(),
+            outside.replace("\"Ping\"", "\"Pong\"")
+        );
+        assert!(!dir.path().join("requests/main/ping.toml").exists());
+    }
+
+    /// The undo and the redo set the names the rename went between, not a
+    /// name the file was given since.
+    #[test]
+    fn undo_and_redo_of_a_rename_set_the_rename_s_names_over_one_given_outside() {
+        let (dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/pong.toml"),
+            "name = \"Ping\"\nmethod = \"GET\"\nurl = \"https://outside/1\"\n",
+        )
+        .unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(p.read_request("main/ping").unwrap().name.as_deref(), Some("Ping"));
+        assert_replayed(p.redo(), "rename request");
+        assert_eq!(p.read_request("main/pong").unwrap().name.as_deref(), Some("Pong"));
+
+        std::fs::write(
+            dir.path().join("requests/main/pong.toml"),
+            "name = \"Other\"\nmethod = \"GET\"\nurl = \"https://outside/2\"\n",
+        )
+        .unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(p.read_request("main/ping").unwrap().name.as_deref(), Some("Ping"));
+        assert_replayed(p.redo(), "rename request");
+        let again = p.read_request("main/pong").unwrap();
+        assert_eq!(
+            (again.name.as_deref(), again.url.as_str()),
+            (Some("Pong"), "https://outside/2")
+        );
+    }
+
+    /// The rename sets only the name, so its undo and redo give back the
+    /// exact bytes, the comments and the key order included.
+    #[test]
+    fn undo_and_redo_of_a_rename_give_back_the_exact_text() {
+        let (dir, _p) = fixture();
+        let original =
+            "# kept\nurl = \"https://{{host}}/ping\"\nname = \"Ping\"  # shown\nmethod = \"GET\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let renamed = original.replace("\"Ping\"", "\"Pong\"");
+        assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), renamed);
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+        assert_replayed(p.redo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), renamed);
+    }
+
+    /// A request with no `name` gets one from the rename, and the undo
+    /// takes the key out again.
+    #[test]
+    fn undo_of_a_rename_takes_out_a_name_the_rename_added() {
+        let (dir, _p) = fixture();
+        let original = "method = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        assert_eq!(
+            read(&dir, "requests/main/pong.toml").unwrap(),
+            format!("name = \"Pong\"\n{original}"),
+            "the name goes first, where a save puts it"
+        );
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+    }
+
+    /// A name added to a file that starts with a byte order mark goes after
+    /// the mark, so the file still parses, and the undo gives back the
+    /// exact bytes.
+    #[test]
+    fn a_name_added_to_a_request_with_a_byte_order_mark_goes_after_it() {
+        let (dir, _p) = fixture();
+        let original = "\u{feff}method = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        assert_eq!(
+            read(&dir, "requests/main/pong.toml").unwrap(),
+            "\u{feff}name = \"Pong\"\nmethod = \"GET\"\nurl = \"https://x/ping\"\n"
+        );
+        assert_eq!(p.read_request("main/pong").unwrap().name.as_deref(), Some("Pong"));
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+    }
+
+    /// Taking out a name the rename added leaves a comment written above
+    /// it since.
+    #[test]
+    fn undo_of_a_rename_keeps_a_comment_written_above_the_name_it_added() {
+        let (dir, _p) = fixture();
+        let original = "# top\nmethod = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let outside =
+            format!("# owner: payments\n{}", read(&dir, "requests/main/pong.toml").unwrap());
+        std::fs::write(dir.path().join("requests/main/pong.toml"), &outside).unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            format!("# owner: payments\n{original}")
+        );
+    }
+
+    /// Taking out a name the rename added leaves a comment written after
+    /// it on its line since.
+    #[test]
+    fn undo_of_a_rename_keeps_a_comment_written_after_the_name_it_added() {
+        let (dir, _p) = fixture();
+        let original = "method = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let outside = read(&dir, "requests/main/pong.toml")
+            .unwrap()
+            .replace("\"Pong\"\n", "\"Pong\"  # keep: used by CI\n");
+        std::fs::write(dir.path().join("requests/main/pong.toml"), &outside).unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            format!("# keep: used by CI\n{original}")
+        );
+    }
+
+    /// A step that found the file not parsing as a request still records
+    /// its opposite, so once the file parses again the next undo or redo
+    /// sets the name.
+    #[test]
+    fn a_name_skipped_over_a_broken_file_is_set_by_the_next_replay() {
+        let (dir, mut p) = fixture();
+        p.rename_request("main/ping", "Pong").unwrap();
+        std::fs::write(dir.path().join("requests/main/pong.toml"), "url = [\n").unwrap();
+        assert_replayed(p.undo(), "rename request");
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "name = \"Pong\"\nmethod = \"GET\"\nurl = \"https://fixed\"\n",
+        )
+        .unwrap();
+        assert_replayed(p.redo(), "rename request");
+        assert_replayed(p.undo(), "rename request");
+        let back = p.read_request("main/ping").unwrap();
+        assert_eq!((back.name.as_deref(), back.url.as_str()), (Some("Ping"), "https://fixed"));
+    }
+
+    /// A request file that no longer parses as a request gets no name: the
+    /// undo and the redo move it with its text as it is, as the rename
+    /// moves such a file.
+    #[test]
+    fn undo_of_a_rename_moves_a_request_that_no_longer_parses_back_as_it_is() {
+        for broken in ["url = [\n", "name = \"Pong\"\nunknown = 1\n"] {
+            let (dir, mut p) = fixture();
+            p.rename_request("main/ping", "Pong").unwrap();
+            std::fs::write(dir.path().join("requests/main/pong.toml"), broken).unwrap();
+            assert_replayed(p.undo(), "rename request");
+            assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), broken);
+            assert!(!dir.path().join("requests/main/pong.toml").exists());
+            assert_replayed(p.redo(), "rename request");
+            assert_eq!(read(&dir, "requests/main/pong.toml").unwrap(), broken);
+        }
     }
 
     /// The same for `state.toml`, which every UI change writes outside the
@@ -1391,6 +1625,29 @@ mod tests {
         // Under a path made present, what is there is looked up on disk.
         o.set(&r("e"), true);
         assert_eq!(o.resolve(&r("e/x.toml")), Node::Disk(r("e/x.toml")));
+    }
+
+    /// A named file inside a directory the same replay renames back is
+    /// looked for where it is on disk before the replay.
+    #[test]
+    fn preflight_finds_a_named_file_through_a_renamed_directory() {
+        let (dir, mut p) = fixture();
+        let requests = dir.path().join("requests");
+        std::fs::rename(requests.join("main"), requests.join("zz")).unwrap();
+        let ops = [
+            Op::Named {
+                path: RelPath::new("requests/main/ping.toml").unwrap(),
+                before: None,
+                after: Some("Ping".into()),
+            },
+            Op::Renamed {
+                from: RelPath::new("requests/main").unwrap(),
+                to: RelPath::new("requests/zz").unwrap(),
+            },
+        ];
+        assert!(p.preflight(&ops).is_ok());
+        std::fs::remove_file(requests.join("zz/ping.toml")).unwrap();
+        assert!(matches!(p.preflight(&ops), Err(Error::Conflict(_))));
     }
 
     #[test]
