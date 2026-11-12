@@ -613,6 +613,9 @@ impl Project {
                 // pre-transaction state.
                 self.relist();
                 self.reload_held_requests();
+                // A write under `environments/` and its reversal change the
+                // directory's stamp; listing it records the new one (#289).
+                self.refresh_environments();
                 if reversal_failed {
                     self.force_reload = true;
                 }

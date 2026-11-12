@@ -969,6 +969,20 @@ mod tests {
         assert!(p.variables().selectors.contains_key("user_id"));
     }
 
+    /// #289: the rename of a selector that is not shared rewrites the
+    /// environment files inside its cascade, and carries the selection.
+    /// Those writes are its own, so they leave no poll due.
+    #[test]
+    fn a_selector_rename_leaves_no_poll_due() {
+        let (dir, mut p) = vars_fixture();
+        p.set_selection_for("qa", "creds", "alice");
+        assert!(!p.changed_on_disk());
+        p.apply_var_edit(&VarEdit::Rename { from: "creds".into(), to: "login".into() }).unwrap();
+        assert!(read(&dir, "environments/qa.toml").unwrap().contains("[options.login.alice]"));
+        assert_eq!(p.selections_for("qa").get("login").map(String::as_str), Some("alice"));
+        assert!(!p.changed_on_disk());
+    }
+
     #[test]
     fn option_edits_go_to_the_shared_or_env_home() {
         let (dir, mut p) = vars_fixture();

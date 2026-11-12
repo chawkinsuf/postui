@@ -30734,6 +30734,43 @@ fn a_press_and_wiggle_on_one_space_row_is_not_a_drag() {
     assert_eq!(manage_cursor(&app), Some(1), "the press still selected it");
 }
 
+/// #289: a selector fields edit rewrites the environment files that hold
+/// its options. Those writes are the app's own, with nothing changed
+/// outside, so the Spaces drop after them lands the first time.
+#[test]
+fn a_space_drop_after_a_selector_fields_edit_lands() {
+    let (mut app, dir) = manage_spaces_app();
+    let envs = app.proj().environments().to_vec();
+    assert!(!envs.is_empty());
+    std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"id\"]\n")
+        .unwrap();
+    for env in &envs {
+        std::fs::write(
+            dir.path().join(format!("environments/{env}.toml")),
+            "[options.user.alice]\nid = \"1\"\n",
+        )
+        .unwrap();
+    }
+    app.resync_project();
+    assert!(!app.proj().changed_on_disk());
+
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    app.update(Action::ApplyGroupFields { selector: "user".into(), slots: vec!["user_id".into()] });
+    assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id"]);
+    assert!(!app.proj().changed_on_disk());
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+
+    let steps = app.history.undo_len();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+    assert_eq!(app.proj().spaces(), ["auth", "billing", "main"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+}
+
 #[test]
 fn dragging_an_environment_row_reorders_and_persists() {
     let (mut app, dir) = manage_envs_app();
