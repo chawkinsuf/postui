@@ -60,12 +60,11 @@ request can also turn off TLS verification.
 Everything undoes: edits, deletes, renames, moves and reorders, including ones
 made in another request or on the Manage screen.
 
-If `project.toml`, `variables.toml`, an environment file or a folder's
-`.folder.toml` was changed outside postui (by a `git pull`, say), the undo
-that reaches it first takes that change back, as a step of its own, and a
-warning names the file. The next undo goes on, and redo puts the outside
-change back. A redo that reaches such a file does the same, and undo puts the
-change back.
+If `project.toml`, `variables.toml`, an environment file,
+`.postui/secrets.toml` or a folder's `.folder.toml` was changed outside postui
+(by a `git pull`, say), the undo or redo that reaches it first takes that
+change back, as a step of its own, and a warning names the file. Undo and redo
+treat that step like any other, so the outside change can be brought back.
 
 ## Environments, variables and secrets
 

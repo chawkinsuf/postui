@@ -42,11 +42,10 @@ sharing a project should upgrade together.
 - A click on a request row opens it when the button comes up, so dragging a
   row never asks about unsaved edits.
 - An undo or redo that reaches `project.toml`, `variables.toml`, an
-  environment file or a `.folder.toml` changed outside postui (by a
-  `git pull`, say) no longer writes over it silently: that press takes the
-  outside change back, as a step of its own, with a warning. The next press
-  goes on to your own steps, and the other key (redo after an undo, undo
-  after a redo) brings the outside change back.
+  environment file, `.postui/secrets.toml` or a `.folder.toml` changed
+  outside postui (by a `git pull`, say) no longer writes over it silently:
+  that press takes the outside change back, as a step of its own, with a
+  warning, and undo and redo can bring it back like any other step.
 - jq, `postui run --jq` and the suite treat a body with comments or NaN as
   not JSON, as the Tree tab does.
 
