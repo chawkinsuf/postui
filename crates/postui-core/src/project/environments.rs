@@ -174,13 +174,12 @@ impl Project {
     pub fn create_environment(&mut self, display: &str) -> Result<String, Error> {
         let display = meta::display_name_of(display)?;
         let meta = self.meta.clone();
-        let existing = self.environments.clone();
-        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), None) {
+        let mut shown = self.environments.clone();
+        if meta::display_taken(&display, &shown, |s| meta::env_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.environment_slug_for(&display, None);
         // The rows shown, then the new one.
-        let mut shown = existing;
         shown.push(slug.clone());
         // Creating an environment switches to it, as today's app does;
         // the transition is recorded so undo puts the old one back.
@@ -213,13 +212,12 @@ impl Project {
             return Err(Error::NotFound(from.to_string()));
         }
         let meta = self.meta.clone();
-        let existing = self.environments.clone();
-        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), Some(from)) {
+        let shown = self.environments.clone();
+        if meta::display_taken(&display, &shown, |s| meta::env_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.environment_slug_for(&display, Some(from));
         let from = from.to_string();
-        let shown = existing;
         let was_active = self.active_env.as_deref() == Some(from.as_str());
         let entry_meta = EntryMeta {
             active_env: (to != from && was_active).then(|| (Some(from.clone()), Some(to.clone()))),
@@ -230,21 +228,13 @@ impl Project {
                 p.fs_rename(&from_path, &env_rel(&to)?)?;
             }
             p.edit_project_toml(|doc| {
-                // Only rewritten when `project.toml` lists `from` at this
-                // write: a rename never creates an order list the project
-                // does without. When no array is present, the renamed
-                // environment re-sorts within the alphabetical unlisted
-                // tail rather than keeping the slot `from` held — the tail
-                // is alphabetical by definition, so there is no slot to
-                // keep. This is deliberate: unlike `rename_space`, which
-                // always writes the full list, an environment rename does
-                // not promote a project into having an order array just
-                // because one entry changed name.
+                // Rewritten only when `project.toml` lists `from` at this
+                // write.
                 if let Some(listed) = listed_in(doc).filter(|l| l.contains(&from)) {
-                    let mut envs = write_list_over(&listed, &shown);
-                    if let Some(i) = envs.iter().position(|n| *n == from) {
-                        envs[i] = to.clone();
-                    }
+                    let renamed = |l: &[String]| -> Vec<String> {
+                        l.iter().map(|n| if *n == from { to.clone() } else { n.clone() }).collect()
+                    };
+                    let envs = write_list_over(&renamed(&listed), &renamed(&shown));
                     doc["environments"] = toml_edit::value(meta::slug_array(&envs));
                 }
                 meta::move_item_table(doc, meta::Kind::Environment, &from, &to);
@@ -291,8 +281,8 @@ impl Project {
         };
         self.transaction("delete environment", entry_meta, |p| {
             p.edit_project_toml(|doc| {
-                // As in `rename_environment`: the list is only rewritten
-                // when `project.toml` lists this environment at this write.
+                // Rewritten only when `project.toml` lists `name` at this
+                // write.
                 if let Some(listed) = listed_in(doc).filter(|l| l.contains(&name)) {
                     let mut envs = write_list_over(&listed, &shown);
                     envs.retain(|n| *n != name);
@@ -670,6 +660,17 @@ mod tests {
         assert!(!text.contains("environments"), "{text}");
         assert!(p.meta().environments.is_empty());
         assert_eq!(p.environments(), ["staging"]);
+    }
+
+    /// A rename to a name the file already lists, with no file of that
+    /// name, writes the name once.
+    #[test]
+    fn a_rename_to_a_name_the_file_already_lists_writes_it_once() {
+        let (dir, mut p) = fixture();
+        hand_order(&dir, &["staging", "qa", "dev"]);
+        p.rename_environment("qa", "Staging").unwrap();
+        assert_eq!(p.meta().environments, ["staging", "dev"]);
+        assert_eq!(p.environments(), ["staging", "dev"]);
     }
 
     #[test]
