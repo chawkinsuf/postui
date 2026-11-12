@@ -29872,6 +29872,335 @@ fn filetime_of(p: &std::path::Path) -> std::time::SystemTime {
     std::fs::metadata(p).unwrap().modified().unwrap()
 }
 
+// -- #239: a sidebar reorder takes in an order changed outside first ------
+
+/// Another program rewriting `main`'s top level to `order`, as a pull
+/// would, behind the running app's back. The trailing comment changes the
+/// file's length, so the mtime gate sees the rewrite even on a
+/// coarse-mtime filesystem. Returns `project.toml` as it left it.
+fn reorder_main_outside(dir: &tempfile::TempDir, order: &[&str]) -> String {
+    let order: Vec<String> = order.iter().map(|s| s.to_string()).collect();
+    postui_core::fixtures::set_level_order(dir.path(), "main", "", &order).unwrap();
+    let path = dir.path().join("project.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{text}\n# pulled\n")).unwrap();
+    project_toml(dir)
+}
+
+fn project_toml(dir: &tempfile::TempDir) -> String {
+    std::fs::read_to_string(dir.path().join("project.toml")).unwrap()
+}
+
+/// Right-clicks sidebar row `i` and clicks its menu's `label` item.
+fn pick_from_sidebar_row_menu(app: &mut App, i: usize, label: &str) {
+    let r = row_rect(app, i);
+    app.handle_mouse(right_down(r.x + 2, r.y));
+    let item = menu_labels(app).iter().position(|l| l == label).expect("the item is listed");
+    render_once(app);
+    let item = app.hits.rect_of(&Hit::DropdownRow(item)).expect("the menu is drawn");
+    app.handle_mouse(left_down(item.x + 1, item.y));
+    app.handle_mouse(left_up(item.x + 1, item.y));
+}
+
+/// The task's case: the order changes outside (alpha and beta swapped) and
+/// the app has not re-read it. Move up on gamma rebuilds the rows first, so
+/// the swap stays and gamma moves one place in the order as it is now. Undo
+/// puts `project.toml` back as the other program left it.
+#[test]
+fn a_request_move_first_takes_in_an_order_changed_outside() {
+    let (mut app, dir) = three_row_app();
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+    let steps = app.history.undo_len();
+
+    pick_from_sidebar_row_menu(&mut app, 2, "Move up");
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"]);
+}
+
+/// The same for a folder's Move up.
+#[test]
+fn a_folder_move_first_takes_in_an_order_changed_outside() {
+    let (mut app, dir) = folder_app();
+    // rows: alpha, beta, a/, b/, c/
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "a/", "b/", "c/"]);
+
+    pick_from_sidebar_row_menu(&mut app, 4, "Move up");
+    assert_eq!(level_order(&dir, ""), ["beta", "alpha", "a/", "c/", "b/"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/alpha"]);
+    assert_eq!(folder_rows(&app), ["main/a", "main/c", "main/b"]);
+    assert_eq!(app.sidebar.selected_key(), Some(RowKey::Folder("main/c".into())));
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+}
+
+/// A drop in the block's own folder rebuilds the rows first, as Move up
+/// does: the swap stays and gamma lands at the index the drag showed, in
+/// the order as it is now. One undo step, and Undo puts `project.toml` back
+/// as the other program left it. `drop` picks gamma up, moves it up one
+/// place and drops it: the mouse, then `m`.
+#[test]
+fn a_reordering_drop_first_takes_in_an_order_changed_outside() {
+    fn by_mouse(app: &mut App) {
+        let r1 = row_rect(app, 1);
+        let r2 = row_rect(app, 2);
+        app.handle_mouse(left_down(r2.x + 2, r2.y));
+        app.handle_mouse(moved(r2.x + 2, r1.y));
+        assert!(app.sidebar.drag.is_some());
+        app.handle_mouse(left_up(r2.x + 2, r1.y));
+    }
+    fn by_keys(app: &mut App) {
+        app.focus = PaneId::Sidebar;
+        app.sidebar.selected = Some(2);
+        key_matrix_tests::feed(app, "m<Up>");
+        assert!(app.sidebar.drag.is_some());
+        key_matrix_tests::feed(app, "<CR>");
+    }
+    for (what, drop) in [("mouse", by_mouse as fn(&mut App)), ("m", by_keys)] {
+        let (mut app, dir) = three_row_app();
+        app.use_profile(crate::config::KeyProfile::Arrows);
+        let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+        let steps = app.history.undo_len();
+
+        drop(&mut app);
+        assert!(app.sidebar.drag.is_none(), "{what}");
+        assert!(app.sidebar_press.is_none(), "{what}");
+        assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
+        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{what}");
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "{what}");
+        assert_eq!(app.history.undo_len(), steps + 1, "{what}");
+
+        app.update(Action::Undo);
+        assert_eq!(project_toml(&dir), outside, "{what}");
+        assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"], "{what}");
+    }
+}
+
+/// The cost of rebuilding at the drop: the block keeps its index, not its
+/// neighbours. Delta is dragged up to between alpha and beta, and alpha's
+/// file is removed outside before the release. Delta lands second in the
+/// rows as they are now, below beta. Undo puts back the order the rebuild
+/// read, without alpha.
+#[test]
+fn a_reordering_drop_keeps_its_index_when_a_row_above_it_was_removed_outside() {
+    let (mut app, dir) = three_row_app();
+    postui_core::fixtures::save_request(dir.path(), "main/delta", &req("https://x/4")).unwrap();
+    app.update(Action::RefreshSidebar);
+    let r1 = row_rect(&mut app, 1);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(r3.x + 2, r3.y));
+    app.handle_mouse(moved(r3.x + 2, r1.y));
+    assert_eq!(request_rows(&app), ["main/alpha", "main/delta", "main/beta", "main/gamma"]);
+    let steps = app.history.undo_len();
+
+    std::fs::remove_file(dir.path().join("requests/main/alpha.toml")).unwrap();
+    app.handle_mouse(left_up(r3.x + 2, r1.y));
+    assert_eq!(saved_order(&dir), ["beta", "delta", "gamma"]);
+    assert_eq!(request_rows(&app), ["main/beta", "main/delta", "main/gamma"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "delta"]);
+}
+
+/// A drop does not run the re-read a focus change runs, so one that is due
+/// does not cancel it: after another project file changed outside, and
+/// after a Move up that took in an order changed outside.
+#[test]
+fn a_reordering_drop_commits_while_a_re_read_is_due() {
+    type Setup = fn(&mut App, &tempfile::TempDir);
+    let cases: [(&str, Setup); 2] = [
+        ("variables.toml changed outside", |_, dir| {
+            std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"x\"\n").unwrap();
+        }),
+        ("a Move up took in an order changed outside", |app, dir| {
+            reorder_main_outside(dir, &["beta", "alpha", "gamma"]);
+            pick_from_sidebar_row_menu(app, 2, "Move up");
+        }),
+    ];
+    for (what, setup) in cases {
+        let (mut app, dir) = three_row_app();
+        setup(&mut app, &dir);
+        assert!(app.proj().changed_on_disk(), "{what}: a re-read is due");
+        let mut want = saved_order(&dir);
+        want.rotate_left(1);
+        let steps = app.history.undo_len();
+
+        let r0 = row_rect(&mut app, 0);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        app.handle_mouse(left_up(r0.x + 2, r2.y));
+        assert_eq!(saved_order(&dir), want, "{what}: the first row went last");
+        assert_eq!(app.history.undo_len(), steps + 1, "{what}");
+    }
+}
+
+/// With nothing changed outside, a reorder is as before: a burst of moves
+/// is one undo step, and a drop after it is its own step.
+#[test]
+fn a_reorder_with_nothing_changed_outside_is_a_burst_and_a_drop_as_before() {
+    let (mut app, dir) = three_row_app();
+    let steps = app.history.undo_len();
+
+    for (row, order) in [(2, ["alpha", "gamma", "beta"]), (1, ["gamma", "alpha", "beta"])] {
+        pick_from_sidebar_row_menu(&mut app, row, "Move up");
+        assert_eq!(saved_order(&dir), order);
+        assert!(!app.proj().changed_on_disk(), "the next re-read finds nothing");
+    }
+    assert_eq!(app.history.undo_len(), steps + 1, "the burst is one step");
+
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(saved_order(&dir), ["alpha", "beta", "gamma"]);
+    assert_eq!(app.history.undo_len(), steps + 2);
+    assert!(!app.proj().changed_on_disk());
+}
+
+/// An outside rewrite between two moves of one burst: the second move is
+/// its own undo step, so Undo puts `project.toml` back as the other
+/// program left it, not as it was before the burst.
+#[test]
+fn a_move_after_an_outside_change_does_not_join_the_burst_before_it() {
+    let (mut app, dir) = three_row_app();
+    let steps = app.history.undo_len();
+    pick_from_sidebar_row_menu(&mut app, 2, "Move up");
+    assert_eq!(saved_order(&dir), ["alpha", "gamma", "beta"]);
+
+    let outside = reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+    pick_from_sidebar_row_menu(&mut app, 1, "Move up");
+    assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"]);
+    assert_eq!(app.history.undo_len(), steps + 2);
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
+}
+
+/// Three steps: the order changes outside (alpha and beta swapped); an
+/// environment op on the Manage screen rewrites `project.toml`; Manage
+/// closes and gamma is moved up one place, by Move up, a mouse drag or
+/// `m`. The swap stays and gamma moves one place in the order as it is on
+/// disk.
+#[test]
+fn a_reorder_after_an_environment_op_keeps_an_order_changed_outside() {
+    use crate::components::manage::ManageTab;
+    use postui_core::project::TlsPolicy;
+    type Op = fn(&mut App);
+    let reorders: [(&str, Op); 3] = [
+        ("Move up", |app| pick_from_sidebar_row_menu(app, 2, "Move up")),
+        ("mouse", |app| {
+            let r1 = row_rect(app, 1);
+            let r2 = row_rect(app, 2);
+            app.handle_mouse(left_down(r2.x + 2, r2.y));
+            app.handle_mouse(moved(r2.x + 2, r1.y));
+            app.handle_mouse(left_up(r2.x + 2, r1.y));
+        }),
+        ("m", |app| {
+            app.focus = PaneId::Sidebar;
+            app.sidebar.selected = Some(2);
+            key_matrix_tests::feed(app, "m<Up><CR>");
+        }),
+    ];
+    let ops: [(&str, Op); 5] = [
+        ("move", |app| {
+            app.update(Action::MoveEnv { name: "dev".into(), delta: -1 });
+        }),
+        ("create", |app| {
+            app.update(Action::CreateEnv("stage".into()));
+        }),
+        ("rename", |app| {
+            app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
+        }),
+        ("delete", |app| {
+            app.update(Action::DeleteEnv("qa".into()));
+        }),
+        ("set TLS policy", |app| {
+            app.update(Action::SetEnvTls { env: "qa".into(), policy: Some(TlsPolicy::Insecure) });
+        }),
+    ];
+    for (what, op) in ops {
+        for (how, reorder) in reorders {
+            let what = format!("{what}, then {how}");
+            let (mut app, dir) = three_row_app();
+            app.use_profile(crate::config::KeyProfile::Arrows);
+            app.update(Action::CreateEnv("qa".into()));
+            app.update(Action::CreateEnv("dev".into()));
+            reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+
+            app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+            let before = project_toml(&dir);
+            op(&mut app);
+            assert_ne!(project_toml(&dir), before, "{what}: the op wrote project.toml");
+            app.update(Action::OpenManage { tab: None });
+            assert_eq!(app.screen, Screen::Main, "{what}");
+            let rows = request_rows(&app);
+            assert_eq!(rows, ["main/alpha", "main/beta", "main/gamma"], "{what}: the old rows");
+
+            reorder(&mut app);
+            assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
+            assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{what}");
+        }
+    }
+}
+
+/// The other ops that write an order re-read nothing in the app: core
+/// builds their list from `project.toml` as it is on disk. Each one runs
+/// straight after an outside swap of alpha and beta and keeps the swap.
+#[test]
+fn the_other_order_writes_keep_an_order_changed_outside() {
+    type Op = fn(&mut App);
+    let ops: [(&str, Op); 5] = [
+        ("create", |app| {
+            app.update(Action::CreateRequest("delta".into()));
+        }),
+        ("delete", |app| {
+            app.update(Action::DeleteRequest("main/gamma".into()));
+        }),
+        ("duplicate", |app| {
+            app.sidebar.select_slug("main/gamma");
+            app.update(Action::DuplicateRequest);
+        }),
+        ("rename", |app| {
+            app.update(Action::RenameRequest { from: "main/gamma".into(), to: "zeta".into() });
+        }),
+        ("new folder", |app| {
+            app.sidebar.select_slug("main/gamma");
+            app.update(Action::PromptNewFolder);
+            submit_folder_prompt(app, "Made");
+        }),
+    ];
+    for (what, op) in ops {
+        let (mut app, dir) = three_row_app();
+        reorder_main_outside(&dir, &["beta", "alpha", "gamma"]);
+        let before = saved_order(&dir);
+        op(&mut app);
+        let after = saved_order(&dir);
+        assert_ne!(after, before, "{what}: the op wrote the order");
+        assert_eq!(after[..2], ["beta", "alpha"], "{what}: {after:?}");
+    }
+
+    // A drop into another level: beta into the open auth/, after auth/ was
+    // put first outside.
+    let (mut app, dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    reorder_main_outside(&dir, &["auth/", "alpha", "beta"]);
+    key_move_ready(&mut app, "main/beta", crate::config::KeyProfile::Arrows);
+    key_matrix_tests::feed(&mut app, "m<Down>");
+    assert_eq!(app.sidebar.drag.as_ref().unwrap().target, ("auth".to_string(), 0));
+    key_matrix_tests::feed(&mut app, "<CR>");
+    assert!(dir.path().join("requests/main/auth/beta.toml").is_file(), "the file moved");
+    assert_eq!(level_order(&dir, ""), ["auth/", "alpha"]);
+}
+
 #[test]
 fn a_right_click_on_an_armed_press_disarms_it() {
     let (mut app, _dir) = three_row_app();
