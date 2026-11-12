@@ -30757,6 +30757,7 @@ fn a_space_drop_after_a_selector_fields_edit_lands() {
     app.update(Action::SelectManageTab(ManageTab::Variables));
     app.update(Action::ApplyGroupFields { selector: "user".into(), slots: vec!["user_id".into()] });
     assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id"]);
+    assert!(!app.proj().changed_on_disk());
     app.update(Action::SelectManageTab(ManageTab::Spaces));
 
     let steps = app.history.undo_len();

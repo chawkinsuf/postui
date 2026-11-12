@@ -316,6 +316,21 @@ mod tests {
         assert!(!p.changed_on_disk());
     }
 
+    /// #289: an environment file written and then put back by a rollback
+    /// leaves no poll due either.
+    #[test]
+    fn a_rollback_under_environments_leaves_no_poll_due() {
+        let (dir, mut p) = fixture();
+        assert!(!p.changed_on_disk());
+        let r = p.cascade("set value", |p| {
+            p.edit_env("qa", |doc| varedit::set_env_value(doc, "host", Some("qa.local")))?;
+            Err::<(), Error>(Error::Edit("late failure".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(read(&dir, "environments/qa.toml").unwrap(), "");
+        assert!(!p.changed_on_disk());
+    }
+
     #[test]
     fn scan_usage_reads_request_files_through_the_project() {
         let (_d, p) = fixture();

@@ -613,11 +613,9 @@ impl Project {
                 // pre-transaction state.
                 self.relist();
                 self.reload_held_requests();
-                // `environments/` is not listed again here, so a rolled-back
-                // write there leaves its stamp out of date and the next
-                // `poll` re-reads once. Through the app such a rollback
-                // takes a hand-edited environment file or a disk fault
-                // (#289).
+                // A write under `environments/` and its reversal change the
+                // directory's stamp; listing it records the new one (#289).
+                self.refresh_environments();
                 if reversal_failed {
                     self.force_reload = true;
                 }
