@@ -308,23 +308,23 @@ fn parse_err(file: &str) -> impl Fn(&dyn std::fmt::Display) -> Error + '_ {
     move |e| Error::Parse { file: file.to_string(), error: e.to_string() }
 }
 
-/// The TOML `text` with its root `name` key set to `name` (`None` removes
-/// it), every other byte as it is. A name that replaces another takes the
-/// old value's place; a new key goes first, where a request's save puts
-/// it; a removed key takes its own line with it.
+/// The request file's TOML `text` with its root `name` key set to `name`
+/// (`None` removes it), every other byte as it is. A name that replaces
+/// another takes the old value's place; a new key goes first (after a
+/// leading byte order mark), where a request's save puts it, on a line
+/// ending in `\n`; a removed key takes its own line with it.
 ///
 /// The value written is toml_edit's quoting of the name, so a name that
 /// was hand-quoted another way (`'Ping'`) comes back as `"Ping"`: the same
 /// name in other quotes.
-pub(crate) fn toml_with_name(
-    text: &str,
-    name: Option<&str>,
-) -> Result<String, toml_edit::TomlError> {
+fn toml_with_name(text: &str, name: Option<&str>) -> Result<String, toml_edit::TomlError> {
     let doc = toml_edit::Document::parse(text)?;
     let new = name.map(|n| toml_edit::Value::from(n).to_string());
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let bom = &text[..text.len() - body.len()];
     let Some((key, value)) = doc.as_table().get_key_value("name") else {
         return Ok(match new {
-            Some(v) => format!("name = {v}\n{text}"),
+            Some(v) => format!("{bom}name = {v}\n{body}"),
             None => text.to_string(),
         });
     };
@@ -333,7 +333,7 @@ pub(crate) fn toml_with_name(
     Ok(match new {
         Some(v) => format!("{}{v}{}", &text[..value.start], &text[value.end..]),
         None => {
-            let start = text[..key.start].rfind('\n').map_or(0, |i| i + 1);
+            let start = text[..key.start].rfind('\n').map_or(bom.len(), |i| i + 1);
             let end = text[value.end..].find('\n').map_or(text.len(), |i| value.end + i + 1);
             format!("{}{}", &text[..start], &text[end..])
         }
@@ -709,9 +709,10 @@ impl Project {
 
     /// Sets `name` in the request file at `path` (`None` removes the key),
     /// the rest of its text as it is ([`toml_with_name`]), writing only
-    /// when the name differs. Answers the name the file held, or `None`
-    /// for a file that is absent or does not parse as a request, which is
-    /// left as it is. Records nothing: the caller records [`Op::Named`].
+    /// when the name differs. Answers the name it replaced when it wrote,
+    /// and `None` when it did not: the file is absent, does not parse as a
+    /// request (left as it is), or already holds `name`. Records nothing:
+    /// the caller records [`Op::Named`].
     pub(crate) fn set_name(
         &mut self,
         path: &RelPath,
@@ -719,10 +720,11 @@ impl Project {
     ) -> Result<Option<Option<String>>, Error> {
         let Some(text) = self.disk.read(path)? else { return Ok(None) };
         let Ok(req) = crate::model::HttpRequest::from_toml_str(&text) else { return Ok(None) };
-        if req.name.as_deref() != name {
-            let Ok(after) = toml_with_name(&text, name) else { return Ok(None) };
-            self.disk.write(path, &after)?;
+        if req.name.as_deref() == name {
+            return Ok(None);
         }
+        let Ok(after) = toml_with_name(&text, name) else { return Ok(None) };
+        self.disk.write(path, &after)?;
         Ok(Some(req.name))
     }
 

@@ -1176,9 +1176,7 @@ impl Project {
             if to_slug != from_slug {
                 p.fs_rename(&from_path, &to_path)?;
             }
-            if let Some(from) = p.set_name(&to_path, Some(&leaf))?
-                && from.as_deref() != Some(leaf.as_str())
-            {
+            if let Some(from) = p.set_name(&to_path, Some(&leaf))? {
                 p.record(Op::Named {
                     path: to_path.clone(),
                     before: from,
@@ -1773,10 +1771,12 @@ impl Project {
         let file = rel(&format!("{dir}/{}", crate::storage::FOLDER_FILE))?;
         match self.disk.read(&file)? {
             Some(text) => {
-                let after = super::toml_with_name(&text, Some(name))
-                    .map_err(|e| Error::BadName(e.to_string()))?;
-                if after != text {
-                    self.fs_write_text(&file, Some(&after))?;
+                let mut doc: toml_edit::DocumentMut = text
+                    .parse()
+                    .map_err(|e: toml_edit::TomlError| Error::BadName(e.to_string()))?;
+                doc["name"] = toml_edit::value(name);
+                if doc.to_string() != text {
+                    self.fs_write_text(&file, Some(&doc.to_string()))?;
                 }
                 Ok(())
             }
@@ -4121,7 +4121,7 @@ mod tests {
         assert_eq!(new, "main/f-2");
         assert_eq!(
             read(&dir, "requests/main/f-2/.folder.toml").as_deref(),
-            Some("name = \"f\"\ncolor = \"red\"\n")
+            Some("color = \"red\"\nname = \"f\"\n")
         );
     }
 

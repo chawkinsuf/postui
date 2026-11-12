@@ -1125,6 +1125,25 @@ mod tests {
         assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
     }
 
+    /// A name added to a file that starts with a byte order mark goes after
+    /// the mark, so the file still parses, and the undo gives back the
+    /// exact bytes.
+    #[test]
+    fn a_name_added_to_a_request_with_a_byte_order_mark_goes_after_it() {
+        let (dir, _p) = fixture();
+        let original = "\u{feff}method = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        assert_eq!(
+            read(&dir, "requests/main/pong.toml").unwrap(),
+            "\u{feff}name = \"Pong\"\nmethod = \"GET\"\nurl = \"https://x/ping\"\n"
+        );
+        assert_eq!(p.read_request("main/pong").unwrap().name.as_deref(), Some("Pong"));
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(read(&dir, "requests/main/ping.toml").unwrap(), original);
+    }
+
     /// Taking out a name the rename added leaves a comment written above
     /// it since.
     #[test]
