@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use futures::StreamExt;
 use postui::action::Action;
 use postui::app::App;
@@ -50,11 +51,11 @@ async fn main() -> anyhow::Result<ExitCode> {
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
 
-    let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
-    enable_terminal_modes();
-    wrap_panic_hook();
-    // The app name lives in the window title, not the header bar.
-    let _ = execute!(std::io::stdout(), SetTitle("postui"));
+    install_panic_hook();
+    enter_terminal().expect("failed to initialize terminal");
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
+            .expect("failed to initialize terminal");
 
     let result = run(&mut terminal, cli_root, debug_ai).await;
     reset_pointer_shape();
@@ -110,12 +111,16 @@ fn reset_pointer_shape() {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
-/// Turns on the terminal modes the app runs with: mouse capture, focus-change
-/// reporting (which drives `Action::ReloadProjectFiles` on
-/// `Event::FocusGained`), bracketed paste, the bar cursor and the keyboard
-/// enhancement flags. Called at start-up and again after every `$EDITOR`
-/// round trip, whose teardown turned them off.
-fn enable_terminal_modes() {
+/// Raw mode, the alternate screen, and the modes the app runs with: mouse
+/// capture, focus-change reporting (which drives
+/// `Action::ReloadProjectFiles` on `Event::FocusGained`), bracketed paste,
+/// the bar cursor, the keyboard enhancement flags and the window title.
+/// Called at start-up and after every `$EDITOR` round trip. It installs no
+/// panic hook, unlike `ratatui::init()`: `main` installs the one hook once
+/// (#171).
+fn enter_terminal() -> std::io::Result<()> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
     // Bracketed paste makes a terminal-level paste (cmd+V on macOS,
     // ctrl+shift+V on Linux) arrive as one `Event::Paste` instead of a
     // flood of synthetic keypresses — without it, any newline in the
@@ -137,10 +142,14 @@ fn enable_terminal_modes() {
             PushKeyboardEnhancementFlags(postui::keys::app_enhancement_flags())
         );
     }
+    // The app name lives in the window title, not the header bar.
+    let _ = execute!(std::io::stdout(), SetTitle("postui"));
+    Ok(())
 }
 
-/// Turns off the modes `enable_terminal_modes` turns on and puts back the
-/// user's own cursor shape.
+/// Turns off the modes `enter_terminal` turns on and puts back the user's
+/// own cursor shape. Raw mode and the alternate screen are
+/// `ratatui::restore()`'s.
 fn disable_terminal_modes() {
     let _ = execute!(
         std::io::stdout(),
@@ -152,13 +161,10 @@ fn disable_terminal_modes() {
     );
 }
 
-/// Wraps the panic hook `ratatui::init()` installed: that hook restores the
-/// terminal but knows nothing about the modes `enable_terminal_modes` turns
-/// on, so turn those off first and then delegate to it. Called once, at
-/// start-up: `take_hook` + `set_hook` adds a layer each time, so a second
-/// call would run the restore sequence twice on a panic. The `$EDITOR`
-/// round trip gets the terminal back without installing a hook (#171).
-fn wrap_panic_hook() {
+/// Installs the panic hook that gives the terminal back before the panic
+/// report prints. Called once, from `main`: `take_hook` + `set_hook` adds a
+/// layer each time (#171).
+fn install_panic_hook() {
     let prev_hook = std::panic::take_hook();
     let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
@@ -189,6 +195,7 @@ fn wrap_panic_hook() {
         let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
         reset_pointer_shape();
         disable_terminal_modes();
+        ratatui::restore();
         prev_hook(info);
     }));
 }
@@ -200,7 +207,7 @@ async fn run(
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
-    // Same probe `enable_terminal_modes` keys the enhancement
+    // Same probe `enter_terminal` keys the enhancement
     // push off: where the terminal can report Shift+Enter, advertise it as
     // the send key; elsewhere the footer keeps showing ^R.
     app.shift_enter_send =
@@ -458,14 +465,14 @@ fn spawn_editor(
 
     let status = std::process::Command::new(&program).args(&args).arg(path).status();
 
-    // Raw mode and the alternate screen back, on the same `Terminal`, but
-    // not `ratatui::init()`: its panic hook would add a layer to the chain
-    // `main` installed (#171). If the terminal can't be got back, the
-    // error ends the app.
-    ratatui::crossterm::terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen)?;
-    enable_terminal_modes();
-    terminal.clear()?;
+    // If the terminal can't be got back, the error ends the app. The file
+    // is left in place and the error names it.
+    enter_terminal().and_then(|()| terminal.clear()).with_context(|| {
+        format!(
+            "could not get the terminal back from {program}; the file is kept at {}",
+            path.display()
+        )
+    })?;
 
     match status {
         Ok(s) if s.success() => Ok(true),
