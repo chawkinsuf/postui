@@ -413,8 +413,7 @@ down remain the keyboard route to the same change.
 Manage screen's Environments tab now shares this whole gesture — the
 armed press, the live drag with its grip glyph and preview, alt+↑/↓ and
 the row menu's Move up/Move down — with `Action::MoveEnv` and
-`Project::{move_environment, set_environment_order}` (since #284 the
-drop's writer is `place_environment`, next paragraph) in place of their
+`Project::{move_environment, place_environment}` in place of their
 space twins, recorded as its own undo marker
 (`ProjectNoun::EnvReorder`, toasting "reorder of environment {name}").
 The order lives in `project.toml` as `environments = [...]`, read and
@@ -437,13 +436,11 @@ place, not the finished order: `place_environment(name, to)` replaces
 reorder, nothing checks whether a re-read is due, and no drop is
 cancelled. The rows are listed again after the write, as before. Undo
 writes back the text the reorder read, so it restores the outside
-order exactly. A reorder that moves nothing in the file's order writes
-nothing and records no step, and the rows show the file's order
-afterwards *(mine)*. That holds in a directory with no `project.toml`
-too (the app opens one when a registered project lost the file):
-`edit_project_toml` writes only when its edit changed the document's
-text, so an edit that changes nothing makes no file there *(mine,
-review 1)*.
+order exactly. A reorder that moves nothing in the file's order leaves
+`project.toml` as it is and records no step, and the rows show the
+file's order afterwards *(mine)*. In a directory with no
+`project.toml` it makes none: `edit_project_toml` writes only when its
+edit changed the document's text *(mine, review 1)*.
 
 The costs accepted with it:
 
@@ -455,15 +452,25 @@ The costs accepted with it:
 - A keyboard move is one place in the file's order, which can be more
   than one on the tab: with `prod`, `qa`, `dev` shown over a file
   holding `qa`, `prod`, `dev`, alt+down on `prod` writes `qa`, `dev`,
-  `prod`.
+  `prod`. The row menu enables Move up and Move down by the row's
+  place on the tab, so over such a file an item can be disabled for a
+  row that could move, or enabled for one that moves nothing *(mine)*.
+- A reorder that lands away from where the tab showed it is not
+  toasted *(mine)*. The rows show the file's order after it, with the
+  cursor on the moved row.
 - The reorder reads `project.toml` and lists `environments/`, nothing
-  else. The rest of an outside change (`variables.toml`, the requests)
-  waits for the next focus change or Send, as after any other op. That
-  read records `project.toml`'s change stamp, as in any op that edits
-  the file, and that listing records `environments/`'s; a reorder that
-  moves nothing makes both too *(mine)*. What else changed in the two
-  is in core from then on, and their stamps no longer make the next
-  focus change or Send re-read.
+  else, also when it moves nothing *(mine)*. Another file changed
+  outside (`variables.toml`) still waits for the next focus change or
+  Send. Neither of the two makes that re-read happen any more: the
+  read records `project.toml`'s change stamp and loads the whole file
+  into `meta`, and the listing records `environments/`'s. Two things
+  built from `meta` before that are not rebuilt: the sidebar's rows
+  keep the request order they had until the sidebar is next rebuilt
+  (opening a request, a request op, or a sidebar reorder, which
+  rebuilds them before it writes), and the spaces list waits for the
+  next focus change or Send, which re-reads when the spaces differ.
+  An environment create, rename, delete or TLS change reads
+  `project.toml` the same way and leaves these two as they were.
 - The Spaces tab keeps #274's rule (re-read first, and a drop is
   cancelled when anything was re-read), so the two tabs differ.
 - A row whose file was deleted outside is still a row when a reorder

@@ -777,8 +777,8 @@ impl Project {
     /// everything `f` does not touch, journaled as a text op, and reloads
     /// `meta`. A `project.toml` that will not parse is an error, never an
     /// empty document. When the edited document's text is the text read,
-    /// nothing is written, so an edit that changes nothing makes no file
-    /// where there was none.
+    /// the file is not written, so an edit that changes nothing makes no
+    /// `project.toml` where there was none.
     pub(crate) fn edit_project_toml(
         &mut self,
         f: impl FnOnce(&mut toml_edit::DocumentMut),

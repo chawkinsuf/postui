@@ -86,7 +86,9 @@ impl Project {
     /// keep their slots. When the row is already at that place, the
     /// document is left as it was read. The rows are listed again either
     /// way, from the `meta` that edit loaded, so they then show the
-    /// file's order.
+    /// file's order. Nothing else is listed again, and no re-read is left
+    /// due for the rest of what changed in the file (spec 2026-09-04
+    /// request reordering, the #284 costs).
     fn reorder_environment(
         &mut self,
         label: &str,
@@ -104,8 +106,10 @@ impl Project {
         let mut change = None;
         self.run_transaction(label, EntryMeta::default(), merge, |p| {
             p.edit_project_toml(|doc| {
-                // A document `ProjectMeta` rejects gets no list;
-                // `edit_project_toml` then refuses the write.
+                // The list as `ProjectMeta` parses it, not the array read
+                // from the document: a document that parse rejects gets
+                // no list here, and `edit_project_toml` then refuses the
+                // write.
                 let Ok(meta) = toml::from_str::<ProjectMeta>(&doc.to_string()) else { return };
                 let mut envs = write_list_over(&meta.environments, &shown);
                 let slots: Vec<usize> =
@@ -404,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn move_environment_swaps_clamps_and_a_burst_merges_into_one_entry() {
+    fn move_environment_moves_a_place_clamps_and_a_burst_merges_into_one_entry() {
         let (_d, mut p) = ordered_fixture();
         assert!(p.move_environment("dev", -1).unwrap().is_none());
         let c = p.move_environment("dev", 1).unwrap().unwrap();
@@ -517,10 +521,11 @@ mod tests {
         assert_eq!(read(&dir, "project.toml").unwrap(), outside);
     }
 
-    /// A row already at its place in the file's order: nothing is written
-    /// and no entry is recorded, and the rows show the file's order.
+    /// A row already at its place in the file's order: `project.toml` is
+    /// left as it is, no entry is recorded, and the rows show the file's
+    /// order.
     #[test]
-    fn a_reorder_that_moves_nothing_in_the_files_order_writes_nothing() {
+    fn a_reorder_that_moves_nothing_in_the_files_order_leaves_the_file_as_it_is() {
         let (dir, mut p) = ordered_fixture();
         let outside = hand_order(&dir, &["qa", "dev"]);
         assert_eq!(p.environments(), ["dev", "qa"]);
@@ -532,20 +537,28 @@ mod tests {
     }
 
     /// A `project.toml` that `ProjectMeta` rejects is never rewritten by a
-    /// reorder.
+    /// reorder: one with an unknown key, and one whose list holds an entry
+    /// that is not a string.
     #[test]
     fn a_reorder_never_writes_a_project_toml_that_will_not_parse() {
         let (dir, mut p) = ordered_fixture();
-        let text = format!("bogus_key = 1\n{}", read(&dir, "project.toml").unwrap());
-        std::fs::write(dir.path().join("project.toml"), &text).unwrap();
-        assert!(matches!(p.move_environment("dev", 1), Err(Error::Parse { .. })));
-        assert!(matches!(p.place_environment("qa", 0), Err(Error::Parse { .. })));
-        assert_eq!(read(&dir, "project.toml").unwrap(), text);
-        assert_eq!(p.journal_len(), 0);
+        let good = read(&dir, "project.toml").unwrap();
+        let broken = [
+            format!("bogus_key = 1\n{good}"),
+            good.replacen("[\"dev\", \"qa\"]", "[\"dev\", 1, \"qa\"]", 1),
+        ];
+        for text in broken {
+            assert_ne!(text, good);
+            std::fs::write(dir.path().join("project.toml"), &text).unwrap();
+            assert!(matches!(p.move_environment("dev", 1), Err(Error::Parse { .. })), "{text}");
+            assert!(matches!(p.place_environment("qa", 0), Err(Error::Parse { .. })), "{text}");
+            assert_eq!(read(&dir, "project.toml").unwrap(), text);
+            assert_eq!(p.journal_len(), 0);
+        }
     }
 
     /// In a directory with no `project.toml`, a reorder that moves nothing
-    /// makes no file and records no entry.
+    /// makes none and records no entry.
     #[test]
     fn a_reorder_that_moves_nothing_makes_no_project_toml() {
         let (dir, _p) = fixture();
