@@ -19956,8 +19956,8 @@ fn an_option_rows_menu_acts_on_nothing_once_no_option_row_is_drawn() {
 /// opened on, whatever the keyboard is on when it is picked. A reload that
 /// renames the selector outside opens the renamed one in its place, with
 /// the left list's focus; a Delete that followed the keyboard there would
-/// delete that selector. The menu's Delete names the option, so it can't
-/// follow the keyboard; since task #212 that reload also closes the menu.
+/// delete that selector. Since task #212 that reload closes the menu, so
+/// the test runs the Delete item's action after it.
 #[test]
 fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let dir = tempfile::tempdir().unwrap();
@@ -19969,13 +19969,14 @@ fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let cell =
         app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).expect("row 0 is drawn");
     app.handle_mouse(right_down(cell.x, cell.y));
+    let delete = menu_action(&app, "Delete").expect("the item is listed");
     assert_eq!(
-        menu_action(&app, "Delete"),
-        Some(Action::OptionMenu(Box::new(Action::DeleteEntry {
+        delete,
+        Action::OptionMenu(Box::new(Action::DeleteEntry {
             env: "qa".into(),
             selector: "user".into(),
             name: "alice".into(),
-        }))),
+        })),
         "Delete carries alice's name"
     );
 
@@ -19999,6 +20000,8 @@ fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     );
 
     assert!(app.modals.is_empty(), "the reload closed the menu");
+    rendered_text_at(&mut app, 130, 46);
+    app.update(delete);
     assert!(app.proj().variables().selectors.contains_key("person"), "the selector stays");
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     let names: Vec<&String> = env.options["person"].keys().collect();
@@ -20902,6 +20905,9 @@ fn a_reload_that_changed_the_files_closes_an_open_option_row_menu() {
     app.on_focus_gained();
 
     assert!(app.modals.top().is_none(), "the menu closed with the reload");
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    let names: Vec<&String> = env.options["user"].keys().collect();
+    assert_eq!(names, ["bob"], "bob is neither renamed nor deleted");
 }
 
 /// A reload that finds nothing changed leaves the menu open.
