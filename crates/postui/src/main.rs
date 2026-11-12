@@ -51,7 +51,8 @@ async fn main() -> anyhow::Result<ExitCode> {
     };
 
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
-    enable_mouse_and_wrap_panic_hook();
+    enable_terminal_modes();
+    wrap_panic_hook();
     // The app name lives in the window title, not the header bar.
     let _ = execute!(std::io::stdout(), SetTitle("postui"));
 
@@ -116,13 +117,12 @@ fn reset_pointer_shape() {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
-/// Enables mouse capture and re-wraps the panic hook `ratatui::init()` just
-/// installed: that hook restores the terminal but knows nothing about mouse
-/// capture, so disable capture first and then delegate to it. Must be called
-/// after *every* `ratatui::init()` — the external-editor round-trip re-inits,
-/// which replaces the hook. Also enables focus-change reporting, which
-/// drives `Action::ReloadProjectFiles` on `Event::FocusGained`.
-fn enable_mouse_and_wrap_panic_hook() {
+/// Turns on the terminal modes the app runs with: mouse capture, focus-change
+/// reporting (which drives `Action::ReloadProjectFiles` on
+/// `Event::FocusGained`), bracketed paste, the bar cursor and the keyboard
+/// enhancement flags. Called at start-up and again after every `$EDITOR`
+/// round trip, whose teardown turned them off.
+fn enable_terminal_modes() {
     // Bracketed paste makes a terminal-level paste (cmd+V on macOS,
     // ctrl+shift+V on Linux) arrive as one `Event::Paste` instead of a
     // flood of synthetic keypresses — without it, any newline in the
@@ -144,6 +144,16 @@ fn enable_mouse_and_wrap_panic_hook() {
             PushKeyboardEnhancementFlags(postui::keys::app_enhancement_flags())
         );
     }
+}
+
+/// Wraps the panic hook `ratatui::init()` installed: that hook restores the
+/// terminal but knows nothing about the modes `enable_terminal_modes` turns
+/// on, so turn those off first and then delegate to it. Called once, at
+/// start-up: `take_hook` + `set_hook` adds a layer each time, so a second
+/// call would run the restore sequence twice on a panic. The `$EDITOR`
+/// round trip rebuilds the terminal with `reenter_terminal`, which installs
+/// no hook, so these two layers cover it too (#171).
+fn wrap_panic_hook() {
     let prev_hook = std::panic::take_hook();
     let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
@@ -192,7 +202,7 @@ async fn run(
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
-    // Same probe `enable_mouse_and_wrap_panic_hook` keys the enhancement
+    // Same probe `enable_terminal_modes` keys the enhancement
     // push off: where the terminal can report Shift+Enter, advertise it as
     // the send key; elsewhere the footer keeps showing ^R.
     app.shift_enter_send =
@@ -457,8 +467,8 @@ fn spawn_editor(
 
     let status = std::process::Command::new(&program).args(&args).arg(path).status();
 
-    *terminal = ratatui::init();
-    enable_mouse_and_wrap_panic_hook();
+    *terminal = reenter_terminal()?;
+    enable_terminal_modes();
     terminal.clear()?;
 
     match status {
@@ -475,6 +485,16 @@ fn spawn_editor(
             Ok(false)
         }
     }
+}
+
+/// `ratatui::try_init()` without its `set_panic_hook()`: raw mode, the
+/// alternate screen and a fresh `Terminal`. The hooks `main` installed once
+/// stay in place across the round trip, so the rebuild adds no layer to
+/// the panic hook chain (#171).
+fn reenter_terminal() -> std::io::Result<ratatui::DefaultTerminal> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    execute!(std::io::stdout(), ratatui::crossterm::terminal::EnterAlternateScreen)?;
+    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
 }
 
 /// Hands a config file to `$EDITOR` as a temp *copy*, then applies it
@@ -542,4 +562,33 @@ fn edit_config_externally(
     // caret warnings show up without any extra code here.
     app.update(Action::ReloadFromDisk);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// #171: each `take_hook` + `set_hook` adds a layer to the panic hook
+    /// chain, so ratatui's hook and ours are installed once, at start-up,
+    /// and the `$EDITOR` round trip rebuilds the terminal without either.
+    /// The hooks are process-global and the round trip needs a real
+    /// terminal, so this reads the code (comment lines left out) instead.
+    #[test]
+    fn panic_hooks_are_installed_once() {
+        let code: String = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (call, times) in [
+            ("ratatui::init(", 1),
+            ("ratatui::try_init(", 0),
+            ("init_with_options(", 0),
+            ("wrap_panic_hook();", 1),
+            ("set_hook(", 1),
+        ] {
+            assert_eq!(code.matches(call).count(), times, "{call}");
+        }
+    }
 }
