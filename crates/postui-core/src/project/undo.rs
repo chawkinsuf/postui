@@ -1276,6 +1276,26 @@ mod tests {
         );
     }
 
+    /// Taking out a name the rename added leaves a comment written after
+    /// it on its line since.
+    #[test]
+    fn undo_of_a_rename_keeps_a_comment_written_after_the_name_it_added() {
+        let (dir, _p) = fixture();
+        let original = "method = \"GET\"\nurl = \"https://x/ping\"\n";
+        std::fs::write(dir.path().join("requests/main/ping.toml"), original).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.rename_request("main/ping", "Pong").unwrap();
+        let outside = read(&dir, "requests/main/pong.toml")
+            .unwrap()
+            .replace("\"Pong\"\n", "\"Pong\"  # keep: used by CI\n");
+        std::fs::write(dir.path().join("requests/main/pong.toml"), &outside).unwrap();
+        assert_replayed(p.undo(), "rename request");
+        assert_eq!(
+            read(&dir, "requests/main/ping.toml").unwrap(),
+            format!("# keep: used by CI\n{original}")
+        );
+    }
+
     /// A step that found the file not parsing as a request still records
     /// its opposite, so once the file parses again the next undo or redo
     /// sets the name.

@@ -312,7 +312,8 @@ fn parse_err(file: &str) -> impl Fn(&dyn std::fmt::Display) -> Error + '_ {
 /// (`None` removes it), every other byte as it is. A name that replaces
 /// another takes the old value's place; a new key goes first (after a
 /// leading byte order mark), where a request's save puts it, on a line
-/// ending in `\n`; a removed key takes its own line with it.
+/// ending in `\n`; a removed key takes its own line with it, but for a
+/// comment after the value, which stays on that line.
 ///
 /// The value written is toml_edit's quoting of the name, so a name that
 /// was hand-quoted another way (`'Ping'`) comes back as `"Ping"`: the same
@@ -334,7 +335,10 @@ fn toml_with_name(text: &str, name: Option<&str>) -> Result<String, toml_edit::T
         Some(v) => format!("{}{v}{}", &text[..value.start], &text[value.end..]),
         None => {
             let start = text[..key.start].rfind('\n').map_or(bom.len(), |i| i + 1);
-            let end = text[value.end..].find('\n').map_or(text.len(), |i| value.end + i + 1);
+            let line_end = text[value.end..].find('\n').map_or(text.len(), |i| value.end + i + 1);
+            let rest = &text[value.end..line_end];
+            let end =
+                if rest.trim().is_empty() { line_end } else { line_end - rest.trim_start().len() };
             format!("{}{}", &text[..start], &text[end..])
         }
     })
@@ -703,6 +707,9 @@ impl Project {
                 Some(t) => self.disk.write(path, t)?,
                 None => self.disk.remove(path)?,
             },
+            // An op a replay recorded holds the step's names (`apply_inverse`
+            // in undo.rs), so its rollback sets the step's name, not one
+            // the file was given since.
             Op::Named { path, before, .. } => {
                 self.set_name(path, before.as_deref())?;
             }
