@@ -439,8 +439,13 @@ writes back the text the reorder read, so it restores the outside
 order exactly. A reorder that moves nothing in the file's order leaves
 `project.toml` as it is and records no step, and the rows show the
 file's order afterwards *(mine)*. In a directory with no
-`project.toml` it makes none: `edit_project_toml` writes only when its
-edit changed the document's text *(mine, review 1)*.
+`project.toml` it makes none *(mine, review 1)*. `edit_project_toml`
+prints the document before the edit and after it, and writes only
+when the two differ, so the bytes are kept also when the file is not
+printed the way `toml_edit` prints it: no final newline, CRLF endings,
+a byte-order mark *(mine (approved), review 3)*. That holds for every
+op that edits `project.toml`: one whose edit leaves the printed
+document as it was no longer rewrites such a file.
 
 The costs accepted with it:
 

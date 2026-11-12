@@ -30617,6 +30617,53 @@ fn an_environment_move_that_moves_nothing_makes_no_project_toml() {
     assert_eq!(app.history.undo_len(), steps);
 }
 
+/// Over a `project.toml` that `toml_edit` would print differently (no
+/// final newline, CRLF endings, a byte-order mark), alt+up on the top
+/// environment row leaves the file's bytes as they were, records no step
+/// and keeps a waiting redo.
+#[test]
+fn an_environment_move_that_moves_nothing_leaves_a_file_toml_edit_would_reprint() {
+    let good = "environments = [\"dev\", \"qa\"]\nname = \"Demo\"\nspaces = [\"main\"]\n";
+    let texts = [
+        good.trim_end_matches('\n').to_string(),
+        good.replace('\n', "\r\n"),
+        format!("\u{feff}{good}"),
+    ];
+    for text in texts {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.toml");
+        std::fs::write(&path, &text).unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        for name in ["dev", "qa"] {
+            std::fs::write(dir.path().join(format!("environments/{name}.toml")), "").unwrap();
+        }
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+        render_once(&mut app);
+        assert_eq!(app.proj().environments(), ["dev", "qa"], "{text:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+
+        // A real move and its undo leave a redo waiting and the bytes as
+        // they were.
+        app.select_list_row(ManageTab::Environments, "dev");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_ne!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        app.update(Action::Undo);
+        render_once(&mut app);
+        assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        assert_eq!(app.proj().environments(), ["dev", "qa"], "{text:?}");
+        let steps = (app.history.undo_len(), app.history.redo_len());
+        assert_eq!(steps.1, 1, "{text:?}");
+
+        app.select_list_row(ManageTab::Environments, "dev");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        assert_eq!((app.history.undo_len(), app.history.redo_len()), steps, "{text:?}");
+    }
+}
+
 #[test]
 fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     // `OpenManage { tab: Some(other) }` while the screen is already up

@@ -571,6 +571,39 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
     }
 
+    /// Over a `project.toml` that `toml_edit` would print differently (no
+    /// final newline, CRLF endings, a byte-order mark), a reorder that
+    /// moves nothing leaves the file's bytes as they were and records no
+    /// entry. A real move writes one entry, and undo puts the bytes back.
+    #[test]
+    fn a_reorder_that_moves_nothing_leaves_a_file_toml_edit_would_reprint() {
+        let (dir, _p) = ordered_fixture();
+        let good = read(&dir, "project.toml").unwrap();
+        let path = dir.path().join("project.toml");
+        let texts = [
+            good.trim_end_matches('\n').to_string(),
+            good.replace('\n', "\r\n"),
+            format!("\u{feff}{good}"),
+        ];
+        for text in texts {
+            std::fs::write(&path, &text).unwrap();
+            let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(p.environments(), ["dev", "qa"]);
+
+            assert!(p.move_environment("dev", -1).unwrap().is_none());
+            assert!(p.place_environment("qa", 1).unwrap().is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+            assert_eq!(p.journal_len(), 0, "{text:?}");
+
+            assert!(p.move_environment("dev", 1).unwrap().is_some());
+            assert_ne!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+            assert_eq!(p.journal_len(), 1, "{text:?}");
+            p.undo().unwrap().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), text.as_bytes(), "{text:?}");
+        }
+    }
+
     #[test]
     fn create_appends_rename_replaces_and_delete_removes_the_array_entry() {
         let (dir, mut p) = ordered_fixture();
