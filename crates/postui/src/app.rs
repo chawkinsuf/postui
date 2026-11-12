@@ -6560,6 +6560,13 @@ impl App {
                 // unchanged project changes nothing, and closes nothing.
                 let stale = self.project().is_some_and(|p| p.changed_on_disk());
                 if stale {
+                    // An open dropdown's items were built from the files as
+                    // they were (a row menu names its row, a chooser its
+                    // environments), so it closes as Esc would close it
+                    // (task #212).
+                    if matches!(self.modals.top(), Some(Modal::Dropdown(_))) {
+                        self.apply_modal_result(ModalResult { close: true, ..Default::default() });
+                    }
                     // The re-read can renumber the option rows a Variable
                     // Manager grid cell finds its option by, so the
                     // Manager's input closes first (task #78, the rule
