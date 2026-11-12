@@ -66,7 +66,7 @@ impl Overlay {
         while let Some(a) = at {
             match self.0.get(&a) {
                 Some(Node::Disk(disk)) => {
-                    return Node::Disk(p.rebase(&a, disk).unwrap_or_else(|| p.clone()));
+                    return Node::Disk(p.rebase(&a, disk).expect("a is p or above it"));
                 }
                 Some(Node::Set(present)) if a == *p => return Node::Set(*present),
                 // Nothing is under a path taken out.
@@ -95,7 +95,7 @@ impl Overlay {
     fn moved(&mut self, from: &RelPath, to: &RelPath) {
         let node = self.resolve(from);
         let under = self.take_under(from);
-        self.set(from, false);
+        self.0.insert(from.clone(), Node::Set(false));
         self.take_under(to);
         for (k, n) in under {
             if let Some(k) = k.rebase(from, to) {
@@ -822,6 +822,10 @@ mod tests {
         assert_replayed(p.undo(), "rename folder");
         assert_replayed(p.undo(), OUTSIDE_LABEL);
         assert_eq!(read(&dir, "requests/main/users/.folder.toml").unwrap(), outside);
+        assert_replayed(p.redo(), OUTSIDE_LABEL);
+        assert_eq!(read(&dir, "requests/main/users/.folder.toml").unwrap(), left);
+        assert_replayed(p.redo(), "rename folder");
+        assert_eq!(read(&dir, "requests/main/people/.folder.toml").unwrap(), renamed);
     }
 
     /// Comment 1283, first case, with nothing changed outside: a folder
