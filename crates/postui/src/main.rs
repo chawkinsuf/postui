@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{EndSynchronizedUpdate, SetTitle};
+use ratatui::crossterm::terminal::{EndSynchronizedUpdate, EnterAlternateScreen, SetTitle};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -50,21 +50,17 @@ async fn main() -> anyhow::Result<ExitCode> {
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
 
-    let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
-    enable_mouse_and_wrap_panic_hook();
-    // The app name lives in the window title, not the header bar.
-    let _ = execute!(std::io::stdout(), SetTitle("postui"));
+    // If entering fails, it failed at raw mode or the alternate screen,
+    // which `ratatui::restore` undoes. The hook goes in after.
+    enter_terminal().inspect_err(|_| ratatui::restore()).expect("failed to initialize terminal");
+    install_panic_hook();
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
+            .expect("failed to initialize terminal");
 
     let result = run(&mut terminal, cli_root, debug_ai).await;
     reset_pointer_shape();
-    let _ = execute!(
-        std::io::stdout(),
-        SetCursorStyle::DefaultUserShape,
-        PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
-        DisableFocusChange,
-        DisableBracketedPaste
-    );
+    disable_terminal_modes();
     drain_pending_input();
     ratatui::restore();
     result.map(|()| ExitCode::SUCCESS)
@@ -116,13 +112,16 @@ fn reset_pointer_shape() {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
-/// Enables mouse capture and re-wraps the panic hook `ratatui::init()` just
-/// installed: that hook restores the terminal but knows nothing about mouse
-/// capture, so disable capture first and then delegate to it. Must be called
-/// after *every* `ratatui::init()` — the external-editor round-trip re-inits,
-/// which replaces the hook. Also enables focus-change reporting, which
-/// drives `Action::ReloadProjectFiles` on `Event::FocusGained`.
-fn enable_mouse_and_wrap_panic_hook() {
+/// Raw mode, the alternate screen, and the modes the app runs with: mouse
+/// capture, focus-change reporting (which drives
+/// `Action::ReloadProjectFiles` on `Event::FocusGained`), bracketed paste,
+/// the bar cursor, the keyboard enhancement flags and the window title.
+/// Called at start-up and after every `$EDITOR` round trip. It installs no
+/// panic hook, unlike `ratatui::init()`: `main` installs the one hook once
+/// (#171).
+fn enter_terminal() -> std::io::Result<()> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
     // Bracketed paste makes a terminal-level paste (cmd+V on macOS,
     // ctrl+shift+V on Linux) arrive as one `Event::Paste` instead of a
     // flood of synthetic keypresses — without it, any newline in the
@@ -132,7 +131,7 @@ fn enable_mouse_and_wrap_panic_hook() {
     // The terminal cursor is hidden everywhere but the focused jq filter
     // bar (`ui::draw`), where it stands in for the painted caret so the
     // completion ghost can trail a thin bar. Shaped once here — the shape
-    // persists — and put back to the user's own on every exit path below.
+    // persists — and put back to the user's own by `disable_terminal_modes`.
     let _ = execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
     // Ctrl+Shift+Z is only distinguishable from Ctrl+Z with the kitty
     // keyboard protocol; without it Ctrl+Y is the redo binding that works.
@@ -144,6 +143,30 @@ fn enable_mouse_and_wrap_panic_hook() {
             PushKeyboardEnhancementFlags(postui::keys::app_enhancement_flags())
         );
     }
+    // The app name lives in the window title, not the header bar.
+    let _ = execute!(std::io::stdout(), SetTitle("postui"));
+    Ok(())
+}
+
+/// Turns off the modes `enter_terminal` turns on and puts back the user's
+/// own cursor shape. Raw mode and the alternate screen are
+/// `ratatui::restore()`'s.
+fn disable_terminal_modes() {
+    let _ = execute!(
+        std::io::stdout(),
+        SetCursorStyle::DefaultUserShape,
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture,
+        DisableFocusChange,
+        DisableBracketedPaste
+    );
+}
+
+/// Installs the panic hook that gives the terminal back before the panic
+/// report prints. Called once, from `main`: each call wraps the hook
+/// already installed in another layer, so `enter_terminal` (run again
+/// after every `$EDITOR` round trip) does not call it (#171).
+fn install_panic_hook() {
     let prev_hook = std::panic::take_hook();
     let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
@@ -173,14 +196,8 @@ fn enable_mouse_and_wrap_panic_hook() {
         // follows is unambiguously outside a synchronized update.
         let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
         reset_pointer_shape();
-        let _ = execute!(
-            std::io::stdout(),
-            SetCursorStyle::DefaultUserShape,
-            PopKeyboardEnhancementFlags,
-            DisableMouseCapture,
-            DisableFocusChange,
-            DisableBracketedPaste
-        );
+        disable_terminal_modes();
+        ratatui::restore();
         prev_hook(info);
     }));
 }
@@ -192,9 +209,9 @@ async fn run(
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
-    // Same probe `enable_mouse_and_wrap_panic_hook` keys the enhancement
-    // push off: where the terminal can report Shift+Enter, advertise it as
-    // the send key; elsewhere the footer keeps showing ^R.
+    // Same probe `enter_terminal` keys the enhancement push off: where the
+    // terminal can report Shift+Enter, advertise it as the send key;
+    // elsewhere the footer keeps showing ^R.
     app.shift_enter_send =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     let mut events = EventStream::new();
@@ -444,21 +461,20 @@ fn spawn_editor(
     let program = parts.next().unwrap_or("vi").to_string();
     let args: Vec<&str> = parts.collect();
 
-    let _ = execute!(
-        std::io::stdout(),
-        SetCursorStyle::DefaultUserShape,
-        PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
-        DisableFocusChange,
-        DisableBracketedPaste
-    );
+    disable_terminal_modes();
     drain_pending_input();
     ratatui::restore();
 
     let status = std::process::Command::new(&program).args(&args).arg(path).status();
 
-    *terminal = ratatui::init();
-    enable_mouse_and_wrap_panic_hook();
+    // A terminal that can't be entered again panics, as at start-up; the
+    // panic names the file, which is left in place.
+    if let Err(e) = enter_terminal() {
+        panic!(
+            "could not get the terminal back from {program}: {e}; the file is at {}",
+            path.display()
+        );
+    }
     terminal.clear()?;
 
     match status {
