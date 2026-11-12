@@ -52,6 +52,12 @@ impl RelPath {
     pub fn starts_with(&self, other: &RelPath) -> bool {
         self == other || self.0.starts_with(&format!("{}/", other.0))
     }
+
+    /// `self` with `from` at its start replaced by `to`, or `None` when it
+    /// does not sit at or under `from`.
+    pub fn rebase(&self, from: &RelPath, to: &RelPath) -> Option<RelPath> {
+        self.starts_with(from).then(|| RelPath(format!("{}{}", to.0, &self.0[from.0.len()..])))
+    }
 }
 
 impl std::fmt::Display for RelPath {
