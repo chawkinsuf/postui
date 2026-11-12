@@ -61,10 +61,10 @@ Everything undoes: edits, deletes, renames, moves and reorders, including ones
 made in another request or on the Manage screen.
 
 If `project.toml`, `variables.toml`, an environment file,
-`.postui/secrets.toml` or a folder's `.folder.toml` was changed outside postui
-(by a `git pull`, say), the undo or redo that reaches it first takes that
-change back, as a step of its own, and a warning names the file. Undo and redo
-treat that step like any other, so the outside change can be brought back.
+`.postui/secrets.toml` or a folder's `.folder.toml` was edited outside postui
+(by a `git pull`, say), the undo or redo that would write over it first takes
+that edit back, as a step of its own, and a warning names the file. Undo and
+redo treat that step like any other, so the outside edit can be brought back.
 
 ## Environments, variables and secrets
 

@@ -42,11 +42,11 @@ sharing a project should upgrade together.
   up and Move down do. Move to space is now `M`.
 - A click on a request row opens it when the button comes up, so dragging a
   row never asks about unsaved edits.
-- An undo or redo that reaches `project.toml`, `variables.toml`, an
-  environment file, `.postui/secrets.toml` or a `.folder.toml` changed
-  outside postui (by a `git pull`, say) no longer writes over it silently:
-  that press takes the outside change back, as a step of its own, with a
-  warning, and undo and redo can bring it back like any other step.
+- An undo or redo that would write over `project.toml`, `variables.toml`, an
+  environment file, `.postui/secrets.toml` or a `.folder.toml` edited outside
+  postui (by a `git pull`, say) no longer does so silently: that press takes
+  the outside edit back, as a step of its own, with a warning, and undo and
+  redo can bring it back like any other step.
 - jq and `postui run --jq` treat a body with comments or NaN as not JSON,
   as the Tree tab does.
 
