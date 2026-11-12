@@ -13,9 +13,9 @@ sharing a project should upgrade together.
 
 ### Added
 
-- `+ Folder` in the sidebar (or `A`) makes a folder, and a folder's menu
-  renames and deletes it. Empty folders show and stay. A folder keeps its
-  name in a small `.folder.toml`. All of it undoes.
+- `+ Folder` in a wide enough sidebar (or `A`) makes a folder, and a folder's
+  menu renames and deletes it. Empty folders show and stay. A folder keeps
+  its name in a small `.folder.toml`. All of it undoes.
 - Requests and folders drag into and out of folders. A closed folder opens
   when the drag rests on it, and where several folders end on one row, the
   pointer's column picks the level.
@@ -62,7 +62,7 @@ sharing a project should upgrade together.
 - A body nested deeper than 256 levels no longer crashes postui when jq reads
   it.
 - After a lost mouse release, the next click no longer starts a drag.
-- An open menu or dropdown closes when postui re-reads changed project
+- A menu or dropdown on top closes when postui re-reads changed project
   files, so a row menu can't act on whatever took its row.
 - A crash after a trip to `$EDITOR` restores the terminal once, not once per
   trip.
