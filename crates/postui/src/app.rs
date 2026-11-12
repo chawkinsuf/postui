@@ -8247,9 +8247,6 @@ impl App {
                 true
             }
             Action::MoveEnv { name, delta } => {
-                // As `MoveSpace`: re-read first (#284), so the move runs
-                // over the rows the re-read shows.
-                self.apply(Action::ReloadProjectFiles);
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -10784,8 +10781,9 @@ impl App {
     }
 
     /// Ends a row drag of the Spaces or Environments list — whichever tab
-    /// the drag itself belongs to. `commit` writes the working order when
-    /// it differs from the original; otherwise (release outside, Escape, a
+    /// the drag itself belongs to. `commit` writes the working order (for
+    /// an environment, the dragged row's place in it) when it differs
+    /// from the original; otherwise (release outside, Escape, a
     /// right click, a tab switch) the rows snap back to disk truth. The
     /// armed press is disarmed either way — Escape ends the drag with the
     /// button still held, and a press left armed would let the next
@@ -10800,14 +10798,13 @@ impl App {
             return false;
         };
         let mut reordered = None;
-        // As `CreateSpace`: the drop re-reads first, on either tab (#274,
-        // #284). A re-read that found a change makes the drop a cancel, as
-        // a reload cancels a live drag: whichever file changed, and with no
-        // toast of its own.
+        // As `CreateSpace`: a space order re-reads first (#274). A re-read
+        // that found a change makes the drop a cancel, as a reload cancels
+        // a live drag: whichever file changed, and with no toast of its own.
         let commit = commit
             && drag.working != drag.original
             && self.project.is_some()
-            && !self.apply(Action::ReloadProjectFiles);
+            && (drag.tab != ManageTab::Spaces || !self.apply(Action::ReloadProjectFiles));
         if commit {
             // The cursor holds the dragged item's name from `begin_drag`
             // on, so the step's before-view already records that row.
@@ -10821,8 +10818,14 @@ impl App {
                         self.space_name(&drag.name)
                     )),
                 ),
+                // Core takes the dragged row and its place in the working
+                // order, and moves it in the list `project.toml` holds
+                // then (#284).
                 _ => (
-                    p.set_environment_order(&drag.working),
+                    p.place_environment(
+                        &drag.name,
+                        drag.working.iter().position(|n| *n == drag.name).unwrap_or(0),
+                    ),
                     crate::undo::StepLabel::reorder(format!(
                         "environment {}",
                         self.env_name(&drag.name)

@@ -29937,13 +29937,6 @@ fn a_reorder_after_an_environment_op_keeps_an_order_changed_outside() {
         }),
     ];
     for (what, op) in ops {
-        // The rows the op leaves for the reorder. An environment move
-        // re-reads the project (#284), which rebuilds the rows; the other
-        // ops leave the rows as they were.
-        let rows = match what {
-            "move" => ["main/beta", "main/alpha", "main/gamma"],
-            _ => ["main/alpha", "main/beta", "main/gamma"],
-        };
         for (how, reorder) in reorders {
             let what = format!("{what}, then {how}");
             let (mut app, dir) = three_row_app();
@@ -29958,7 +29951,8 @@ fn a_reorder_after_an_environment_op_keeps_an_order_changed_outside() {
             assert_ne!(project_toml(&dir), before, "{what}: the op wrote project.toml");
             app.update(Action::OpenManage { tab: None });
             assert_eq!(app.screen, Screen::Main, "{what}");
-            assert_eq!(request_rows(&app), rows, "{what}: the rows before the reorder");
+            let rows = request_rows(&app);
+            assert_eq!(rows, ["main/alpha", "main/beta", "main/gamma"], "{what}: the old rows");
 
             reorder(&mut app);
             assert_eq!(saved_order(&dir), ["beta", "gamma", "alpha"], "{what}");
@@ -30440,7 +30434,7 @@ fn dragging_an_environment_row_reorders_and_persists() {
     );
 }
 
-// -- #284: an environment reorder re-reads the project first -------------
+// -- #284: an environment reorder moves the row in the file's order ------
 
 /// Rewrites `environments = [...]` in `project.toml` by hand, as another
 /// program would (a `git pull`), under a new comment line.
@@ -30454,7 +30448,7 @@ fn hand_order_envs(dir: &tempfile::TempDir, order: &[&str]) {
 /// The Environments tab showing `prod`, `qa`, `dev` over a `project.toml`
 /// reordered by hand to `qa`, `prod`, `dev`. With `taken_in`, another op
 /// of the app (a TLS setting) has read and rewritten `project.toml` since,
-/// which leaves the rows as they were and the re-read due.
+/// which leaves the rows as they were.
 fn manage_envs_app_reordered_by_hand(taken_in: bool) -> (App, tempfile::TempDir) {
     let (mut app, dir) = manage_envs_app();
     hand_order_envs(&dir, &["qa", "prod", "dev"]);
@@ -30464,14 +30458,17 @@ fn manage_envs_app_reordered_by_hand(taken_in: bool) -> (App, tempfile::TempDir)
     }
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"], "the rows are the old ones");
     assert_eq!(listed_envs(&dir), ["qa", "prod", "dev"]);
-    assert!(app.proj().changed_on_disk(), "taken in {taken_in}: the re-read is due");
     (app, dir)
 }
 
+/// alt+up on `dev` moves it one place up in the order the file holds. It
+/// is one undo step, and Undo puts the file's text back.
 #[test]
 fn a_keyboard_environment_move_runs_over_the_order_on_disk() {
     for taken_in in [false, true] {
         let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
+        let before = project_toml(&dir);
+        let steps = app.history.undo_len();
         app.select_list_row(ManageTab::Environments, "dev");
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
         assert_eq!(
@@ -30485,9 +30482,33 @@ fn a_keyboard_environment_move_runs_over_the_order_on_disk() {
             Some("dev"),
             "taken in {taken_in}"
         );
+        assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
+
         app.update(Action::Undo);
-        assert_eq!(listed_envs(&dir), ["qa", "prod", "dev"], "taken in {taken_in}: undo");
+        assert_eq!(project_toml(&dir), before, "taken in {taken_in}: undo");
+        assert_eq!(app.proj().environments(), ["qa", "prod", "dev"], "taken in {taken_in}");
     }
+}
+
+/// An outside rewrite between two alt+up presses on one row: the second
+/// move runs over the order the file holds then and is its own undo step,
+/// so Undo puts `project.toml` back as the other program left it.
+#[test]
+fn an_environment_move_after_an_outside_change_does_not_join_the_burst_before_it() {
+    let (mut app, dir) = manage_envs_app();
+    let steps = app.history.undo_len();
+    app.select_list_row(ManageTab::Environments, "dev");
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(listed_envs(&dir), ["prod", "dev", "qa"]);
+
+    hand_order_envs(&dir, &["qa", "prod", "dev"]);
+    let outside = project_toml(&dir);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(listed_envs(&dir), ["qa", "dev", "prod"]);
+    assert_eq!(app.history.undo_len(), steps + 2);
+
+    app.update(Action::Undo);
+    assert_eq!(project_toml(&dir), outside);
 }
 
 /// Drags the third row, `dev`, to the top of the list and drops it there.
@@ -30502,132 +30523,76 @@ fn drag_dev_to_the_top(app: &mut App) {
     assert!(app.manage_press.is_none());
 }
 
-/// The drop's re-read finds the change, so the drop writes nothing and
-/// the rows show the order on disk. The same drag over those rows then
-/// lands.
+/// A drop of `dev` on the top row puts it first in the order the file
+/// holds, at the first drop. It is one undo step, and Undo puts the
+/// file's text back.
 #[test]
-fn an_environment_drop_over_an_order_changed_on_disk_writes_nothing() {
+fn an_environment_drop_lands_in_the_order_on_disk() {
     for taken_in in [false, true] {
         let (mut app, dir) = manage_envs_app_reordered_by_hand(taken_in);
+        let before = project_toml(&dir);
         let steps = app.history.undo_len();
 
         drag_dev_to_the_top(&mut app);
-        assert_eq!(
-            listed_envs(&dir),
-            ["qa", "prod", "dev"],
-            "taken in {taken_in}: the order on disk is kept"
-        );
-        assert_eq!(
-            app.proj().environments(),
-            ["qa", "prod", "dev"],
-            "taken in {taken_in}: and the rows show it"
-        );
-        assert_eq!(app.history.undo_len(), steps, "taken in {taken_in}: no undo step");
+        assert_eq!(listed_envs(&dir), ["dev", "qa", "prod"], "taken in {taken_in}");
+        assert_eq!(app.proj().environments(), ["dev", "qa", "prod"], "taken in {taken_in}");
+        assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
         assert_eq!(
             app.manage_selected(ManageTab::Environments).as_deref(),
             Some("dev"),
             "taken in {taken_in}: the cursor stays on the dragged row"
         );
 
-        drag_dev_to_the_top(&mut app);
-        assert_eq!(listed_envs(&dir), ["dev", "qa", "prod"], "taken in {taken_in}");
-        assert_eq!(app.proj().environments(), ["dev", "qa", "prod"], "taken in {taken_in}");
-        assert_eq!(app.history.undo_len(), steps + 1, "taken in {taken_in}");
+        app.update(Action::Undo);
+        assert_eq!(project_toml(&dir), before, "taken in {taken_in}: undo");
+        assert_eq!(app.proj().environments(), ["qa", "prod", "dev"], "taken in {taken_in}");
     }
 }
 
-/// An undo re-reads everything, so the re-read the TLS setting left due
-/// is no longer due, and the drop after the undo lands.
+/// A drop keeps its place, not its neighbours, over a set of environments
+/// changed outside and not yet re-read.
 #[test]
-fn an_undo_leaves_no_re_read_due_for_the_next_environment_drop() {
-    let (mut app, dir) = manage_envs_app_reordered_by_hand(true);
-    app.update(Action::Undo);
-    assert_eq!(app.proj().environments(), ["qa", "prod", "dev"], "the undo re-read the rows");
-    assert!(!app.proj().changed_on_disk());
+fn an_environment_drop_keeps_its_place_over_a_set_changed_outside() {
+    // `stage` was added outside and listed first. `dev`, dropped on the
+    // top row, goes first among the rows the tab showed, under `stage`.
+    let (mut app, dir) = manage_envs_app();
+    std::fs::write(dir.path().join("environments/stage.toml"), "").unwrap();
+    hand_order_envs(&dir, &["stage", "prod", "qa", "dev"]);
     drag_dev_to_the_top(&mut app);
-    assert_eq!(listed_envs(&dir), ["dev", "qa", "prod"]);
-    assert_eq!(app.proj().environments(), ["dev", "qa", "prod"]);
+    assert_eq!(listed_envs(&dir), ["stage", "dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["stage", "dev", "prod", "qa"]);
+
+    // `qa` was removed outside, its file and its entry. `dev` goes first,
+    // and `qa`, still a row at the drop, is written after the listed ones.
+    let (mut app, dir) = manage_envs_app();
+    std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
+    hand_order_envs(&dir, &["prod", "dev"]);
+    drag_dev_to_the_top(&mut app);
+    assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["dev", "prod"]);
 }
 
-/// Declares a variable `host` and a selector `user` by hand, with a value
-/// and an option in every environment's file, and has the app read them.
-/// The last environment's file also holds `api`, which nothing declares.
-fn hand_declare_variables(app: &mut App, dir: &tempfile::TempDir) {
-    let envs = app.proj().environments().to_vec();
-    std::fs::write(
-        dir.path().join("variables.toml"),
-        "[host]\n\n[selectors.user]\nfields = [\"id\"]\n",
-    )
-    .unwrap();
-    for env in &envs {
-        let api = if Some(env) == envs.last() { "api = \"a\"\n" } else { "" };
-        std::fs::write(
-            dir.path().join(format!("environments/{env}.toml")),
-            format!("host = \"h\"\n{api}\n[options.user.alice]\nid = \"1\"\n"),
-        )
+/// A selector fields edit rewrites the environment files. With nothing
+/// changed outside, the drop after it lands at the first drop.
+#[test]
+fn an_environment_drop_after_a_selector_fields_edit_lands() {
+    let (mut app, dir) = manage_envs_app();
+    std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"id\"]\n")
         .unwrap();
-    }
+    let dev = dir.path().join("environments/dev.toml");
+    std::fs::write(&dev, "[options.user.alice]\nid = \"1\"\n").unwrap();
     app.resync_project();
     assert!(app.proj().variables().selectors.contains_key("user"));
-    assert!(!app.proj().changed_on_disk());
-}
 
-/// One edit on the Variables tab, then back to `tab`.
-fn edit_on_the_variables_tab(app: &mut App, tab: ManageTab, edit: &str) {
     app.update(Action::SelectManageTab(ManageTab::Variables));
-    match edit {
-        "a selector's fields" => {
-            app.update(Action::ApplyGroupFields {
-                selector: "user".into(),
-                slots: vec!["user_id".into()],
-            });
-            assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id"]);
-        }
-        "a selector's name" => {
-            let rename = VarStructOp::Rename { from: "user".into(), to: "actor".into() };
-            app.update(Action::VarStruct(rename));
-            assert!(app.proj().variables().selectors.contains_key("actor"));
-        }
-        // The last environment's file holds `api`, so the rename is
-        // refused there and the files written before it are put back.
-        "a refused variable rename" => {
-            let rename = VarStructOp::Rename { from: "host".into(), to: "api".into() };
-            app.update(Action::VarStruct(rename));
-            assert!(app.last_action_failed);
-            assert!(app.proj().variables().vars.contains_key("host"));
-        }
-        other => panic!("{other}"),
-    }
-    app.update(Action::SelectManageTab(tab));
-}
+    app.update(Action::ApplyGroupFields { selector: "user".into(), slots: vec!["user_id".into()] });
+    assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id"]);
+    assert!(std::fs::read_to_string(&dev).unwrap().contains("user_id"), "dev.toml was rewritten");
+    app.update(Action::SelectManageTab(ManageTab::Environments));
 
-/// #284: the app's own writes of environment files, with nothing changed
-/// outside, leave no re-read due, so the drop after them lands.
-#[test]
-fn an_environment_drop_after_the_apps_own_environment_writes_lands() {
-    for edit in ["a selector's fields", "a selector's name", "a refused variable rename"] {
-        let (mut app, dir) = manage_envs_app();
-        hand_declare_variables(&mut app, &dir);
-        edit_on_the_variables_tab(&mut app, ManageTab::Environments, edit);
-        drag_dev_to_the_top(&mut app);
-        assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"], "{edit}");
-        assert_eq!(app.proj().environments(), ["dev", "prod", "qa"], "{edit}");
-    }
-}
-
-/// #284: as above, for a space drop after a selector fields edit.
-#[test]
-fn a_space_drop_after_a_selector_fields_edit_lands() {
-    let (mut app, dir) = manage_spaces_app();
-    hand_declare_variables(&mut app, &dir);
-    edit_on_the_variables_tab(&mut app, ManageTab::Spaces, "a selector's fields");
-    let r0 = manage_row(&mut app, 0);
-    let r2 = manage_row(&mut app, 2);
-    app.handle_mouse(left_down(r0.x + 2, r0.y));
-    app.handle_mouse(moved(r0.x + 2, r2.y));
-    app.handle_mouse(left_up(r0.x + 2, r2.y));
-    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
-    assert_eq!(app.proj().spaces(), ["auth", "billing", "main"]);
+    drag_dev_to_the_top(&mut app);
+    assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
+    assert_eq!(app.proj().environments(), ["dev", "prod", "qa"]);
 }
 
 #[test]

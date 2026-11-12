@@ -864,8 +864,8 @@ impl Project {
     /// nothing to write, so `self.meta` holds the lists the op goes on to
     /// change. Deciding that peeks at the file rather than reading it: a
     /// read records the file's stamp, and the next `poll` would then never
-    /// re-read the rest of an outside edit. A call that does read a file
-    /// changed outside leaves that `poll` due (`edit_project_toml`).
+    /// re-read the rest of an outside edit. For the same reason a call
+    /// that did read a file changed outside leaves that `poll` due.
     ///
     /// Only a whole listing drops entries naming nothing (D7): after a walk
     /// that failed part way (an unreadable folder, reported as a warning
@@ -909,6 +909,7 @@ impl Project {
         {
             return Ok(false);
         }
+        let outside_edit = self.disk.changed(&path);
         // The lists written are built from the document `edit_project_toml`
         // reads, not from the peek: the file can change between the two,
         // and a list built from the peek would overwrite that change. The
@@ -926,6 +927,9 @@ impl Project {
                 wrote = true;
             }
         })?;
+        if outside_edit {
+            self.force_reload = true;
+        }
         Ok(wrote)
     }
 

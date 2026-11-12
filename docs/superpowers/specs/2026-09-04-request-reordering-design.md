@@ -434,26 +434,31 @@ at the place it was dropped on, so the writer takes the row and its
 place, not the finished order: `place_environment(name, to)` replaces
 `set_environment_order(displayed)`. Nothing is re-read before a
 reorder, nothing checks whether a re-read is due, and no drop is
-cancelled. The rows are listed again after the write, as before. A
-reorder that moves nothing in the file's order writes nothing and
-records no step; the rows still show the file's order afterwards. Undo
+cancelled. The rows are listed again after the write, as before. Undo
 writes back the text the reorder read, so it restores the outside
-order exactly.
+order exactly. A reorder that moves nothing in the file's order writes
+nothing and records no step, and the rows show the file's order
+afterwards *(mine)*.
 
 The costs accepted with it:
 
-- A drop keeps its place, not its neighbours. When an environment was
-  added or removed outside, the row can land on the other side of a
-  neighbour than the drag showed: with a new environment listed first
+- A drop keeps its place, not its neighbours: the row lands at the
+  place it was dropped on, among the rows in the file's order. When an
+  environment was added or removed outside, that place is counted
+  among the rows the tab showed: with a new environment listed first
   in the file, a row dropped on the top row ends second, under it.
-- The reorder re-reads nothing else. The rest of an outside change
-  (`variables.toml`, the requests) waits for the next focus change or
-  Send, as after any other op.
+- The reorder reads `project.toml` and lists `environments/`, nothing
+  else. The rest of an outside change (`variables.toml`, the requests)
+  waits for the next focus change or Send, as after any other op.
 - The Spaces tab keeps #274's rule (re-read first, and a drop is
   cancelled when anything was re-read), so the two tabs differ.
-- A row whose file was deleted outside can be moved until the next
-  re-read. Its name is written into the list, where it shows nothing,
-  as before.
+- A row whose file was deleted outside is still a row when a reorder
+  runs before the next re-read. That reorder writes its name into the
+  list, where it shows nothing, as before.
+- In a directory with no `project.toml` (the app opens one when a
+  registered project lost the file), a reorder that moves nothing
+  leaves an empty `project.toml` and an undo step. A reorder that
+  moves a row made the file there before too. *(mine)*
 
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)

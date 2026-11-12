@@ -4,6 +4,20 @@
 use super::*;
 use crate::journal::MergeKey;
 
+/// `listed` (an `environments` array) exactly as written, with duplicates
+/// dropped and invalid and stale names kept in place, then the `shown`
+/// environments it lacks: the list an environment op writes back. Never
+/// filters a hand-written entry away.
+fn write_list_over(listed: &[String], shown: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in listed.iter().chain(shown) {
+        if !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
 impl Project {
     /// The slug `display` gets as an environment's file: `slugify`, then
     /// `-2`, `-3`, … while the disk says `environments/<slug>.toml`
@@ -18,34 +32,15 @@ impl Project {
         )
     }
 
-    /// `meta.environments` exactly as written (duplicates dropped,
-    /// invalid and stale names kept in place) then unlisted files: the
-    /// list every environment op writes back. Never filters a
-    /// hand-written entry away.
+    /// [`write_list_over`] `meta.environments`, the array as last read:
+    /// the list create, rename and delete write back.
     ///
     /// Unlike the spaces `write_list`, this works from `self.environments`
     /// — the last `refresh_environments` listing — rather than re-listing
     /// disk. A file that appeared since that refresh simply stays
     /// unlisted until the next reload.
     fn env_write_list(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for name in &self.meta.environments {
-            if !out.contains(name) {
-                out.push(name.clone());
-            }
-        }
-        for name in &self.environments {
-            if !out.contains(name) {
-                out.push(name.clone());
-            }
-        }
-        out
-    }
-
-    /// The indices of `list` the app displays, in order: the entries that
-    /// name an environment the project actually has.
-    fn env_slots(&self, list: &[String]) -> Vec<usize> {
-        (0..list.len()).filter(|i| self.environments.contains(&list[*i])).collect()
+        write_list_over(&self.meta.environments, &self.environments)
     }
 
     /// Re-lists from `meta` and disk; a listing that fails keeps the list
@@ -57,67 +52,78 @@ impl Project {
         }
     }
 
-    /// Moves `name` by `delta` among the displayed environments (a swap).
+    /// Moves `name` by `delta` places among the displayed environments,
+    /// stopping at the ends.
     pub fn move_environment(
         &mut self,
         name: &str,
         delta: i32,
     ) -> Result<Option<ListChange>, Error> {
-        let mut envs = self.env_write_list();
-        let slots = self.env_slots(&envs);
-        let Some(pos) = slots.iter().position(|i| envs[*i] == *name) else {
-            return Err(Error::NotFound(name.to_string()));
-        };
-        let target = (pos as i32 + delta).clamp(0, slots.len() as i32 - 1) as usize;
-        if target == pos {
-            return Ok(None);
-        }
-        let before: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
-        envs.swap(slots[pos], slots[target]);
-        let after: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
         let key = MergeKey::EnvOrder { name: name.to_string() };
-        self.transaction_merging("move environment", key, |p| {
-            p.edit_project_toml(|doc| {
-                doc["environments"] = toml_edit::value(meta::slug_array(&envs))
-            })?;
-            p.refresh_environments();
-            Ok(())
-        })?;
-        Ok(Some(ListChange { before, after }))
+        self.reorder_environment("move environment", Some(key), name, |pos| {
+            pos.saturating_add_signed(delta as isize)
+        })
     }
 
-    /// Writes the whole displayed order as a drag left it. Refuses an
-    /// order that is not exactly the displayed set.
-    pub fn set_environment_order(
+    /// Puts `name` at place `to` among the displayed environments, as a
+    /// drag left it. A place past the end is the last one.
+    pub fn place_environment(
         &mut self,
-        displayed: &[String],
+        name: &str,
+        to: usize,
     ) -> Result<Option<ListChange>, Error> {
-        let mut envs = self.env_write_list();
-        let slots = self.env_slots(&envs);
-        let valid: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
-        if let Some(extra) = displayed.iter().find(|n| !valid.contains(n)) {
-            return Err(Error::NotFound(extra.clone()));
+        self.reorder_environment("reorder environments", None, name, |_| to)
+    }
+
+    /// Moves `name` among the displayed environments to the place `place`
+    /// gives from its place now (capped at the last one), as one undo
+    /// entry.
+    ///
+    /// The list is built from the document `edit_project_toml` has just
+    /// read, never from `self.meta`, so the row moves in the order the
+    /// file holds at this write and an outside edit postui hasn't read
+    /// yet is kept (#284). Entries that name no displayed environment
+    /// keep their slots. When the row is already at that place, the
+    /// document is left as it was read.
+    fn reorder_environment(
+        &mut self,
+        label: &str,
+        merge: Option<MergeKey>,
+        name: &str,
+        place: impl FnOnce(usize) -> usize,
+    ) -> Result<Option<ListChange>, Error> {
+        let shown = self.environments.clone();
+        if !shown.iter().any(|e| e == name) {
+            return Err(Error::NotFound(name.to_string()));
         }
-        if let Some(missing) = valid.iter().find(|n| !displayed.contains(n)) {
-            return Err(Error::NotFound(missing.clone()));
-        }
-        if displayed.len() != valid.len() {
-            return Err(Error::NotFound(displayed[0].clone()));
-        }
-        if valid == displayed {
-            return Ok(None);
-        }
-        for (slot, name) in slots.iter().zip(displayed) {
-            envs[*slot] = name.clone();
-        }
-        self.transaction("reorder environments", EntryMeta::default(), |p| {
+        let mut change = None;
+        self.run_transaction(label, EntryMeta::default(), merge, |p| {
             p.edit_project_toml(|doc| {
-                doc["environments"] = toml_edit::value(meta::slug_array(&envs))
+                // A document `ProjectMeta` rejects gets no list;
+                // `edit_project_toml` then refuses the write.
+                let Ok(meta) = toml::from_str::<ProjectMeta>(&doc.to_string()) else { return };
+                let mut envs = write_list_over(&meta.environments, &shown);
+                let slots: Vec<usize> =
+                    (0..envs.len()).filter(|i| shown.contains(&envs[*i])).collect();
+                let before: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
+                let Some(pos) = before.iter().position(|n| n == name) else { return };
+                let to = place(pos).min(before.len() - 1);
+                if to == pos {
+                    return;
+                }
+                let mut after = before.clone();
+                let moved = after.remove(pos);
+                after.insert(to, moved);
+                for (slot, n) in slots.iter().zip(&after) {
+                    envs[*slot] = n.clone();
+                }
+                doc["environments"] = toml_edit::value(meta::slug_array(&envs));
+                change = Some(ListChange { before, after });
             })?;
             p.refresh_environments();
             Ok(())
         })?;
-        Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
+        Ok(change)
     }
 
     /// Writes `secrets.toml` from memory as a journaled text op.
@@ -441,9 +447,9 @@ mod tests {
     }
 
     #[test]
-    fn set_environment_order_writes_the_dragged_order_and_refuses_a_wrong_set() {
+    fn place_environment_puts_the_row_at_its_place_and_refuses_a_row_not_shown() {
         let (dir, mut p) = fixture();
-        let c = p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().unwrap();
+        let c = p.place_environment("qa", 0).unwrap().unwrap();
         assert_eq!(c.before, ["dev", "qa"]);
         assert_eq!(c.after, ["qa", "dev"]);
         assert_eq!(p.environments(), ["qa", "dev"]);
@@ -451,13 +457,86 @@ mod tests {
             read(&dir, "project.toml").unwrap().contains("environments = [\"qa\", \"dev\"]"),
             "the drag materialises the whole displayed order"
         );
-        assert!(p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().is_none());
-        assert!(matches!(p.set_environment_order(&["qa".into()]), Err(Error::NotFound(_))));
-        assert!(matches!(
-            p.set_environment_order(&["qa".into(), "nope".into()]),
-            Err(Error::NotFound(_))
-        ));
+        assert!(p.place_environment("qa", 0).unwrap().is_none());
+        assert!(matches!(p.place_environment("nope", 0), Err(Error::NotFound(_))));
         assert_eq!(p.journal_len(), 1, "a drag never merges");
+
+        // The rows between the old place and the new one shift, and a
+        // place past the end is the last one.
+        p.create_environment("Prod").unwrap();
+        let c = p.place_environment("prod", 0).unwrap().unwrap();
+        assert_eq!(c.before, ["qa", "dev", "prod"]);
+        assert_eq!(c.after, ["prod", "qa", "dev"]);
+        let c = p.place_environment("prod", 9).unwrap().unwrap();
+        assert_eq!(c.after, ["qa", "dev", "prod"]);
+        assert_eq!(p.environments(), ["qa", "dev", "prod"]);
+    }
+
+    /// Rewrites the `environments` list in `project.toml` by hand, as
+    /// another program would, and returns the file's new text.
+    fn hand_order(dir: &tempfile::TempDir, order: &[&str]) -> String {
+        let path = dir.path().join("project.toml");
+        let mut doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        doc["environments"] = toml_edit::value(toml_edit::Array::from_iter(order.iter().copied()));
+        let text = format!("# pulled\n{doc}");
+        std::fs::write(&path, &text).unwrap();
+        text
+    }
+
+    /// #284: both reorders move the row in the list `project.toml` holds
+    /// at the write, not in the list as last read, and undo puts the
+    /// file's text back.
+    #[test]
+    fn a_reorder_moves_the_row_in_the_list_the_file_holds() {
+        let (dir, mut p) = ordered_fixture();
+        p.create_environment("Prod").unwrap();
+        assert_eq!(p.environments(), ["dev", "qa", "prod"]);
+
+        let outside = hand_order(&dir, &["qa", "dev", "prod"]);
+        let c = p.move_environment("prod", -1).unwrap().unwrap();
+        assert_eq!(c.before, ["qa", "dev", "prod"]);
+        assert_eq!(c.after, ["qa", "prod", "dev"]);
+        assert_eq!(p.meta().environments, ["qa", "prod", "dev"]);
+        assert_eq!(p.environments(), ["qa", "prod", "dev"]);
+        p.undo().unwrap().unwrap();
+        assert_eq!(read(&dir, "project.toml").unwrap(), outside);
+
+        let outside = hand_order(&dir, &["prod", "dev", "qa"]);
+        let c = p.place_environment("qa", 0).unwrap().unwrap();
+        assert_eq!(c.before, ["prod", "dev", "qa"]);
+        assert_eq!(c.after, ["qa", "prod", "dev"]);
+        assert_eq!(p.meta().environments, ["qa", "prod", "dev"]);
+        assert_eq!(p.environments(), ["qa", "prod", "dev"]);
+        p.undo().unwrap().unwrap();
+        assert_eq!(read(&dir, "project.toml").unwrap(), outside);
+    }
+
+    /// A row already at its place in the file's order: nothing is written
+    /// and no entry is recorded, and the rows show the file's order.
+    #[test]
+    fn a_reorder_that_moves_nothing_in_the_files_order_writes_nothing() {
+        let (dir, mut p) = ordered_fixture();
+        let outside = hand_order(&dir, &["qa", "dev"]);
+        assert_eq!(p.environments(), ["dev", "qa"]);
+        assert!(p.move_environment("qa", -1).unwrap().is_none());
+        assert!(p.place_environment("dev", 1).unwrap().is_none());
+        assert_eq!(read(&dir, "project.toml").unwrap(), outside);
+        assert_eq!(p.journal_len(), 0);
+        assert_eq!(p.environments(), ["qa", "dev"]);
+    }
+
+    /// A `project.toml` that `ProjectMeta` rejects is never rewritten by a
+    /// reorder.
+    #[test]
+    fn a_reorder_never_writes_a_project_toml_that_will_not_parse() {
+        let (dir, mut p) = ordered_fixture();
+        let text = format!("bogus_key = 1\n{}", read(&dir, "project.toml").unwrap());
+        std::fs::write(dir.path().join("project.toml"), &text).unwrap();
+        assert!(matches!(p.move_environment("dev", 1), Err(Error::Parse { .. })));
+        assert!(matches!(p.place_environment("qa", 0), Err(Error::Parse { .. })));
+        assert_eq!(read(&dir, "project.toml").unwrap(), text);
+        assert_eq!(p.journal_len(), 0);
     }
 
     #[test]
