@@ -179,16 +179,20 @@ impl Project {
                     // Compared where this replay first meets the path: after
                     // that the file holds what an earlier inverse put there,
                     // which is not on disk yet. A peek, so a change `poll`
-                    // has not read yet is still `poll`'s to read.
-                    if !overlay.contains_key(path) && !written_outside_journal(path) {
-                        let held = self.disk.peek(path)?;
-                        if held != *after {
-                            differing.push(Op::Text {
-                                path: path.clone(),
-                                before: after.clone(),
-                                after: held,
-                            });
-                        }
+                    // has not read yet is still `poll`'s to read. A file
+                    // that cannot be read is not compared: the inverse
+                    // reads it before it writes (`fs_write_text`) and fails
+                    // there, which keeps the entry on its stack.
+                    if !overlay.contains_key(path)
+                        && !written_outside_journal(path)
+                        && let Ok(held) = self.disk.peek(path)
+                        && held != *after
+                    {
+                        differing.push(Op::Text {
+                            path: path.clone(),
+                            before: after.clone(),
+                            after: held,
+                        });
                     }
                     overlay.insert(path.clone(), before.is_some());
                 }
@@ -712,8 +716,9 @@ mod tests {
     }
 
     /// Comment 1283, first case, with nothing changed outside: a folder
-    /// renamed to People, to Users and back to People. One undo, a redo,
-    /// and then every step beneath undoes, down to the create.
+    /// renamed to People, to Users and back to People. One undo, a redo
+    /// that is refused, and then every step beneath undoes, down to the
+    /// create.
     #[test]
     fn a_folder_renamed_back_and_forth_undoes_all_the_way_after_a_redo() {
         let (dir, mut p) = fixture();
@@ -722,11 +727,8 @@ mod tests {
         p.rename_folder("main/people", "Users").unwrap();
         p.rename_folder("main/users", "People").unwrap();
         assert_replayed(p.undo(), "rename folder");
-        // This redo is refused, on main too (#286). Were it not, the undo
-        // after it leaves the same folder and the same steps.
-        if p.redo().is_ok() {
-            assert_replayed(p.undo(), "rename folder");
-        }
+        // #286: this redo is refused, on main too.
+        assert!(p.redo().is_err());
         assert_replayed(p.undo(), "rename folder");
         assert_replayed(p.undo(), "rename folder");
         assert!(dir.path().join("requests/main/users/.folder.toml").is_file());
@@ -802,17 +804,43 @@ mod tests {
         assert_eq!(vars(), "[broken\n");
     }
 
-    /// A file the check cannot read as text refuses the step, which is
-    /// dropped. The file is not written.
+    /// A file that cannot be read as text fails the undo, which writes
+    /// nothing and keeps its step. With the file readable again, the step
+    /// undoes.
     #[test]
-    fn a_file_that_is_not_text_refuses_the_step() {
+    fn a_file_that_is_not_text_fails_the_undo_and_keeps_the_step() {
         let (dir, mut p) = fixture();
+        let vars = || read(&dir, "variables.toml").unwrap();
+        let start = vars();
         add_port(&mut p);
+        let left = vars();
         let bytes = [0xff, 0xfe, 0xfd];
         std::fs::write(dir.path().join("variables.toml"), bytes).unwrap();
         assert!(p.undo().is_err());
         assert_eq!(std::fs::read(dir.path().join("variables.toml")).unwrap(), bytes);
-        assert!(!p.can_undo() && !p.can_redo());
+        assert!(p.can_undo() && !p.can_redo());
+        std::fs::write(dir.path().join("variables.toml"), &left).unwrap();
+        assert_replayed(p.undo(), "edit variables");
+        assert_eq!(vars(), start);
+    }
+
+    /// The same for a space delete whose `project.toml` cannot be read as
+    /// text: the undo fails with the space still in the trash, and with the
+    /// file readable again the space is restored.
+    #[test]
+    fn a_space_delete_is_undone_once_a_file_that_was_not_text_is_readable_again() {
+        let (dir, mut p) = fixture();
+        p.delete_space("auth").unwrap();
+        let left = read(&dir, "project.toml").unwrap();
+        let bytes = [0xff, 0xfe, 0xfd];
+        std::fs::write(dir.path().join("project.toml"), bytes).unwrap();
+        assert!(p.undo().is_err());
+        assert_eq!(std::fs::read(dir.path().join("project.toml")).unwrap(), bytes);
+        assert!(!dir.path().join("requests/auth").exists());
+        std::fs::write(dir.path().join("project.toml"), &left).unwrap();
+        assert_replayed(p.undo(), "delete space");
+        assert!(dir.path().join("requests/auth/login.toml").is_file());
+        assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
     /// The TUI's refresh completes an order list outside the journal when

@@ -125,7 +125,7 @@ without it an undo cannot get past an order completion).
 | R9 | `.postui/state.toml` and request files are not compared, as on this branch: the app writes both outside the history. #285 stays its own task. | mine |
 | R10 | The sidebar's order completion stays followed by the journal (`Journal::follow` from `fs_write_text`). | mine |
 | R12 | A file that does not parse is taken back like any other: the app writes the step's text over it and keeps its text in the outside step. | mine |
-| R13 | A file the check cannot read (unreadable, not UTF-8) refuses the step and drops it, as on this branch. | mine |
+| R13 | A file the check cannot read (unreadable, not UTF-8) is not compared. The undo or redo then fails where it reads that file to write it, as on main: nothing is written to the file, what the replay had already done is put back, and the step stays on its stack for a retry. *Changed in review round 1 (2026-11-11):* the rule was "refuses the step and drops it, as on this branch", which also dropped the step that restores a deleted request or space. | mine |
 
 The reason the user gave with the answers to questions 1 and 2 (you,
 comment 1296):
@@ -213,7 +213,8 @@ again at round 1.
 - No new stored copy, no reads on a timer, nothing at reload. Each undo or
   redo reads the small files its step would rewrite, as on this branch.
 - One more journal entry and marker per outside edit met, holding two
-  texts of each file in it.
+  texts of each file in it. With a history at its cap of 200, it pushes
+  the oldest step out, as a new step does.
 - The first press writes over the outside edit on disk. After that it is
   kept only in the history: a new op or edit clears redo, and quitting or
   switching projects clears everything. The toast is the only warning.
@@ -244,13 +245,15 @@ is back (R4, R7); a cascade where one file changed: only that file is in
 the step (R3); a step made on the outside text undoes to it and the step
 before takes it back first (R2); a folder's file (R3); a step beneath a
 dropped one (R8); both cases of comment 1283; an outside edit between two
-undos, then the redos; an unparsable file (R12); state and request files
+undos, then the redos; an unparsable file (R12); a file that is not text,
+under an edit and under a space delete (R13); state and request files
 never compared, the order completion followed (R9, R10, kept tests); the
 path refusals (R7, main's tests).
 Core, `journal.rs`: nothing new. The burst rule's tests came with #239.
 App, `tests.rs`: the ticket's steps with the toasts and both stacks walked
 down, up, down and past a new op (R4, R6); the redo side (R5); a delete
-restored after an outside change; a refused step, then the one beneath
+restored after an outside change, and after a file that was not text is
+readable again (R13); a refused step, then the one beneath
 (R8); the steps of comment 1290 (a move, an outside rewrite, a move up and
 down that net to nothing, undo); rename, save, undo and the refresh tests
 (kept).
@@ -264,9 +267,9 @@ the redo side mirrors undo (R5); a broken file is taken back like any
 other (R12); the wording (R6); a refused step is still dropped (R7); the
 untrue label in R8 is left as it is; state and request files are still not
 compared (R9); the order completion is still followed (R10); a file the
-check cannot read still refuses the step (R13); the press that finds an
-outside edit counts as one step of a counted undo; the work goes on top
-of this branch.
+check cannot read fails the undo or redo and keeps the step, as on main
+(R13, changed in review round 1); the press that finds an outside edit
+counts as one step of a counted undo; the work goes on top of this branch.
 
 Not in this design: #285 (request files) and #286 (a folder rename's redo
 refused on main) are unchanged. #286's fix has to keep the compare from

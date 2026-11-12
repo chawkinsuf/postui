@@ -266,8 +266,9 @@ treat loading external edits as its own undo step?").
   and a re-read does not touch the history.
 - Nothing is refused over text. A file that does not parse is taken back
   like any other. The refusals over paths stay as they were (a file that
-  vanished, a name taken), a file that cannot be read as text refuses
-  too, and a refused step is still dropped (mine).
+  vanished, a name taken), and a refused step is still dropped. A file
+  that cannot be read as text fails the undo or redo, which writes
+  nothing to it and keeps its step for a retry (mine).
 - A dropped step leaves its text in the files it wrote. The step beneath
   that wrote one of those files finds that text the same way: its first
   press takes it back, with the same toast although the text was the

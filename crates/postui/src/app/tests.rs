@@ -6701,6 +6701,25 @@ fn a_delete_is_restored_after_a_change_made_outside() {
     assert_eq!(request_rows(&app), ["main/beta", "main/alpha", "main/gamma"]);
 }
 
+/// A request is deleted and `project.toml` is then left unreadable as
+/// text. The undo fails and says so, and its step stays: with the file
+/// readable again, the next undo restores the request.
+#[test]
+fn a_delete_is_restored_once_a_file_that_was_not_text_is_readable_again() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    let left = project_toml(&dir);
+    std::fs::write(dir.path().join("project.toml"), [0xff, 0xfe, 0xfd]).unwrap();
+
+    let failed = toasts_of(&mut app, Action::Undo);
+    assert!(failed.iter().any(|m| m.contains("could not undo")), "{failed:?}");
+    assert!(!dir.path().join("requests/main/alpha.toml").exists());
+    std::fs::write(dir.path().join("project.toml"), &left).unwrap();
+    assert_eq!(toasts_of(&mut app, Action::Undo), ["Restored alpha"]);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
 /// An undo refused because its request file was removed outside drops only
 /// its own step, and what that step wrote to `project.toml` stays there.
 /// The delete beneath it wrote `project.toml` too: its undo takes that text
