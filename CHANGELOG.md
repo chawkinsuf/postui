@@ -39,8 +39,9 @@ requests and folders moved in and out of them, by mouse or by keyboard.
   row never asks about unsaved edits.
 - An undo or redo that reaches a file like `project.toml` changed outside
   postui (by a `git pull`, say) no longer writes over it silently: that press
-  takes the outside change back, as a step of its own, with a warning. Redo
-  or undo puts it back.
+  takes the outside change back, as a step of its own, with a warning. The
+  next press goes on to your own steps, and the other key (redo after an
+  undo, undo after a redo) brings the outside change back.
 - jq, `postui run --jq` and the suite treat a body with comments or NaN as
   not JSON, as the Tree tab does.
 
@@ -51,13 +52,13 @@ requests and folders moved in and out of them, by mouse or by keyboard.
   environment, no longer write over an order changed outside; creating or
   reordering spaces re-reads the project first, so a space directory made by
   hand shows with its requests.
-- Undoing a request rename changes only the name, so later edits to the
-  request stay.
+- Undoing or redoing a request rename changes only the name, so later edits
+  to the request stay.
 - A body nested deeper than 256 levels no longer crashes postui when jq reads
   it.
 - After a lost mouse release, the next click no longer starts a drag.
-- A Variable Manager row menu closes when postui re-reads changed project
-  files, so it can't act on the wrong option.
+- An open menu or dropdown closes when postui re-reads changed project
+  files, so a row menu can't act on whatever took its row.
 - A crash after a trip to `$EDITOR` restores the terminal once, not once per
   trip.
 

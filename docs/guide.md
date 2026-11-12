@@ -63,7 +63,8 @@ made in another request or on the Manage screen.
 If a file like `project.toml` or `variables.toml` was changed outside postui
 (by a `git pull`, say), the undo that reaches it first takes that change back,
 as a step of its own, and a warning names the file. The next undo goes on, and
-redo puts the outside change back.
+redo puts the outside change back. A redo that reaches such a file does the
+same, and undo puts the change back.
 
 ## Environments, variables and secrets
 
