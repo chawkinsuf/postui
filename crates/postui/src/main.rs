@@ -50,8 +50,8 @@ async fn main() -> anyhow::Result<ExitCode> {
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
 
-    // The hook goes in once the terminal is entered. If entering fails,
-    // `ratatui::restore` undoes what was done before the panic.
+    // If entering fails, it failed at raw mode or the alternate screen,
+    // which `ratatui::restore` undoes. The hook goes in after.
     enter_terminal().inspect_err(|_| ratatui::restore()).expect("failed to initialize terminal");
     install_panic_hook();
     let mut terminal =
@@ -163,14 +163,10 @@ fn disable_terminal_modes() {
 }
 
 /// Installs the panic hook that gives the terminal back before the panic
-/// report prints. Only the first call installs it: `take_hook` + `set_hook`
-/// would add a layer each time (#171).
+/// report prints. Called once, from `main`: each call wraps the hook
+/// already installed in another layer, so `enter_terminal` (run again
+/// after every `$EDITOR` round trip) does not call it (#171).
 fn install_panic_hook() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(wrap_panic_hook);
-}
-
-fn wrap_panic_hook() {
     let prev_hook = std::panic::take_hook();
     let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
@@ -562,28 +558,4 @@ fn edit_config_externally(
     // caret warnings show up without any extra code here.
     app.update(Action::ReloadFromDisk);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    /// The address of the installed hook's closure, put back after reading.
-    fn installed_hook_addr() -> usize {
-        let hook = std::panic::take_hook();
-        let addr = std::ptr::from_ref(&*hook).cast::<()>() as usize;
-        std::panic::set_hook(hook);
-        addr
-    }
-
-    /// #171: a second install leaves the hook as it was instead of wrapping
-    /// it in a new layer.
-    #[test]
-    fn a_second_install_adds_no_layer() {
-        super::install_panic_hook();
-        let first = installed_hook_addr();
-        super::install_panic_hook();
-        let second = installed_hook_addr();
-        // Back to the default hook, so a failed assert below prints plainly.
-        drop(std::panic::take_hook());
-        assert_eq!(first, second);
-    }
 }
