@@ -482,6 +482,21 @@ The costs accepted with it:
   runs before the next re-read. That reorder writes its name into the
   list, where it shows nothing, as before.
 
+*(2026-11-12, #287, mine.)* An environment create, rename and delete
+build the list they write the same way, inside `edit_project_toml`
+from the document just read: create adds the new environment last
+unless the file already names it, rename puts the new name in the old
+one's slot (the first slot, when the file already names it too),
+delete drops the name. An order changed outside, and an environment
+added to the list outside, are kept. As for a reorder, the list
+written also takes the environments the tab showed at the last
+listing, so one removed from the list outside since then is written
+back. A rename or delete rewrites the list only when the
+file lists that environment at the write, not when the last read did,
+so neither makes a list the file does without. Nothing is re-read
+first and nothing is checked, as for the reorders, and the costs above
+that are not about a drop or a move hold for these three too.
+
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)
 swallows the first Escape pressed while a button is held; a `Down(Left)`

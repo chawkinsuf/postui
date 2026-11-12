@@ -119,6 +119,10 @@ impl Project {
             }
             Ok(())
         })?;
+        // A write under `environments/` changes the directory's stamp.
+        // Listing it again records the new one, as `edit_env` does, so
+        // `changed_on_disk` does not report the edit's own writes (#289).
+        self.refresh_environments();
         self.model = new_model;
         if let Some(data) = active_data {
             self.env_data = data;
@@ -295,6 +299,36 @@ mod tests {
         })
         .unwrap();
         assert_eq!(p.journal_len(), 1);
+    }
+
+    /// #289: the environment files `edit_variables_and_envs` writes are
+    /// its own change, so they leave no poll due.
+    #[test]
+    fn edit_variables_and_envs_leaves_no_poll_due() {
+        let (dir, mut p) = fixture();
+        assert!(!p.changed_on_disk());
+        p.edit_variables_and_envs(
+            |doc| varedit::rename_var(doc, "host", "hostname"),
+            |doc| varedit::rename_env_var(doc, "host", "hostname"),
+        )
+        .unwrap();
+        assert!(read(&dir, "environments/dev.toml").unwrap().contains("hostname = "));
+        assert!(!p.changed_on_disk());
+    }
+
+    /// #289: an environment file written and then put back by a rollback
+    /// leaves no poll due either.
+    #[test]
+    fn a_rollback_under_environments_leaves_no_poll_due() {
+        let (dir, mut p) = fixture();
+        assert!(!p.changed_on_disk());
+        let r = p.cascade("set value", |p| {
+            p.edit_env("qa", |doc| varedit::set_env_value(doc, "host", Some("qa.local")))?;
+            Err::<(), Error>(Error::Edit("late failure".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(read(&dir, "environments/qa.toml").unwrap(), "");
+        assert!(!p.changed_on_disk());
     }
 
     #[test]
