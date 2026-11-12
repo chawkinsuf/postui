@@ -151,6 +151,11 @@ not hold also means nothing. Neither case needs another state.
   `Rename` items carry the row index from when the menu opened, and a
   reload while the menu is open can renumber the options under them
   (`Delete` carries the name). Same class, left as on main, reported.
+
+  *Note 2026-11-12, task #212 (mine):* a reload that finds the project
+  files changed now closes a dropdown on top of the modal stack first, as
+  Esc would, so the menu's items can no longer act on the options after
+  the reload. A reload that finds nothing changed leaves it open.
 - The sidebar cursor (its own R6 rules).
 
 ### Spec amendments when the code lands

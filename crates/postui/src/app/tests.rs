@@ -19956,7 +19956,8 @@ fn an_option_rows_menu_acts_on_nothing_once_no_option_row_is_drawn() {
 /// opened on, whatever the keyboard is on when it is picked. A reload that
 /// renames the selector outside opens the renamed one in its place, with
 /// the left list's focus; a Delete that followed the keyboard there would
-/// delete that selector.
+/// delete that selector. Since task #212 that reload closes the menu, so
+/// the test runs the Delete item's action after it.
 #[test]
 fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let dir = tempfile::tempdir().unwrap();
@@ -19968,7 +19969,16 @@ fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let cell =
         app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).expect("row 0 is drawn");
     app.handle_mouse(right_down(cell.x, cell.y));
-    let i = menu_labels(&app).iter().position(|l| l == "Delete").expect("the item is listed");
+    let delete = menu_action(&app, "Delete").expect("the item is listed");
+    assert_eq!(
+        delete,
+        Action::OptionMenu(Box::new(Action::DeleteEntry {
+            env: "qa".into(),
+            selector: "user".into(),
+            name: "alice".into(),
+        })),
+        "Delete carries alice's name"
+    );
 
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -19989,9 +19999,9 @@ fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
         "the renamed selector opens in its place"
     );
 
+    assert!(app.modals.is_empty(), "the reload closed the menu");
     rendered_text_at(&mut app, 130, 46);
-    let item = app.hits.rect_of(&crate::hit::Hit::DropdownRow(i)).expect("the menu is open");
-    app.handle_mouse(left_down(item.x + 1, item.y));
+    app.update(delete);
     assert!(app.proj().variables().selectors.contains_key("person"), "the selector stays");
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     let names: Vec<&String> = env.options["person"].keys().collect();
@@ -20870,6 +20880,50 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
             name: "alice".into(),
         })))
     );
+}
+
+/// Task #212: an option row menu was built from the files as they were. A
+/// reload that finds them changed closes it, so none of its items acts on
+/// whatever option took its row.
+#[test]
+fn a_reload_that_changed_the_files_closes_an_open_option_row_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 0, 0);
+    app.handle_mouse(right_down(r.x, r.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "alice's menu is open");
+
+    // alice is deleted outside, so bob now sits at the menu's row.
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n\n[options.user.bob]\nuser = \"2002\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+
+    assert!(app.modals.top().is_none(), "the menu closed with the reload");
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    let names: Vec<&String> = env.options["user"].keys().collect();
+    assert_eq!(names, ["bob"], "bob is neither renamed nor deleted");
+}
+
+/// A reload that finds nothing changed leaves the menu open.
+#[test]
+fn a_reload_that_changed_nothing_keeps_an_open_option_row_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 0, 0);
+    app.handle_mouse(right_down(r.x, r.y));
+
+    app.on_focus_gained();
+
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "still open");
 }
 
 /// The same rule for the variable form's own field: a right click is a
