@@ -44,15 +44,91 @@ fn written_outside_journal(path: &RelPath) -> bool {
             && path.file_name() != crate::storage::FOLDER_FILE)
 }
 
+/// What [`Project::preflight`] knows of a path the replay has touched, at
+/// that path or at a directory above it.
+enum Node {
+    /// It holds what is on disk at this path (moved here by the replay).
+    At(RelPath),
+    /// An inverse made it present or absent.
+    Set(bool),
+}
+
+/// Where a path stands at a point of the replay.
+enum Held {
+    /// What is on disk at this path.
+    Disk(RelPath),
+    Set(bool),
+}
+
+/// The paths the replay has touched so far, by the path they will have.
+/// A path is looked up at itself, then at each directory above it, so a
+/// path inside a moved directory is found where the directory is on disk
+/// (#286).
+#[derive(Default)]
+struct Overlay(std::collections::HashMap<RelPath, Node>);
+
+impl Overlay {
+    fn resolve(&self, p: &RelPath) -> Held {
+        let mut at = Some(p.clone());
+        while let Some(a) = at {
+            match self.0.get(&a) {
+                Some(Node::At(disk)) => {
+                    let rest = &p.as_str()[a.as_str().len()..];
+                    return match RelPath::new(format!("{disk}{rest}")) {
+                        Ok(on_disk) => Held::Disk(on_disk),
+                        Err(_) => Held::Set(false),
+                    };
+                }
+                // Nothing is under a file or a path taken out.
+                Some(Node::Set(present)) => return Held::Set(*present && a == *p),
+                None => at = a.parent(),
+            }
+        }
+        Held::Disk(p.clone())
+    }
+
+    /// Takes `p` and everything under it out of the map.
+    fn take_under(&mut self, p: &RelPath) -> Vec<(RelPath, Node)> {
+        let keys: Vec<RelPath> = self.0.keys().filter(|k| k.starts_with(p)).cloned().collect();
+        keys.into_iter().filter_map(|k| self.0.remove_entry(&k)).collect()
+    }
+
+    fn set(&mut self, p: &RelPath, present: bool) {
+        self.take_under(p);
+        self.0.insert(p.clone(), Node::Set(present));
+    }
+
+    /// An inverse moves what is at `from` to `to`, with what is under it.
+    fn moved(&mut self, from: &RelPath, to: &RelPath) {
+        let node = match self.resolve(from) {
+            Held::Disk(on_disk) => Node::At(on_disk),
+            Held::Set(present) => Node::Set(present),
+        };
+        let under = self.take_under(from);
+        self.set(from, false);
+        self.take_under(to);
+        for (k, n) in under {
+            if k == *from {
+                continue;
+            }
+            let rest = &k.as_str()[from.as_str().len()..];
+            if let Ok(k) = RelPath::new(format!("{to}{rest}")) {
+                self.0.insert(k, n);
+            }
+        }
+        self.0.insert(to.clone(), node);
+    }
+}
+
 impl Project {
     pub fn clear_journal(&mut self) {
         self.journal.clear();
     }
 
     /// Simulates replaying `ops.iter().rev()` — the order `apply_inverse`
-    /// actually runs in, for both undo and redo — against a virtual
-    /// overlay of path existence seeded from disk. For each op, checks
-    /// its inverse's preconditions against the overlay (not raw disk),
+    /// actually runs in, for both undo and redo — against an [`Overlay`]
+    /// of the paths the replay moves or writes, over the disk. For each op,
+    /// checks its inverse's preconditions against the overlay (not raw disk),
     /// then applies the inverse's effect to the overlay before moving to
     /// the next op, so a later check sees what an earlier op in this same
     /// replay will have done. Refuses the whole entry at the first op
@@ -82,14 +158,12 @@ impl Project {
             Error::Conflict(format!("{path} {what} (changed outside the app)"))
         };
         let mut differing = Vec::new();
-        let mut overlay: std::collections::HashMap<RelPath, bool> =
-            std::collections::HashMap::new();
-        fn exists(
-            disk: &crate::disk::Disk,
-            overlay: &std::collections::HashMap<RelPath, bool>,
-            p: &RelPath,
-        ) -> bool {
-            overlay.get(p).copied().unwrap_or_else(|| disk.exists(p))
+        let mut overlay = Overlay::default();
+        fn exists(disk: &crate::disk::Disk, overlay: &Overlay, p: &RelPath) -> bool {
+            match overlay.resolve(p) {
+                Held::Disk(at) => disk.exists(&at),
+                Held::Set(present) => present,
+            }
         }
         for op in ops.iter().rev() {
             match op {
@@ -100,14 +174,15 @@ impl Project {
                     if exists(&self.disk, &overlay, from) {
                         return Err(conflict(from, "already exists"));
                     }
-                    overlay.insert(to.clone(), false);
-                    overlay.insert(from.clone(), true);
+                    overlay.moved(to, from);
                 }
                 Op::Created { path } => {
                     if !exists(&self.disk, &overlay, path) {
                         return Err(conflict(path, "no longer exists"));
                     }
-                    if self.disk.is_dir(path) {
+                    if let Held::Disk(at) = overlay.resolve(path)
+                        && self.disk.is_dir(&at)
+                    {
                         // What it holds that postui shows (a folder, a
                         // request file, neither hidden), once this replay
                         // has taken out what the entry put in it: on disk
@@ -117,14 +192,14 @@ impl Project {
                             !super::is_hidden(name) && (is_dir || name.ends_with(".toml"))
                         };
                         let mut held = false;
-                        for e in self.disk.list(path)? {
+                        for e in self.disk.list(&at)? {
                             let Ok(child) = path.join(&e.name) else { continue };
                             held |=
                                 shown(&e.name, e.is_dir) && exists(&self.disk, &overlay, &child);
                         }
                         let inside = format!("{path}/");
-                        held |= overlay.iter().any(|(p, &present)| {
-                            present
+                        held |= overlay.0.iter().any(|(p, node)| {
+                            !matches!(node, Node::Set(false))
                                 && p.as_str()
                                     .strip_prefix(&inside)
                                     // The overlay knows no kind: a name with
@@ -135,7 +210,7 @@ impl Project {
                             return Err(conflict(path, "holds something added since"));
                         }
                     }
-                    overlay.insert(path.clone(), false);
+                    overlay.set(path, false);
                 }
                 Op::Trashed { ticket } => {
                     if !exists(&self.disk, &overlay, &ticket.slot) {
@@ -144,8 +219,7 @@ impl Project {
                     if exists(&self.disk, &overlay, &ticket.original) {
                         return Err(conflict(&ticket.original, "already exists"));
                     }
-                    overlay.insert(ticket.slot.clone(), false);
-                    overlay.insert(ticket.original.clone(), true);
+                    overlay.moved(&ticket.slot, &ticket.original);
                 }
                 Op::Restored { ticket } => {
                     // Known gap, left for #243: a restored directory (a
@@ -165,8 +239,7 @@ impl Project {
                     if exists(&self.disk, &overlay, &ticket.slot) {
                         return Err(conflict(&ticket.slot, "is occupied in the trash"));
                     }
-                    overlay.insert(ticket.original.clone(), false);
-                    overlay.insert(ticket.slot.clone(), true);
+                    overlay.moved(&ticket.original, &ticket.slot);
                 }
                 Op::Text { path, before, after } => {
                     let expect_present = after.is_some();
@@ -176,25 +249,24 @@ impl Project {
                             if expect_present { "no longer exists" } else { "already exists" },
                         ));
                     }
-                    // Compared where this replay first meets the path: after
-                    // that the file holds what an earlier inverse put there,
-                    // which is not on disk yet. A peek, so a change `poll`
-                    // has not read yet is still `poll`'s to read. A file
-                    // that cannot be read is not compared: the inverse
-                    // reads it before it writes (`fs_write_text`) and fails
-                    // there, which keeps the entry on its stack.
-                    if !overlay.contains_key(path)
+                    // Compared in the file on disk that the path stands
+                    // for at this point of the replay, until an earlier
+                    // inverse has written it: after that it holds text that
+                    // is not on disk yet. The difference names that file,
+                    // since its step runs before this replay moves anything.
+                    // A peek, so a change `poll` has not read yet is still
+                    // `poll`'s to read. A file that cannot be read is not
+                    // compared: the inverse reads it before it writes
+                    // (`fs_write_text`) and fails there, which keeps the
+                    // entry on its stack.
+                    if let Held::Disk(at) = overlay.resolve(path)
                         && !written_outside_journal(path)
-                        && let Ok(held) = self.disk.peek(path)
+                        && let Ok(held) = self.disk.peek(&at)
                         && held != *after
                     {
-                        differing.push(Op::Text {
-                            path: path.clone(),
-                            before: after.clone(),
-                            after: held,
-                        });
+                        differing.push(Op::Text { path: at, before: after.clone(), after: held });
                     }
-                    overlay.insert(path.clone(), before.is_some());
+                    overlay.set(path, before.is_some());
                 }
             }
         }
@@ -715,10 +787,53 @@ mod tests {
         assert!(!dir.path().join("requests/main/people").exists());
     }
 
+    /// #286: the redo of a folder rename moves the directory, then writes
+    /// the folder's file at its new path. The file is found where it is
+    /// before the replay, inside the directory the redo moves.
+    #[test]
+    fn redo_of_a_folder_rename_renames_it_again() {
+        let (dir, mut p) = fixture();
+        p.create_folder("main", "Users", None).unwrap();
+        p.rename_folder("main/users", "Accounts").unwrap();
+        let renamed = read(&dir, "requests/main/accounts/.folder.toml").unwrap();
+        assert_replayed(p.undo(), "rename folder");
+        assert!(dir.path().join("requests/main/users/.folder.toml").is_file());
+        assert_replayed(p.redo(), "rename folder");
+        assert_eq!(read(&dir, "requests/main/accounts/.folder.toml").unwrap(), renamed);
+        assert!(!dir.path().join("requests/main/users").exists());
+        assert_replayed(p.undo(), "rename folder");
+        assert_replayed(p.undo(), "create folder");
+        assert!(!dir.path().join("requests/main/users").exists());
+        assert!(!dir.path().join("requests/main/accounts").exists());
+    }
+
+    /// The folder's file changed outside before that redo. The redo takes
+    /// the change back in the file where it is, and the next redo renames
+    /// the folder. Two undos bring the outside text back.
+    #[test]
+    fn a_folder_file_changed_outside_is_taken_back_before_its_rename_is_redone() {
+        let (dir, mut p) = fixture();
+        p.create_folder("main", "Users", None).unwrap();
+        p.rename_folder("main/users", "People").unwrap();
+        let renamed = read(&dir, "requests/main/people/.folder.toml").unwrap();
+        assert_replayed(p.undo(), "rename folder");
+        let left = read(&dir, "requests/main/users/.folder.toml").unwrap();
+        let outside = edit_outside(&dir, "requests/main/users/.folder.toml");
+        assert_took_back(p.redo(), &["requests/main/users/.folder.toml"]);
+        assert_eq!(read(&dir, "requests/main/users/.folder.toml").unwrap(), left);
+        assert!(!dir.path().join("requests/main/people").exists(), "the rename is not redone yet");
+        assert_replayed(p.redo(), "rename folder");
+        assert_eq!(read(&dir, "requests/main/people/.folder.toml").unwrap(), renamed);
+        assert!(!dir.path().join("requests/main/users").exists());
+
+        assert_replayed(p.undo(), "rename folder");
+        assert_replayed(p.undo(), OUTSIDE_LABEL);
+        assert_eq!(read(&dir, "requests/main/users/.folder.toml").unwrap(), outside);
+    }
+
     /// Comment 1283, first case, with nothing changed outside: a folder
-    /// renamed to People, to Users and back to People. One undo, a redo
-    /// that is refused, and then every step beneath undoes, down to the
-    /// create.
+    /// renamed to People, to Users and back to People. One undo, its redo,
+    /// and then every step undoes, down to the create.
     #[test]
     fn a_folder_renamed_back_and_forth_undoes_all_the_way_after_a_redo() {
         let (dir, mut p) = fixture();
@@ -727,8 +842,8 @@ mod tests {
         p.rename_folder("main/people", "Users").unwrap();
         p.rename_folder("main/users", "People").unwrap();
         assert_replayed(p.undo(), "rename folder");
-        // #286: this redo is refused, on main too.
-        assert!(p.redo().is_err());
+        assert_replayed(p.redo(), "rename folder");
+        assert_replayed(p.undo(), "rename folder");
         assert_replayed(p.undo(), "rename folder");
         assert_replayed(p.undo(), "rename folder");
         assert!(dir.path().join("requests/main/users/.folder.toml").is_file());
