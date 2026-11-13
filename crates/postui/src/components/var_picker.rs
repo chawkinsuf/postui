@@ -420,6 +420,15 @@ impl VarPickerState {
         stepped
     }
 
+    /// The row the picker's Manage control opens (#295): the selector's,
+    /// in SelectOption mode. The insert picker has none.
+    pub fn manage_target(&self) -> Option<&str> {
+        match &self.mode {
+            PickerMode::SelectOption { selector, .. } => Some(selector),
+            PickerMode::Insert => None,
+        }
+    }
+
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -467,7 +476,8 @@ impl VarPickerState {
                 format!("Select \u{2014} {selector}")
             }
         };
-        paint::text(frame.buffer_mut(), area.x + 2, title_y, &title, theme.text, theme.panel, true);
+        let manage = self.manage_target().is_some();
+        super::modal::draw_title(frame.buffer_mut(), hits, theme, hovered, area, &title, manage);
 
         // Only Insert mode has a typed filter field: what's typed there can
         // become a new variable's name. SelectOption mode's list starts

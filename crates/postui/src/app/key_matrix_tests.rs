@@ -1623,6 +1623,11 @@ fn every_painted_keycap_resolves_to_its_chip() {
                             )
                     }
                     Key::OrRow(named, a) => shown == *named || honest(&app, a, &shown),
+                    // Caught over the dialog by its keymap binding, a
+                    // ctrl/alt combo (`App::handle_key_routed`).
+                    Key::Chord(a) => {
+                        app.keymap.ctrl_alt_combo_for_action(a).is_some_and(|c| shown == glyphs(&c))
+                    }
                     Key::Named(_) | Key::Nav(_) | Key::Answer(_) | Key::Pick => continue,
                 };
                 assert!(

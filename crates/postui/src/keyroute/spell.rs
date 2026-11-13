@@ -15,6 +15,10 @@ pub enum Key {
     /// Spelled from what runs this action (`spell`). The chip's own action
     /// may be another, or none: the form's `u undo` hint.
     Of(Action),
+    /// The keymap's ctrl or alt combo for this action, none without one:
+    /// a key caught over a dialog, which keeps its other keys (the edit
+    /// dialogs' Manage key, #295).
+    Chord(Action),
     /// Two actions on one chip (`alt+←→ tabs`): both spelled, a shared
     /// prefix merged.
     Pair(Action, Action),
@@ -159,6 +163,7 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
     let vim = at.profile == KeyProfile::Vim;
     Some(match key {
         Key::Of(a) => glyphs(&spell(at, a, keymap)?),
+        Key::Chord(a) => glyphs(&keymap.ctrl_alt_combo_for_action(a)?),
         Key::Pair(a, b) => pair(&glyphs(&spell(at, a, keymap)?), &glyphs(&spell(at, b, keymap)?)),
         Key::PairOr(a, b) => match (spell(at, a, keymap), spell(at, b, keymap)) {
             (Some(a), Some(b)) => pair(&glyphs(&a), &glyphs(&b)),

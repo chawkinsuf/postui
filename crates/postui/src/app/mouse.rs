@@ -2427,6 +2427,10 @@ impl App {
                 false
             }
             Hit::ModalRemove => self.remove_from_value_popup(),
+            Hit::ModalManage => match self.modals.open_in_manage() {
+                Some(res) => self.apply_modal_result(res),
+                None => false,
+            },
             // The painted buttons dispatch the modal's own cancel/confirm
             // directly; a synthesized Esc would only close the field now.
             // Message's only button ("OK") also maps to `ModalConfirm` —

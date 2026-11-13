@@ -49,6 +49,7 @@ icons! {
     FOLDER / FOLDER_PILL = "\u{F024B}", "nf-md-folder";
     CHECKBOX / CHECKBOX_PILL = "\u{F0132}", "nf-md-checkbox_marked";
     CHECKBOX_OFF / CHECKBOX_OFF_PILL = "\u{F0131}", "nf-md-checkbox_blank_outline";
+    OPEN_IN_NEW / OPEN_IN_NEW_PILL = "\u{F03CC}", "nf-md-open_in_new";
 }
 
 #[cfg(test)]

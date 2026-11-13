@@ -631,7 +631,7 @@ impl App {
     }
 
     /// Puts `row` under its own list's cursor, live or parked (spec R5).
-    fn place_list_row(&mut self, row: ListRow) {
+    pub(super) fn place_list_row(&mut self, row: ListRow) {
         match row {
             ListRow::Env(n) => self.select_list_row(ManageTab::Environments, &n),
             ListRow::Space(n) => self.select_list_row(ManageTab::Spaces, &n),

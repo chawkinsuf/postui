@@ -364,6 +364,10 @@ pub enum Hit {
     /// The value popup's "Remove" button: deletes the stored value at the
     /// chosen Write-to scope, so the next wider scope shows through.
     ModalRemove,
+    /// An edit dialog's "󰏌 Manage" on its title row (#295): closes the
+    /// dialog and opens its variable or selector in Manage
+    /// (`Modal::manage_target`).
+    ModalManage,
     /// The response header strip's jq (nf-md-filter) icon action: opens
     /// the jq filter bar and focuses it, exactly as focusing it any other
     /// way does. Registered only while `Response::jq_available()`.
