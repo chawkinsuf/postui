@@ -40868,3 +40868,55 @@ fn a_bare_key_bound_to_manage_stays_the_dialogs() {
     assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { focus: 1, .. })));
     assert_eq!(app.screen, Screen::Main);
 }
+
+/// A `keys.toml` that binds the Manage key only to keys with no ctrl or
+/// alt names no Manage key over a dialog, in the footer or the control's
+/// hint, and the key leaves the dialog alone; a ctrl or alt binding beside
+/// it is the one named, and it works.
+#[test]
+fn over_a_dialog_only_a_ctrl_or_alt_manage_key_is_named_and_works() {
+    use crate::components::varmanager::VmDetail;
+    let hint = |app: &App| {
+        crate::hint::hint_for(&Hit::ModalManage, &app.keymap, &crate::hint::HintCtx::default())
+    };
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.keymap.apply_overrides("manage_open = [\"f9\"]\n").unwrap();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let footer = footer_text(&mut app);
+    assert!(!footer.contains("manage"), "{footer}");
+    assert_eq!(hint(&app).as_deref(), Some("Open this in Manage"));
+    app.handle_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE));
+    assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })), "the dialog stays");
+    assert_eq!(app.screen, Screen::Main);
+
+    app.keymap.apply_overrides("manage_open = [\"f9\", \"ctrl+o\"]\n").unwrap();
+    let footer = footer_text(&mut app);
+    assert!(footer.contains("^O manage"), "{footer}");
+    assert_eq!(hint(&app).as_deref(), Some("Open this in Manage \u{b7} ^O"));
+    app.handle_key(ctrl('o'));
+    assert!(manage_shows(&app, VmDetail::Var("base_url".into())));
+}
+
+/// A Manage input that refuses to close stops the Manage key over a
+/// dialog: the screen stays where it was and the dialog comes back with
+/// its typing, as it does for any refused confirm.
+#[test]
+fn a_refused_manage_input_keeps_the_dialog_and_its_typing() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top_mut() else {
+        panic!("the value popup")
+    };
+    fields[0].input = LineInput::new("typed, never confirmed");
+    app.handle_key(alt('r'));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the value popup comes back")
+    };
+    assert_eq!(fields[0].input.text(), "typed, never confirmed");
+    assert_eq!(app.manage.tab, ManageTab::Settings);
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+}

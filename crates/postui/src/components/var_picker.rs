@@ -420,9 +420,15 @@ impl VarPickerState {
         stepped
     }
 
-    /// `manage`: the title row carries the Manage control
-    /// (`Modal::manage_target`).
-    #[allow(clippy::too_many_arguments)]
+    /// The row the picker's Manage control opens (#295): the selector's,
+    /// in SelectOption mode. The insert picker has none.
+    pub fn manage_target(&self) -> Option<&str> {
+        match &self.mode {
+            PickerMode::SelectOption { selector, .. } => Some(selector),
+            PickerMode::Insert => None,
+        }
+    }
+
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -431,7 +437,6 @@ impl VarPickerState {
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
         t: f32,
-        manage: bool,
     ) {
         let width = 60.min(screen.width);
         // Insert-mode chrome: 1 pad + 1 title + 1 ring-margin gap + 3-row
@@ -471,6 +476,7 @@ impl VarPickerState {
                 format!("Select \u{2014} {selector}")
             }
         };
+        let manage = self.manage_target().is_some();
         super::modal::draw_title(frame.buffer_mut(), hits, theme, hovered, area, &title, manage);
 
         // Only Insert mode has a typed filter field: what's typed there can
@@ -954,7 +960,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter insert"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
@@ -976,7 +982,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("base"));
         assert!(content.contains("api root"));
@@ -996,7 +1002,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("base api root = x"), "{content}");
     }
@@ -1015,7 +1021,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
         let field_area = Rect {
@@ -1045,7 +1051,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
         let bar = buffer[(row0.x, row0.y)].clone();
@@ -1074,15 +1080,7 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
-                p.draw(
-                    f,
-                    f.area(),
-                    &theme,
-                    &mut hits,
-                    Some(&crate::hit::Hit::VarPickerRow(1)),
-                    1.0,
-                    false,
-                )
+                p.draw(f, f.area(), &theme, &mut hits, Some(&crate::hit::Hit::VarPickerRow(1)), 1.0)
             })
             .unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
@@ -1177,7 +1175,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
         let row2 = hits.rect_of(&crate::hit::Hit::VarPickerRow(2)).unwrap();
@@ -1215,7 +1213,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -1283,7 +1281,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("add new option"), "{content}");
     }
@@ -1313,7 +1311,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let buf = terminal.backend().buffer();
         let at = find_on_row(buf, row, "本");
@@ -1332,7 +1330,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let buf = terminal.backend().buffer();
         for x in row.right()..buf.area.right() {
@@ -1350,7 +1348,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let buf = terminal.backend().buffer();
         let at = find_on_row(buf, row, "本");
@@ -1395,7 +1393,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0, false)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 

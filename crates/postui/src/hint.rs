@@ -131,6 +131,12 @@ pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
         Source::Of(action) => {
             Some(describe_action(&action, keymap, !shows_its_own_keycap(hit), ctx.spell))
         }
+        Source::Keycap(s, key) => {
+            Some(match crate::keyroute::spell::keycap(&key, ctx.spell, keymap) {
+                Some(key) => format!("{s} \u{b7} {key}"),
+                None => s,
+            })
+        }
     }
 }
 
@@ -162,6 +168,8 @@ enum Source {
     Keyed(String, Action),
     /// A control that dispatches `action`: described like the palette does.
     Of(Action),
+    /// A fixed line, then `key` as its footer chip paints it.
+    Keycap(String, crate::keyroute::spell::Key),
 }
 
 fn text(s: &str) -> Option<Source> {
@@ -603,9 +611,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             Some(ExtractDestination::ActiveEnv) => "Remove this environment's value",
             _ => "Remove the project default value",
         }),
-        Hit::ModalManage => {
-            Some(Source::Keyed("Open this in Manage".to_string(), Action::OpenManage { tab: None }))
-        }
+        Hit::ModalManage => Some(Source::Keycap(
+            "Open this in Manage".to_string(),
+            crate::components::modal::MANAGE_KEY,
+        )),
         Hit::TipEdit(_) => text(match ctx.tip_edit {
             TipEditVerb::Value => "Edit this variable's value",
             TipEditVerb::Option => "Choose this selector's option",

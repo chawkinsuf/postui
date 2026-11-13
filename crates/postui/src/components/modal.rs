@@ -887,12 +887,7 @@ impl Modal {
             | Modal::Prompt {
                 kind: PromptKind::SecretValue { name, then_send: false, .. }, ..
             } => Some(name),
-            Modal::VarPicker(state) => match &state.mode {
-                crate::components::var_picker::PickerMode::SelectOption { selector, .. } => {
-                    Some(selector)
-                }
-                crate::components::var_picker::PickerMode::Insert => None,
-            },
+            Modal::VarPicker(state) => state.manage_target(),
             _ => None,
         }
     }
@@ -924,27 +919,40 @@ pub(crate) fn draw_title(
     if !manage {
         return;
     }
-    // In the accent text the value popup's "✕ remove" uses.
     let rect = Rect {
         x: area.right().saturating_sub(2 + w).max(area.x),
         y: area.y + 1,
         width: w.min(area.width),
         height: 1,
     };
-    let hit = crate::hit::Hit::ModalManage;
+    accent_control(buf, hits, theme, hovered, rect, &label, crate::hit::Hit::ModalManage);
+}
+
+/// A one-row control in accent text, `hit` when clicked, its colours
+/// swapped while hovered: the value popup's "✕ remove" and the Manage
+/// control. `label` is clipped to `rect`.
+fn accent_control(
+    buf: &mut ratatui::buffer::Buffer,
+    hits: &mut crate::hit::HitMap,
+    theme: &Theme,
+    hovered: Option<&crate::hit::Hit>,
+    rect: Rect,
+    label: &str,
+    hit: crate::hit::Hit,
+) {
     let style = if hovered == Some(&hit) {
         Style::default().bg(theme.accent).fg(theme.on_accent)
     } else {
         Style::default().bg(theme.panel).fg(theme.accent)
     };
-    buf.set_string(rect.x, rect.y, crate::ui::clip(&label, rect.width), style);
+    buf.set_string(rect.x, rect.y, crate::ui::clip(label, rect.width), style);
     hits.register(rect, hit);
 }
 
-/// The Manage control's key: the one that opens Manage (#295), the same
-/// in both profiles. Over an edit dialog it opens the dialog's row
-/// (`App::handle_key_routed`).
-const MANAGE_KEY: Key = Key::Of(Action::OpenManage { tab: None });
+/// The Manage control's key: a ctrl or alt key that opens Manage (#295),
+/// the same in both profiles. Over an edit dialog it opens the dialog's
+/// row (`App::handle_key_routed`).
+pub(crate) const MANAGE_KEY: Key = Key::Chord(Action::OpenManage { tab: None });
 
 /// The Manage control's text: the open-in-new icon and the screen's name.
 fn manage_label() -> String {
@@ -3374,7 +3382,7 @@ impl ModalStack {
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::FilePicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
-            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t, manage),
+            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::NewProject { name, path, on_path, .. } => {
                 let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
@@ -3668,12 +3676,6 @@ impl ModalStack {
                     let (_, stored) = chosen_scope(fields, scope_values);
                     if stored {
                         let label = "\u{2715} remove";
-                        let remove_hit = crate::hit::Hit::ModalRemove;
-                        let style = if hovered == Some(&remove_hit) {
-                            Style::default().bg(theme.accent).fg(theme.on_accent)
-                        } else {
-                            Style::default().bg(theme.panel).fg(theme.accent)
-                        };
                         let w = crate::ui::cells(label) as u16;
                         let rect = Rect {
                             x: (field_x + field_w).saturating_sub(w),
@@ -3681,8 +3683,8 @@ impl ModalStack {
                             width: w,
                             height: 1,
                         };
-                        frame.buffer_mut().set_string(rect.x, rect.y, label, style);
-                        hits.register(rect, remove_hit);
+                        let hit = crate::hit::Hit::ModalRemove;
+                        accent_control(frame.buffer_mut(), hits, theme, hovered, rect, label, hit);
                     }
                 }
             }

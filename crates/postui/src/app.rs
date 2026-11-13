@@ -12782,10 +12782,11 @@ impl App {
             // The key that opens Manage opens an edit dialog's row there
             // (#295), as its Manage control does. It is a keymap binding,
             // which the modal's own key handler doesn't see, so it is
-            // caught here; only as a ctrl/alt combo, like paste's (1b), so
-            // the dialog keeps its bare keys (Tab, Enter, letters). A
+            // caught here; only as a ctrl/alt combo, so the dialog keeps
+            // its other keys (Tab, Enter, letters). The chip and the
+            // control's hint name only such a combo (`Key::Chord`). A
             // dialog with no row swallows it below, as before.
-            if modified
+            if combo.ctrl_or_alt()
                 && global == Some(Action::OpenManage { tab: None })
                 && let Some(res) = self.modals.open_in_manage()
             {

@@ -139,6 +139,11 @@ impl KeyCombo {
         };
         Self { code, modifiers: mods }
     }
+
+    /// Whether the combo holds ctrl or alt.
+    pub fn ctrl_or_alt(&self) -> bool {
+        self.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    }
 }
 
 /// Folds SUPER combos — which only kitty-protocol terminals report, and
@@ -690,6 +695,16 @@ impl Keymap {
         let pool: Vec<&KeyCombo> =
             if modified.is_empty() { combos } else { modified.into_iter().copied().collect() };
         pool.into_iter().min_by_key(|c| format_combo(c))
+    }
+
+    /// [`Self::combo_for_action`] among the combos that hold ctrl or alt
+    /// ([`KeyCombo::ctrl_or_alt`]); `None` when no such combo is bound.
+    pub fn ctrl_alt_combo_for_action(&self, target: &Action) -> Option<String> {
+        self.bindings
+            .iter()
+            .filter(|(combo, action)| *action == target && combo.ctrl_or_alt())
+            .map(|(combo, _)| format_combo(combo))
+            .min()
     }
 
     /// Every combo bound to `action_id`, in `keys.toml`'s input grammar
