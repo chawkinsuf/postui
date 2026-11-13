@@ -2748,7 +2748,7 @@ fn first_non_blank(text: &str) -> usize {
 /// before `col` (or the line start), as `viewport_window`'s does, so on
 /// an indexed raw line it segments `O(COL_MARK_STEP)` chars however far
 /// the row is scrolled (its caller still copies the line's text).
-fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
+pub(crate) fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
     let (from_byte, from_char, mut w) = from;
     for g in crate::ui::char_graphemes(&text[from_byte..]) {
         w += g.width;
@@ -2779,7 +2779,7 @@ fn cell_span(text: &str, col: usize, from: ColMark) -> (usize, usize) {
 /// is segmented from the end; only its char offset needs the line, as a
 /// plain char count (no segmenting, as cheap as the char count it took
 /// before #45).
-fn last_grapheme(text: &str) -> usize {
+pub(crate) fn last_grapheme(text: &str) -> usize {
     crate::ui::graphemes(text).next_back().map_or(0, |(byte, _, _)| text[..byte].chars().count())
 }
 
@@ -5527,7 +5527,7 @@ type ColMark = (usize, usize, usize);
 /// one past char `reach` — all that widening ranges whose finite ends lie
 /// by `reach` needs. `None` for ASCII text, where every char is a
 /// grapheme. One walk per row, however many ranges it widens.
-fn grapheme_edges(text: &str, reach: usize) -> Option<Vec<usize>> {
+pub(crate) fn grapheme_edges(text: &str, reach: usize) -> Option<Vec<usize>> {
     if text.is_ascii() {
         return None;
     }
@@ -5549,7 +5549,10 @@ fn grapheme_edges(text: &str, reach: usize) -> Option<Vec<usize>> {
 /// a grapheme makes ratatui paint each part alone, dropping a zero-width
 /// tail (a heart's selector, an accent) and shifting the row. An end
 /// already on an edge, or past the text, stays as it is.
-fn whole_graphemes(edges: Option<&[usize]>, (from, to): (usize, usize)) -> (usize, usize) {
+pub(crate) fn whole_graphemes(
+    edges: Option<&[usize]>,
+    (from, to): (usize, usize),
+) -> (usize, usize) {
     let Some(edges) = edges else {
         return (from, to);
     };

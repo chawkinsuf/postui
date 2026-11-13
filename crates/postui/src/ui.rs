@@ -1,5 +1,6 @@
 use crate::app::{App, Screen};
 use crate::components::footer::FooterChip;
+use crate::components::tip_text::{TipLine, TipText};
 use crate::components::{Component, DrawCtx};
 use crate::hit::Hit;
 use crate::layout::{PaneId, compute_layout};
@@ -381,17 +382,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 revealed,
                 app.hovered.as_ref(),
                 &mut app.hits,
+                &mut app.tip_text,
             );
             app.drawn_tip = Some(tip);
         }
         None => {
-            // No tip this frame: nothing to hold, nothing revealed. A hold
-            // that outlived its tip (the token left the screen under a
-            // resting pointer) would otherwise re-raise it, secret and
-            // all, the moment the token came back.
+            // No tip this frame: nothing to hold, nothing revealed, nothing
+            // selected. A hold that outlived its tip (the token left the
+            // screen under a resting pointer) would otherwise re-raise it,
+            // secret and all, the moment the token came back.
             app.drawn_tip = None;
             app.tip_held = false;
             app.tip_revealed = None;
+            app.tip_text.clear();
         }
     }
 }
@@ -431,7 +434,8 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 /// below and there is more room above, cut to fit the roomier side so it
 /// never covers the token, and clamped to stay inside `screen`; nothing
 /// is drawn when not even one row of each section fits. Registers the
-/// panel and its pills in `hits`.
+/// panel and its pills in `hits`, and hands the rows it painted to
+/// `selection`, whose mouse selection it paints over them (#294).
 #[allow(clippy::too_many_arguments)]
 fn draw_var_tooltip(
     frame: &mut Frame,
@@ -442,6 +446,7 @@ fn draw_var_tooltip(
     revealed: bool,
     hovered: Option<&crate::hit::Hit>,
     hits: &mut crate::hit::HitMap,
+    selection: &mut TipText,
 ) {
     use crate::hit::Hit;
     use ratatui::layout::Rect;
@@ -471,17 +476,22 @@ fn draw_var_tooltip(
     // structure and widths whatever mix of narrow, wide, or control
     // characters the secret holds, so reveal / hide moves nothing.
     let masked = info.secret && !revealed;
-    let mut value_lines: Vec<String> = match &info.value {
+    let mut value_lines: Vec<TipLine> = match &info.value {
         Some(value) => wrap_cells(value, top_w)
             .into_iter()
-            .map(|row| if masked { "\u{25cf}".repeat(cells(&row).max(1)) } else { row })
+            .enumerate()
+            .map(|(i, row)| TipLine {
+                text: if masked { "\u{25cf}".repeat(cells(&row).max(1)) } else { row },
+                // A value wraps mid-text: its rows copy back as one.
+                join: if i == 0 { "\n" } else { "" },
+            })
             .collect(),
         None => Vec::new(),
     };
     let source = info.source.label();
     // The descriptions stack, each wrapped on its own and starting a row
     // of its own.
-    let mut descs: Vec<Vec<String>> = info
+    let mut descs: Vec<Vec<TipLine>> = info
         .descriptions
         .iter()
         .map(|d| wrap_words(d, wrap_w))
@@ -522,7 +532,7 @@ fn draw_var_tooltip(
     }
     let desc_lines = descs.concat();
     // Display cells throughout (a wide glyph is one char but two cells).
-    let widest = |lines: &[String]| lines.iter().map(|l| cells(l)).max().unwrap_or(0);
+    let widest = |lines: &[TipLine]| lines.iter().map(|l| cells(&l.text)).max().unwrap_or(0);
     // At least one cell, as a mask always shows one dot: an empty value
     // revealed keeps its masked footprint (and the guard below its tip).
     let top_text_w = if has_value { widest(&value_lines) } else { name_w }.max(1);
@@ -544,6 +554,7 @@ fn draw_var_tooltip(
     // top row's text before them: no tip at all, rather than pills painted
     // over the border (or placed off a u16 underflow).
     if (width as usize) < 6 + pills_w || side_room < height {
+        selection.clear();
         return;
     }
     let y = if height <= below_room { tip.anchor.bottom() } else { tip.anchor.y - height };
@@ -552,14 +563,19 @@ fn draw_var_tooltip(
     let buf = frame.buffer_mut();
     crate::paint::floating_panel(buf, area, screen, theme);
     let inner = width.saturating_sub(4) as usize;
+    // Every row as painted, for the mouse selection.
+    let mut painted: Vec<TipLine> = Vec::with_capacity(rows.len());
     for (i, tip_row) in rows.iter().enumerate() {
         let row = y + 1 + i as u16;
         // The top row keeps room for the pills after its text.
         let room = if i == 0 { inner.saturating_sub(1 + pills_w) } else { inner };
-        let (text, fg) = match tip_row {
+        let (line, fg) = match tip_row {
             TipRow::Value(line) => (line, theme.text),
             TipRow::Description(line) => (line, theme.text_muted),
-            TipRow::Gap => continue,
+            TipRow::Gap => {
+                painted.push(TipLine::new(""));
+                continue;
+            }
             TipRow::Name => {
                 // The name in the token's tint (so the panel reads as
                 // that token's), the source muted after it — cut from the
@@ -575,21 +591,41 @@ fn draw_var_tooltip(
                     theme.panel,
                     true,
                 );
+                let mut shown = TipLine::new(name);
                 if source_room > 0 {
+                    let source = ellipsize(&source, source_room);
                     crate::paint::text(
                         buf,
                         name_end + 2,
                         row,
-                        &ellipsize(&source, source_room),
+                        &source,
                         theme.text_muted,
                         theme.panel,
                         false,
                     );
+                    shown.text = format!("{}  {source}", shown.text);
                 }
+                painted.push(shown);
                 continue;
             }
         };
-        crate::paint::text(buf, x + 2, row, &ellipsize(text, room), fg, theme.panel, false);
+        let text = ellipsize(&line.text, room);
+        crate::paint::text(buf, x + 2, row, &text, fg, theme.panel, false);
+        painted.push(TipLine { text, join: line.join });
+    }
+    // The selection, over the rows as painted: a frame whose rows differ
+    // from the last one's drops it.
+    selection.show((x + 2, y + 1), painted);
+    for i in 0..rows.len() {
+        let Some((from, to)) = selection.selected_cells(i) else {
+            continue;
+        };
+        let row = y + 1 + i as u16;
+        for col in from..to {
+            if let Some(cell) = buf.cell_mut((x + 2 + col as u16, row)) {
+                cell.set_bg(theme.selection);
+            }
+        }
     }
     // The panel first: later registrations win a hit lookup, so the
     // pills painted next sit on top of it.
@@ -608,10 +644,10 @@ fn draw_var_tooltip(
 
 /// One row of the variable tooltip, top to bottom.
 enum TipRow {
-    Value(String),
+    Value(TipLine),
     /// The variable's name and where its value came from.
     Name,
-    Description(String),
+    Description(TipLine),
     /// The blank row between two sections.
     Gap,
 }
@@ -647,20 +683,24 @@ pub(crate) fn one_line(s: &str) -> String {
 /// Prose `s` wrapped into lines of at most `max` display cells, breaking
 /// between words; whitespace folds as [`one_line`] folds it. A word wider
 /// than a line is hard-broken as [`wrap_cells`] does. A blank `s` yields
-/// no lines at all.
-fn wrap_words(s: &str, max: usize) -> Vec<String> {
+/// no lines at all. Each row after the first joins the one above with the
+/// space the wrap took, or with nothing inside a word broken across rows.
+fn wrap_words(s: &str, max: usize) -> Vec<TipLine> {
     let mut lines = Vec::new();
-    let mut line = String::new();
-    for piece in s.split_whitespace().flat_map(|word| wrap_cells(word, max)) {
-        if !line.is_empty() && cells(&line) + 1 + cells(&piece) > max {
-            lines.push(std::mem::take(&mut line));
+    let mut line = TipLine::new("");
+    for word in s.split_whitespace() {
+        for (k, piece) in wrap_cells(word, max).into_iter().enumerate() {
+            if !line.text.is_empty() && cells(&line.text) + 1 + cells(&piece) > max {
+                let join = if k == 0 { " " } else { "" };
+                lines.push(std::mem::replace(&mut line, TipLine { text: String::new(), join }));
+            }
+            if !line.text.is_empty() {
+                line.text.push(' ');
+            }
+            line.text.push_str(&piece);
         }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(&piece);
     }
-    if !line.is_empty() {
+    if !line.text.is_empty() {
         lines.push(line);
     }
     lines
@@ -668,11 +708,11 @@ fn wrap_words(s: &str, max: usize) -> Vec<String> {
 
 /// Cuts `lines` to at most `rows`, the last survivor ellipsized (within
 /// `max` cells) to say the rest is missing.
-fn cut_rows(lines: &mut Vec<String>, rows: usize, max: usize) {
+fn cut_rows(lines: &mut Vec<TipLine>, rows: usize, max: usize) {
     if lines.len() > rows {
         lines.truncate(rows);
         if let Some(last) = lines.last_mut() {
-            *last = format!("{}\u{2026}", take_cells(last, max.saturating_sub(1)));
+            last.text = format!("{}\u{2026}", take_cells(&last.text, max.saturating_sub(1)));
         }
     }
 }
@@ -1250,7 +1290,18 @@ mod tests {
         assert_eq!(wrap_cells(&format!("{family}{family}"), 3), vec![family, family]);
         let heart = "\u{2764}\u{fe0f}";
         assert_eq!(wrap_cells(&heart.repeat(3), 3), vec![heart; 3]);
-        assert_eq!(wrap_words(&format!("{heart} {heart}"), 4), vec![heart, heart]);
+        let texts = |lines: Vec<TipLine>| lines.into_iter().map(|l| l.text).collect::<Vec<_>>();
+        assert_eq!(texts(wrap_words(&format!("{heart} {heart}"), 4)), vec![heart, heart]);
+    }
+
+    /// A description's rows join back as the prose read: the space a wrap
+    /// took between two words, nothing inside a word too wide for a row
+    /// (#294).
+    #[test]
+    fn wrapped_words_join_back_as_the_prose_read() {
+        let lines = wrap_words("ab cd  efghijk", 5);
+        let rows: Vec<(&str, &str)> = lines.iter().map(|l| (l.text.as_str(), l.join)).collect();
+        assert_eq!(rows, vec![("ab cd", "\n"), ("efghi", " "), ("jk", "")]);
     }
 
     /// No room, no text: not even the `…`, which would take a cell the
@@ -1354,6 +1405,7 @@ mod tests {
                     revealed,
                     None,
                     &mut hits,
+                    &mut TipText::default(),
                 )
             })
             .unwrap();
