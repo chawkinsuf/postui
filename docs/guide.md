@@ -50,8 +50,8 @@ Params, Vars and Body:
   it into the table so you can change its value. A few, like `Host`, belong to
   the HTTP client and can't be changed.
 - **Vars** sets values for this request alone, and lists every variable the
-  request uses, the project's default headers' included, with the value it
-  has now.
+  request uses, including those in the project default headers it sends,
+  with the value it has now.
 - **Body** is a JSON editor that can format or minify the body, or open it in
   your `$EDITOR`.
 

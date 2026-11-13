@@ -24,8 +24,8 @@ Small improvements for variables and the project's default headers.
 
 ### Fixed
 
-- On the Headers tab, a project default `Accept` or `Content-Type` header is
-  no longer listed together with postui's own, struck through.
+- On the Headers tab, postui's own `Accept` or `Content-Type` is no longer
+  listed, struck through, beside a project default header of the same name.
 
 ## [0.4.0] - 2026-11-12
 
