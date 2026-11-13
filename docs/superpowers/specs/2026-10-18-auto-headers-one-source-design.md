@@ -250,7 +250,8 @@ first, so `https:///host` has a `Host` row like the wire does.
   there. A second type for so little seemed worse.
 - ~~Unsent auto and client rows are in the list but hidden by the editor
   (R5), so #20's change only touches the draw.~~ Withdrawn by task #57:
-  the editor draws them struck through (R5 as amended).
+  the editor draws them struck through (R5 as amended). Task #293 leaves
+  out an unsent auto row that an enabled project default names (R5).
 - `HeaderOrigin::Request { row }` carries the table index for R3b,
   rather than the editor matching rows by name or by order.
 - ~~R3b's note wording: `not sent · the client sets Host`.~~ Replaced
