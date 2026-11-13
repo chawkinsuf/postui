@@ -88,8 +88,11 @@ A **selector** bundles several variables into named options, so you can switch
 them together, such as a region that sets both a host and a key. Its options
 can differ per environment or be shared by all.
 
-In the editor, hovering or clicking a `{{token}}` shows its value and where it
-comes from, and selected text can be turned into a new variable.
+In the editor, hovering or clicking a `{{token}}` opens a tip with its value
+and where it comes from, and selected text can be turned into a new variable.
+The tip's text can be selected with the mouse and copied. A token's dialog for
+a declared variable's value or a selector's option has a Manage control that
+opens that variable or selector on the Manage screen.
 
 ## The response
 

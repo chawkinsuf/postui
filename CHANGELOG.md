@@ -4,6 +4,29 @@ Notable changes to postui, newest first. Versions follow
 [Semantic Versioning](https://semver.org/); before 1.0, a release may still
 change the project file format.
 
+## [0.4.1] - 2026-11-13
+
+Small improvements for variables and the project's default headers.
+
+### Added
+
+- The text of a `{{token}}`'s tip can be selected with the mouse (a
+  double click takes a word), and ctrl+c copies it. It copies what the tip
+  shows, so a hidden secret copies as dots.
+- A `{{token}}`'s dialog for a declared variable's value or a selector's
+  option has a Manage control (or `alt+r`) that opens that variable or
+  selector in Manage.
+
+### Changed
+
+- The Vars tab also lists the variables in the project's default headers
+  that the request sends.
+
+### Fixed
+
+- On the Headers tab, a project default `Accept` or `Content-Type` header is
+  no longer listed together with postui's own, struck through.
+
 ## [0.4.0] - 2026-11-12
 
 Request folders can now be made, renamed and deleted in the sidebar, and
