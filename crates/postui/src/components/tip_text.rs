@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 
 use super::response::{grapheme_at_col, grapheme_edges, last_grapheme, whole_graphemes};
-use crate::text::mouse::{Span, grow_by_words, word_at};
+use crate::text::mouse::{Span, grow_by_words, sweep, word_at};
 use crate::text::{Lines, Pos};
 
 /// One painted row of the tip: its text as painted, and what a copy puts
@@ -114,12 +114,9 @@ impl TipText {
         true
     }
 
-    /// A sweep to the pointer, as the response view's
-    /// (`Response::drag_selection_to`): at the ragged edges the pointer
-    /// reads as a boundary, so a downward sweep onto a row's first cell
-    /// ends at the end of the row above, and an upward sweep past a row's
-    /// end starts at the start of the row below. Back on the anchor, no
-    /// selection. After a double click it grows by whole words.
+    /// A sweep to the pointer, by the response view's rules
+    /// ([`crate::text::mouse::sweep`]). After a double click it grows by
+    /// whole words.
     pub fn drag_to(&mut self, x: u16, y: u16) -> bool {
         let Some(head) = self.cell_at(x, y) else {
             return false;
@@ -132,19 +129,14 @@ impl TipText {
         let Some(anchor) = self.anchor else {
             return false;
         };
-        let disp_col = self.disp_col(x);
-        let past_end =
-            |row: usize| grapheme_at_col(&self.lines[row].text, disp_col, (0, 0, 0)).is_none();
-        if head.col == 0 && head.row > anchor.row && (disp_col == 0 || past_end(head.row)) {
-            let row = head.row - 1;
-            self.sel = Some((anchor, Pos::new(row, last_grapheme(&self.lines[row].text))));
-            return true;
-        }
-        if head.row < anchor.row && !self.lines[head.row].text.is_empty() && past_end(head.row) {
-            self.sel = Some((anchor, Pos::new(head.row + 1, 0)));
-            return true;
-        }
-        self.sel = (head != anchor).then_some((anchor, head));
+        let rows = &self.lines;
+        self.sel = sweep(
+            anchor,
+            head,
+            self.disp_col(x),
+            |row, col| grapheme_at_col(&rows[row].text, col, (0, 0, 0)).is_some(),
+            |row| last_grapheme(&rows[row].text),
+        );
         true
     }
 
@@ -183,7 +175,8 @@ impl TipText {
     }
 
     /// The selected text: each row's part as painted, joined as the rows
-    /// join ([`TipLine::join`]). `None` without a selection.
+    /// join ([`TipLine::join`]). `None` without a selection, or when it
+    /// covers no text (a sweep ended on a blank row it started on).
     pub fn selected_text(&self) -> Option<String> {
         let (a, b) = self.sel?;
         let (s, e) = (a.min(b), a.max(b));
@@ -196,7 +189,7 @@ impl TipText {
                 out.extend(line.text.chars().skip(from).take(to - from));
             }
         }
-        Some(out)
+        (!out.is_empty()).then_some(out)
     }
 }
 
@@ -260,6 +253,15 @@ mod tests {
         t.begin_at(11, 6);
         t.drag_to(30, 5);
         assert_eq!(t.selected_text().as_deref(), Some("de"), "up past a row's end");
+    }
+
+    #[test]
+    fn a_sweep_from_a_blank_row_onto_the_next_rows_first_cell_selects_nothing() {
+        let mut t = tip(&[("abc", "\n"), ("", "\n"), ("def", "\n")]);
+        t.begin_at(10, 6);
+        t.drag_to(10, 7);
+        assert_eq!(t.selected_text(), None);
+        assert_eq!(t.selected_cells(1), None);
     }
 
     #[test]

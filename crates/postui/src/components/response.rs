@@ -4204,50 +4204,26 @@ impl Response {
         let Some(anchor) = view.sel_anchor else {
             return false;
         };
-        // A drag's head is a boundary at the ragged edges: a downward
-        // sweep whose pointer sits on a row's first cell stops at the
-        // boundary *before* that char — the selection ends at the end of
-        // the line above instead of grabbing the row's first char — and
-        // an upward sweep whose pointer sits past a row's end starts at
-        // the boundary *after* its last char — the selection starts at
-        // the start of the row below instead of grabbing that last char.
-        // In between, the head cell is the sweep's leading edge and is
-        // included: down-drags take the char under the pointer, up-drags
-        // landing on a row start take its first char.
+        // The ragged edges' rules are the shared sweep's. Scrolled
+        // sideways, the left edge is mid-line for every row, so the
+        // pointer there is not on column 0 and the sweep takes the cell
+        // under it, a cut wide first glyph included.
         let area = view.last_area.expect("cell_at resolved through last_area");
         let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
         let disp_col = view.h_scroll + usize::from(xx - area.x);
-        if head.1 == 0 && head.0 > anchor.0 {
-            // The head is the row's first grapheme; the boundary is the
-            // pointer on that grapheme's first cell (line column 0), not
-            // on any of its cells: on the right half of a wide first glyph
-            // (`❤️`, `日`) the pointer is on that glyph, so the sweep takes
-            // it. Past a row's end (an empty row, or one glyph short of
-            // the pointer) is still the boundary. Scrolled sideways, the
-            // left edge is mid-line for every row and the sweep takes the
-            // cell under the pointer, a cut wide first glyph included.
-            let text = view.display_line_text(head.0).unwrap_or_default();
-            if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
-                let row = head.0 - 1;
-                // The row's last grapheme, as `cell_at` clamps a click past it.
-                let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
-                view.sel = Some((anchor, (row, last)));
-                return true;
-            }
-        }
-        if head.0 < anchor.0 {
-            // `cell_at` clamped a pointer past the row's end onto its
-            // last grapheme; re-check the pointed display column against the
-            // row to tell the two apart (a row that paints no cells has no
-            // last char to spuriously grab — it stays in the sweep).
-            let text = view.display_line_text(head.0).unwrap_or_default();
-            let paints = grapheme_at_col(&text, 0, (0, 0, 0)).is_some();
-            if paints && view.grapheme_at(head.0, &text, disp_col).is_none() {
-                view.sel = Some((anchor, (head.0 + 1, 0)));
-                return true;
-            }
-        }
-        view.sel = (head != anchor).then_some((anchor, head));
+        let at = |(row, col)| crate::text::Pos::new(row, col);
+        let v = &*view;
+        let sel = crate::text::mouse::sweep(
+            at(anchor),
+            at(head),
+            disp_col,
+            |row, col| {
+                v.display_line_text(row).is_some_and(|t| v.grapheme_at(row, &t, col).is_some())
+            },
+            // The row's last grapheme, as `cell_at` clamps a click past it.
+            |row| v.display_line_text(row).map_or(0, |t| last_grapheme(&t)),
+        );
+        view.sel = sel.map(|(a, h)| ((a.row, a.col), (h.row, h.col)));
         true
     }
 

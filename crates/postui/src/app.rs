@@ -11892,7 +11892,7 @@ impl App {
 
     /// The text of whichever selection currently owns the keyboard, in
     /// focus-priority order: the variable tooltip's (#294; it floats over
-    /// everything, and a press anywhere off the tip drops it); in vim the
+    /// everything, and the next key or a press off the tip drops it); in vim the
     /// live engine field's Visual (a
     /// mouse selection there becomes Visual; a modal parks the field, so
     /// it never has one under a modal), the top modal's text field, a
@@ -12522,10 +12522,14 @@ impl App {
         // its second press (task #85).
         let armed = self.disarm_quit();
         let ran = self.route_key(ev, armed.as_ref());
+        // A key ends the tooltip's selection (#294), a copy key after
+        // copying it, so a selection the key makes is the one ctrl+c
+        // copies next.
+        let unselected = self.tip_text.clear_selection();
         self.vim_after_key(ran);
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
-        let changed = ran.changed || self.key_echo() != echo || armed.is_some();
+        let changed = ran.changed || self.key_echo() != echo || armed.is_some() || unselected;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.

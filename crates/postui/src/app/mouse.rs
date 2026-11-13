@@ -134,8 +134,7 @@ impl App {
         // ctrl+c presses are back to back (task #85).
         let mut disarmed = false;
         // A press anywhere off the variable tooltip drops the tip's
-        // selection (#294), so ctrl+c never copies it over a selection
-        // made after it.
+        // selection (#294), as a key does (`handle_key`).
         let mut unselected = false;
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.router.clear();

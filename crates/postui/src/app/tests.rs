@@ -32247,6 +32247,22 @@ fn a_press_off_the_tooltip_drops_its_selection_and_pills_still_click() {
     assert_eq!(app.tip_text.selected_text(), None);
 }
 
+/// A key ends the tip's selection, a copy key after copying it (#294), so
+/// ctrl+c never copies it over a selection a key makes after it.
+#[test]
+fn a_key_ends_the_tooltips_selection() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    sweep_tip(&mut app, "base_url", (0, 0), (4, 0));
+    app.handle_key(ctrl('c'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https");
+    assert_eq!(app.tip_text.selected_text(), None, "the copy ends it");
+    sweep_tip(&mut app, "base_url", (0, 0), (4, 0));
+    assert!(app.tip_text.selected_text().is_some());
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)), "it repaints");
+    assert_eq!(app.tip_text.selected_text(), None);
+}
+
 /// A token drawn twice (URL and a header value) holds the instance the
 /// tip was raised for: entering the panel must not re-anchor the tip at
 /// the other instance and lose it.

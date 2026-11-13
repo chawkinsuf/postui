@@ -127,6 +127,36 @@ pub(crate) fn grow_by_words<B: Lines + ?Sized>(buf: &B, span: Span, at: Pos) -> 
     }
 }
 
+/// A sweep over read-only text (the response view, the variable tooltip):
+/// the selection, inclusive `(anchor, head)` chars, of a press on `anchor`
+/// dragged onto char `head`, the pointer at line column `col`.
+/// `has_cell(row, col)` is whether `row` paints a grapheme at line column
+/// `col`; `last(row)` is the char of `row`'s last grapheme.
+///
+/// At the ragged edges the pointer reads as a boundary. A downward sweep
+/// whose pointer is on a row's column 0, or past its end, ends at the end
+/// of the row above instead of taking the row's first char (on the right
+/// half of a wide first glyph the pointer is on the glyph, so it is
+/// taken). An upward sweep whose pointer is past the end of a row that
+/// paints starts at the start of the row below instead of taking that
+/// row's last char. Back on the anchor, nothing is selected.
+pub(crate) fn sweep(
+    anchor: Pos,
+    head: Pos,
+    col: usize,
+    has_cell: impl Fn(usize, usize) -> bool,
+    last: impl Fn(usize) -> usize,
+) -> Option<(Pos, Pos)> {
+    if head.col == 0 && head.row > anchor.row && (col == 0 || !has_cell(head.row, col)) {
+        let row = head.row - 1;
+        return Some((anchor, Pos::new(row, last(row))));
+    }
+    if head.row < anchor.row && has_cell(head.row, 0) && !has_cell(head.row, col) {
+        return Some((anchor, Pos::new(head.row + 1, 0)));
+    }
+    (head != anchor).then_some((anchor, head))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
