@@ -2549,6 +2549,7 @@ impl App {
         };
         self.editor.shadowed = self.compute_shadowed(&vars);
         self.editor.vars = vars;
+        self.editor.send_context = self.prepare_context();
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one. The

@@ -366,6 +366,11 @@ pub struct Editor {
     /// token (URL bar, table cells, computed-header rows, the body editor)
     /// tints and registers its spans from this.
     pub vars: crate::components::var_tokens::VarView,
+    /// The project's side of a send (its resolved variables and default
+    /// headers), synced by `App::update` on every action alongside `vars`.
+    /// The Vars tab's referenced list asks `header_rows` with it which
+    /// default headers the send carries (task #292).
+    pub send_context: postui_core::prepare::PrepareContext,
 }
 
 /// State for [`Editor::draw_computed_headers`], read off
@@ -418,6 +423,7 @@ impl Default for Editor {
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
             vars: Default::default(),
+            send_context: Default::default(),
             body: new_body_state(""),
             body_hl_text: String::new(),
             body_hl_marker: None,
@@ -3964,10 +3970,10 @@ impl Editor {
 
     /// Every `{{variable}}` the request references, deduped in first-seen
     /// order, from exactly the fields a send substitutes: the URL, enabled
-    /// param and header keys/values, enabled request-var values, and the
-    /// body only while `substitute_body` is on. Shared by the Vars tab's
-    /// height math and its referenced-section draw so they can never
-    /// disagree.
+    /// param and header keys/values, the project default headers the send
+    /// carries (task #292), enabled request-var values, and the body only
+    /// while `substitute_body` is on. Shared by the Vars tab's height math
+    /// and its referenced-section draw so they can never disagree.
     fn referenced_var_names(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         let mut names = Vec::new();
@@ -3986,6 +3992,24 @@ impl Editor {
                     scan(&e.value);
                 }
             }
+        }
+        // Which defaults are sent is `header_rows`'s verdict, worked out
+        // here from the fields as they stand. A default's verdict reads only
+        // the request's header names and its variables, so the copy leaves
+        // the rest (the body) out. A sent default's `overriding_row` is its
+        // name and value as written; a replaced, duplicate or client-owned
+        // one has none.
+        let headers_only = HttpRequest {
+            headers: self.headers.clone(),
+            variables: self.variables.clone(),
+            ..HttpRequest::default()
+        };
+        let rows = postui_core::prepare::header_rows(&headers_only, &self.send_context);
+        let default = postui_core::prepare::HeaderOrigin::Default;
+        let defaults = rows.iter().filter(|r| r.origin == default);
+        for (name, value) in defaults.filter_map(|r| r.overriding_row()) {
+            scan(name);
+            scan(value);
         }
         for (_, e) in &self.variables {
             if e.enabled {
@@ -8853,6 +8877,60 @@ url = "https://api.example.com/users""#,
         terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("body_var"), "{content}");
+    }
+
+    /// Task #292: the project's default headers the send carries are listed
+    /// too, after the request's own headers'. A default that isn't sent is
+    /// not: disabled, replaced by a request row (enabled or disabled), a
+    /// duplicate of an earlier default, or a header the client owns.
+    #[test]
+    fn vars_tab_lists_the_variables_of_the_projects_sent_default_headers() {
+        let on = |v: &str| Entry { value: v.into(), enabled: true };
+        let off = |v: &str| Entry { value: v.into(), enabled: false };
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        e.url = LineInput::new("https://{{base}}/v1");
+        e.headers.insert("x-mine".into(), on("{{mine}}"));
+        e.headers.insert("authorization".into(), on("Basic abc"));
+        e.headers.insert("x-shut".into(), off("{{shut_own}}"));
+        e.variables.insert("own".into(), on("{{from_var}}"));
+        let mut ctx = postui_core::prepare::PrepareContext::default();
+        for (k, v) in [
+            ("{{key_name}}", on("{{token}}")),
+            ("x-base", on("{{base}}")),
+            ("x-off", off("{{ignored}}")),
+            ("Authorization", on("Bearer {{replaced}}")),
+            ("X-Shut", on("{{shut_default}}")),
+            ("X-Dup", on("{{first}}")),
+            ("x-dup", on("{{second}}")),
+            ("Host", on("{{host_tok}}")),
+        ] {
+            ctx.default_headers.insert(k.into(), v);
+        }
+        e.send_context = ctx;
+        assert_eq!(
+            e.referenced_var_names(),
+            ["base", "mine", "key_name", "token", "first", "from_var"],
+            "deduped, the sent defaults after the request's headers"
+        );
+        assert_eq!(e.section_len(), 6, "each is a row of the referenced section");
+    }
+
+    /// Task #292: which defaults are sent follows the fields as they stand,
+    /// with no draw in between: right after a load, and after an undo's
+    /// snapshot swap.
+    #[test]
+    fn vars_tab_default_header_variables_follow_the_request_without_a_draw() {
+        let on = |v: &str| Entry { value: v.into(), enabled: true };
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        e.send_context.default_headers.insert("Authorization".into(), on("Bearer {{token}}"));
+        let mut own = HttpRequest::default();
+        own.headers.insert("authorization".into(), on("mine"));
+        e.load(Some("own".into()), own.clone());
+        assert_eq!(e.referenced_row_of("token"), None, "the request's row replaces it");
+        e.load(Some("plain".into()), HttpRequest::default());
+        assert_eq!(e.referenced_row_of("token"), Some(0), "sent on this one");
+        e.apply_snapshot(&own, None);
+        assert_eq!(e.referenced_row_of("token"), None, "replaced again");
     }
 
     /// A referenced row's room splits between the value and its source:

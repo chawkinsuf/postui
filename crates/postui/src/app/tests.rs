@@ -17092,6 +17092,67 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     assert!(rendered_text(&mut app).contains("Copied Host"), "toast confirms the copy");
 }
 
+/// Task #292: a variable a project default header uses is listed on every
+/// request's Vars tab, with the value it resolves to, as the request's own
+/// are; a reload brings a new default's in.
+#[test]
+fn the_vars_tab_lists_a_project_default_headers_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.editor.active_tab = EditorTab::Vars;
+    app.update(Action::ReloadProjectFiles);
+    assert!(!rendered_text(&mut app).contains("{{base_url}}"), "no default uses it yet");
+
+    set_default_header(&mut app, "X-Root", "{{base_url}}");
+    app.update(Action::ReloadProjectFiles);
+
+    let content = rendered_text(&mut app);
+    assert!(content.contains("referenced"), "{content}");
+    assert!(content.contains("{{base_url}}"), "the default's variable is listed: {content}");
+    assert!(content.contains("https://qa.example.com"), "with qa's value: {content}");
+}
+
+/// Task #292: a default the request's own row replaces lists no variable,
+/// so an undo or redo of that row brings the default's variable back into
+/// the Vars tab's list or takes it out. The cursor on a referenced row
+/// stays on its variable across both.
+#[test]
+fn undo_keeps_the_vars_cursor_on_its_variable_when_a_default_is_replaced() {
+    let mut app = App::new_for_test();
+    set_default_header(&mut app, "Authorization", "Bearer {{token}}");
+    app.update(Action::CreateRequest("vars".into()));
+    app.editor.url = LineInput::new("https://{{u}}/");
+    for (k, v) in [("a", "{{x}}"), ("b", "{{y}}")] {
+        app.editor
+            .variables
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.preferred_tab = EditorTab::Vars;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    render_once(&mut app);
+    app.capture_undo();
+    assert_eq!(app.editor.referenced_row_of("y"), Some(3), "u, token, x, y");
+
+    app.editor.headers.insert(
+        "Authorization".into(),
+        postui_core::model::Entry { value: "mine".into(), enabled: true },
+    );
+    app.capture_undo();
+    render_once(&mut app);
+    assert_eq!(app.editor.referenced_row_of("token"), None, "the request's row replaces it");
+    app.editor.table.set_selected(Some(Stop::Section(2)));
+
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("Authorization"), "{:?}", app.editor.headers);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(3)), "on y: u, token, x, y");
+    app.update(Action::Redo);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(2)), "on y: u, x, y");
+}
+
 /// The pencil on an auto row adds the header to the request as written
 /// (a default's token stays a token), last, and opens its value with the
 /// caret at the end: a header is taken over to give it a value of one's
