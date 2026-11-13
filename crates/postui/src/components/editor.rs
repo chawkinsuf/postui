@@ -214,6 +214,10 @@ pub struct Editor {
     /// by the Vars tab's table draw to show the dim "overrides" hint
     /// trailing a shadowing row's value; never itself edited here.
     pub shadowed: IndexMap<String, String>,
+    /// The project's `[default_headers]`, synced by `App` on every
+    /// `update()` alongside `vars`, for the Vars tab's referenced list,
+    /// which takes in their `{{variables}}` (task #292).
+    pub project_headers: IndexMap<String, Entry>,
     /// The request body buffer. edtui owns the text, cursor and undo stack;
     /// it is only ever rewritten wholesale by an explicit user action
     /// (load / format / minify / external editor), so half-typed JSON
@@ -417,6 +421,7 @@ impl Default for Editor {
             headers: IndexMap::new(),
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
+            project_headers: IndexMap::new(),
             vars: Default::default(),
             body: new_body_state(""),
             body_hl_text: String::new(),
@@ -3964,10 +3969,14 @@ impl Editor {
 
     /// Every `{{variable}}` the request references, deduped in first-seen
     /// order, from exactly the fields a send substitutes: the URL, enabled
-    /// param and header keys/values, enabled request-var values, and the
-    /// body only while `substitute_body` is on. Shared by the Vars tab's
-    /// height math and its referenced-section draw so they can never
-    /// disagree.
+    /// param and header keys/values, the project's enabled default headers
+    /// (task #292), enabled request-var values, and the body only while
+    /// `substitute_body` is on. Shared by the Vars tab's height math and
+    /// its referenced-section draw so they can never disagree.
+    ///
+    /// A default the request's own row replaces is still scanned: the
+    /// Headers tab still lists it, struck through, and telling which
+    /// defaults are sent would take the send's header rules here.
     fn referenced_var_names(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         let mut names = Vec::new();
@@ -3979,7 +3988,7 @@ impl Editor {
             }
         };
         scan(self.url.text());
-        for map in [&self.params, &self.headers] {
+        for map in [&self.params, &self.headers, &self.project_headers] {
             for (k, e) in map {
                 if e.enabled {
                     scan(k);
@@ -8853,6 +8862,29 @@ url = "https://api.example.com/users""#,
         terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("body_var"), "{content}");
+    }
+
+    /// Task #292: the project's default headers are sent with the request,
+    /// so their variables are listed too, after the request's own headers'
+    /// and only from the enabled ones.
+    #[test]
+    fn vars_tab_lists_the_variables_of_the_projects_default_headers() {
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        e.url = LineInput::new("https://{{base}}/v1");
+        e.headers.insert("x-mine".into(), Entry { value: "{{mine}}".into(), enabled: true });
+        e.variables.insert("own".into(), Entry { value: "{{from_var}}".into(), enabled: true });
+        e.project_headers
+            .insert("{{key_name}}".into(), Entry { value: "{{token}}".into(), enabled: true });
+        e.project_headers
+            .insert("x-base".into(), Entry { value: "{{base}}".into(), enabled: true });
+        e.project_headers
+            .insert("x-off".into(), Entry { value: "{{ignored}}".into(), enabled: false });
+        assert_eq!(
+            e.referenced_var_names(),
+            ["base", "mine", "key_name", "token", "from_var"],
+            "deduped, the defaults after the request's headers, a disabled default skipped"
+        );
+        assert_eq!(e.section_len(), 5, "each is a row of the referenced section");
     }
 
     /// A referenced row's room splits between the value and its source:
