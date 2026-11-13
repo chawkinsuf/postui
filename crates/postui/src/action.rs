@@ -1035,6 +1035,11 @@ pub enum Action {
     OpenManage {
         tab: Option<crate::components::manage::ManageTab>,
     },
+    /// Open the Manage screen's Variables tab with its list on `name`'s
+    /// row, a variable or a selector: what an edit dialog's Manage control
+    /// and key dispatch once the dialog has closed (#295). Unlike
+    /// `OpenManage`, never a toggle.
+    OpenInManage(String),
     /// Switch the open Manage screen to another tab (the tab strip's
     /// click target and `alt+←/→`).
     SelectManageTab(crate::components::manage::ManageTab),

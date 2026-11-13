@@ -186,11 +186,16 @@ pub enum PromptKind {
     /// popup lands on. Set once at open: a write keeps the row's enabled
     /// status, and a removal pending on it still writes into the row when
     /// a value is typed back (see the confirm), so the mark stays.
+    ///
+    /// `declared`: `variables.toml` declares the name, so it has a row in
+    /// Manage and the popup offers its Manage control (#295). A request's
+    /// own variable has none.
     EditVarValue {
         name: String,
         scope_values: Vec<(String, Option<String>)>,
         pending_removals: Vec<String>,
         request_disabled: bool,
+        declared: bool,
     },
 }
 
@@ -868,6 +873,72 @@ impl Modal {
             _ => true,
         }
     }
+
+    /// The row an edit dialog's Manage control opens (#295): the
+    /// variable's, or for the option picker its selector's. Only the
+    /// dialogs a token's 󰏫 opens on a declared name have one; the
+    /// send-time secret prompt is about the send, so it has none.
+    pub fn manage_target(&self) -> Option<&str> {
+        match self {
+            Modal::MultiPrompt {
+                kind: PromptKind::EditVarValue { name, declared: true, .. },
+                ..
+            }
+            | Modal::Prompt {
+                kind: PromptKind::SecretValue { name, then_send: false, .. }, ..
+            } => Some(name),
+            Modal::VarPicker(state) => match &state.mode {
+                crate::components::var_picker::PickerMode::SelectOption { selector, .. } => {
+                    Some(selector)
+                }
+                crate::components::var_picker::PickerMode::Insert => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// An edit dialog's Manage control (#295), on the right of its title row
+/// inside `area`, in the accent text the value popup's "✕ remove" uses.
+pub(crate) fn draw_manage_control(
+    buf: &mut ratatui::buffer::Buffer,
+    hits: &mut crate::hit::HitMap,
+    theme: &Theme,
+    hovered: Option<&crate::hit::Hit>,
+    area: Rect,
+) {
+    let label = manage_label();
+    let w = crate::ui::cells(&label) as u16;
+    let rect = Rect {
+        x: area.right().saturating_sub(2 + w).max(area.x),
+        y: area.y + 1,
+        width: w.min(area.width),
+        height: 1,
+    };
+    let hit = crate::hit::Hit::ModalManage;
+    let style = if hovered == Some(&hit) {
+        Style::default().bg(theme.accent).fg(theme.on_accent)
+    } else {
+        Style::default().bg(theme.panel).fg(theme.accent)
+    };
+    buf.set_string(rect.x, rect.y, crate::ui::clip(&label, rect.width), style);
+    hits.register(rect, hit);
+}
+
+/// The Manage control's key: the one that opens Manage (#295), the same
+/// in both profiles. Over an edit dialog it opens the dialog's row
+/// (`App::handle_key_routed`).
+const MANAGE_KEY: Key = Key::Of(Action::OpenManage { tab: None });
+
+/// The Manage control's text: the open-in-new icon and the screen's name.
+fn manage_label() -> String {
+    format!("{} Manage", crate::glyph::OPEN_IN_NEW)
+}
+
+/// The cells a dialog's title gives up to its Manage control: the
+/// control and a gap.
+pub(crate) fn manage_control_room_cells() -> u16 {
+    crate::ui::cells(&manage_label()) as u16 + 1
 }
 
 /// One field close on the top form modal's stack (spec 2026-09-16):
@@ -1361,6 +1432,18 @@ impl ModalStack {
         })
     }
 
+    /// The top dialog's Manage control or key (#295): the dialog closes as
+    /// its Cancel would, what it holds unconfirmed dropped, and its row
+    /// opens in Manage. `None` when the top dialog has no Manage row.
+    pub fn open_in_manage(&self) -> Option<ModalResult> {
+        let name = self.top()?.manage_target()?.to_string();
+        Some(ModalResult {
+            actions: vec![Action::OpenInManage(name)],
+            close: true,
+            ..Default::default()
+        })
+    }
+
     /// Shows or hides the secret prompt's value (plan M3b Deviation 4).
     /// `false` when the top dialog is not the secret prompt.
     pub(crate) fn toggle_secret_reveal(&mut self) -> bool {
@@ -1815,6 +1898,9 @@ impl ModalStack {
                     None,
                 ));
             }
+            if self.top().and_then(Modal::manage_target).is_some() {
+                chips.push((MANAGE_KEY, "manage".to_string(), None));
+            }
             chips.extend([
                 // Vim reopens with `o` and confirms with Enter (spec §5.10,
                 // plan M4b Deviation 22); arrows reads the named keys.
@@ -1878,6 +1964,9 @@ impl ModalStack {
                             None,
                         ));
                     }
+                    if self.top().and_then(Modal::manage_target).is_some() {
+                        chips.push((MANAGE_KEY, "manage", None));
+                    }
                 } else if fields.len() > 1 {
                     chips.push((Key::Named("tab"), "next field", None));
                 }
@@ -1924,11 +2013,16 @@ impl ModalStack {
             // The secret prompt's reveal chord, in both profiles, the field
             // open or not (plan M3b Deviation 4); the eye button beside the
             // field is its mouse twin.
-            Modal::Prompt { revealed, kind, .. } if kind.is_secret() => vec![
-                (Key::Named("ctrl+r"), if *revealed { "hide" } else { "reveal" }, None),
-                (Key::Named("enter"), "confirm", Some(Action::ConfirmTopModal)),
-                (Key::Named("esc"), "cancel", Some(Action::CancelTopModal)),
-            ],
+            Modal::Prompt { revealed, kind, .. } if kind.is_secret() => {
+                let mut chips =
+                    vec![(Key::Named("ctrl+r"), if *revealed { "hide" } else { "reveal" }, None)];
+                if self.top().and_then(Modal::manage_target).is_some() {
+                    chips.push((MANAGE_KEY, "manage", None));
+                }
+                chips.push((Key::Named("enter"), "confirm", Some(Action::ConfirmTopModal)));
+                chips.push((Key::Named("esc"), "cancel", Some(Action::CancelTopModal)));
+                chips
+            }
             Modal::Prompt { kind, .. } => vec![
                 (Key::Named("enter"), "confirm", Some(Action::ConfirmTopModal)),
                 (Key::Named("esc"), kind.cancel_verb(), Some(Action::CancelTopModal)),
@@ -1992,9 +2086,11 @@ impl ModalStack {
                     (Key::Named("esc"), "close", None),
                 ]
             }
+            // The option picker: its selector opens in Manage (#295).
             Modal::VarPicker(_) => vec![
                 (Key::Pick, "navigate", None),
                 (Key::Named("enter"), "select", None),
+                (MANAGE_KEY, "manage", None),
                 (Key::Named("esc"), "close", None),
             ],
             Modal::Palette(_) => vec![
@@ -2922,6 +3018,10 @@ impl ModalStack {
         // outside them (topmost-wins in `HitMap`) closes the modal, same as
         // Esc — live for every variant, not just Dropdown.
         hits.register(backdrop, crate::hit::Hit::ModalOutside);
+        // What the title gives up to an edit dialog's Manage control, read
+        // before the arms below borrow the modal's parts.
+        let manage_room =
+            if top.manage_target().is_some() { manage_control_room_cells() } else { 0 };
         match top {
             // Each choice of the three blocking dialogs is its own clickable
             // painted button; there is deliberately no Cancel -- see the
@@ -3089,11 +3189,14 @@ impl ModalStack {
                     frame.buffer_mut(),
                     area.x + 2,
                     title_y,
-                    crate::ui::clip(title, area.width.saturating_sub(4)),
+                    crate::ui::clip(title, area.width.saturating_sub(4 + manage_room)),
                     theme.text,
                     theme.panel,
                     true,
                 );
+                if manage_room > 0 {
+                    draw_manage_control(frame.buffer_mut(), hits, theme, hovered, area);
+                }
 
                 // A secret prompt keeps a reveal button beside its field,
                 // the same block height (field and button share one
@@ -3414,11 +3517,14 @@ impl ModalStack {
                     frame.buffer_mut(),
                     area.x + 2,
                     title_y,
-                    title,
+                    crate::ui::clip(title, area.width.saturating_sub(4 + manage_room)),
                     theme.text,
                     theme.panel,
                     true,
                 );
+                if manage_room > 0 {
+                    draw_manage_control(frame.buffer_mut(), hits, theme, hovered, area);
+                }
 
                 let field_x = area.x + 2;
                 let field_w = area.width.saturating_sub(4);

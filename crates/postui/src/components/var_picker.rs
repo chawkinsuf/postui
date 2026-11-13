@@ -467,7 +467,15 @@ impl VarPickerState {
                 format!("Select \u{2014} {selector}")
             }
         };
-        paint::text(frame.buffer_mut(), area.x + 2, title_y, &title, theme.text, theme.panel, true);
+        // The option picker's selector has a row in Manage, and its
+        // control opens it there (#295).
+        let manage = matches!(self.mode, PickerMode::SelectOption { .. });
+        let room = if manage { super::modal::manage_control_room_cells() } else { 0 };
+        let title = clip(&title, area.width.saturating_sub(4 + room));
+        paint::text(frame.buffer_mut(), area.x + 2, title_y, title, theme.text, theme.panel, true);
+        if manage {
+            super::modal::draw_manage_control(frame.buffer_mut(), hits, theme, hovered, area);
+        }
 
         // Only Insert mode has a typed filter field: what's typed there can
         // become a new variable's name. SelectOption mode's list starts

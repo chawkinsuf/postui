@@ -603,6 +603,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             Some(ExtractDestination::ActiveEnv) => "Remove this environment's value",
             _ => "Remove the project default value",
         }),
+        Hit::ModalManage => {
+            Some(Source::Keyed("Open this in Manage".to_string(), Action::OpenManage { tab: None }))
+        }
         Hit::TipEdit(_) => text(match ctx.tip_edit {
             TipEditVerb::Value => "Edit this variable's value",
             TipEditVerb::Option => "Choose this selector's option",
@@ -1147,6 +1150,7 @@ mod tests {
             Hit::ModalRevealToggle,
             Hit::ModalRowToggle(0),
             Hit::ModalRemove,
+            Hit::ModalManage,
             Hit::PickerPrimary,
             Hit::ResponseSearchNext,
             Hit::SplitStop(SplitStop::EditorFull),

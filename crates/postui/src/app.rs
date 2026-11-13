@@ -7113,6 +7113,26 @@ impl App {
                 }
                 true
             }
+            Action::OpenInManage(name) => {
+                use crate::components::manage::ManageTab;
+                let on_tab = |app: &Self| {
+                    app.screen == Screen::Manage && app.manage.tab == ManageTab::Variables
+                };
+                if !on_tab(self) {
+                    // Opens the screen, or switches its tab: a switch
+                    // closes the screen's open inputs, saved, and stops on
+                    // one that refuses.
+                    self.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
+                    if !on_tab(self) {
+                        return true;
+                    }
+                } else if !self.close_inputs_or_stop(false) {
+                    // Moving the list would drop a Manager field's typing.
+                    return true;
+                }
+                self.place_list_row(crate::undo::ListRow::Var(name));
+                true
+            }
             Action::SelectManageTab(tab) => {
                 // A live Manage-list row drag belongs to whichever tab's
                 // list it is rearranging: the tab strip switching out from
@@ -8991,6 +9011,7 @@ impl App {
 
         let mut destination = PromptField::choice("destination", "Write to", &choices);
         destination.input = LineInput::new(preselect);
+        let declared = self.variables().vars.contains_key(name);
 
         self.push_modal(Modal::MultiPrompt {
             title: format!("{{{{{name}}}}}"),
@@ -9001,6 +9022,7 @@ impl App {
                 scope_values,
                 pending_removals: Vec::new(),
                 request_disabled,
+                declared,
             },
         });
         true
@@ -12756,6 +12778,16 @@ impl App {
             {
                 self.remove_from_value_popup();
                 return true; // swallowed even when inert — never typed
+            }
+            // The key that opens Manage opens an edit dialog's row there
+            // (#295), as its Manage control does. A dialog with no row
+            // swallows it below, as before. A bare letter bound to it stays
+            // typing.
+            if global == Some(Action::OpenManage { tab: None })
+                && (modified || !matches!(ev.code, KeyCode::Char(_)))
+                && let Some(res) = self.modals.open_in_manage()
+            {
+                return self.apply_modal_result(res);
             }
             // `Modal::ConfigEditInvalid`'s "Keep editing" needs App (it
             // stashes the temp path so the resumed editor reopens the

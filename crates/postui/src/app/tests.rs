@@ -40706,3 +40706,144 @@ fn above_the_first_row_and_below_the_last_reorder_to_the_ends() {
     app.handle_mouse(left_up(names_x(r0), r2.y + 3));
     assert_eq!(saved_order(&dir), ["alpha", "beta", "gamma"]);
 }
+
+// --- The edit dialogs open their variable in Manage (#295) ---------------
+
+/// Whether the Manage screen is up on its Variables tab, its list on
+/// `name`'s row with the keyboard on the list.
+fn manage_shows(app: &App, detail: crate::components::varmanager::VmDetail) -> bool {
+    app.screen == Screen::Manage
+        && app.manage.tab == crate::components::manage::ManageTab::Variables
+        && app.varmanager.detail == detail
+        && app.varmanager.focus == crate::components::varmanager::VmFocus::List
+}
+
+/// The value popup's 󰏌 Manage drops what the dialog holds, as its Cancel
+/// does, and opens the variable's row on the Variables tab; closing the
+/// screen goes back to the editor.
+#[test]
+fn the_value_popups_manage_opens_its_variable_and_drops_the_typing() {
+    use crate::components::varmanager::VmDetail;
+    let (mut app, dir, _out) = tooltip_app("base_url");
+    app.focus = PaneId::Editor;
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top_mut() else {
+        panic!("the value popup")
+    };
+    fields[0].input = LineInput::new("typed, never confirmed");
+    render_once(&mut app);
+    click_hit(&mut app, Hit::ModalManage);
+    assert!(app.modals.is_empty(), "the dialog closes");
+    assert!(manage_shows(&app, VmDetail::Var("base_url".into())));
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("https://qa.example.com"), "nothing written: {qa}");
+    assert!(!qa.contains("typed"), "{qa}");
+    app.update(Action::CloseScreen);
+    assert_eq!(app.screen, Screen::Main);
+    assert_eq!(app.focus, PaneId::Editor, "back where the dialog was opened");
+}
+
+/// The option picker's Manage key (the one that opens Manage) opens the
+/// selector's row, and the secret prompt's its secret's.
+#[test]
+fn the_manage_key_opens_the_pickers_selector_and_the_secrets_variable() {
+    use crate::components::varmanager::VmDetail;
+    let (mut app, _dir, _out) = tooltip_app("user");
+    app.update(Action::OpenVarTokenPopup("user".into()));
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+    app.handle_key(alt('r'));
+    assert!(app.modals.is_empty());
+    assert!(manage_shows(&app, VmDetail::Group("user".into())));
+
+    let (mut app, _dir, _out) = tooltip_app("api_key");
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt { kind: PromptKind::SecretValue { .. }, .. })
+    ));
+    app.handle_key(alt('r'));
+    assert!(app.modals.is_empty());
+    assert!(manage_shows(&app, VmDetail::Var("api_key".into())));
+}
+
+/// Manage lands on the dialog's row even when the screen was last left
+/// on another tab, or on another variable.
+#[test]
+fn manage_from_a_dialog_lands_on_its_row_whatever_the_screen_last_showed() {
+    use crate::components::manage::ManageTab;
+    use crate::components::varmanager::VmDetail;
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.update(Action::CloseScreen);
+    app.update(Action::OpenVarTokenPopup("user".into()));
+    app.handle_key(alt('r'));
+    assert!(manage_shows(&app, VmDetail::Group("user".into())));
+    app.update(Action::CloseScreen);
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    app.handle_key(alt('r'));
+    assert!(manage_shows(&app, VmDetail::Var("base_url".into())));
+}
+
+/// A name with no row in Manage (a request's own variable) gets no Manage
+/// control, and the key does nothing over its dialog; nor does the
+/// send-time secret prompt, which is about the send, not the variable.
+#[test]
+fn a_dialog_with_no_manage_row_has_no_manage_control() {
+    let (mut app, _dir, _out) = tooltip_app("local");
+    app.editor
+        .variables
+        .insert("local".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.update(Action::OpenVarTokenPopup("local".into()));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { .. }, .. })
+    ));
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ModalManage).is_none());
+    app.handle_key(alt('r'));
+    assert!(app.modals.top().is_some(), "the dialog stays");
+    assert_eq!(app.screen, Screen::Main);
+
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.push_modal(Modal::Prompt {
+        title: "Secret {{api_key}}".into(),
+        input: LineInput::new(""),
+        kind: PromptKind::SecretValue { name: "api_key".into(), env: "qa".into(), then_send: true },
+        revealed: false,
+    });
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ModalManage).is_none());
+}
+
+/// The control sits at the right of the dialog's title row, and the footer
+/// names its key while the dialog is up.
+#[test]
+fn the_manage_control_sits_on_the_title_row_and_its_key_is_in_the_footer() {
+    let alt_r = crate::keys::display_keycap("alt+r");
+    for name in ["base_url", "user", "api_key"] {
+        let (mut app, _dir, _out) = tooltip_app("x");
+        app.update(Action::OpenVarTokenPopup(name.into()));
+        render_once(&mut app);
+        let body = app.hits.rect_of(&Hit::ModalBody).unwrap();
+        let control = app.hits.rect_of(&Hit::ModalManage).expect(name);
+        assert_eq!(control.y, body.y + 1, "{name}: the title row");
+        assert_eq!(control.right(), body.right() - 2, "{name}: at its right");
+        let text = tooltip_text(&mut app);
+        assert!(text.contains("\u{F03CC} Manage"), "{name}: {text}");
+        let footer = footer_text(&mut app);
+        assert!(footer.contains(&format!("{alt_r} manage")), "{name}: {footer}");
+    }
+}
+
+/// The vim profile keeps the key.
+#[test]
+fn the_manage_key_works_over_a_dialog_in_the_vim_profile() {
+    use crate::components::varmanager::VmDetail;
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    render_once(&mut app);
+    app.handle_key(alt('r'));
+    assert!(app.modals.is_empty());
+    assert!(manage_shows(&app, VmDetail::Var("base_url".into())));
+}
