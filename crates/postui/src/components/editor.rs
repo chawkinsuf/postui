@@ -380,9 +380,9 @@ pub struct Editor {
 pub struct ComputedHeadersView {
     /// The auto section's rows, in `header_rows` order: every row other
     /// than the request's own (the editable table shows those), sent or
-    /// not (save an auto row a sent default replaces, task #293); one that
-    /// isn't sent sits where it would have gone and draws struck through
-    /// (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
+    /// not, save an unsent auto row a project default names (task #293);
+    /// one that isn't sent sits where it would have gone and draws struck
+    /// through (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
     /// The request table's notes, one per row: a row kept off the wire
     /// because the client owns its header (spec 2026-10-18 R3a) is
@@ -849,6 +849,11 @@ impl Editor {
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
         use postui_core::prepare::HeaderOrigin;
         let rows = postui_core::prepare::header_rows(&self.current_request(), ctx);
+        let defaults: Vec<String> = rows
+            .iter()
+            .filter(|r| r.origin == HeaderOrigin::Default)
+            .map(|r| r.header.name.clone())
+            .collect();
         let mut notes = vec![None; self.headers.len()];
         let mut auto = Vec::new();
         for r in rows {
@@ -860,13 +865,17 @@ impl Editor {
                         *note = client_owned_header(r.unsent).map(RowNote::Unsent);
                     }
                 }
+                // An unsent auto `Content-Type` or `Accept` that a project
+                // default names is left out: the default's row, sent or
+                // struck, is the one row shown for that header (task #293).
+                HeaderOrigin::Auto
+                    if !r.sent()
+                        && defaults.iter().any(|d| d.eq_ignore_ascii_case(&r.header.name)) => {}
                 // Every other row is drawn, an unsent one struck through,
                 // so the user sees what is overridden (task #57): a
-                // default or the auto `Content-Type` or `Accept` a typed row
-                // replaced, or the URL's `Authorization`, whether a typed
-                // row or a default replaced it. An auto row a sent default
-                // replaces is not in `header_rows` at all (task #293). A
-                // struck `Authorization` shows its credential no more
+                // default, the auto `Content-Type` or `Accept`, or the URL's
+                // `Authorization`, whether a typed row or a default replaced
+                // it. A struck `Authorization` shows its credential no more
                 // than the URL bar shows the userinfo, and masks the same
                 // way when a secret is in it.
                 HeaderOrigin::Default | HeaderOrigin::Auto | HeaderOrigin::Client => auto.push(r),
@@ -9218,8 +9227,8 @@ url = "https://api.example.com/users""#,
     /// A row that overrides an auto or client row leaves that row in the
     /// auto section, struck through, so the user sees what is overridden
     /// (task #57): the auto `Accept` and `Content-Type`, the URL's
-    /// `Authorization`. A project default replacing the auto `Accept` is
-    /// the exception: the auto row is left out (task #293).
+    /// `Authorization`. A project default naming the auto `Accept` is the
+    /// exception: the unsent auto row is left out (task #293).
     #[test]
     fn headers_tab_strikes_the_auto_rows_something_overrides() {
         let mut app = App::new_for_test();
@@ -9251,20 +9260,38 @@ url = "https://api.example.com/users""#,
             assert!(!buffer_has_crossed_out(buf, typed), "{typed} is sent");
         }
 
-        // A project default replacing the auto Accept is listed alone.
+        // A project default naming Accept is its one row in the auto
+        // section while the auto Accept is unsent.
+        use postui_core::prepare::HeaderOrigin;
         let root = app.proj().root().to_path_buf();
         std::fs::write(root.join("project.toml"), "[default_headers]\nAccept = \"text/html\"\n")
             .unwrap();
         app.resync_project();
         app.editor.headers.clear();
-        app.update(Action::Render);
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let mut accepts = |app: &mut App| -> Vec<(HeaderOrigin, bool)> {
+            app.update(Action::Render);
+            terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+            let rows = app.editor.computed.rows.iter();
+            rows.filter(|r| r.header.name == "Accept").map(|r| (r.origin, r.sent())).collect()
+        };
+        assert_eq!(accepts(&mut app), [(HeaderOrigin::Default, true)], "the default, sent");
+        // An enabled request row strikes the default, and adds no row.
+        let row = |enabled| Entry { value: "text/plain".into(), enabled };
+        app.editor.headers.insert("Accept".into(), row(true));
+        assert_eq!(accepts(&mut app), [(HeaderOrigin::Default, false)], "the default, struck");
+        // A disabled one keeps the default off the wire and the auto
+        // Accept on it, so both are shown.
+        app.editor.headers.insert("Accept".into(), row(false));
+        assert_eq!(
+            accepts(&mut app),
+            [(HeaderOrigin::Default, false), (HeaderOrigin::Auto, true)],
+            "the default struck, the auto sent"
+        );
         let buf = terminal.backend().buffer();
+        assert!(buffer_has_crossed_out(buf, "Accept: text/html"), "the default is drawn struck");
         let content = format!("{buf:?}");
-        assert_eq!(content.matches("Accept: ").count(), 1, "the default only: {content}");
-        assert!(content.contains("Accept: text/html"), "the default is drawn");
-        assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
-        assert!(!content.contains("Accept: application/json"), "the auto Accept is left out");
+        assert!(content.contains("Accept: application/json"), "the auto Accept is drawn");
+        assert!(!buffer_has_crossed_out(buf, "application/json"), "and sent");
     }
 
     /// A struck auto row's strike starts on the name's first char: the
