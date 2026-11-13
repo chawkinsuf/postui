@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 
-use super::response::{grapheme_at_col, grapheme_edges, last_grapheme, whole_graphemes};
+use crate::text::graphemes::{grapheme_at_col, grapheme_edges, last_grapheme, whole_graphemes};
 use crate::text::mouse::{Span, grow_by_words, sweep, word_at};
 use crate::text::{Lines, Pos};
 
@@ -134,7 +134,7 @@ impl TipText {
             anchor,
             head,
             self.disp_col(x),
-            |row, col| grapheme_at_col(&rows[row].text, col, (0, 0, 0)).is_some(),
+            |col| grapheme_at_col(&rows[head.row].text, col, (0, 0, 0)).is_some(),
             |row| last_grapheme(&rows[row].text),
         );
         true

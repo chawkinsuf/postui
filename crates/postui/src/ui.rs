@@ -611,6 +611,8 @@ fn draw_var_tooltip(
         };
         let text = ellipsize(&line.text, room);
         crate::paint::text(buf, x + 2, row, &text, fg, theme.panel, false);
+        // A selection copies the row as painted, a cut row's `…` included
+        // (copy what is shown, #294); the copy pill copies the whole value.
         painted.push(TipLine { text, join: line.join });
     }
     // The selection, over the rows as painted: a frame whose rows differ
