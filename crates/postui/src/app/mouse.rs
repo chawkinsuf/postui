@@ -133,9 +133,17 @@ impl App {
         // never survives a click. It drops an armed quit too, so the two
         // ctrl+c presses are back to back (task #85).
         let mut disarmed = false;
+        // A press anywhere off the variable tooltip drops the tip's
+        // selection (#294), as a key does (`handle_key`).
+        let mut unselected = false;
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.router.clear();
             disarmed = self.disarm_quit().is_some();
+            let on_tip =
+                self.hits.hit_at_ignoring_var_tokens(m.column, m.row).and_then(Hit::tip_name);
+            if on_tip.is_none() {
+                unselected = self.tip_text.clear_selection();
+            }
         }
         let edge = self.vim_mouse_start(&m);
         let changed = self.handle_mouse_inner(m);
@@ -155,7 +163,7 @@ impl App {
         // The pointer may have left its token, or come back to it: the
         // tooltip's wait restarts here, not at the next tick (#233).
         let tipped = self.track_tip_dwells(std::time::Instant::now());
-        changed || ended || noted || regated || asked || disarmed || tipped
+        changed || ended || noted || regated || asked || disarmed || tipped || unselected
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -175,8 +183,12 @@ impl App {
         // The tooltip hold: the pointer on the last-drawn tip's panel or a
         // pill holds that tip, so it survives a click on its pills and
         // drops on the first event landing elsewhere. (The tip hits in
-        // the map all belong to `drawn_tip` — one tip per frame.)
-        self.tip_held = under.as_ref().and_then(Hit::tip_name).is_some();
+        // the map all belong to `drawn_tip` — one tip per frame.) A sweep
+        // over the tip's text holds it too, through button-held motion
+        // that slips off it (#294); the release is the pointer's again.
+        let sweeping_tip = self.text_drag == Some(TextDrag::Tip)
+            && m.kind == MouseEventKind::Drag(MouseButton::Left);
+        self.tip_held = sweeping_tip || under.as_ref().and_then(Hit::tip_name).is_some();
 
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
@@ -319,6 +331,7 @@ impl App {
                             self.session.response.drag_selection_to(m.column, m.row)
                         }
                         Some(TextDrag::Field(field)) => self.drag_text(field, m.column, m.row),
+                        Some(TextDrag::Tip) => self.tip_text.drag_to(m.column, m.row),
                         None => unreachable!(),
                     };
                 }
@@ -2702,9 +2715,21 @@ impl App {
             Hit::TipEdit(name) => self.press_tip_pill(crate::action::TipPill::Edit, name),
             Hit::TipCopy(name) => self.press_tip_pill(crate::action::TipPill::Copy, name),
             Hit::TipReveal(name) => self.press_tip_pill(crate::action::TipPill::Reveal, name),
-            // A click on the panel between its controls: consumed, so it
-            // never reaches whatever the tip floats over.
-            Hit::TipPanel(_) => true,
+            // A press on the panel between its controls is on the tip's
+            // text, never on whatever the tip floats over: it anchors a
+            // selection sweep there, or takes the word on a double click,
+            // as the response text does (#294).
+            Hit::TipPanel(_) => {
+                let anchored = if clicks.text == 2 {
+                    self.tip_text.select_word_at(m.column, m.row)
+                } else {
+                    self.tip_text.begin_at(m.column, m.row)
+                };
+                if anchored {
+                    self.text_drag = Some(TextDrag::Tip);
+                }
+                true
+            }
             // Taken at the top of the press, before the click-away rules.
             Hit::CurlNotice(part) => self.press_curl_notice(part),
             // The input closed at the top of this function (a close it

@@ -7,6 +7,7 @@
 pub mod brackets;
 pub mod class;
 mod class_table;
+pub mod graphemes;
 pub mod indent;
 pub mod mouse;
 

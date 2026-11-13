@@ -5,6 +5,9 @@ use crate::action::{Action, Place, ResponseMotion};
 use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
+use crate::text::graphemes::{
+    ColMark, grapheme_at_col, grapheme_edges, last_grapheme, whole_graphemes,
+};
 use crate::theme::Theme;
 use crate::vim::engine::SearchMemory;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
@@ -2742,23 +2745,6 @@ fn first_non_blank(text: &str) -> usize {
     len.saturating_sub(1)
 }
 
-/// The first char of the grapheme painted at display column `col` of
-/// `text` (wide graphemes span several columns), or `None` when `col` is
-/// past the text. The walk resumes from `from`, a `col_marks` entry at or
-/// before `col` (or the line start), as `viewport_window`'s does, so on
-/// an indexed raw line it segments `O(COL_MARK_STEP)` chars however far
-/// the row is scrolled (its caller still copies the line's text).
-fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
-    let (from_byte, from_char, mut w) = from;
-    for g in crate::ui::char_graphemes(&text[from_byte..]) {
-        w += g.width;
-        if w > col {
-            return Some(from_char + g.char);
-        }
-    }
-    None
-}
-
 /// The display columns `[start, end)` that the grapheme holding char `col`
 /// of `text` paints on, as ratatui paints it. A zero-width grapheme, or a
 /// column past the end (an empty line's), takes the one column there, as
@@ -2773,14 +2759,6 @@ fn cell_span(text: &str, col: usize, from: ColMark) -> (usize, usize) {
         w += g.width;
     }
     (w, w + 1)
-}
-
-/// The first char of `text`'s last grapheme (0 when empty). The grapheme
-/// is segmented from the end; only its char offset needs the line, as a
-/// plain char count (no segmenting, as cheap as the char count it took
-/// before #45).
-fn last_grapheme(text: &str) -> usize {
-    crate::ui::graphemes(text).next_back().map_or(0, |(byte, _, _)| text[..byte].chars().count())
 }
 
 /// The search hits that fall on one rendered line, as char ranges.
@@ -4204,50 +4182,29 @@ impl Response {
         let Some(anchor) = view.sel_anchor else {
             return false;
         };
-        // A drag's head is a boundary at the ragged edges: a downward
-        // sweep whose pointer sits on a row's first cell stops at the
-        // boundary *before* that char — the selection ends at the end of
-        // the line above instead of grabbing the row's first char — and
-        // an upward sweep whose pointer sits past a row's end starts at
-        // the boundary *after* its last char — the selection starts at
-        // the start of the row below instead of grabbing that last char.
-        // In between, the head cell is the sweep's leading edge and is
-        // included: down-drags take the char under the pointer, up-drags
-        // landing on a row start take its first char.
+        // The ragged edges' rules are the shared sweep's. Scrolled
+        // sideways, the left edge is mid-line for every row, so the
+        // pointer there is not on column 0 and the sweep takes the cell
+        // under it, a cut wide first glyph included.
         let area = view.last_area.expect("cell_at resolved through last_area");
         let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
         let disp_col = view.h_scroll + usize::from(xx - area.x);
-        if head.1 == 0 && head.0 > anchor.0 {
-            // The head is the row's first grapheme; the boundary is the
-            // pointer on that grapheme's first cell (line column 0), not
-            // on any of its cells: on the right half of a wide first glyph
-            // (`❤️`, `日`) the pointer is on that glyph, so the sweep takes
-            // it. Past a row's end (an empty row, or one glyph short of
-            // the pointer) is still the boundary. Scrolled sideways, the
-            // left edge is mid-line for every row and the sweep takes the
-            // cell under the pointer, a cut wide first glyph included.
-            let text = view.display_line_text(head.0).unwrap_or_default();
-            if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
-                let row = head.0 - 1;
-                // The row's last grapheme, as `cell_at` clamps a click past it.
-                let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
-                view.sel = Some((anchor, (row, last)));
-                return true;
-            }
-        }
-        if head.0 < anchor.0 {
-            // `cell_at` clamped a pointer past the row's end onto its
-            // last grapheme; re-check the pointed display column against the
-            // row to tell the two apart (a row that paints no cells has no
-            // last char to spuriously grab — it stays in the sweep).
-            let text = view.display_line_text(head.0).unwrap_or_default();
-            let paints = grapheme_at_col(&text, 0, (0, 0, 0)).is_some();
-            if paints && view.grapheme_at(head.0, &text, disp_col).is_none() {
-                view.sel = Some((anchor, (head.0 + 1, 0)));
-                return true;
-            }
-        }
-        view.sel = (head != anchor).then_some((anchor, head));
+        let at = |(row, col)| crate::text::Pos::new(row, col);
+        let v = &*view;
+        // The head row's text, built once if the sweep asks about it.
+        let head_text = std::cell::OnceCell::new();
+        let sel = crate::text::mouse::sweep(
+            at(anchor),
+            at(head),
+            disp_col,
+            |col| {
+                let text = head_text.get_or_init(|| v.display_line_text(head.0));
+                text.as_deref().is_some_and(|t| v.grapheme_at(head.0, t, col).is_some())
+            },
+            // The row's last grapheme, as `cell_at` clamps a click past it.
+            |row| v.display_line_text(row).map_or(0, |t| last_grapheme(&t)),
+        );
+        view.sel = sel.map(|(a, h)| ((a.row, a.col), (h.row, h.col)));
         true
     }
 
@@ -5516,48 +5473,6 @@ fn apply_col_style(line: Line<'static>, from: usize, to: usize, patch: Style) ->
 /// a scrolled frame on a megabyte line stays flat instead of re-walking
 /// its whole prefix.
 const COL_MARK_STEP: usize = 1024;
-
-/// A resume point for a column walk (`viewport_window`, `grapheme_at_col`)
-/// — a grapheme's byte offset, char index and the display column it
-/// starts at. `(0, 0, 0)` is the line start.
-type ColMark = (usize, usize, usize);
-
-/// The char offsets `text`'s graphemes start at, then its char count: the
-/// edges a highlight or a copy may end on, walked only until the first
-/// one past char `reach` — all that widening ranges whose finite ends lie
-/// by `reach` needs. `None` for ASCII text, where every char is a
-/// grapheme. One walk per row, however many ranges it widens.
-fn grapheme_edges(text: &str, reach: usize) -> Option<Vec<usize>> {
-    if text.is_ascii() {
-        return None;
-    }
-    let mut edges = Vec::new();
-    let mut end = 0;
-    for g in crate::ui::char_graphemes(text) {
-        edges.push(g.char);
-        if g.char > reach {
-            return Some(edges);
-        }
-        end = g.char + g.chars;
-    }
-    edges.push(end);
-    Some(edges)
-}
-
-/// The char range `[from, to)` widened out to whole graphemes (`edges`,
-/// from [`grapheme_edges`]), for a highlight or a copy: a span cut inside
-/// a grapheme makes ratatui paint each part alone, dropping a zero-width
-/// tail (a heart's selector, an accent) and shifting the row. An end
-/// already on an edge, or past the text, stays as it is.
-fn whole_graphemes(edges: Option<&[usize]>, (from, to): (usize, usize)) -> (usize, usize) {
-    let Some(edges) = edges else {
-        return (from, to);
-    };
-    let last = edges[edges.len() - 1];
-    let start = if from < last { edges[edges.partition_point(|&e| e <= from) - 1] } else { from };
-    let end = if to < last { edges[edges.partition_point(|&e| e < to)] } else { to };
-    (start, end)
-}
 
 /// The column index of `text`: entry `k` is the grapheme covering display
 /// column `k * COL_MARK_STEP` (a wide one covering two marks appears

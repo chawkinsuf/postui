@@ -168,6 +168,9 @@ pub enum TextDrag {
     Response,
     /// A text field's: the body, or a one-line field.
     Field(crate::keyroute::FieldId),
+    /// The variable tooltip's text (#294). While it is armed the tip stays
+    /// open, wherever the pointer goes.
+    Tip,
 }
 
 /// Whether `n` can't be a new declaration's name: one of the reserved
@@ -407,6 +410,9 @@ pub struct App {
     /// otherwise nothing shows — never a different token that happens to
     /// lie under the pointer — and the tipless frame clears the hold.
     pub(crate) tip_held: bool,
+    /// The drawn tip's rows and the mouse selection over them (#294),
+    /// cleared with the frame that draws no tip.
+    pub(crate) tip_text: crate::components::tip_text::TipText,
     /// Set when a sidebar right-click moved `sidebar.selected` onto the
     /// clicked row to open its context menu: the selection to restore
     /// (`Some(prev)`, itself possibly `None`) if that menu is dismissed
@@ -2068,6 +2074,7 @@ impl App {
             hovered_token: None,
             drawn_tip: None,
             tip_held: false,
+            tip_text: Default::default(),
             sidebar_menu_revert: None,
             modal_handoff: false,
             last_pointer_shape: PointerShape::Default,
@@ -11884,7 +11891,9 @@ impl App {
     }
 
     /// The text of whichever selection currently owns the keyboard, in
-    /// focus-priority order: in vim the live engine field's Visual (a
+    /// focus-priority order: the variable tooltip's (#294; it floats over
+    /// everything, and the next key or a press off the tip drops it); in vim the
+    /// live engine field's Visual (a
     /// mouse selection there becomes Visual; a modal parks the field, so
     /// it never has one under a modal), the top modal's text field, a
     /// Variable Manager edit, then (on the main screen) a table cell edit,
@@ -11892,6 +11901,9 @@ impl App {
     /// nothing is selected anywhere — the caller falls back to the key's
     /// normal meaning (ctrl+c quits).
     fn active_selection_text(&mut self) -> Option<String> {
+        if let Some(text) = self.tip_text.selected_text() {
+            return Some(text);
+        }
         if let Some(text) = self.vim_selection_text() {
             return Some(text);
         }
@@ -12510,10 +12522,14 @@ impl App {
         // its second press (task #85).
         let armed = self.disarm_quit();
         let ran = self.route_key(ev, armed.as_ref());
+        // A key ends the tooltip's selection (#294), a copy key after
+        // copying it, so a selection the key makes is the one ctrl+c
+        // copies next.
+        let unselected = self.tip_text.clear_selection();
         self.vim_after_key(ran);
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
-        let changed = ran.changed || self.key_echo() != echo || armed.is_some();
+        let changed = ran.changed || self.key_echo() != echo || armed.is_some() || unselected;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.

@@ -32107,6 +32107,162 @@ fn right_click_under_the_tooltip_reaches_the_row_beneath() {
     assert!(under.as_ref().is_none_or(|h| h.tip_name().is_none()), "{under:?}");
 }
 
+/// The tip's text cell `(col, row)`: the rows start inside two columns of
+/// padding and one row of it.
+fn tip_cell(app: &App, name: &str, col: u16, row: u16) -> (u16, u16) {
+    let panel = app.hits.rect_of(&Hit::TipPanel(name.into())).expect("the tip is drawn");
+    (panel.x + 2 + col, panel.y + 1 + row)
+}
+
+/// Sweeps the tip's text from cell `from` to cell `to` (`tip_cell`'s) with
+/// the button held, and releases there.
+fn sweep_tip(app: &mut App, name: &str, from: (u16, u16), to: (u16, u16)) {
+    let (fx, fy) = tip_cell(app, name, from.0, from.1);
+    let (tx, ty) = tip_cell(app, name, to.0, to.1);
+    app.handle_mouse(left_down(fx, fy));
+    app.handle_mouse(dragged(tx, ty));
+    app.handle_mouse(left_up(tx, ty));
+    render_once(app);
+}
+
+/// The tip's text is selectable (#294): a press on the panel anchors a
+/// sweep, button-held motion extends it, and ctrl+c copies it rather than
+/// quitting, the tip staying up throughout. The selection paints on the
+/// selection colour.
+#[test]
+fn a_sweep_over_the_tooltip_selects_and_ctrl_c_copies_it() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    // `https://qa.example.com`: from `q` to the last `e` of `example`.
+    sweep_tip(&mut app, "base_url", (8, 0), (17, 0));
+    assert!(app.var_token_tip().is_some(), "the tip stays up");
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let bg = |col| buf[tip_cell(&app, "base_url", col, 0)].bg;
+    assert_eq!((bg(8), bg(17)), (app.theme.selection, app.theme.selection));
+    assert_ne!(bg(7), app.theme.selection);
+    assert_ne!(bg(18), app.theme.selection);
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "copy pre-empts quit");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "qa.example");
+}
+
+/// A sweep across the tip's rows copies what the tip shows, row by row:
+/// the value, the blank row, the name and its source, the description.
+#[test]
+fn a_sweep_across_the_tooltips_rows_copies_them_as_shown() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    sweep_tip(&mut app, "base_url", (0, 0), (7, 4));
+    app.handle_key(ctrl('c'));
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "https://qa.example.com\n\nbase_url  qa\n\nAPI root"
+    );
+}
+
+/// A value wrapped across rows copies back as the one value it is, and a
+/// masked secret copies as the dots it shows (#294).
+#[test]
+fn a_wrapped_value_copies_whole_and_a_masked_secret_copies_its_dots() {
+    let (mut app, dir, out) = tooltip_app("base_url");
+    let long = format!("https://{}.example.com", "a".repeat(50));
+    std::fs::write(dir.path().join("environments/qa.toml"), format!("base_url = \"{long}\"\n"))
+        .unwrap();
+    app.proj_mut().invalidate_stamps();
+    app.update(Action::ReloadProjectFiles);
+    hover_token(&mut app, "base_url");
+    // The value wraps a pill strip short of 56 cells: 49 on the first row,
+    // the last 21 on the second.
+    sweep_tip(&mut app, "base_url", (0, 0), (20, 1));
+    assert!(app.var_token_tip().is_some(), "released on the tip, it stays up");
+    app.handle_key(ctrl('c'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), long, "no break where it wrapped");
+
+    let (mut app, _dir, out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    sweep_tip(&mut app, "api_key", (0, 0), (14, 0));
+    app.handle_key(ctrl('c'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "\u{25cf}".repeat(15), "as shown");
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    render_once(&mut app);
+    assert_eq!(app.tip_text.selected_text(), None, "the text it was made over is gone");
+    sweep_tip(&mut app, "api_key", (0, 0), (14, 0));
+    app.handle_key(ctrl('c'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "sk-super-secret", "revealed");
+}
+
+/// A double click on the tip's text takes the word under it, as the
+/// response text's does.
+#[test]
+fn a_double_click_on_the_tooltip_takes_the_word() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let (x, y) = tip_cell(&app, "base_url", 9, 0);
+    for _ in 0..2 {
+        app.handle_mouse(left_down(x, y));
+        app.handle_mouse(left_up(x, y));
+    }
+    render_once(&mut app);
+    app.handle_key(ctrl('c'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "qa");
+}
+
+/// The tip stays up while the button is held after a press on it, even
+/// with the pointer off it; released away from it, it closes as usual and
+/// takes its selection with it (#294).
+#[test]
+fn the_tooltip_holds_through_a_sweep_and_closes_on_a_release_away() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let tip = app.var_token_tip().expect("the rested tip");
+    let (x, y) = tip_cell(&app, "base_url", 0, 0);
+    app.handle_mouse(left_down(x, y));
+    render_once(&mut app);
+    app.handle_mouse(dragged(110, 35));
+    render_once(&mut app);
+    assert_eq!(app.var_token_tip(), Some(tip), "held while the button is");
+    assert!(app.tip_text.selected_text().is_some());
+    app.handle_mouse(left_up(110, 35));
+    render_once(&mut app);
+    assert_eq!(app.var_token_tip(), None, "released away, it closes");
+    assert_eq!(app.tip_text.selected_text(), None);
+}
+
+/// A press anywhere off the tip drops its selection, so ctrl+c then copies
+/// nothing of it; a click on a pill still acts as before.
+#[test]
+fn a_press_off_the_tooltip_drops_its_selection_and_pills_still_click() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    sweep_tip(&mut app, "base_url", (0, 0), (4, 0));
+    click_hit(&mut app, Hit::TipCopy("base_url".into()));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+    assert_eq!(app.tip_text.selected_text().as_deref(), Some("https"), "a pill keeps it");
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    app.handle_mouse(left_down(panel.x, panel.bottom() + 3));
+    assert_eq!(app.tip_text.selected_text(), None);
+}
+
+/// A key ends the tip's selection, a copy key after copying it (#294), so
+/// ctrl+c never copies it over a selection a key makes after it.
+#[test]
+fn a_key_ends_the_tooltips_selection() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    sweep_tip(&mut app, "base_url", (0, 0), (4, 0));
+    app.handle_key(ctrl('c'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https");
+    assert_eq!(app.tip_text.selected_text(), None, "the copy ends it");
+    sweep_tip(&mut app, "base_url", (0, 0), (4, 0));
+    assert!(app.tip_text.selected_text().is_some());
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)), "it repaints");
+    assert_eq!(app.tip_text.selected_text(), None);
+}
+
 /// A token drawn twice (URL and a header value) holds the instance the
 /// tip was raised for: entering the panel must not re-anchor the tip at
 /// the other instance and lose it.

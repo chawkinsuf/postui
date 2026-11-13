@@ -15,6 +15,7 @@ pub mod settings;
 pub mod sidebar;
 pub mod table_editor;
 pub mod testbed;
+pub mod tip_text;
 pub mod toast;
 pub mod var_picker;
 pub mod var_tokens;
