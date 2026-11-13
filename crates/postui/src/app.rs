@@ -12780,11 +12780,13 @@ impl App {
                 return true; // swallowed even when inert — never typed
             }
             // The key that opens Manage opens an edit dialog's row there
-            // (#295), as its Manage control does. A dialog with no row
-            // swallows it below, as before. A bare letter bound to it stays
-            // typing.
-            if global == Some(Action::OpenManage { tab: None })
-                && (modified || !matches!(ev.code, KeyCode::Char(_)))
+            // (#295), as its Manage control does. It is a keymap binding,
+            // which the modal's own key handler doesn't see, so it is
+            // caught here; only as a ctrl/alt combo, like paste's (1b), so
+            // the dialog keeps its bare keys (Tab, Enter, letters). A
+            // dialog with no row swallows it below, as before.
+            if modified
+                && global == Some(Action::OpenManage { tab: None })
                 && let Some(res) = self.modals.open_in_manage()
             {
                 return self.apply_modal_result(res);

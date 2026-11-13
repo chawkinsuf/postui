@@ -898,17 +898,33 @@ impl Modal {
     }
 }
 
-/// An edit dialog's Manage control (#295), on the right of its title row
-/// inside `area`, in the accent text the value popup's "✕ remove" uses.
-pub(crate) fn draw_manage_control(
+/// A dialog's title on its title row inside `area`, clipped to the row,
+/// and with `manage` its Manage control (#295) at the row's right.
+pub(crate) fn draw_title(
     buf: &mut ratatui::buffer::Buffer,
     hits: &mut crate::hit::HitMap,
     theme: &Theme,
     hovered: Option<&crate::hit::Hit>,
     area: Rect,
+    title: &str,
+    manage: bool,
 ) {
     let label = manage_label();
     let w = crate::ui::cells(&label) as u16;
+    let room = if manage { w + 1 } else { 0 };
+    paint::text(
+        buf,
+        area.x + 2,
+        area.y + 1,
+        crate::ui::clip(title, area.width.saturating_sub(4 + room)),
+        theme.text,
+        theme.panel,
+        true,
+    );
+    if !manage {
+        return;
+    }
+    // In the accent text the value popup's "✕ remove" uses.
     let rect = Rect {
         x: area.right().saturating_sub(2 + w).max(area.x),
         y: area.y + 1,
@@ -933,12 +949,6 @@ const MANAGE_KEY: Key = Key::Of(Action::OpenManage { tab: None });
 /// The Manage control's text: the open-in-new icon and the screen's name.
 fn manage_label() -> String {
     format!("{} Manage", crate::glyph::OPEN_IN_NEW)
-}
-
-/// The cells a dialog's title gives up to its Manage control: the
-/// control and a gap.
-pub(crate) fn manage_control_room_cells() -> u16 {
-    crate::ui::cells(&manage_label()) as u16 + 1
 }
 
 /// One field close on the top form modal's stack (spec 2026-09-16):
@@ -1444,6 +1454,13 @@ impl ModalStack {
         })
     }
 
+    /// The footer chip for the top dialog's Manage key (#295), when the
+    /// dialog has a Manage row.
+    fn manage_chip<L: From<&'static str>>(&self) -> Option<(Key, L, Option<Action>)> {
+        self.top()?.manage_target()?;
+        Some((MANAGE_KEY, "manage".into(), None))
+    }
+
     /// Shows or hides the secret prompt's value (plan M3b Deviation 4).
     /// `false` when the top dialog is not the secret prompt.
     pub(crate) fn toggle_secret_reveal(&mut self) -> bool {
@@ -1898,9 +1915,7 @@ impl ModalStack {
                     None,
                 ));
             }
-            if self.top().and_then(Modal::manage_target).is_some() {
-                chips.push((MANAGE_KEY, "manage".to_string(), None));
-            }
+            chips.extend(self.manage_chip());
             chips.extend([
                 // Vim reopens with `o` and confirms with Enter (spec §5.10,
                 // plan M4b Deviation 22); arrows reads the named keys.
@@ -1964,9 +1979,7 @@ impl ModalStack {
                             None,
                         ));
                     }
-                    if self.top().and_then(Modal::manage_target).is_some() {
-                        chips.push((MANAGE_KEY, "manage", None));
-                    }
+                    chips.extend(self.manage_chip());
                 } else if fields.len() > 1 {
                     chips.push((Key::Named("tab"), "next field", None));
                 }
@@ -2016,9 +2029,7 @@ impl ModalStack {
             Modal::Prompt { revealed, kind, .. } if kind.is_secret() => {
                 let mut chips =
                     vec![(Key::Named("ctrl+r"), if *revealed { "hide" } else { "reveal" }, None)];
-                if self.top().and_then(Modal::manage_target).is_some() {
-                    chips.push((MANAGE_KEY, "manage", None));
-                }
+                chips.extend(self.manage_chip());
                 chips.push((Key::Named("enter"), "confirm", Some(Action::ConfirmTopModal)));
                 chips.push((Key::Named("esc"), "cancel", Some(Action::CancelTopModal)));
                 chips
@@ -2086,13 +2097,13 @@ impl ModalStack {
                     (Key::Named("esc"), "close", None),
                 ]
             }
-            // The option picker: its selector opens in Manage (#295).
-            Modal::VarPicker(_) => vec![
-                (Key::Pick, "navigate", None),
-                (Key::Named("enter"), "select", None),
-                (MANAGE_KEY, "manage", None),
-                (Key::Named("esc"), "close", None),
-            ],
+            Modal::VarPicker(_) => {
+                let mut chips =
+                    vec![(Key::Pick, "navigate", None), (Key::Named("enter"), "select", None)];
+                chips.extend(self.manage_chip());
+                chips.push((Key::Named("esc"), "close", None));
+                chips
+            }
             Modal::Palette(_) => vec![
                 (Key::Pick, "navigate", None),
                 (Key::Named("enter"), "run", None),
@@ -3018,10 +3029,9 @@ impl ModalStack {
         // outside them (topmost-wins in `HitMap`) closes the modal, same as
         // Esc — live for every variant, not just Dropdown.
         hits.register(backdrop, crate::hit::Hit::ModalOutside);
-        // What the title gives up to an edit dialog's Manage control, read
-        // before the arms below borrow the modal's parts.
-        let manage_room =
-            if top.manage_target().is_some() { manage_control_room_cells() } else { 0 };
+        // Whether the title row carries a Manage control, read before the
+        // arms below borrow the modal's parts.
+        let manage = top.manage_target().is_some();
         match top {
             // Each choice of the three blocking dialogs is its own clickable
             // painted button; there is deliberately no Cancel -- see the
@@ -3182,21 +3192,7 @@ impl ModalStack {
                 }
 
                 let title_y = area.y + 1;
-                // Clipped, always: a title is one line, and a long one
-                // used to run straight out of the panel and across the
-                // dimmed screen behind it.
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    title_y,
-                    crate::ui::clip(title, area.width.saturating_sub(4 + manage_room)),
-                    theme.text,
-                    theme.panel,
-                    true,
-                );
-                if manage_room > 0 {
-                    draw_manage_control(frame.buffer_mut(), hits, theme, hovered, area);
-                }
+                draw_title(frame.buffer_mut(), hits, theme, hovered, area, title, manage);
 
                 // A secret prompt keeps a reveal button beside its field,
                 // the same block height (field and button share one
@@ -3378,7 +3374,7 @@ impl ModalStack {
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::FilePicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
-            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
+            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t, manage),
             Modal::NewProject { name, path, on_path, .. } => {
                 let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
@@ -3513,18 +3509,7 @@ impl ModalStack {
                 }
 
                 let title_y = area.y + 1;
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    title_y,
-                    crate::ui::clip(title, area.width.saturating_sub(4 + manage_room)),
-                    theme.text,
-                    theme.panel,
-                    true,
-                );
-                if manage_room > 0 {
-                    draw_manage_control(frame.buffer_mut(), hits, theme, hovered, area);
-                }
+                draw_title(frame.buffer_mut(), hits, theme, hovered, area, title, manage);
 
                 let field_x = area.x + 2;
                 let field_w = area.width.saturating_sub(4);

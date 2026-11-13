@@ -40813,6 +40813,15 @@ fn a_dialog_with_no_manage_row_has_no_manage_control() {
     });
     render_once(&mut app);
     assert!(app.hits.rect_of(&Hit::ModalManage).is_none());
+
+    // The insert picker: no control, no footer chip.
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.update(Action::OpenVarTokenPopup("nowhere".into()));
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ModalManage).is_none());
+    let footer = footer_text(&mut app);
+    assert!(!footer.contains("manage"), "{footer}");
 }
 
 /// The control sits at the right of the dialog's title row, and the footer
@@ -40846,4 +40855,16 @@ fn the_manage_key_works_over_a_dialog_in_the_vim_profile() {
     app.handle_key(alt('r'));
     assert!(app.modals.is_empty());
     assert!(manage_shows(&app, VmDetail::Var("base_url".into())));
+}
+
+/// A bare key bound to open Manage stays the dialog's own: Tab still
+/// moves the value popup's focus.
+#[test]
+fn a_bare_key_bound_to_manage_stays_the_dialogs() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.keymap.bind(crate::keys::KeyCombo::parse("tab").unwrap(), Action::OpenManage { tab: None });
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { focus: 1, .. })));
+    assert_eq!(app.screen, Screen::Main);
 }
