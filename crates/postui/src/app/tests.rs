@@ -22528,7 +22528,7 @@ mod undo_tests {
         let saved_before = app.editor.saved.clone();
         let mut req = app.editor.current_request();
         req.url = "https://example.com".into();
-        app.editor.apply_snapshot(&req, None, &Default::default());
+        app.editor.apply_snapshot(&req, None);
         assert_eq!(app.editor.url.text(), "https://example.com");
         assert_eq!(app.editor.saved, saved_before, "saved snapshot untouched");
         assert!(app.editor.is_dirty());

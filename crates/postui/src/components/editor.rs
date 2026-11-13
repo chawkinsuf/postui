@@ -359,7 +359,6 @@ pub struct Editor {
     /// Host and Content-Length never are (spec R3a). Recomputed
     /// every draw by `recompute_computed_headers` (cheap, small N) so an
     /// env switch or a body edit shows up live; never itself edited here.
-    /// The Vars tab's referenced list reads its sent defaults (task #292).
     pub computed: ComputedHeadersView,
     /// The variable snapshot inline `{{token}}` highlighting and the hover
     /// tooltip resolve against (spec §7), synced by `App::update` on every
@@ -367,6 +366,11 @@ pub struct Editor {
     /// token (URL bar, table cells, computed-header rows, the body editor)
     /// tints and registers its spans from this.
     pub vars: crate::components::var_tokens::VarView,
+    /// The project's side of a send (its resolved variables and default
+    /// headers), synced by `App::update` on every action alongside `vars`.
+    /// The Vars tab's referenced list asks `header_rows` with it which
+    /// default headers the send carries (task #292).
+    pub send_context: postui_core::prepare::PrepareContext,
 }
 
 /// State for [`Editor::draw_computed_headers`], read off
@@ -419,6 +423,7 @@ impl Default for Editor {
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
             vars: Default::default(),
+            send_context: Default::default(),
             body: new_body_state(""),
             body_hl_text: String::new(),
             body_hl_marker: None,
@@ -619,15 +624,8 @@ impl Editor {
     /// removed (undoing a row add) goes to `fallback` instead, the spot an
     /// undo step recorded on this tab (task #121), so the undo lands where
     /// the cursor was before the op; with none on this tab it falls back
-    /// as `restore_caret` does. `computed` is worked out against `ctx`
-    /// before the caret is placed, so a Vars tab caret finds its variable
-    /// in the list of the swapped-in fields.
-    pub fn apply_snapshot(
-        &mut self,
-        req: &HttpRequest,
-        fallback: Option<TableCursor>,
-        ctx: &postui_core::prepare::PrepareContext,
-    ) {
+    /// as `restore_caret` does.
+    pub fn apply_snapshot(&mut self, req: &HttpRequest, fallback: Option<TableCursor>) {
         let caret = self.caret();
         let keys_before: Vec<String> =
             (0..self.table_len()).filter_map(|i| self.table_key_at(i)).collect();
@@ -656,7 +654,6 @@ impl Editor {
         if !on_table {
             self.table.set_selected(None);
         }
-        self.recompute_computed_headers(ctx);
         // The table's caret is put back in one write (`restore_caret`), so a
         // cursor that comes back where it was is no cursor move (S23).
         self.restore_caret(&caret, fallback);
@@ -790,10 +787,11 @@ impl Editor {
                 // A name the swap removed goes to the recorded spot, else
                 // stays at its old place, as a table row whose key is gone
                 // does (`Caret::Cell`): the neighbour now there. A Headers
-                // auto row has no name to be found by, so it keeps its
-                // place, clamped on the next frame. Its row came from an
-                // edit the cursor moved onto afterwards, so no recorded
-                // spot names it anyway.
+                // auto row (no name) can't be told gone here: `App` works
+                // the auto rows out after the swap, so it keeps its place,
+                // clamped on the next frame. Its row came from an edit the
+                // cursor moved onto afterwards, so no recorded spot names
+                // it anyway.
                 let stop = match name {
                     None => Stop::Section(*index),
                     Some(n) => match self.referenced_row_of(n) {
@@ -3995,10 +3993,20 @@ impl Editor {
                 }
             }
         }
-        // A sent default's `overriding_row` is its name and value as
-        // written; a replaced, duplicate or client-owned one has none.
+        // Which defaults are sent is `header_rows`'s verdict, worked out
+        // here from the fields as they stand. A default's verdict reads only
+        // the request's header names and its variables, so the copy leaves
+        // the rest (the body) out. A sent default's `overriding_row` is its
+        // name and value as written; a replaced, duplicate or client-owned
+        // one has none.
+        let headers_only = HttpRequest {
+            headers: self.headers.clone(),
+            variables: self.variables.clone(),
+            ..HttpRequest::default()
+        };
+        let rows = postui_core::prepare::header_rows(&headers_only, &self.send_context);
         let default = postui_core::prepare::HeaderOrigin::Default;
-        let defaults = self.computed.rows.iter().filter(|r| r.origin == default);
+        let defaults = rows.iter().filter(|r| r.origin == default);
         for (name, value) in defaults.filter_map(|r| r.overriding_row()) {
             scan(name);
             scan(value);
@@ -5426,7 +5434,7 @@ mod tests {
         e.table.set_selected(Some(Stop::Section(0)));
         let mut req = e.current_request();
         req.headers.insert("X-B".into(), Entry { value: "2".into(), enabled: true });
-        e.apply_snapshot(&req, None, &Default::default());
+        e.apply_snapshot(&req, None);
         assert_eq!(e.table.selected(), Some(Stop::Row(1)), "on the row the swap brought back");
     }
 
@@ -5447,13 +5455,13 @@ mod tests {
         e.headers.insert("X-C".into(), Entry { value: "1".into(), enabled: true });
         e.table.set_selected(Some(Stop::Row(2)));
         let params = TableCursor { tab: EditorTab::Params, stop: Stop::Row(0) };
-        e.apply_snapshot(&before, Some(params), &Default::default());
+        e.apply_snapshot(&before, Some(params));
         assert_eq!(e.table.selected(), Some(Stop::Row(1)), "R8: the last real row");
 
         e.headers.insert("X-C".into(), Entry { value: "1".into(), enabled: true });
         e.table.set_selected(Some(Stop::Row(2)));
         let here = TableCursor { tab: EditorTab::Headers, stop: Stop::Row(0) };
-        e.apply_snapshot(&before, Some(here), &Default::default());
+        e.apply_snapshot(&before, Some(here));
         assert_eq!(e.table.selected(), Some(Stop::Row(0)), "the recorded spot");
     }
 
@@ -5470,8 +5478,7 @@ mod tests {
         let before = e.current_request();
         e.url = LineInput::new("https://x/{{token}}");
         e.table.set_selected(Some(Stop::Section(0)));
-        let add = TableCursor { tab: EditorTab::Vars, stop: Stop::Add };
-        e.apply_snapshot(&before, Some(add), &Default::default());
+        e.apply_snapshot(&before, Some(TableCursor { tab: EditorTab::Vars, stop: Stop::Add }));
         assert_eq!(e.table.selected(), Some(Stop::Add));
     }
 
@@ -7250,7 +7257,7 @@ mod tests {
         assert_eq!(ed.current_request().jq, None, "an empty scratch is no filter");
         assert!(ed.is_dirty(), "the scratch is the request's (amendment A2)");
         req.jq = None;
-        ed.apply_snapshot(&req, None, &Default::default());
+        ed.apply_snapshot(&req, None);
         assert_eq!(ed.jq, "");
     }
 
@@ -7288,7 +7295,7 @@ mod tests {
         assert!(ed.is_dirty(), "switching the filter on is an edit");
         ed.jq_enabled = false;
         assert!(!ed.is_dirty(), "and back is clean again");
-        ed.apply_snapshot(&req, None, &Default::default());
+        ed.apply_snapshot(&req, None);
         assert!(!ed.jq_enabled);
     }
 
@@ -7383,7 +7390,7 @@ mod tests {
         assert_eq!(ids_after, ids_before, "a request from memory keeps its own ids");
         assert!(!ed.jq_modified("ids"), "discarded");
         // Undoing the discard puts the edited snapshot back, exactly.
-        ed.apply_snapshot(&before_discard, None, &Default::default());
+        ed.apply_snapshot(&before_discard, None);
         assert_eq!(ed.current_request(), before_discard);
         assert_eq!(ed.jq_saved_filter("ids"), Some(".items[].id"), "its own saved text");
         assert_eq!(ed.jq_saved_filter("c"), Some(""), "and c's its own");
@@ -7430,7 +7437,7 @@ mod tests {
             new_ids.iter().all(|n| old_ids.iter().all(|o| n > o)),
             "a read from disk numbers past every earlier id: {old_ids:?} then {new_ids:?}"
         );
-        ed.apply_snapshot(&buffer, None, &Default::default());
+        ed.apply_snapshot(&buffer, None);
         assert_eq!(ed.jq_saved_filter("names"), None, "never matched by name");
         assert!(!ed.jq_modified("names"), "no mark");
         ed.jq_revert();
@@ -7447,7 +7454,7 @@ mod tests {
         ed.jq_delete("names");
         ed.jq_rename("ids", "names").unwrap();
         ed.mark_saved();
-        ed.apply_snapshot(&before, None, &Default::default());
+        ed.apply_snapshot(&before, None);
         assert_eq!(ed.jq_saved_filter("names"), None, "view 1 was deleted before the save");
         assert_eq!(ed.jq_saved_filter("ids"), Some(".items[].id"), "view 2, by id");
     }
@@ -7515,7 +7522,7 @@ mod tests {
         snap.jq_views[1].id = 9;
         snap.jq_current = Some("ids".into());
         snap.jq = Some(".s".into());
-        ed.apply_snapshot(&snap, None, &Default::default());
+        ed.apply_snapshot(&snap, None);
         assert_eq!(ed.jq_views[1].id, 9);
         assert_eq!(ed.jq_current.as_deref(), Some("ids"));
         assert_eq!(ed.jq, ".s");
@@ -8899,13 +8906,31 @@ url = "https://api.example.com/users""#,
         ] {
             ctx.default_headers.insert(k.into(), v);
         }
-        e.recompute_computed_headers(&ctx);
+        e.send_context = ctx;
         assert_eq!(
             e.referenced_var_names(),
             ["base", "mine", "key_name", "token", "first", "from_var"],
             "deduped, the sent defaults after the request's headers"
         );
         assert_eq!(e.section_len(), 6, "each is a row of the referenced section");
+    }
+
+    /// Task #292: which defaults are sent follows the fields as they stand,
+    /// with no draw in between: right after a load, and after an undo's
+    /// snapshot swap.
+    #[test]
+    fn vars_tab_default_header_variables_follow_the_request_without_a_draw() {
+        let on = |v: &str| Entry { value: v.into(), enabled: true };
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        e.send_context.default_headers.insert("Authorization".into(), on("Bearer {{token}}"));
+        let mut own = HttpRequest::default();
+        own.headers.insert("authorization".into(), on("mine"));
+        e.load(Some("own".into()), own.clone());
+        assert_eq!(e.referenced_row_of("token"), None, "the request's row replaces it");
+        e.load(Some("plain".into()), HttpRequest::default());
+        assert_eq!(e.referenced_row_of("token"), Some(0), "sent on this one");
+        e.apply_snapshot(&own, None);
+        assert_eq!(e.referenced_row_of("token"), None, "replaced again");
     }
 
     /// A referenced row's room splits between the value and its source:

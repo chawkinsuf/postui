@@ -105,11 +105,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // Task 10): cheap (small N), and keeps the computed section
             // live across an env switch or an in-progress edit without
             // having to track exactly which action invalidates it. Gated on
-            // the active tab -- only the Headers tab and the Vars tab's
-            // referenced list (task #292) read it, so skip building the
-            // context and its one pass on the others.
-            use crate::components::editor::EditorTab;
-            if matches!(app.editor.active_tab, EditorTab::Headers | EditorTab::Vars) {
+            // the active tab -- there's nothing on screen to read it on any
+            // other tab, so skip building the context and its one pass.
+            if app.editor.active_tab == crate::components::editor::EditorTab::Headers {
                 let prepare_ctx = app.prepare_context();
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
