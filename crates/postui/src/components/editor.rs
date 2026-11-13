@@ -380,8 +380,9 @@ pub struct Editor {
 pub struct ComputedHeadersView {
     /// The auto section's rows, in `header_rows` order: every row other
     /// than the request's own (the editable table shows those), sent or
-    /// not; one that isn't sent sits where it would have gone and draws
-    /// struck through (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
+    /// not (save an auto row a sent default replaces, task #293); one that
+    /// isn't sent sits where it would have gone and draws struck through
+    /// (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
     /// The request table's notes, one per row: a row kept off the wire
     /// because the client owns its header (spec 2026-10-18 R3a) is
@@ -861,9 +862,11 @@ impl Editor {
                 }
                 // Every other row is drawn, an unsent one struck through,
                 // so the user sees what is overridden (task #57): a
-                // default, the auto `Content-Type` or `Accept`, or the URL's
-                // `Authorization`, whether a typed row or a default replaced
-                // it. A struck `Authorization` shows its credential no more
+                // default or the auto `Content-Type` or `Accept` a typed row
+                // replaced, or the URL's `Authorization`, whether a typed
+                // row or a default replaced it. An auto row a sent default
+                // replaces is not in `header_rows` at all (task #293). A
+                // struck `Authorization` shows its credential no more
                 // than the URL bar shows the userinfo, and masks the same
                 // way when a secret is in it.
                 HeaderOrigin::Default | HeaderOrigin::Auto | HeaderOrigin::Client => auto.push(r),
@@ -9215,7 +9218,8 @@ url = "https://api.example.com/users""#,
     /// A row that overrides an auto or client row leaves that row in the
     /// auto section, struck through, so the user sees what is overridden
     /// (task #57): the auto `Accept` and `Content-Type`, the URL's
-    /// `Authorization` — by a typed row, or by a project default.
+    /// `Authorization`. A project default replacing the auto `Accept` is
+    /// the exception: the auto row is left out (task #293).
     #[test]
     fn headers_tab_strikes_the_auto_rows_something_overrides() {
         let mut app = App::new_for_test();
@@ -9247,7 +9251,7 @@ url = "https://api.example.com/users""#,
             assert!(!buffer_has_crossed_out(buf, typed), "{typed} is sent");
         }
 
-        // A project default replaces the auto Accept just the same.
+        // A project default replacing the auto Accept is listed alone.
         let root = app.proj().root().to_path_buf();
         std::fs::write(root.join("project.toml"), "[default_headers]\nAccept = \"text/html\"\n")
             .unwrap();
@@ -9256,12 +9260,11 @@ url = "https://api.example.com/users""#,
         app.update(Action::Render);
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
-        assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
+        let content = format!("{buf:?}");
+        assert_eq!(content.matches("Accept: ").count(), 1, "the default only: {content}");
+        assert!(content.contains("Accept: text/html"), "the default is drawn");
         assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
-        assert!(
-            buffer_has_crossed_out(buf, "Accept: application/json"),
-            "the auto Accept it replaces"
-        );
+        assert!(!content.contains("Accept: application/json"), "the auto Accept is left out");
     }
 
     /// A struck auto row's strike starts on the name's first char: the

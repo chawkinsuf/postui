@@ -521,7 +521,8 @@ fn fixed_row(
 /// Every header of `req`'s send, in wire order — the client's
 /// `Authorization` from the URL's userinfo, enabled defaults, enabled
 /// request rows, the auto `Content-Type` and `Accept`, then the client's
-/// `Host` and `Content-Length` — whether sent or not. The order is the
+/// `Host` and `Content-Length` — whether sent or not, save an auto row a
+/// sent default replaces, which is left out (task #293). The order is the
 /// order rows go into the client's header map, which [`wire_order`] reads
 /// to place the client's rows (one put in before ours keeps its place
 /// when replaced), so it is a contract, not a display choice. The one
@@ -647,16 +648,24 @@ fn rows(
     // curl would leave it to curl's, so it is ours to send. A request row
     // or project default naming `accept` (the pencil writes one) replaces
     // it. Each is shown as it is sent, and the request may take it over
-    // unless it has a row naming it already.
+    // unless it has a row naming it already. One a sent default replaces
+    // is left out, so the default is listed alone (task #293). One a
+    // request row replaces stays, unsent (#57).
     let auto = |name: &str, value: &str, rows: &[HeaderRow]| {
+        let by_default = rows.iter().any(|r| {
+            r.origin == HeaderOrigin::Default
+                && r.sent()
+                && r.header.name.eq_ignore_ascii_case(name)
+        });
         let take_over = (!named_by_request(name)).then(|| (name.into(), value.into()));
         let (unsent, origin) = (replaced(rows, name), HeaderOrigin::Auto);
-        fixed_row(name, value.into(), value.into(), origin, unsent, take_over)
+        (!by_default)
+            .then(|| fixed_row(name, value.into(), value.into(), origin, unsent, take_over))
     };
     if body_len.is_some() {
-        rows.push(auto("Content-Type", "application/json", &rows));
+        rows.extend(auto("Content-Type", "application/json", &rows));
     }
-    rows.push(auto("Accept", AUTO_ACCEPT, &rows));
+    rows.extend(auto("Accept", AUTO_ACCEPT, &rows));
 
     // The client's own rows. `Host` and the URL's `Authorization` are read
     // off the substituted template rather than `prepare`'s assembled URL so
@@ -1633,17 +1642,44 @@ mod tests {
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(wire(&p), vec![("accept".into(), "text/plain".into())], "and alone goes out");
 
-        // A sent default names it too — and so does the request row that
-        // keeps that default from being sent.
-        let req = base("https://api.example.com/v1");
+        // A sent default names it too (the auto row is then left out, see
+        // the test below), and so does the request row that keeps that
+        // default from being sent.
         let with_default = ctx(&[], &[("Accept", "text/plain", true)]);
-        assert!(!auto_accept(&header_rows(&req, &with_default)).sent());
         let mut req = base("https://api.example.com/v1");
         req.headers.insert("Accept".into(), on("x"));
         assert!(
             !auto_accept(&header_rows(&req, &with_default)).sent(),
             "the request row still names it even though the default is not sent"
         );
+    }
+
+    /// An auto row a sent project default replaces is not listed at all,
+    /// so the default stands alone (task #293). An enabled request row
+    /// naming it leaves it listed and unsent (#57); a disabled one keeps
+    /// the default off the wire, so the auto row is sent again.
+    #[test]
+    fn header_rows_leave_out_an_auto_row_a_sent_default_replaces() {
+        let mut req = base("https://api.example.com/v1");
+        req.method = Method::Post;
+        req.body = Some(Body::Json { text: "{}".into() });
+        let c = ctx(&[], &[("accept", "text/plain", true), ("Content-Type", "text/csv", true)]);
+        let rows = header_rows(&req, &c);
+        assert_eq!(auto(&rows, "Accept"), None);
+        assert_eq!(auto(&rows, "Content-Type"), None);
+        let names: Vec<&str> = rows.iter().map(|r| r.header.name.as_str()).collect();
+        assert_eq!(names, ["accept", "Content-Type", "Host", "Content-Length"]);
+        assert!(rows.iter().all(HeaderRow::sent));
+        let (p, _) = prepare(&req, &c).unwrap();
+        let wire: Vec<&str> = p.wire.iter().map(|h| h.value.as_str()).collect();
+        assert_eq!(wire, ["text/plain", "text/csv", "api.example.com", "2"]);
+
+        req.headers.insert("Accept".into(), on("x"));
+        req.headers.insert("Content-Type".into(), off("y"));
+        let rows = header_rows(&req, &c);
+        assert_eq!(auto_accept(&rows).unsent, Some(Unsent::Replaced), "by the request's row");
+        let ct = auto(&rows, "Content-Type").expect("listed once the default is replaced");
+        assert!(ct.sent(), "a disabled row replaces the default, not the auto row");
     }
 
     /// The length is counted without building the string, and agrees with
