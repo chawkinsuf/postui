@@ -628,7 +628,8 @@ impl App {
             ..import.request
         };
         self.no_coalesce = true;
-        self.editor.apply_snapshot(&replaced, None);
+        let ctx = self.prepare_context();
+        self.editor.apply_snapshot(&replaced, None, &ctx);
         self.sync_active_tab();
         let changed = self.editor.current_request() != current;
         // The hint only when there is a step to undo: a curl the request

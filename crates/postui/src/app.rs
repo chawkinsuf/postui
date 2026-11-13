@@ -2549,8 +2549,6 @@ impl App {
         };
         self.editor.shadowed = self.compute_shadowed(&vars);
         self.editor.vars = vars;
-        self.editor.project_headers =
-            self.project().map(|p| p.meta().default_headers.clone()).unwrap_or_default();
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one. The
@@ -13716,7 +13714,8 @@ impl App {
                 // fields) — undo never moves focus, as on the Manage screen.
                 // A table cursor whose row the swap removes goes back to the
                 // step's spot (task #121).
-                self.editor.apply_snapshot(&target, cursor);
+                let ctx = self.prepare_context();
+                self.editor.apply_snapshot(&target, cursor, &ctx);
                 self.sync_active_tab();
                 // The applied state IS the new shadow; without this the
                 // capture hook would record the undo as a fresh edit.

@@ -214,10 +214,6 @@ pub struct Editor {
     /// by the Vars tab's table draw to show the dim "overrides" hint
     /// trailing a shadowing row's value; never itself edited here.
     pub shadowed: IndexMap<String, String>,
-    /// The project's `[default_headers]`, synced by `App` on every
-    /// `update()` alongside `vars`, for the Vars tab's referenced list,
-    /// which takes in their `{{variables}}` (task #292).
-    pub project_headers: IndexMap<String, Entry>,
     /// The request body buffer. edtui owns the text, cursor and undo stack;
     /// it is only ever rewritten wholesale by an explicit user action
     /// (load / format / minify / external editor), so half-typed JSON
@@ -363,6 +359,7 @@ pub struct Editor {
     /// Host and Content-Length never are (spec R3a). Recomputed
     /// every draw by `recompute_computed_headers` (cheap, small N) so an
     /// env switch or a body edit shows up live; never itself edited here.
+    /// The Vars tab's referenced list reads its sent defaults (task #292).
     pub computed: ComputedHeadersView,
     /// The variable snapshot inline `{{token}}` highlighting and the hover
     /// tooltip resolve against (spec §7), synced by `App::update` on every
@@ -421,7 +418,6 @@ impl Default for Editor {
             headers: IndexMap::new(),
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
-            project_headers: IndexMap::new(),
             vars: Default::default(),
             body: new_body_state(""),
             body_hl_text: String::new(),
@@ -623,8 +619,15 @@ impl Editor {
     /// removed (undoing a row add) goes to `fallback` instead, the spot an
     /// undo step recorded on this tab (task #121), so the undo lands where
     /// the cursor was before the op; with none on this tab it falls back
-    /// as `restore_caret` does.
-    pub fn apply_snapshot(&mut self, req: &HttpRequest, fallback: Option<TableCursor>) {
+    /// as `restore_caret` does. `computed` is worked out against `ctx`
+    /// before the caret is placed, so a Vars tab caret finds its variable
+    /// in the list of the swapped-in fields.
+    pub fn apply_snapshot(
+        &mut self,
+        req: &HttpRequest,
+        fallback: Option<TableCursor>,
+        ctx: &postui_core::prepare::PrepareContext,
+    ) {
         let caret = self.caret();
         let keys_before: Vec<String> =
             (0..self.table_len()).filter_map(|i| self.table_key_at(i)).collect();
@@ -653,6 +656,7 @@ impl Editor {
         if !on_table {
             self.table.set_selected(None);
         }
+        self.recompute_computed_headers(ctx);
         // The table's caret is put back in one write (`restore_caret`), so a
         // cursor that comes back where it was is no cursor move (S23).
         self.restore_caret(&caret, fallback);
@@ -786,11 +790,10 @@ impl Editor {
                 // A name the swap removed goes to the recorded spot, else
                 // stays at its old place, as a table row whose key is gone
                 // does (`Caret::Cell`): the neighbour now there. A Headers
-                // auto row (no name) can't be told gone here: `App` works
-                // the auto rows out after the swap, so it keeps its place,
-                // clamped on the next frame. Its row came from an edit the
-                // cursor moved onto afterwards, so no recorded spot names
-                // it anyway.
+                // auto row has no name to be found by, so it keeps its
+                // place, clamped on the next frame. Its row came from an
+                // edit the cursor moved onto afterwards, so no recorded
+                // spot names it anyway.
                 let stop = match name {
                     None => Stop::Section(*index),
                     Some(n) => match self.referenced_row_of(n) {
@@ -3969,14 +3972,10 @@ impl Editor {
 
     /// Every `{{variable}}` the request references, deduped in first-seen
     /// order, from exactly the fields a send substitutes: the URL, enabled
-    /// param and header keys/values, the project's enabled default headers
-    /// (task #292), enabled request-var values, and the body only while
-    /// `substitute_body` is on. Shared by the Vars tab's height math and
-    /// its referenced-section draw so they can never disagree.
-    ///
-    /// A default the request's own row replaces is still scanned: the
-    /// Headers tab still lists it, struck through, and telling which
-    /// defaults are sent would take the send's header rules here.
+    /// param and header keys/values, the project default headers the send
+    /// carries (task #292), enabled request-var values, and the body only
+    /// while `substitute_body` is on. Shared by the Vars tab's height math
+    /// and its referenced-section draw so they can never disagree.
     fn referenced_var_names(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         let mut names = Vec::new();
@@ -3988,13 +3987,21 @@ impl Editor {
             }
         };
         scan(self.url.text());
-        for map in [&self.params, &self.headers, &self.project_headers] {
+        for map in [&self.params, &self.headers] {
             for (k, e) in map {
                 if e.enabled {
                     scan(k);
                     scan(&e.value);
                 }
             }
+        }
+        // A sent default's `overriding_row` is its name and value as
+        // written; a replaced, duplicate or client-owned one has none.
+        let default = postui_core::prepare::HeaderOrigin::Default;
+        let defaults = self.computed.rows.iter().filter(|r| r.origin == default);
+        for (name, value) in defaults.filter_map(|r| r.overriding_row()) {
+            scan(name);
+            scan(value);
         }
         for (_, e) in &self.variables {
             if e.enabled {
@@ -5419,7 +5426,7 @@ mod tests {
         e.table.set_selected(Some(Stop::Section(0)));
         let mut req = e.current_request();
         req.headers.insert("X-B".into(), Entry { value: "2".into(), enabled: true });
-        e.apply_snapshot(&req, None);
+        e.apply_snapshot(&req, None, &Default::default());
         assert_eq!(e.table.selected(), Some(Stop::Row(1)), "on the row the swap brought back");
     }
 
@@ -5440,13 +5447,13 @@ mod tests {
         e.headers.insert("X-C".into(), Entry { value: "1".into(), enabled: true });
         e.table.set_selected(Some(Stop::Row(2)));
         let params = TableCursor { tab: EditorTab::Params, stop: Stop::Row(0) };
-        e.apply_snapshot(&before, Some(params));
+        e.apply_snapshot(&before, Some(params), &Default::default());
         assert_eq!(e.table.selected(), Some(Stop::Row(1)), "R8: the last real row");
 
         e.headers.insert("X-C".into(), Entry { value: "1".into(), enabled: true });
         e.table.set_selected(Some(Stop::Row(2)));
         let here = TableCursor { tab: EditorTab::Headers, stop: Stop::Row(0) };
-        e.apply_snapshot(&before, Some(here));
+        e.apply_snapshot(&before, Some(here), &Default::default());
         assert_eq!(e.table.selected(), Some(Stop::Row(0)), "the recorded spot");
     }
 
@@ -5463,7 +5470,8 @@ mod tests {
         let before = e.current_request();
         e.url = LineInput::new("https://x/{{token}}");
         e.table.set_selected(Some(Stop::Section(0)));
-        e.apply_snapshot(&before, Some(TableCursor { tab: EditorTab::Vars, stop: Stop::Add }));
+        let add = TableCursor { tab: EditorTab::Vars, stop: Stop::Add };
+        e.apply_snapshot(&before, Some(add), &Default::default());
         assert_eq!(e.table.selected(), Some(Stop::Add));
     }
 
@@ -7242,7 +7250,7 @@ mod tests {
         assert_eq!(ed.current_request().jq, None, "an empty scratch is no filter");
         assert!(ed.is_dirty(), "the scratch is the request's (amendment A2)");
         req.jq = None;
-        ed.apply_snapshot(&req, None);
+        ed.apply_snapshot(&req, None, &Default::default());
         assert_eq!(ed.jq, "");
     }
 
@@ -7280,7 +7288,7 @@ mod tests {
         assert!(ed.is_dirty(), "switching the filter on is an edit");
         ed.jq_enabled = false;
         assert!(!ed.is_dirty(), "and back is clean again");
-        ed.apply_snapshot(&req, None);
+        ed.apply_snapshot(&req, None, &Default::default());
         assert!(!ed.jq_enabled);
     }
 
@@ -7375,7 +7383,7 @@ mod tests {
         assert_eq!(ids_after, ids_before, "a request from memory keeps its own ids");
         assert!(!ed.jq_modified("ids"), "discarded");
         // Undoing the discard puts the edited snapshot back, exactly.
-        ed.apply_snapshot(&before_discard, None);
+        ed.apply_snapshot(&before_discard, None, &Default::default());
         assert_eq!(ed.current_request(), before_discard);
         assert_eq!(ed.jq_saved_filter("ids"), Some(".items[].id"), "its own saved text");
         assert_eq!(ed.jq_saved_filter("c"), Some(""), "and c's its own");
@@ -7422,7 +7430,7 @@ mod tests {
             new_ids.iter().all(|n| old_ids.iter().all(|o| n > o)),
             "a read from disk numbers past every earlier id: {old_ids:?} then {new_ids:?}"
         );
-        ed.apply_snapshot(&buffer, None);
+        ed.apply_snapshot(&buffer, None, &Default::default());
         assert_eq!(ed.jq_saved_filter("names"), None, "never matched by name");
         assert!(!ed.jq_modified("names"), "no mark");
         ed.jq_revert();
@@ -7439,7 +7447,7 @@ mod tests {
         ed.jq_delete("names");
         ed.jq_rename("ids", "names").unwrap();
         ed.mark_saved();
-        ed.apply_snapshot(&before, None);
+        ed.apply_snapshot(&before, None, &Default::default());
         assert_eq!(ed.jq_saved_filter("names"), None, "view 1 was deleted before the save");
         assert_eq!(ed.jq_saved_filter("ids"), Some(".items[].id"), "view 2, by id");
     }
@@ -7507,7 +7515,7 @@ mod tests {
         snap.jq_views[1].id = 9;
         snap.jq_current = Some("ids".into());
         snap.jq = Some(".s".into());
-        ed.apply_snapshot(&snap, None);
+        ed.apply_snapshot(&snap, None, &Default::default());
         assert_eq!(ed.jq_views[1].id, 9);
         assert_eq!(ed.jq_current.as_deref(), Some("ids"));
         assert_eq!(ed.jq, ".s");
@@ -8864,27 +8872,40 @@ url = "https://api.example.com/users""#,
         assert!(content.contains("body_var"), "{content}");
     }
 
-    /// Task #292: the project's default headers are sent with the request,
-    /// so their variables are listed too, after the request's own headers'
-    /// and only from the enabled ones.
+    /// Task #292: the project's default headers the send carries are listed
+    /// too, after the request's own headers'. A default that isn't sent is
+    /// not: disabled, replaced by a request row (enabled or disabled), a
+    /// duplicate of an earlier default, or a header the client owns.
     #[test]
-    fn vars_tab_lists_the_variables_of_the_projects_default_headers() {
+    fn vars_tab_lists_the_variables_of_the_projects_sent_default_headers() {
+        let on = |v: &str| Entry { value: v.into(), enabled: true };
+        let off = |v: &str| Entry { value: v.into(), enabled: false };
         let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
         e.url = LineInput::new("https://{{base}}/v1");
-        e.headers.insert("x-mine".into(), Entry { value: "{{mine}}".into(), enabled: true });
-        e.variables.insert("own".into(), Entry { value: "{{from_var}}".into(), enabled: true });
-        e.project_headers
-            .insert("{{key_name}}".into(), Entry { value: "{{token}}".into(), enabled: true });
-        e.project_headers
-            .insert("x-base".into(), Entry { value: "{{base}}".into(), enabled: true });
-        e.project_headers
-            .insert("x-off".into(), Entry { value: "{{ignored}}".into(), enabled: false });
+        e.headers.insert("x-mine".into(), on("{{mine}}"));
+        e.headers.insert("authorization".into(), on("Basic abc"));
+        e.headers.insert("x-shut".into(), off("{{shut_own}}"));
+        e.variables.insert("own".into(), on("{{from_var}}"));
+        let mut ctx = postui_core::prepare::PrepareContext::default();
+        for (k, v) in [
+            ("{{key_name}}", on("{{token}}")),
+            ("x-base", on("{{base}}")),
+            ("x-off", off("{{ignored}}")),
+            ("Authorization", on("Bearer {{replaced}}")),
+            ("X-Shut", on("{{shut_default}}")),
+            ("X-Dup", on("{{first}}")),
+            ("x-dup", on("{{second}}")),
+            ("Host", on("{{host_tok}}")),
+        ] {
+            ctx.default_headers.insert(k.into(), v);
+        }
+        e.recompute_computed_headers(&ctx);
         assert_eq!(
             e.referenced_var_names(),
-            ["base", "mine", "key_name", "token", "from_var"],
-            "deduped, the defaults after the request's headers, a disabled default skipped"
+            ["base", "mine", "key_name", "token", "first", "from_var"],
+            "deduped, the sent defaults after the request's headers"
         );
-        assert_eq!(e.section_len(), 5, "each is a row of the referenced section");
+        assert_eq!(e.section_len(), 6, "each is a row of the referenced section");
     }
 
     /// A referenced row's room splits between the value and its source:
