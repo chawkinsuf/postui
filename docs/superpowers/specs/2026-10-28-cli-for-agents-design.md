@@ -223,6 +223,7 @@ drops them all as before #229 (#228's territory). See `2026-11-01-jq-stream-erro
 
 - Runs every request in the project, or in space S, **one at a time in
   sidebar order** (later requests may rely on earlier ones). (mine)
+  *Amended 2026-11-13 (#301, you):* one at a time stays the default; --jobs N lifts it on request. See 2026-11-13-suite-live-view-design.md.
 - One result per request: slug, method, status (or the send/prepare
   error), `elapsed` ms, size. Then totals. A request that fails to
   prepare (unresolved variable) is reported and skipped; the suite goes
@@ -533,7 +534,8 @@ Tests that drive the TUI also get a tmux check of the waiting screen.
 6. Exit codes: 0 fine, 1 a failed result (≥ 400, send or prepare error,
    check errors), 2 usage or project errors.
 7. Suite runs one at a time in sidebar order and keeps going past
-   failures.
+   failures. (Amended 2026-11-13, #301: `--jobs N` lifts one at a time on
+   request; see `2026-11-13-suite-live-view-design.md`.)
 8. *(Ad-hoc curl: moved to #213.)*
 9. One output mask replaces every secret value (4+ chars) everywhere,
    response bodies included; `run -o` files are raw and unmasked.

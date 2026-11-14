@@ -147,10 +147,19 @@ pub fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// request's `authorization` in `x-echo` and its body back; `/bytes` 200
 /// `ok\xff\xfe`; `/ndjson` 200 two NDJSON lines `{"part":…}`; `/sse` 200
 /// the same two values as server-sent events, then `data: [DONE]`; `/hang`
-/// never answers; anything else 200, empty.
+/// never answers; `/slow` 200, empty, after 300 ms, counting how many are
+/// in progress at once; anything else 200, empty.
 pub struct Server {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
+    slow: Arc<Mutex<InFlight>>,
+}
+
+/// The `/slow` requests in progress now, and the most there were at once.
+#[derive(Default)]
+struct InFlight {
+    now: usize,
+    most: usize,
 }
 
 impl Server {
@@ -159,15 +168,22 @@ impl Server {
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
+        let slow = Arc::new(Mutex::new(InFlight::default()));
+        let flight = slow.clone();
         // Sockets of `/hang` requests, kept open so they stay unanswered.
         let held = Arc::new(Mutex::new(Vec::new()));
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (log, held) = (log.clone(), held.clone());
-                std::thread::spawn(move || serve(stream, &log, &held));
+                let (log, held, flight) = (log.clone(), held.clone(), flight.clone());
+                std::thread::spawn(move || serve(stream, &log, &held, &flight));
             }
         });
-        Server { port, seen }
+        Server { port, seen, slow }
+    }
+
+    /// The most `/slow` requests that were in progress at one time.
+    pub fn max_in_flight(&self) -> usize {
+        self.slow.lock().unwrap().most
     }
 
     /// `http://127.0.0.1:<port>`.
@@ -182,7 +198,12 @@ impl Server {
 }
 
 /// Reads one request off `stream`, records it and answers it.
-fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpStream>>) {
+fn serve(
+    mut stream: TcpStream,
+    seen: &Mutex<Vec<String>>,
+    held: &Mutex<Vec<TcpStream>>,
+    slow: &Mutex<InFlight>,
+) {
     let mut data = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {
@@ -239,6 +260,16 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<String>>, held: &Mutex<Vec<TcpS
         "/hang" => {
             held.lock().unwrap().push(stream);
             return;
+        }
+        "/slow" => {
+            {
+                let mut flight = slow.lock().unwrap();
+                flight.now += 1;
+                flight.most = flight.most.max(flight.now);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            slow.lock().unwrap().now -= 1;
+            ("200 OK", String::new(), Vec::new())
         }
         _ => ("200 OK", String::new(), Vec::new()),
     };

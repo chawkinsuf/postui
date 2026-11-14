@@ -161,6 +161,7 @@ postui requests                          # the project's requests
 postui run main/users/list-users         # send one and print the response
 postui run main/users/list-users --jq '.[].name'
 postui suite                             # send them all: status and timing
+postui suite -j 4 -i                     # pick env and options, four at a time
 postui check                             # validate the files and variables
 ```
 

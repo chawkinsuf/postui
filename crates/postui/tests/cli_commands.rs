@@ -1163,6 +1163,7 @@ fn read_commands_send_nothing() {
         assert_ne!(out.status.code(), Some(2), "{command}");
     }
     assert!(server.seen().is_empty(), "{:?}", server.seen());
+    assert_eq!(server.max_in_flight(), 0);
 }
 
 /// Review Focus 5: a reader that stopped ends the run quietly.

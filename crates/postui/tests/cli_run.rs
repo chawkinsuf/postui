@@ -1016,8 +1016,93 @@ fn suite_runs_in_sidebar_order_and_keeps_going() {
     assert_eq!(v["totals"]["requests"], 6);
     assert_eq!(v["totals"]["passed"], 3);
     assert_eq!(v["totals"]["failed"], 3);
+    // Spec 2026-11-13 §6: the total is the run's wall-clock time, which one
+    // at a time is at least the sum of the results' own.
     let sum: u64 = results.iter().filter_map(|r| r["elapsed_ms"].as_u64()).sum();
-    assert_eq!(v["totals"]["elapsed_ms"], sum);
+    assert!(v["totals"]["elapsed_ms"].as_u64().unwrap() >= sum, "{v}");
+}
+
+/// main: a-slow, b-slow, c-slow (each answered after 300 ms), d-ok.
+fn slow_suite_project(home: &Home, base: &str) -> PathBuf {
+    write_suite_project(
+        home,
+        base,
+        &[
+            ("main/a-slow", &get("/slow")),
+            ("main/b-slow", &get("/slow")),
+            ("main/c-slow", &get("/slow")),
+            ("main/d-ok", &get("/ok")),
+        ],
+    )
+}
+
+/// The `request` of each result, in the order the report gives them.
+fn result_slugs(v: &serde_json::Value) -> Vec<String> {
+    v["results"].as_array().unwrap().iter().map(|r| r["request"].as_str().unwrap().into()).collect()
+}
+
+/// Spec 2026-11-13 §6: `--jobs N` sends up to N at once, and the rows are
+/// still reported in sidebar order whatever order they finished in.
+#[test]
+fn suite_jobs_sends_at_once_and_reports_in_sidebar_order() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = slow_suite_project(&home, &server.base());
+
+    let out = home.run_json(&["suite", "-p", s(&root), "--jobs", "3"]);
+    assert_ok(&out, "suite --jobs 3");
+    let v = json(&out);
+    assert_eq!(v["jobs"], 3);
+    assert_eq!(result_slugs(&v), ["main/a-slow", "main/b-slow", "main/c-slow", "main/d-ok"]);
+    assert_eq!(server.max_in_flight(), 3);
+}
+
+/// Spec 2026-11-13 §6: one at a time stays the default.
+#[test]
+fn suite_sends_one_at_a_time_by_default() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = slow_suite_project(&home, &server.base());
+
+    let out = home.run_json(&["suite", "-p", s(&root)]);
+    assert_ok(&out, "suite");
+    let v = json(&out);
+    assert_eq!(v["jobs"], 1);
+    assert_eq!(result_slugs(&v), ["main/a-slow", "main/b-slow", "main/c-slow", "main/d-ok"]);
+    assert_eq!(server.max_in_flight(), 1);
+}
+
+/// Spec 2026-11-13 §6: the plain heading names the jobs only when more
+/// than one ran at once; with one it is exactly the old line.
+#[test]
+fn suite_plain_heading_names_jobs_only_above_one() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = slow_suite_project(&home, &server.base());
+
+    let one = home.run(&["suite", "-p", s(&root)]);
+    assert_ok(&one, "suite");
+    let text = String::from_utf8_lossy(&one.stdout);
+    assert!(text.starts_with("suite  environment dev  space (all)\n"), "{text}");
+    let three = home.run(&["suite", "-p", s(&root), "-j", "3"]);
+    assert_ok(&three, "suite -j 3");
+    let text = String::from_utf8_lossy(&three.stdout);
+    assert!(text.starts_with("suite  environment dev  space (all)  jobs 3\n"), "{text}");
+}
+
+/// Spec 2026-11-13 §4: `-i` needs a terminal to pick in; the harness has
+/// none, so it is a usage error and nothing runs.
+#[test]
+fn suite_interactive_needs_a_terminal() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = slow_suite_project(&home, &server.base());
+
+    let out = home.run(&["suite", "-p", s(&root), "-i"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("-i needs a terminal to pick in"), "{err}");
+    assert!(out.stdout.is_empty());
 }
 
 #[test]

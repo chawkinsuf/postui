@@ -82,6 +82,10 @@ pub(super) struct Session {
     pub clients: Clients,
     /// What opening the project warned about.
     pub warnings: Vec<String>,
+    /// Each `--select` (selector, option) whose option differs from the
+    /// saved selection for the environment, in the order given: what the
+    /// suite's live view names in its header (spec 2026-11-13 §5.1).
+    pub changed: Vec<(String, String)>,
     /// The `--var`s, which every request prepared gets as its own
     /// `[variables]`, enabled: the source `prepare` ranks first (D4).
     vars: Vec<(String, String)>,
@@ -97,6 +101,7 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     let (mut project, mut warnings) = open(&root)?;
     warnings.extend(project.listing_warning());
     let env = pick_env(&mut project, opts.env.as_deref())?;
+    let changed = changed_selections(&project, env.as_deref().unwrap_or_default(), &opts.selects);
     for (selector, option) in &opts.selects {
         select_option(&mut project, env.as_deref().unwrap_or_default(), selector, option)?;
     }
@@ -119,7 +124,46 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
     }
     let clients = Clients::with_timeout(opts.timeout)
         .map_err(|e| CliError::new(format!("could not start the HTTP client: {e}")))?;
-    Ok(Session { project, root, env, mask, context, clients, warnings, vars: opts.vars.clone() })
+    Ok(Session {
+        project,
+        root,
+        env,
+        mask,
+        context,
+        clients,
+        warnings,
+        changed,
+        vars: opts.vars.clone(),
+    })
+}
+
+/// The `selects` whose option isn't the one saved for `env`: a shared
+/// selector's pick is the one for every environment, any other's is the
+/// environment's own. Of a selector given more than once, only the last
+/// counts, as it is the one applied. Read before the `--select`s are
+/// applied.
+fn changed_selections(
+    project: &Project,
+    env: &str,
+    selects: &[(String, String)],
+) -> Vec<(String, String)> {
+    let shared =
+        |selector: &str| project.variables().selectors.get(selector).is_some_and(|d| d.shared);
+    selects
+        .iter()
+        .enumerate()
+        .filter(|(at, (selector, _))| selects[at + 1..].iter().all(|(later, _)| later != selector))
+        .map(|(_, select)| select)
+        .filter(|(selector, option)| {
+            let saved = if shared(selector) {
+                project.local().shared_selections.get(selector)
+            } else {
+                project.selections_for(env).get(selector)
+            };
+            saved != Some(option)
+        })
+        .cloned()
+        .collect()
 }
 
 impl Session {

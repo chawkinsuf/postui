@@ -45,40 +45,64 @@ pub(super) fn pick_env(
         return Ok(project.active_env().map(str::to_string));
     };
     let slugs = project.environments().to_vec();
-    let named = |slug: &String| project.env_name(slug);
-    let slug = slugs
-        .iter()
-        .find(|s| *s == wanted)
-        .or_else(|| slugs.iter().find(|s| named(s) == wanted))
-        .or_else(|| {
-            slugs
-                .iter()
-                .find(|s| s.eq_ignore_ascii_case(wanted) || named(s).eq_ignore_ascii_case(wanted))
-        })
-        .cloned()
-        .ok_or_else(|| {
-            CliError::new(if slugs.is_empty() {
-                format!("no such environment \"{wanted}\"; this project has none")
-            } else {
-                format!(
-                    "no such environment \"{wanted}\"; the environments are {}",
-                    slugs.join(", ")
-                )
-            })
-        })?;
+    let names: Vec<String> = slugs.iter().map(|s| project.env_name(s)).collect();
+    let pairs: Vec<(&str, &str)> =
+        slugs.iter().map(String::as_str).zip(names.iter().map(String::as_str)).collect();
+    let slug = slugs[match_env(&pairs, wanted)?].clone();
     if let Err(e) = project.load_environment(&slug) {
-        return Err(match e {
-            postui_core::project::Error::Parse { file, error } => {
-                CliError::at(format!("environment \"{slug}\": {error}"), project.root().join(file))
-            }
-            other => CliError::new(format!("environment \"{slug}\": {other}")),
-        });
+        return Err(env_load_error(project, &slug, e));
     }
     // The file just parsed, so this loads it too; a failure now is a race.
     if let Some(warning) = project.set_active_env(Some(slug.clone())).into_iter().next() {
         return Err(CliError::new(warning));
     }
     Ok(Some(slug))
+}
+
+/// The index in `envs` (each a (slug, display name)) of the environment
+/// `wanted` names: its slug, else its display name, exact before
+/// case-insensitive. The error lists the slugs. `--env` and the `-i` picker
+/// both match through here.
+pub(super) fn match_env(envs: &[(&str, &str)], wanted: &str) -> Result<usize, CliError> {
+    envs.iter()
+        .position(|(slug, _)| *slug == wanted)
+        .or_else(|| envs.iter().position(|(_, name)| *name == wanted))
+        .or_else(|| {
+            envs.iter().position(|(slug, name)| {
+                slug.eq_ignore_ascii_case(wanted) || name.eq_ignore_ascii_case(wanted)
+            })
+        })
+        .ok_or_else(|| {
+            CliError::new(if envs.is_empty() {
+                format!("no such environment \"{wanted}\"; this project has none")
+            } else {
+                let slugs: Vec<&str> = envs.iter().map(|(slug, _)| *slug).collect();
+                format!(
+                    "no such environment \"{wanted}\"; the environments are {}",
+                    slugs.join(", ")
+                )
+            })
+        })
+}
+
+/// The error for a `--space` the project doesn't have.
+pub(super) fn no_such_space(wanted: &str) -> CliError {
+    CliError::new(format!("no such space \"{wanted}\" in this project"))
+}
+
+/// `e`, from loading environment `slug`, as an error naming the file when it
+/// is the file that is wrong.
+pub(super) fn env_load_error(
+    project: &Project,
+    slug: &str,
+    e: postui_core::project::Error,
+) -> CliError {
+    match e {
+        postui_core::project::Error::Parse { file, error } => {
+            CliError::at(format!("environment \"{slug}\": {error}"), project.root().join(file))
+        }
+        other => CliError::new(format!("environment \"{slug}\": {other}")),
+    }
 }
 
 /// `postui projects`.
@@ -323,7 +347,7 @@ pub(super) fn spaces_of(project: &Project, space: Option<&str>) -> Result<Vec<St
         Some(wanted) if project.spaces().iter().any(|s| s == wanted) => {
             Ok(vec![wanted.to_string()])
         }
-        Some(wanted) => Err(CliError::new(format!("no such space \"{wanted}\" in this project"))),
+        Some(wanted) => Err(no_such_space(wanted)),
     }
 }
 

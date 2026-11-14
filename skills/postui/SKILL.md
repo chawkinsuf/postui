@@ -53,7 +53,7 @@ text; add `--json` only when a script needs to parse it.
 postui run <slug> [--env E] [--select SELECTOR=OPTION]... [--var NAME=VALUE]...
                   [--jq F | --view[=NAME]] [-o FILE] [-i | -v] [--dry-run] [--timeout SECS]
 postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VALUE]...
-             [-o FILE] [--timeout SECS]
+             [-j N] [--plain] [-o FILE] [--timeout SECS]
 ```
 
 - `run` prints the response body and nothing else, as curl does. A status
@@ -92,7 +92,10 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   environment, or in the request's `[variables]`.
 - `suite` sends every request (or one space's) one at a time in sidebar
   order and prints each one's status, time and size, then totals. A request
-  that can't be prepared is reported and skipped.
+  that can't be prepared is reported and skipped. The output is plain text
+  when there's no terminal; pass `--plain` if your shell runs under a
+  pseudo-terminal. Don't use `-i` (it opens a picker for a person). Use
+  `--jobs N` (N at once) only when the requests don't depend on each other.
 - Exit codes: 0 fine; 1 a status of 400 or more, a send or prepare error, a
   failed jq filter, or (suite) any of these; 2 a mistake in the command or
   the project.

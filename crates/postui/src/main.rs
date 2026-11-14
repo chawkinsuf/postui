@@ -15,8 +15,7 @@ use ratatui::crossterm::terminal::{EndSynchronizedUpdate, EnterAlternateScreen, 
 use std::process::ExitCode;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<ExitCode> {
+fn main() -> anyhow::Result<ExitCode> {
     use postui::cli_out::{print_err, print_out};
     let cli = postui::config::parse_cli(std::env::args_os().skip(1).collect());
     let (cli_root, debug_ai) = match cli {
@@ -43,13 +42,28 @@ async fn main() -> anyhow::Result<ExitCode> {
         postui::config::CliParse::CommandHelp(text) => {
             return Ok(print_out(text).unwrap_or(ExitCode::SUCCESS));
         }
-        postui::config::CliParse::Command(command) => return Ok(postui::cli::run(command).await),
+        postui::config::CliParse::Command(command) => return cli_command(command),
         postui::config::CliParse::CommandUsage { reason, json, usage } => {
             return Ok(postui::cli::out::fail_usage(&reason, json, usage));
         }
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
+    tokio::runtime::Runtime::new()?.block_on(app(cli_root, debug_ai))
+}
 
+/// A CLI command. Its runtime is not waited on once the command is done: a
+/// send it dropped (a cancelled suite, a request that timed out) can leave
+/// its DNS lookup on tokio's blocking pool, and dropping the runtime would
+/// wait for that lookup to return.
+fn cli_command(command: postui::cli::Command) -> anyhow::Result<ExitCode> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let code = runtime.block_on(postui::cli::run(command));
+    runtime.shutdown_background();
+    Ok(code)
+}
+
+/// The TUI on the project `cli_root` names (or none).
+async fn app(cli_root: Option<std::path::PathBuf>, debug_ai: bool) -> anyhow::Result<ExitCode> {
     // If entering fails, it failed at raw mode or the alternate screen,
     // which `ratatui::restore` undoes. The hook goes in after.
     enter_terminal().inspect_err(|_| ratatui::restore()).expect("failed to initialize terminal");
