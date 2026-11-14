@@ -7,7 +7,7 @@
 //! `--space` and `--jobs`.
 
 use super::live::{put, wipe};
-use super::paint::{Seg, Tone, paint};
+use super::paint::{Seg, Tone, fit, paint, printable, width};
 use crate::cli::read::{displayed, env_load_error, match_env, no_such_space, open};
 use crate::cli::run::RunOpts;
 use crate::cli::{CliError, Global, target};
@@ -22,8 +22,6 @@ use std::io::Write;
 
 /// What a selector with no selection shows as its first value.
 const NONE: &str = "(none)";
-/// The width a row's label is padded to.
-const LABEL: usize = 12;
 /// At once offers 1 to this, then what `--jobs` gave if larger.
 const AT_ONCE: usize = 16;
 
@@ -275,45 +273,91 @@ impl Form {
         }
     }
 
-    /// The form as styled lines (spec §7).
-    pub(super) fn lines(&self) -> Vec<Vec<Seg>> {
-        let toned = |text: &str, tone| Seg { text: text.to_string(), tone, shrink: 0 };
-        let mut lines = vec![
-            vec![
-                toned("postui suite", Some(Tone::Bold)),
-                toned("  ", None),
-                toned(&self.catalog.project, Some(Tone::Dim)),
-            ],
-            Vec::new(),
+    /// The form as styled lines (spec §7) for a terminal of `cols` × `rows`,
+    /// drawn as the live band is (final review I2). Each line is fitted to
+    /// the width so it takes one line: the key line keeps the hints that fit
+    /// whole, the project's name clips, and a row gives up its value's
+    /// padding, then the value, then the label. There are no more lines than
+    /// the height less one, so the next draw can reach the first (as R13):
+    /// the blank lines go first, then the count line, the key line and the
+    /// title; then only the rows up to the cursor's show.
+    pub(super) fn lines(&self, cols: usize, rows: usize) -> Vec<Vec<Seg>> {
+        let seg = |text: &str, tone, shrink| Seg { text: text.to_string(), tone, shrink };
+        let title = vec![
+            seg("postui suite", Some(Tone::Bold), 0),
+            seg("  ", None, 0),
+            seg(&printable(&self.catalog.project), Some(Tone::Dim), 1),
         ];
-        for (at, row) in self.rows.iter().enumerate() {
-            let widest = row.values.iter().map(|v| cells(v)).max().unwrap_or(0);
-            let value = &row.values[row.at];
-            let here = at == self.cursor;
-            lines.push(vec![
-                toned(if here { "▸ " } else { "  " }, None),
-                toned(&pad(&row.label, LABEL), Some(Tone::Dim)),
-                toned("  ‹ ", None),
-                toned(&pad(value, widest), here.then_some(Tone::Space)),
-                toned(" ›", None),
-            ]);
-        }
+        let label_col = self.rows.iter().map(|r| cells(&printable(&r.label))).max().unwrap_or(0);
+        let mut form: Vec<Vec<Seg>> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(at, row)| {
+                let values: Vec<String> = row.values.iter().map(|v| printable(v)).collect();
+                let widest = values.iter().map(|v| cells(v)).max().unwrap_or(0);
+                let value = &values[row.at];
+                let here = at == self.cursor;
+                vec![
+                    seg(if here { "▸ " } else { "  " }, None, 0),
+                    seg(&pad(&printable(&row.label), label_col), Some(Tone::Dim), 3),
+                    seg("  ‹ ", None, 0),
+                    seg(value, here.then_some(Tone::Space), 2),
+                    seg(&pad("", widest - cells(value)), None, 1),
+                    seg(" ›", None, 0),
+                ]
+            })
+            .collect();
         let space = &self.rows[self.space_row()];
         let n = match space.at {
             0 => self.catalog.counts.iter().sum(),
             at => self.catalog.counts.get(at - 1).copied().unwrap_or(0),
         };
-        lines.push(Vec::new());
-        lines.push(vec![toned(&format!("  {n} requests"), Some(Tone::Dim))]);
-        lines.push(Vec::new());
-        let mut keys = vec![toned(" ", None)];
+        let count = vec![seg(&format!("  {n} requests"), Some(Tone::Dim), 0)];
         let hints = [("↑↓", "move"), ("←→", "change"), ("enter", "run"), ("esc", "cancel")];
-        for (at, (key, what)) in hints.iter().enumerate() {
-            keys.push(toned(&format!(" {key} "), Some(Tone::Bold)));
-            let gap = if at + 1 < hints.len() { " " } else { "" };
-            keys.push(toned(&format!("{what}{gap}"), Some(Tone::Dim)));
+        // As many hints as fit, whole; with not even one, the first, clipped.
+        let keys = (1..=hints.len())
+            .rev()
+            .map(|n| key_line(&hints[..n]))
+            .find(|line| width(line) <= cols)
+            .unwrap_or_else(|| key_line(&hints[..1]));
+        // What shows besides the rows: the blank lines, the count line, the
+        // key line and the title, given up in that order (as R13) while the
+        // form is taller than the room.
+        let room = rows.saturating_sub(1).max(1);
+        let mut shown = [true; 4];
+        let others = |shown: &[bool; 4]| {
+            3 * usize::from(shown[0]) + shown[1..].iter().filter(|kept| **kept).count()
+        };
+        for at in 0..shown.len() {
+            if form.len() + others(&shown) > room {
+                shown[at] = false;
+            }
         }
-        lines.push(keys);
+        let [blank, count_kept, keys_kept, title_kept] = shown;
+        // Still too many rows: those up to the cursor's, as many as fit.
+        let fits = room.saturating_sub(others(&shown)).max(1);
+        let first = (self.cursor + 1).saturating_sub(fits);
+        form.truncate(first + fits);
+        form.drain(..first);
+        let mut lines = Vec::new();
+        if title_kept {
+            lines.push(title);
+        }
+        let gap = || blank.then(Vec::new);
+        lines.extend(gap());
+        lines.append(&mut form);
+        lines.extend(gap());
+        if count_kept {
+            lines.push(count);
+        }
+        lines.extend(gap());
+        if keys_kept {
+            lines.push(keys);
+        }
+        for line in &mut lines {
+            fit(line, cols);
+        }
         lines
     }
 
@@ -343,6 +387,18 @@ impl Form {
 /// `text` padded with spaces to `cols` display columns.
 fn pad(text: &str, cols: usize) -> String {
     format!("{text}{}", " ".repeat(cols.saturating_sub(cells(text))))
+}
+
+/// The key line with `hints`: each key bold, what it does dim and the
+/// first to clip.
+fn key_line(hints: &[(&str, &str)]) -> Vec<Seg> {
+    let mut line = vec![Seg { text: " ".into(), tone: None, shrink: 0 }];
+    for (at, (key, what)) in hints.iter().enumerate() {
+        line.push(Seg { text: format!(" {key} "), tone: Some(Tone::Bold), shrink: 0 });
+        let gap = if at + 1 < hints.len() { " " } else { "" };
+        line.push(Seg { text: format!("{what}{gap}"), tone: Some(Tone::Dim), shrink: 1 });
+    }
+    line
 }
 
 /// The index of the environment `wanted` names, matched as `--env` is.
@@ -418,10 +474,12 @@ pub(in crate::cli) async fn pick(
     let mut drawn = 0;
     let done = loop {
         // The form's old lines wiped a line at a time, as the live band's
-        // are (see `wipe`), then the form again.
+        // are (see `wipe`), then the form again, fitted to the terminal as
+        // it is now (80×24 if it can't say).
         let mut buf = Vec::new();
         wipe(&mut buf, drawn);
-        let lines = form.lines();
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let lines = form.lines(usize::from(cols), usize::from(rows));
         drawn = lines.len();
         for line in &lines {
             put(&mut buf, &paint(line, color));
@@ -435,7 +493,8 @@ pub(in crate::cli) async fn pick(
                         break Some(key);
                     }
                 }
-                // A resize: the form is the same, drawn again.
+                // A resize: the form is the same, drawn again to the new
+                // size.
                 Some(Ok(Event::Resize(..))) => break None,
                 Some(Ok(_)) => {}
                 // The terminal is gone: nothing to pick with.
@@ -512,16 +571,21 @@ mod tests {
         Form::new(catalog(), None, &opts(None, &[]), 1).unwrap()
     }
 
-    /// The plain text of every line.
-    fn text(form: &Form) -> Vec<String> {
-        form.lines().iter().map(|l| paint(l, false)).collect()
+    /// The plain text of every line on a terminal of `cols` × `rows`.
+    fn text_in(form: &Form, cols: usize, rows: usize) -> Vec<String> {
+        form.lines(cols, rows).iter().map(|l| paint(l, false)).collect()
     }
 
-    /// The row labelled `label`'s text, after its marker and label.
+    /// The plain text of every line, on a terminal with room for it all.
+    fn text(form: &Form) -> Vec<String> {
+        text_in(form, 200, 100)
+    }
+
+    /// The row labelled `label`'s value: what is between `‹ ` and ` ›`.
     fn value(form: &Form, label: &str) -> String {
         let after_marker = |l: &str| l.chars().skip(2).collect::<String>();
         let line = text(form).into_iter().find(|l| after_marker(l).starts_with(label)).unwrap();
-        let rest: String = line.chars().skip(2 + LABEL + 4).collect();
+        let rest = &line[line.find("‹ ").unwrap() + "‹ ".len()..];
         rest.trim_end_matches('›').trim_end().to_string()
     }
 
@@ -663,7 +727,7 @@ mod tests {
         bare.active_env = None;
         let form = Form::new(bare, None, &opts(None, &[]), 1).unwrap();
         let rows = text(&form);
-        assert_eq!(rows[2], "▸ Space         ‹ all   ›");
+        assert_eq!(rows[2], "▸ Space    ‹ all   ›");
         assert!(rows.iter().all(|l| !l.contains("Environment")));
         // No environment to name: the run keeps what was given.
         let (_, run, _) = form.picks(&opts(None, &[]));
@@ -738,7 +802,9 @@ mod tests {
         assert!(text(&form).contains(&"  3 requests".to_string()));
     }
 
-    /// The form's layout, with its cursor and key line (spec §7).
+    /// The form's layout, with its cursor and key line (spec §7). The labels
+    /// are padded to the widest of them, so a long selector name still
+    /// lines its values up (final review I2).
     #[test]
     fn the_form_is_laid_out_as_the_mockup() {
         let mut form = form();
@@ -748,29 +814,133 @@ mod tests {
             [
                 "postui suite  my-api",
                 "",
-                "  Environment   ‹ Dev  ›",
-                "▸ Space         ‹ all   ›",
-                "  customer      ‹ acme   ›",
-                "  locale        ‹ fr ›",
-                "  At once       ‹ 1  ›",
+                "  Environment  ‹ Dev  ›",
+                "▸ Space        ‹ all   ›",
+                "  customer     ‹ acme   ›",
+                "  locale       ‹ fr ›",
+                "  At once      ‹ 1  ›",
                 "",
                 "  9 requests",
                 "",
                 "  ↑↓ move  ←→ change  enter run  esc cancel",
             ]
         );
+        let mut long = catalog();
+        long.shared[0].name = "a-much-longer-selector".into();
+        let rows = text(&Form::new(long, None, &opts(None, &[]), 1).unwrap());
+        let at = |l: &String| cells(&l[..l.find('‹').unwrap()]);
+        let columns: Vec<usize> = rows.iter().filter(|l| l.contains('‹')).map(at).collect();
+        assert!(columns.iter().all(|&c| c == 2 + 22 + 2), "{rows:#?}");
     }
 
     /// The cursor's value is in `Space` tone, the label dim.
     #[test]
     fn the_cursor_value_is_toned() {
         let form = form();
-        let line = &form.lines()[2];
+        let lines = form.lines(200, 100);
+        let line = &lines[2];
         let at = line.iter().find(|s| s.text.starts_with("Dev")).unwrap();
         assert_eq!(at.tone, Some(Tone::Space));
         assert_eq!(line[1].tone, Some(Tone::Dim));
-        let other = &form.lines()[3];
+        let other = &lines[3];
         assert!(other.iter().all(|s| s.tone != Some(Tone::Space)));
+    }
+
+    /// A catalog whose names are all long: the project, an environment, a
+    /// selector and its option.
+    fn long_catalog() -> Catalog {
+        let mut c = catalog();
+        c.project = "a project with a rather long name".into();
+        c.envs[0].name = "Development, the shared one".into();
+        c.envs[0].selectors[0].name = "customer-account".into();
+        c.envs[0].selectors[0].options[0] = "acme-corporation-international".into();
+        c
+    }
+
+    /// Final review I2: every line of the form is one terminal line however
+    /// narrow the terminal (review focus 1, 20–40 columns), so the redraw's
+    /// count of what it drew is right and nothing is left behind.
+    #[test]
+    fn the_form_fits_a_narrow_terminal() {
+        for form in [form(), Form::new(long_catalog(), None, &opts(None, &[]), 1).unwrap()] {
+            for cols in [20, 30, 38, 43, 80] {
+                for line in text_in(&form, cols, 100) {
+                    assert!(cells(&line) <= cols, "{cols}: {line:?}");
+                }
+            }
+        }
+        // The key line gives up whole hints from its end; the values clip
+        // before the labels do.
+        let narrow = text_in(&form(), 38, 100);
+        assert_eq!(narrow[10], "  ↑↓ move  ←→ change  enter run");
+        let long = Form::new(long_catalog(), None, &opts(None, &[]), 1).unwrap();
+        let narrow = text_in(&long, 30, 100);
+        assert_eq!(narrow[0], "postui suite  a project with…");
+        // Padded to `customer-account`, the widest label.
+        assert!(narrow[2].starts_with(&format!("▸ {}  ‹ D", pad("Environment", 16))));
+        assert!(narrow[2].contains('…'), "{narrow:#?}");
+    }
+
+    /// Final review I2, as R13 for the band: the form never draws more lines
+    /// than the terminal is high less one. The blank lines go first, then
+    /// the count line, the key line and the title; then only the rows around
+    /// the cursor's.
+    #[test]
+    fn a_short_terminal_drops_lines_and_keeps_the_cursor_row() {
+        let form = form();
+        // Five rows: eleven lines with everything.
+        assert_eq!(text_in(&form, 80, 12).len(), 11);
+        assert_eq!(
+            text_in(&form, 80, 10),
+            [
+                "postui suite  my-api",
+                "▸ Environment  ‹ Dev  ›",
+                "  Space        ‹ all   ›",
+                "  customer     ‹ acme   ›",
+                "  locale       ‹ fr ›",
+                "  At once      ‹ 1  ›",
+                "  9 requests",
+                "  ↑↓ move  ←→ change  enter run  esc cancel",
+            ]
+        );
+        assert!(!text_in(&form, 80, 8).iter().any(|l| l.contains("requests")));
+        assert!(text_in(&form, 80, 8).iter().any(|l| l.contains("esc cancel")));
+        assert_eq!(text_in(&form, 80, 7)[0], "postui suite  my-api");
+        assert!(!text_in(&form, 80, 7).iter().any(|l| l.contains("esc")));
+        assert!(text_in(&form, 80, 6)[0].starts_with("▸ Environment"));
+        let mut form = form;
+        for rows in 1..=12 {
+            for cursor in 0..5 {
+                form.cursor = cursor;
+                let lines = text_in(&form, 80, rows);
+                assert!(lines.len() <= rows.saturating_sub(1).max(1), "{rows}: {lines:#?}");
+                assert_eq!(
+                    lines.iter().filter(|l| l.starts_with('▸')).count(),
+                    1,
+                    "{rows} rows, cursor {cursor}: {lines:#?}"
+                );
+            }
+        }
+        form.cursor = 4;
+        assert_eq!(text_in(&form, 80, 3), ["  locale       ‹ fr ›", "▸ At once      ‹ 1  ›"]);
+    }
+
+    /// Final review M5: control characters in the names the form shows are
+    /// `?`; the picks keep the names as they are.
+    #[test]
+    fn control_characters_in_names_show_as_question_marks() {
+        let mut c = catalog();
+        c.project = "my\napi".into();
+        c.envs[0].name = "D\tev".into();
+        c.shared[0].name = "lo\u{1b}cale".into();
+        let form = Form::new(c, None, &opts(None, &[]), 1).unwrap();
+        let rows = text(&form);
+        assert_eq!(rows[0], "postui suite  my?api");
+        assert!(rows.iter().any(|l| l.contains("‹ D?ev")), "{rows:#?}");
+        assert!(rows.iter().any(|l| l.starts_with("  lo?cale")), "{rows:#?}");
+        assert!(rows.iter().all(|l| !l.chars().any(char::is_control)), "{rows:#?}");
+        let (_, run, _) = form.picks(&opts(None, &[]));
+        assert!(run.selects.contains(&("lo\u{1b}cale".to_string(), "fr".to_string())));
     }
 
     /// The catalog read from a project: each environment's own selectors with
