@@ -673,6 +673,7 @@ fn build(
             jq_enabled: true,
             jq_views: Vec::new(),
             jq_current: None,
+            checks: Default::default(),
             params: IndexMap::new(),
             headers,
             variables: IndexMap::new(),

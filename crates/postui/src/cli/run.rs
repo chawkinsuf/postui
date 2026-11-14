@@ -5,13 +5,14 @@
 //! back) and holds the one mask every printed string passes through.
 
 use super::check::{declared, reason};
+use super::checks::{FIRST_FAILING_STATUS, ShownCheck, failure_lines, passed, shown, status_check};
 use super::mask::{self, Mask};
 use super::out::{count, fields, rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
-use postui_core::model::{Entry, HttpRequest, JqView, Method, applied_jq_filter};
+use postui_core::model::{Checks, Entry, HttpRequest, JqView, Method, applied_jq_filter};
 use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
@@ -24,9 +25,6 @@ use std::time::Duration;
 
 /// The status a failed run ends with.
 pub(super) const FAILED: u8 = 1;
-
-/// A response status from here up is a failure (`run` exits 1).
-pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 
 /// What `run` and `suite` share on their command lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,6 +297,9 @@ pub struct RunReport {
     /// What came back; `null` for a dry run or when nothing did.
     response: Option<ResponseReport>,
     jq: Option<JqReport>,
+    /// Each of the request's `[checks]` run over the response, in file
+    /// order; empty without a response (suite checks spec §2.4).
+    checks: Vec<ShownCheck>,
     output_file: Option<PathBuf>,
     /// Why there is no response (an unresolved variable, a send error).
     error: Option<String>,
@@ -380,19 +381,19 @@ pub(super) fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Runs `filter` over the body `text`, unmasked (masking first would break
-/// the JSON where a mask lands in a number or an escape): each result is
-/// parsed as the JSON jq printed, then masked as a tree. Returns the
-/// results and the error (unmasked) as `JqReport` holds them: a filter
+/// Runs `filter` over the body as `doc` read it, unmasked (masking first
+/// would break the JSON where a mask lands in a number or an escape): each
+/// result is parsed as the JSON jq printed, then masked as a tree. Returns
+/// the results and the error (unmasked) as `JqReport` holds them: a filter
 /// that failed on some values of a stream has both, the other values'
 /// results and the first error (#229); `None` results only when it failed
 /// with none.
 fn run_jq(
     filter: &str,
-    text: &str,
+    doc: Result<jq::JqDocument, jq::JqError>,
     mask: &Mask,
 ) -> (Option<Vec<serde_json::Value>>, Option<String>) {
-    let run = match jq::JqDocument::parse(text).and_then(|doc| jq::run(filter, &doc)) {
+    let run = match doc.and_then(|doc| jq::run(filter, &doc)) {
         Ok(run) => run,
         Err(e) => return (None, Some(e.message())),
     };
@@ -439,14 +440,16 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
         .map_err(|e| CliError::at(format!("could not write {}: {e}", file.display()), file.into()))
 }
 
-/// Fills `report` from `raw`: the response, the jq results, the `-o` file.
-/// A file that can't be written is the report's `error`, with the response
-/// shown as if there were no `-o`. The body takes the form the report will
-/// print in: text, or with `json` parsed when it parses.
+/// Fills `report` from `raw`: the response, the request's `checks` run over
+/// it, the jq results, the `-o` file. A file that can't be written is the
+/// report's `error`, with the response shown as if there were no `-o`. The
+/// body takes the form the report will print in: text, or with `json`
+/// parsed when it parses.
 fn record(
     report: &mut RunReport,
     mask: &Mask,
     raw: RawResponse,
+    checks: &Checks,
     jq: Option<&str>,
     output: Option<&Path>,
     json: bool,
@@ -455,6 +458,11 @@ fn record(
     // byte-exact `-o` that succeeds never does).
     let decoded = OnceCell::new();
     let text = || decoded.get_or_init(|| String::from_utf8_lossy(&raw.bytes)).as_ref();
+    // The body as the jq checks and the filter read it, once for both.
+    let parsed = OnceCell::new();
+    let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
+    let outcomes = postui_core::checks::evaluate(checks, raw.status, doc);
+    report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -477,7 +485,7 @@ fn record(
     // against printing 24 KB of stream on a failure (mine (approved)); the
     // skill tells the agent to add `-o` for such requests.
     if let Some(filter) = jq {
-        let (results, error) = run_jq(filter, text(), mask);
+        let (results, error) = run_jq(filter, doc(), mask);
         report.jq = Some(JqReport {
             filter: mask.apply(filter),
             output: results,
@@ -485,6 +493,9 @@ fn record(
             suggest_output: output.is_none() && !raw.bytes.is_empty(),
         });
     }
+    // The read body is done with: freed before the body is shown (`--json`
+    // parses it again).
+    drop(parsed);
     let mut show_body = jq.is_none() && output.is_none();
     if let Some(file) = output {
         // Alone, the file is the response itself, kept byte-exact (a binary
@@ -604,6 +615,7 @@ pub async fn run(
         dry_run,
         response: None,
         jq: None,
+        checks: Vec::new(),
         output_file: None,
         error: None,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).collect(),
@@ -640,19 +652,28 @@ pub async fn run(
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, mask, raw, jq, output, g.json),
+        Ok(raw) => record(&mut report, mask, raw, &read.checks, jq, output, g.json),
         Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)
 }
 
 impl RunReport {
-    /// 1 when the run failed: an error, a status of 400 or more, or a jq
-    /// error; else 0.
+    /// The response's status when the 400 rule fails it: without a
+    /// `status` check, which replaces the rule (R3) and says a failure in
+    /// its own line.
+    fn failing_status(&self) -> Option<u16> {
+        let status = self.response.as_ref().map(|r| r.status)?;
+        (status_check(&self.checks).is_none() && status >= FIRST_FAILING_STATUS).then_some(status)
+    }
+
+    /// 1 when the run failed: an error, a jq error, or a response that
+    /// doesn't pass (a status of 400 or more without a `status` check, or a
+    /// failed check); else 0.
     pub fn status(&self) -> ExitCode {
-        let status = self.response.as_ref().map(|r| r.status);
         let jq_failed = self.jq.as_ref().is_some_and(|j| j.error.is_some());
-        if self.error.is_some() || jq_failed || status.is_some_and(|s| s >= FIRST_FAILING_STATUS) {
+        let failed = self.response.as_ref().is_some_and(|r| !passed(r.status, &self.checks));
+        if self.error.is_some() || jq_failed || failed {
             ExitCode::from(FAILED)
         } else {
             ExitCode::SUCCESS
@@ -677,7 +698,8 @@ impl RunReport {
     /// `include`, the status line and response headers and a blank line;
     /// then the body as it came (nothing when `-o` took it), or the jq
     /// results one a line. Stderr, a `postui: ` line each (D6): the error, a
-    /// failing jq filter, a status of 400 or more, and the warnings.
+    /// failing jq filter, a status of 400 or more (without a `status`
+    /// check), each failed check, and the warnings.
     pub fn streams(&self, include: bool) -> (String, String) {
         let mut out = String::new();
         let mut err = String::new();
@@ -723,8 +745,11 @@ impl RunReport {
         if let Some(error) = &self.error {
             err.push_str(&format!("postui: {}\n", error.trim_end()));
         }
-        if let Some(r) = self.response.as_ref().filter(|r| r.status >= FIRST_FAILING_STATUS) {
-            err.push_str(&format!("postui: {}\n", status_line(r.status)));
+        if let Some(status) = self.failing_status() {
+            err.push_str(&format!("postui: {}\n", status_line(status)));
+        }
+        for line in failure_lines(&self.checks) {
+            err.push_str(&format!("postui: {}\n", line.trim_end()));
         }
         for w in &self.warnings {
             err.push_str(&format!("postui: warning: {}\n", w.trim_end()));
@@ -734,7 +759,7 @@ impl RunReport {
 
     /// The request line, what identifies the run, the request's headers and
     /// body, the response with its body exactly as it came (or the jq
-    /// results), then the error and warnings.
+    /// results), the checks, then the error and warnings.
     pub fn text(&self) -> String {
         let mut out = match (&self.method, &self.url) {
             (Some(method), Some(url)) => format!("{} {url}\n", method.as_str()),
@@ -788,6 +813,18 @@ impl RunReport {
             if let Some(failure) = j.failure() {
                 out.push_str(&table(&[vec![format!("error: {failure}")]]));
             }
+        }
+        if !self.checks.is_empty() {
+            let rows: Vec<Vec<String>> = self
+                .checks
+                .iter()
+                .map(|c| {
+                    let verdict = if c.passed() { "passed" } else { "failed" };
+                    vec![verdict.to_string(), c.summary()]
+                })
+                .collect();
+            out.push_str("\nchecks\n");
+            out.push_str(&table(&rows));
         }
         if let Some(file) = &self.output_file {
             // Absolute: the file is the user's, named from their working

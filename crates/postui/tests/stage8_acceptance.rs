@@ -61,6 +61,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
         jq_enabled: true,
         jq_views: Vec::new(),
         jq_current: None,
+        checks: Default::default(),
         params: Default::default(),
         headers: Default::default(),
         variables: Default::default(),

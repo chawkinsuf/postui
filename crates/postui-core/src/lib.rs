@@ -50,6 +50,7 @@ fn xdg_app_dir(var: &str, default: &[&str]) -> Option<std::path::PathBuf> {
     Some(base.join(APP_NAME))
 }
 
+pub mod checks;
 pub mod curl;
 pub mod disk;
 pub mod fixtures;

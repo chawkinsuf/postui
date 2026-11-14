@@ -166,6 +166,7 @@ mod tests {
             elapsed_ms: None,
             size: None,
             error: None,
+            checks: Vec::new(),
         }
     }
 

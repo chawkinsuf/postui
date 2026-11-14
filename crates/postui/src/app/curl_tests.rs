@@ -1030,6 +1030,43 @@ fn replace_puts_the_curl_in_the_editor_and_keeps_name_jq_and_request_variables()
     assert!(!app.editor_holds_unsaved());
 }
 
+/// Suite checks R10: the TUI carries `[checks]` unseen through a save, a
+/// duplicate, a replace with curl and its undo.
+#[test]
+fn checks_ride_through_save_duplicate_replace_and_undo() {
+    let mut app = app_with_clip("curl https://x/new");
+    let text =
+        "name = \"Kept\"\nurl = \"https://x/old\"\n\n[checks]\nstatus = [200, 201]\njq = ['.ok']\n";
+    let kept = postui_core::model::HttpRequest::from_toml_str(text).unwrap();
+    let checks = kept.checks.clone();
+    postui_core::fixtures::save_request(app.proj().root(), "main/kept", &kept).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/kept".into()));
+    app.capture_undo();
+    let load = |app: &App, slug: &str| {
+        postui_core::fixtures::load_request(app.proj().root(), slug).unwrap().checks
+    };
+
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/edited");
+    app.capture_undo();
+    app.update(Action::SaveRequest);
+    assert_eq!(load(&app, "main/kept").status, checks.status);
+    assert_eq!(load(&app, "main/kept"), checks, "a save keeps them");
+
+    app.sidebar.select_slug("main/kept");
+    app.update(Action::DuplicateRequest);
+    assert_eq!(load(&app, "main/kept-copy"), checks, "a duplicate keeps them");
+
+    app.update(Action::ForceOpenRequest("main/kept".into()));
+    app.capture_undo();
+    replace(&mut app, None);
+    assert_eq!(app.editor.current_request().url, "https://x/new");
+    assert_eq!(app.editor.current_request().checks, checks, "a replace keeps them");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.current_request().url, "https://x/edited");
+    assert_eq!(app.editor.current_request().checks, checks, "and so does its undo");
+}
+
 /// Spec 30, amendment A11: the views, the scratch, what is current and
 /// the switch all ride through a replace.
 #[test]

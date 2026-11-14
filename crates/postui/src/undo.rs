@@ -271,6 +271,7 @@ pub fn coalesce_key(before: &HttpRequest, after: &HttpRequest) -> Option<Coalesc
         || before.insecure != after.insecure
         || before.jq_enabled != after.jq_enabled
         || before.jq_current != after.jq_current
+        || before.checks != after.checks
         || before.params != after.params
         || before.headers != after.headers
         || before.variables != after.variables
@@ -518,6 +519,7 @@ mod tests {
             jq_enabled: true,
             jq_views: Vec::new(),
             jq_current: None,
+            checks: Default::default(),
             params: Default::default(),
             headers: Default::default(),
             variables: Default::default(),
