@@ -8,15 +8,16 @@
 
 use super::live::{put, wipe};
 use super::paint::{Seg, Tone, fit, pad_right, paint, printable, width};
-use crate::cli::read::{displayed, env_load_error, match_env, no_such_space, open};
+use crate::cli::read::{displayed, match_env, no_such_space};
 use crate::cli::run::{RunOpts, session};
-use crate::cli::{CliError, Global, target};
+use crate::cli::{CliError, Global};
 use crate::ui::cells;
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::queue;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
+use postui_core::project::Project;
 use postui_core::varmodel::{self, EnvData};
 use std::io::Write;
 
@@ -26,7 +27,7 @@ const NONE: &str = "(none)";
 const AT_ONCE: usize = 16;
 
 /// A selector's options in one environment (or all of them, if shared) and
-/// the option saved for it.
+/// the option selected for it.
 pub(super) struct SelectorChoices {
     pub name: String,
     pub options: Vec<String>,
@@ -62,17 +63,15 @@ fn options_in(model: &varmodel::VarModel, env: &EnvData, selector: &str) -> Opti
 }
 
 impl Catalog {
-    /// Reads the project `g` names, read-only: each environment loaded in
-    /// turn for its selectors' options, with the saved selections.
-    pub(super) fn read(g: &Global) -> Result<Catalog, CliError> {
-        let root = target::resolve(g.project.as_deref())?;
-        // Its warnings are the run's to print, at its finish.
-        let (mut project, _) = open(&root)?;
+    /// What `project` offers: each environment loaded in turn for its
+    /// selectors' options, with the selections it holds.
+    pub(super) fn of(project: &mut Project) -> Catalog {
         let slugs = project.environments().to_vec();
         let mut envs = Vec::new();
         for slug in &slugs {
-            let data =
-                project.load_environment(slug).map_err(|e| env_load_error(&project, slug, e))?;
+            // One that doesn't load offers no options; picking it gets the
+            // run's error for it.
+            let data = project.load_environment(slug).unwrap_or_default();
             let model = project.variables();
             let saved = project.selections_for(slug);
             let selectors = model
@@ -105,10 +104,10 @@ impl Catalog {
             .collect();
         let spaces: Vec<(String, String)> =
             project.spaces().iter().map(|s| (s.clone(), project.space_name(s))).collect();
-        let counts = spaces.iter().map(|(slug, _)| displayed(&project, slug).len()).collect();
+        let counts = spaces.iter().map(|(slug, _)| displayed(project, slug).len()).collect();
         let active_env =
             project.active_env().and_then(|active| slugs.iter().position(|s| s == active));
-        Ok(Catalog { project: project.display_name(), envs, shared, spaces, counts, active_env })
+        Catalog { project: project.display_name(), envs, shared, spaces, counts, active_env }
     }
 }
 
@@ -155,11 +154,12 @@ impl Row {
         Row { label: label.to_string(), kind, values, at, none: false }
     }
 
-    /// The selector's row: its option from `selects` if the environment has
-    /// that option, else the saved one; with neither, `(none)` comes first.
+    /// The selector's row: its option from the last of `selects` to name it
+    /// (the one the run applies) if the environment has that option, else
+    /// the selected one; with neither, `(none)` comes first.
     fn selector(choice: &SelectorChoices, selects: &[(String, String)]) -> Row {
         let has = |option: &&String| choice.options.contains(option);
-        let given = selects.iter().find(|(name, _)| *name == choice.name).map(|(_, o)| o);
+        let given = selects.iter().rfind(|(name, _)| *name == choice.name).map(|(_, o)| o);
         let pick = given.filter(has).or(choice.saved.as_ref().filter(has));
         let mut values = choice.options.clone();
         let (at, none) = match pick.and_then(|p| values.iter().position(|v| v == p)) {
@@ -463,9 +463,10 @@ pub(in crate::cli) async fn pick(
     color: bool,
 ) -> Result<Picked, CliError> {
     // The run's own checks of `--env` and the `--select`s, so `-i` refuses
-    // what the run without it would (spec §7).
-    session(g, opts)?;
-    let mut form = Form::new(Catalog::read(g)?, space, opts, jobs)?;
+    // what the run without it would (spec §7); the form reads the project
+    // the session opened.
+    let catalog = Catalog::of(&mut session(g, opts)?.project);
+    let mut form = Form::new(catalog, space, opts, jobs)?;
     let _raw = RawGuard::new()?;
     let mut events = EventStream::new();
     let mut out = std::io::stdout();
@@ -605,6 +606,9 @@ mod tests {
         let flagged =
             Form::new(catalog(), None, &opts(None, &[("customer", "globex")]), 1).unwrap();
         assert_eq!(value(&flagged, "customer"), "globex");
+        // Of a selector given twice, the last, as the run applies it.
+        let twice = opts(None, &[("customer", "globex"), ("customer", "acme")]);
+        assert_eq!(value(&Form::new(catalog(), None, &twice, 1).unwrap(), "customer"), "acme");
         // An option the environment doesn't have falls back to the saved one.
         let missing = Form::new(catalog(), None, &opts(None, &[("customer", "nope")]), 1).unwrap();
         assert_eq!(value(&missing, "customer"), "acme");
@@ -950,8 +954,7 @@ mod tests {
     fn the_catalog_is_read_from_the_project() {
         let dir = tempfile::tempdir().unwrap();
         shop(dir.path());
-        let g = Global { project: Some(dir.path().to_str().unwrap().into()), json: false };
-        let catalog = Catalog::read(&g).unwrap();
+        let catalog = catalog_of(dir.path(), &[]);
         assert_eq!(catalog.project, "Shop");
         assert_eq!(catalog.active_env, Some(1));
         let envs: Vec<(&str, &str)> =
@@ -976,6 +979,41 @@ mod tests {
             [("main".to_string(), "main".to_string()), ("admin".to_string(), "Admin".to_string())]
         );
         assert_eq!(catalog.counts, [2, 1]);
+    }
+
+    /// The catalog of the project at `root`, as `pick` reads it: from the
+    /// session for `selects`.
+    fn catalog_of(root: &std::path::Path, selects: &[(&str, &str)]) -> Catalog {
+        let g = Global { project: Some(root.to_str().unwrap().into()), json: false };
+        let mut s = session(&g, &opts(None, selects)).unwrap();
+        Catalog::of(&mut s.project)
+    }
+
+    /// An environment whose file doesn't load is still offered, with no
+    /// options, so `-i` opens wherever the run without it does.
+    #[test]
+    fn an_environment_that_does_not_load_offers_no_options() {
+        let dir = tempfile::tempdir().unwrap();
+        shop(dir.path());
+        std::fs::write(dir.path().join("environments/dev.toml"), "base = [").unwrap();
+        let catalog = catalog_of(dir.path(), &[]);
+        let envs: Vec<&str> = catalog.envs.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(envs, ["dev", "prod"]);
+        assert!(catalog.envs[0].selectors.is_empty());
+        assert_eq!(catalog.envs[1].selectors[0].name, "region");
+        assert_eq!(catalog.active_env, Some(1));
+    }
+
+    /// A `--select` for this run is the selected option in the catalog.
+    #[test]
+    fn the_catalog_holds_the_selects_for_this_run() {
+        let dir = tempfile::tempdir().unwrap();
+        shop(dir.path());
+        let catalog = catalog_of(dir.path(), &[("region", "eu"), ("locale", "fr")]);
+        assert_eq!(catalog.envs[1].selectors[0].saved.as_deref(), Some("eu"));
+        assert_eq!(catalog.shared[0].saved.as_deref(), Some("fr"));
+        // Another environment's are as saved.
+        assert_eq!(catalog.envs[0].selectors[0].saved.as_deref(), Some("globex"));
     }
 
     /// A `--select` the run without `-i` would refuse is refused before the

@@ -6,7 +6,7 @@
 
 use super::outline::Line;
 use super::{Plan, SuiteResult};
-use crate::ui::{cells, graphemes};
+use crate::ui::{cells, graphemes, take_cells};
 use postui_core::model::Method;
 use std::time::{Duration, Instant};
 
@@ -120,25 +120,13 @@ pub(super) fn width(segs: &[Seg]) -> usize {
 }
 
 /// `text` cut to at most `cols` columns: whole graphemes, the last column an
-/// `…` when something was cut. Empty when not even one grapheme and the `…`
-/// fit.
+/// `…` when something was cut. Empty when nothing but spaces would come
+/// before the `…`.
 fn clip(text: &str, cols: usize) -> String {
     if cells(text) <= cols {
         return text.to_string();
     }
-    if cols < 2 {
-        return String::new();
-    }
-    let mut kept = String::new();
-    let mut used = 0;
-    for (_, g, w) in graphemes(text) {
-        if used + w + 1 > cols {
-            break;
-        }
-        kept.push_str(g);
-        used += w;
-    }
-    let kept = kept.trim_end();
+    let kept = take_cells(text, cols.saturating_sub(1)).trim_end();
     if kept.is_empty() { String::new() } else { format!("{kept}…") }
 }
 
