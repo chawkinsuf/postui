@@ -57,7 +57,8 @@ const NAME_CAP: usize = 32;
 /// Method column width: `OPTIONS` is the longest and is seven, but the
 /// sidebar's rows pad to six (spec §5.1).
 const METHOD_COL: usize = 6;
-/// Width of the time and size columns.
+/// Width of the time and size columns: every [`time`] under 1000 s and
+/// every [`size`] under 1000 MB fits it (spec §5.1's fixed-width forms).
 const NUM_COL: usize = 6;
 /// Width of the status column.
 const STATUS_COL: usize = 3;
@@ -164,7 +165,7 @@ pub(super) fn name_column(lines: &[Line]) -> usize {
     lines
         .iter()
         .filter_map(|l| match l {
-            Line::Request { name, .. } => Some(cells(name)),
+            Line::Request { name, .. } => Some(cells(&printable(name))),
             _ => None,
         })
         .max()
@@ -194,22 +195,51 @@ fn pad_left(text: &str, cols: usize) -> String {
     format!("{}{text}", " ".repeat(cols.saturating_sub(cells(text))))
 }
 
-/// `ms` as the rows show a time: `120 ms`, `2.3 s`.
-pub(super) fn time(ms: u64) -> String {
-    if ms < 1000 { format!("{ms} ms") } else { format!("{:.1} s", ms as f64 / 1000.0) }
+/// `value` in `unit` in at most three digits: one decimal under 10 (`2.3`),
+/// whole from 10 (`12`, `123`). `None` from 1000 on, where the next unit
+/// takes over.
+fn short(value: f64, unit: &str) -> Option<String> {
+    let tenths = (value * 10.0).round() as u64;
+    if tenths < 100 {
+        return Some(format!("{}.{} {unit}", tenths / 10, tenths % 10));
+    }
+    let whole = value.round() as u64;
+    (whole < 1000).then(|| format!("{whole} {unit}"))
 }
 
-/// `bytes` as the rows show a size: `512 B`, `1.2 KB`, `14.0 MB`.
-pub(super) fn size(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = 1024 * 1024;
-    if bytes < KB {
-        format!("{bytes} B")
-    } else if bytes < MB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
+/// `ms` as the rows show a time, at most 6 columns under 1000 s: `120 ms`,
+/// `2.3 s`, `12 s`, `123 s` (R18).
+pub(super) fn time(ms: u64) -> String {
+    if ms < 1000 {
+        return format!("{ms} ms");
     }
+    let secs = ms as f64 / 1000.0;
+    short(secs, "s").unwrap_or_else(|| format!("{} s", secs.round() as u64))
+}
+
+/// `bytes` as the rows show a size, at most 6 columns under 1000 MB:
+/// `512 B`, `1.2 KB`, `123 KB`, `14 MB`. Each unit gives way to the next at
+/// 1000 of it, so `1000 KB` is `1.0 MB` (R18).
+pub(super) fn size(bytes: usize) -> String {
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    for unit in ["KB", "MB"] {
+        match short(value, unit) {
+            Some(text) => return text,
+            None => value /= 1024.0,
+        }
+    }
+    short(value, "GB").unwrap_or_else(|| format!("{} GB", value.round() as u64))
+}
+
+/// `text` with each control character (a newline, a tab, ESC) shown as `?`.
+/// Display names come from a project's files: shown raw, a newline or tab
+/// would break the one-row-one-line count the redraw relies on, and an
+/// escape sequence would reach the terminal.
+pub(super) fn printable(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
 fn status_tone(status: u16) -> Tone {
@@ -230,11 +260,12 @@ pub(super) fn line_row(
     frame: usize,
 ) -> Vec<Seg> {
     let (depth, method, name) = match line {
-        Line::Space { name } => return vec![toned(name.clone(), Tone::Space)],
+        Line::Space { name } => return vec![toned(printable(name), Tone::Space)],
         Line::Folder { depth, name } => {
+            let name = printable(name);
             return vec![plain("  ".repeat(*depth)), toned(format!("{name}/"), Tone::Folder)];
         }
-        Line::Request { depth, method, name, .. } => (*depth, *method, name),
+        Line::Request { depth, method, name, .. } => (*depth, *method, printable(name)),
     };
     let state = state.unwrap_or(&RowState::Waiting);
     let dim = matches!(state, RowState::Waiting | RowState::Skipped);
@@ -260,7 +291,7 @@ pub(super) fn line_row(
         0,
     ));
     row.push(seg(" ", dim.then_some(Tone::Dim), 0));
-    row.push(seg(pad_right(&clip(name, name_col), name_col), dim.then_some(Tone::Dim), 2));
+    row.push(seg(pad_right(&clip(&name, name_col), name_col), dim.then_some(Tone::Dim), 2));
     match state {
         RowState::Waiting => {}
         RowState::Skipped => {
@@ -321,13 +352,13 @@ pub(super) fn header(plan: &Plan) -> Vec<Seg> {
     let mut row = vec![
         toned("postui suite", Tone::Bold),
         toned("  env ", Tone::Dim),
-        plain(plan.env.as_deref().unwrap_or("(none)")),
+        plain(printable(plan.env.as_deref().unwrap_or("(none)"))),
         toned("  space ", Tone::Dim),
-        plain(plan.space.as_deref().unwrap_or("all")),
+        plain(printable(plan.space.as_deref().unwrap_or("all"))),
     ];
     for (selector, option) in &plan.changed {
-        row.push(toned(format!("  {selector} "), Tone::Dim));
-        row.push(plain(option.clone()));
+        row.push(toned(format!("  {} ", printable(selector)), Tone::Dim));
+        row.push(plain(printable(option)));
     }
     let at_once = if plan.jobs > 1 {
         format!("{} at a time", plan.jobs)
@@ -429,13 +460,57 @@ mod tests {
         Plan { env: Some("Dev".into()), space: None, changed, jobs, lines: Vec::new(), total: 9 }
     }
 
+    /// Spec 2026-11-13 §5.1's fixed-width forms (R18): a decimal only under
+    /// 10, and the next unit from 1000 of one, so every realistic time and
+    /// size fits the 6-column field.
     #[test]
     fn time_and_size_forms() {
         assert_eq!(time(120), "120 ms");
+        assert_eq!(time(999), "999 ms");
         assert_eq!(time(2300), "2.3 s");
+        assert_eq!(time(9960), "10 s");
+        assert_eq!(time(12_300), "12 s");
+        assert_eq!(time(123_400), "123 s");
         assert_eq!(size(512), "512 B");
+        assert_eq!(size(999), "999 B");
+        assert_eq!(size(1000), "1.0 KB");
         assert_eq!(size(1229), "1.2 KB");
-        assert_eq!(size(14 * 1024 * 1024), "14.0 MB");
+        assert_eq!(size(12_600), "12 KB");
+        assert_eq!(size(126_000), "123 KB");
+        assert_eq!(size(1000 * 1024), "1.0 MB");
+        assert_eq!(size(1_023_488), "1.0 MB");
+        assert_eq!(size(14 * 1024 * 1024), "14 MB");
+        assert_eq!(size(1000 * 1024 * 1024), "1.0 GB");
+        for ms in (0..1_000_000).step_by(7) {
+            assert!(cells(&time(ms)) <= NUM_COL, "{ms}: {}", time(ms));
+        }
+        for bytes in (0..1000 * 1024 * 1024).step_by(997) {
+            assert!(cells(&size(bytes)) <= NUM_COL, "{bytes}: {}", size(bytes));
+        }
+    }
+
+    /// Final review M5: a control character in a space, folder, request,
+    /// environment, selector or option name shows as `?`, so it takes the
+    /// one line it is measured to and sends the terminal nothing.
+    #[test]
+    fn control_characters_in_names_show_as_question_marks() {
+        let odd = "a\nb\tc\u{1b}[31m";
+        let shown = "a?b?c?[31m";
+        let space = line_row(&Line::Space { name: odd.into() }, None, 0, Instant::now(), 0);
+        assert_eq!(paint(&space, false), shown);
+        let folder =
+            line_row(&Line::Folder { depth: 1, name: odd.into() }, None, 0, Instant::now(), 0);
+        assert_eq!(paint(&folder, false), format!("  {shown}/"));
+        let lines = [request(1, Some(Method::Get), odd)];
+        assert_eq!(name_column(&lines), cells(shown));
+        let r = row(&lines[0], &RowState::Waiting, name_column(&lines));
+        assert_eq!(paint(&r, false), format!("  · GET    {shown}"));
+        let mut p = plan(vec![(odd.into(), odd.into())], 1);
+        p.env = Some(odd.into());
+        p.space = Some(odd.into());
+        let head = paint(&header(&p), false);
+        assert_eq!(head.matches(shown).count(), 4, "{head:?}");
+        assert!(!head.chars().any(char::is_control), "{head:?}");
     }
 
     #[test]
