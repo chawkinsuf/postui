@@ -1,5 +1,6 @@
 /target
 /docs/superpowers/plans
+/.superpowers
 /.veans.yml
 *.swp
 *.swo
