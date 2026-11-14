@@ -1,9 +1,11 @@
-# Suite checks beyond the status code — Design (draft)
+# Suite checks beyond the status code — Design
 
-Task #221. Status: **draft, waiting on the questions on the ticket.** The
-three open points are marked **Q1–Q3** below; everything marked `mine` is
-my choice, listed in §6 for veto. Once the questions are answered, the
-answers go into the rules table and this spec is what gets built.
+Task #221. Status: **approved 2026-11-14.** The three points put to the user
+(**Q1–Q3**, ticket comment 1348) were each answered A ("A for each of them",
+comment 1349), so the recommended forms below are what gets built; they are
+`mine (approved)` in the rules table. Everything marked `mine` drew no veto
+and stays listed in §6 for a second look. The user also asked for a TUI
+follow-up, filed as #302 "Show request checks in the TUI" (§2.5).
 
 ## 1. The problem
 
@@ -50,7 +52,7 @@ i think", you, spec 2026-10-28 §1) and of the live view (spec 2026-11-13 §1).
 
 ## 2. The proposal
 
-### 2.1 In the request file (Q1, recommended form)
+### 2.1 In the request file (Q1: A)
 
 ```toml
 name = "Chat, JSON schema"
@@ -119,7 +121,7 @@ check failed: .a == 1: the body isn't JSON
 - A failing check prints no body. The way to look is `run --view` or
   `run --jq`, as today.
 
-### 2.4 `run` (Q2, recommended)
+### 2.4 `run` (Q2: A)
 
 `run` evaluates the same checks, with the same rule: exit 1 and a
 `postui: check failed: …` line on stderr per failure; the body still prints
@@ -128,12 +130,13 @@ that expects 404 exits 0 and prints no `postui: 404 Not Found` line. `-v`
 lists the checks after the response; `--json` gets the same `checks` array.
 `--dry-run` sends nothing and checks nothing.
 
-### 2.5 The TUI (Q3, recommended)
+### 2.5 The TUI (Q3: A)
 
 The TUI shows nothing of the checks and has no way to edit them; it keeps
 them. The editor carries `checks` unchanged so a save, an undo step, a
-duplicate and replace-with-curl all leave them as they were. Showing results
-in the response pane, or editing them in a tab, would each be its own task.
+duplicate and replace-with-curl all leave them as they were. Showing them
+is #302 "Show request checks in the TUI", filed at the user's word: "Make a
+ticket to add something to the tui in a later update." (you, 2026-11-14).
 
 ### 2.6 Docs (mine)
 
@@ -145,16 +148,17 @@ in the response pane, or editing them in a tab, would each be its own task.
 
 | # | Rule | From |
 |---|---|---|
-| R1 | Checks live in the request file, `[checks]` with `status` and `jq` | Q1 |
-| R2 | jq checks are their own filters, not the request's jq views | Q1 |
+| R1 | Checks live in the request file, `[checks]` with `status` and `jq` | mine (approved), Q1: A |
+| R2 | jq checks are their own filters, not the request's jq views | mine (approved), Q1: A |
 | R3 | `status` replaces the `< 400` rule; without it the rule stays | mine |
 | R4 | A jq check passes only when every output is `true`, there is at least one, and no error | mine |
 | R5 | A filter that doesn't compile: `check` error, suite failure, not a read error | mine |
 | R6 | A bad `status` value is a read error | mine |
 | R7 | Failure lines and JSON `passed`/`checks` as §2.3 | mine |
 | R8 | Live view: `✗`, first failure in place of the URL, all under it when final | mine |
-| R9 | `run` evaluates checks the same way | Q2 |
-| R10 | The TUI keeps checks through every save path, shows none | Q3 |
+| R9 | `run` always evaluates checks the same way | mine (approved), Q2: A |
+| R10 | The TUI keeps checks through every save path, shows none | mine (approved), Q3: A |
+| R11 | Showing checks in the TUI is a later task, #302 | you: "Make a ticket to add something to the tui in a later update." |
 
 ## 4. What changes
 
@@ -168,7 +172,7 @@ in the response pane, or editing them in a tab, would each be its own task.
   the outcomes; `passed()` uses them; plain, JSON and live paint as §2.3.
   jq runs off the async loop so a large body doesn't stall the live view's
   ticks.
-- `cli/run.rs`: the same, per §2.4 (if Q2 is A).
+- `cli/run.rs`: the same, per §2.4.
 - `cli/check.rs`: compile each check filter.
 - `components/editor.rs`, `app/curl_flow.rs`: carry `checks`.
 - Docs per §2.6.
@@ -182,7 +186,7 @@ in the response pane, or editing them in a tab, would each be its own task.
   list.
 - Suite: a 404 with `status = 404` passes; a 200 with a failing jq check
   fails; text, JSON and the live row as §2.3; the exit code.
-- `run`: exit code and stderr lines (Q2).
+- `run`: exit code and stderr lines.
 - `check`: a filter that doesn't compile is an error naming the file.
 - TUI: a request with checks, edited and saved, keeps them; replace with
   curl keeps them.
