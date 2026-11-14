@@ -19,6 +19,7 @@ use crossterm::queue;
 use crossterm::terminal::{Clear, ClearType};
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 /// What the finish says of `-o`'s file.
@@ -89,9 +90,11 @@ impl<W: Write> Live<W> {
             self.board.skip_unfinished();
         }
         let counts = self.board.counts();
+        // The badge agrees with the exit status (R16): a failed `-o` write
+        // fails the run as a failed request does.
         let badge = if cancelled {
             Badge::Cancelled
-        } else if counts.failed == 0 {
+        } else if report.status() == ExitCode::SUCCESS {
             Badge::Ok
         } else {
             Badge::Fail
@@ -471,6 +474,26 @@ mod tests {
         let warnings = text.find("\nwarnings\n  a warning\n").expect(&text);
         assert!(note < warnings);
         assert!(!text.contains("written to /tmp/r.txt\n"));
+    }
+
+    /// R16: the badge agrees with the exit status. A run whose every
+    /// request passed but whose `-o` file could not be written exits 1, so
+    /// it ends ` FAIL `, then the warning that says why.
+    #[test]
+    fn a_failed_write_ends_with_fail() {
+        let mut out = Vec::new();
+        let mut live = live(&mut out, false, 80, 24);
+        live.begin(&plan(1, 1));
+        live.started(0, Some("http://x/0"));
+        live.finished(0, &ok(0));
+        let mut report = report(vec![ok(0)], false, Vec::new());
+        report.note_write_failure("could not write /tmp/r.txt".into());
+        live.finish(&report, FileNote::None);
+        drop(live);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("  FAIL   1 requests · 1 passed · 0 failed"), "{text:?}");
+        assert!(!text.contains(" OK "), "{text:?}");
+        assert!(text.contains("could not write /tmp/r.txt"), "{text:?}");
     }
 
     /// `written to <file>` after a run that wrote `-o`.
