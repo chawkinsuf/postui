@@ -102,8 +102,13 @@ check failed: .choices[0].finish_reason == "stop" gave false
 check failed: .usage.total_tokens > 0 gave no output
 check failed: .choices[0].message.content gave "I can't see an image" (clipped to 60 characters)
 check failed: .choices[0] | fromjson: cannot parse …
-check failed: .a == 1: the body isn't JSON
+check failed: .a == 1: not JSON: expected value at line 1 column 1
 ```
+
+Amended 2026-11-14 while building (mine): a body that doesn't read gives
+the reader's own message, as `run --jq` prints it (`not JSON: …`, or the
+nesting limit), rather than a fixed "the body isn't JSON", so the line says
+why. A status check given several codes says `expected 200 or 201`.
 
 - **Plain text:** the row as today (the real status shows), the failure
   lines under it, where an error goes now.
@@ -127,7 +132,9 @@ check failed: .a == 1: the body isn't JSON
 `postui: check failed: …` line on stderr per failure; the body still prints
 as now. A `status` check replaces the `≥ 400` rule there too, so a request
 that expects 404 exits 0 and prints no `postui: 404 Not Found` line. `-v`
-lists the checks after the response; `--json` gets the same `checks` array.
+lists the checks after the response (and after the jq results, when there
+are any), one `passed`/`failed` row each; `--json` gets the same `checks`
+array.
 `--dry-run` sends nothing and checks nothing.
 
 ### 2.5 The TUI (Q3: A)

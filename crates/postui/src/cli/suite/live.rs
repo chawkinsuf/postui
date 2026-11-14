@@ -14,7 +14,7 @@ use super::super::read::warnings_text;
 use super::board::Board;
 use super::outline::Line;
 use super::paint::{
-    Badge, Seg, Tone, error_under, fit, header, line_row, name_column, paint, progress, totals,
+    Badge, Seg, Tone, fit, header, line_row, name_column, paint, progress, totals, under,
 };
 use super::{Plan, SuiteReport, SuiteResult, Watch};
 use crossterm::cursor::{Hide, MoveToNextLine, MoveToPreviousLine, Show};
@@ -125,19 +125,21 @@ impl<W: Write> Live<W> {
         self.write(&buf);
     }
 
-    /// Line `at` of the list as segments.
-    fn row(&self, at: usize, now: Instant) -> Vec<Seg> {
+    /// Line `at` of the list as segments, as the band shows it or as it is
+    /// printed for good.
+    fn row(&self, at: usize, now: Instant, band: bool) -> Vec<Seg> {
         let line = &self.board.lines()[at];
         let state = match line {
             Line::Request { index, .. } => Some(self.board.state(*index)),
             Line::Space { .. } | Line::Folder { .. } => None,
         };
-        line_row(line, state, self.name_col, now, self.frame)
+        line_row(line, state, self.name_col, now, self.frame, band)
     }
 
     /// Wipes the band, prints the lines that just became final, whole and
-    /// with a `!` row's further lines under it, then draws the band again,
-    /// or `end` in its place when the run is over.
+    /// with a `!` row's further lines or a row's failed checks under it,
+    /// then draws the band again, or `end` in its place when the run is
+    /// over.
     fn redraw(&mut self, end: Option<&[Seg]>) {
         let mut buf = Vec::new();
         wipe(&mut buf, self.drawn);
@@ -145,12 +147,11 @@ impl<W: Write> Live<W> {
         // Before the band (R14): the band and `may_start` count from the
         // mark this moves.
         for at in self.board.take_final() {
-            let segs = self.row(at, now);
+            let segs = self.row(at, now, false);
             put(&mut buf, &paint(&segs, self.color));
             if let Line::Request { index, depth, .. } = &self.board.lines()[at] {
-                for under in error_under(self.board.state(*index), *depth) {
-                    let under = [Seg::new(under, Some(Tone::NotSent), 0)];
-                    put(&mut buf, &paint(&under, self.color));
+                for line in under(self.board.state(*index), *depth) {
+                    put(&mut buf, &paint(&[line], self.color));
                 }
             }
             #[cfg(test)]
@@ -179,7 +180,7 @@ impl<W: Write> Live<W> {
             paint(&segs, self.color)
         };
         let (range, more) = self.board.band(rows.saturating_sub(3));
-        let mut lines: Vec<String> = range.map(|at| fitted(self.row(at, now))).collect();
+        let mut lines: Vec<String> = range.map(|at| fitted(self.row(at, now, true))).collect();
         let mut more = (more > 0)
             .then(|| fitted(vec![Seg::new(format!("… {more} more"), Some(Tone::Dim), 0)]));
         let mut blank = true;
@@ -347,7 +348,32 @@ mod tests {
             elapsed_ms: Some(120),
             size: Some(512),
             error: None,
+            passed: true,
+            checks: Vec::new(),
         }
+    }
+
+    /// Suite checks spec §2.3: a row that failed a check is printed for
+    /// good with its URL, then each failure under it.
+    #[test]
+    fn a_failed_check_prints_under_its_final_row() {
+        let mut out = Vec::new();
+        let mut live = live(&mut out, false, 80, 24);
+        live.begin(&plan(1, 1));
+        live.started(0, Some("http://x/0"));
+        let checks = postui_core::model::Checks { status: vec![201], jq: Vec::new() };
+        let outcomes = postui_core::checks::evaluate(&checks, 200, "");
+        let mut failed = ok(0);
+        failed.passed = false;
+        failed.checks = crate::cli::checks::shown(&outcomes, &crate::cli::mask::Mask::none());
+        live.finished(0, &failed);
+        assert_eq!(live.finals[1], "  ✗ GET    req-00  200  120 ms   512 B  http://x/0");
+        drop(live);
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("http://x/0\r\n      check failed: status 200, expected 201\r\n"),
+            "{text:?}"
+        );
     }
 
     fn report(results: Vec<SuiteResult>, cancelled: bool, warnings: Vec<String>) -> SuiteReport {

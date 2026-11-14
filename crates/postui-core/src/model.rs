@@ -284,6 +284,11 @@ pub struct HttpRequest {
     /// name no view has reads as the scratch ([`Self::from_toml_str`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jq_current: Option<String>,
+    /// What `postui suite` and `postui run` check the response against
+    /// (`[checks]`, suite checks spec 2026-11-14). The TUI carries them
+    /// unseen (R10).
+    #[serde(default, skip_serializing_if = "Checks::is_empty")]
+    pub checks: Checks,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -292,6 +297,65 @@ pub struct HttpRequest {
     pub variables: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Body>,
+}
+
+/// A request's `[checks]` (suite checks spec 2026-11-14 §2.1): what its
+/// response must be for `suite` and `run` to pass it. Evaluated by
+/// [`crate::checks::evaluate`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checks {
+    /// The statuses that pass, one code or a list in the file. Empty is
+    /// the default rule, below 400 (R3).
+    #[serde(default, deserialize_with = "status_codes", skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<u16>,
+    /// jq filters that must each give `true` and nothing else (R4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jq: Vec<String>,
+}
+
+impl Checks {
+    pub fn is_empty(&self) -> bool {
+        self.status.is_empty() && self.jq.is_empty()
+    }
+}
+
+/// `status = 200` or `status = [200, 201]`, each a code from 100 to 599; any
+/// other value refuses the read (R6).
+fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
+    struct Codes;
+
+    fn code<E: de::Error>(v: i64) -> Result<u16, E> {
+        u16::try_from(v).ok().filter(|c| (100..=599).contains(c)).ok_or_else(|| {
+            E::custom(format!("a check's status must be a code from 100 to 599, not {v}"))
+        })
+    }
+
+    impl<'de> Visitor<'de> for Codes {
+        type Value = Vec<u16>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a status code or a list of them")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(vec![code(v)?])
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            self.visit_i64(i64::try_from(v).unwrap_or(i64::MAX))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut codes = Vec::new();
+            while let Some(v) = seq.next_element::<i64>()? {
+                codes.push(code(v)?);
+            }
+            Ok(codes)
+        }
+    }
+
+    d.deserialize_any(Codes)
 }
 
 fn default_true() -> bool {
@@ -346,7 +410,7 @@ impl HttpRequest {
     /// as plain strings, disabled as *inline* tables (sub-table sections would
     /// force reordering), body text verbatim.
     pub fn to_toml_string(&self) -> String {
-        use toml_edit::{DocumentMut, Item, Table, Value, value};
+        use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
         let mut doc = DocumentMut::new();
         if let Some(name) = &self.name {
             doc["name"] = value(name);
@@ -378,6 +442,29 @@ impl HttpRequest {
                 views.push(t);
             }
             doc["jq_view"] = Item::ArrayOfTables(views);
+        }
+        if !self.checks.is_empty() {
+            let mut t = Table::new();
+            match self.checks.status.as_slice() {
+                [] => {}
+                [one] => t["status"] = value(i64::from(*one)),
+                many => {
+                    t["status"] = value(many.iter().map(|c| i64::from(*c)).collect::<Array>());
+                }
+            }
+            if !self.checks.jq.is_empty() {
+                // One filter a line: they are read, and diffed, one by one.
+                let mut filters = Array::new();
+                for filter in &self.checks.jq {
+                    let mut v = Value::from(filter.as_str());
+                    v.decor_mut().set_prefix("\n  ");
+                    filters.push_formatted(v);
+                }
+                filters.set_trailing_comma(true);
+                filters.set_trailing("\n");
+                t["jq"] = value(filters);
+            }
+            doc["checks"] = Item::Table(t);
         }
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
@@ -434,6 +521,7 @@ mod tests {
             jq_enabled: true,
             jq_views: Vec::new(),
             jq_current: None,
+            checks: Checks::default(),
             params,
             headers,
             variables: IndexMap::new(),
@@ -739,6 +827,64 @@ mod tests {
     fn empty_variables_table_is_omitted() {
         let out = sample().to_toml_string();
         assert!(!out.contains("[variables]"), "empty variables table is skipped:\n{out}");
+    }
+
+    /// Suite checks spec §2.1, §4: `[checks]` round-trips after the jq
+    /// views and before `[params]`, one status as a number and several as a
+    /// list, each filter on its own line.
+    #[test]
+    fn checks_round_trip_after_the_views_before_params() {
+        let mut req = sample();
+        req.jq_views = vec![JqView { name: "names".into(), filter: ".n".into(), id: 0 }];
+        req.checks = Checks {
+            status: vec![200],
+            jq: vec![".a == 1".into(), ".choices[0].finish_reason == \"stop\"".into()],
+        };
+        let out = req.to_toml_string();
+        let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s}:\n{out}"));
+        assert!(at("[[jq_view]]") < at("[checks]") && at("[checks]") < at("[params]"), "{out}");
+        assert!(out.contains("[checks]\nstatus = 200\njq = [\n  \".a == 1\",\n"), "{out}");
+        assert!(out.contains("\n  '.choices[0].finish_reason == \"stop\"',\n]\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        req.checks.status = vec![200, 201];
+        let out = req.to_toml_string();
+        assert!(out.contains("status = [200, 201]"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    #[test]
+    fn no_checks_write_nothing_and_old_files_read_without_them() {
+        let out = sample().to_toml_string();
+        assert!(!out.contains("checks"), "{out}");
+        assert!(HttpRequest::from_toml_str(&out).unwrap().checks.is_empty());
+        let empty = HttpRequest::from_toml_str("url = \"u\"\n[checks]\n").unwrap();
+        assert!(empty.checks.is_empty());
+        assert!(!empty.to_toml_string().contains("checks"));
+    }
+
+    #[test]
+    fn checks_read_one_status_or_a_list() {
+        let read =
+            |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
+        assert_eq!(read("status = 404\n").unwrap().checks.status, [404]);
+        assert_eq!(read("status = [200, 204]\n").unwrap().checks.status, [200, 204]);
+        assert_eq!(read("jq = ['.a']\n").unwrap().checks.jq, [".a"]);
+    }
+
+    /// Spec R6: a status that isn't a code from 100 to 599 refuses the read;
+    /// so does a key `[checks]` doesn't know.
+    #[test]
+    fn a_bad_check_status_or_key_refuses_the_read() {
+        let read =
+            |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
+        for bad in ["status = 99\n", "status = 600\n", "status = [200, 1000]\n", "status = -1\n"] {
+            let err = read(bad).unwrap_err().to_string();
+            assert!(err.contains("a code from 100 to 599"), "{bad}: {err}");
+        }
+        for bad in ["status = \"200\"\n", "status = [\"200\"]\n", "jq = '.a'\n", "header = 1\n"] {
+            assert!(read(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

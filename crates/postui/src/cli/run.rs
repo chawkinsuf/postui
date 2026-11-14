@@ -5,13 +5,15 @@
 //! back) and holds the one mask every printed string passes through.
 
 use super::check::{declared, reason};
+use super::checks::{ShownCheck, failure_lines, shown};
 use super::mask::{self, Mask};
 use super::out::{count, fields, rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
-use postui_core::model::{Entry, HttpRequest, JqView, Method, applied_jq_filter};
+use postui_core::checks::FIRST_FAILING_STATUS;
+use postui_core::model::{Checks, Entry, HttpRequest, JqView, Method, applied_jq_filter};
 use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
 use postui_core::{jq, storage, varmodel};
@@ -24,9 +26,6 @@ use std::time::Duration;
 
 /// The status a failed run ends with.
 pub(super) const FAILED: u8 = 1;
-
-/// A response status from here up is a failure (`run` exits 1).
-pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 
 /// What `run` and `suite` share on their command lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,10 +298,17 @@ pub struct RunReport {
     /// What came back; `null` for a dry run or when nothing did.
     response: Option<ResponseReport>,
     jq: Option<JqReport>,
+    /// Each of the request's `[checks]` run over the response, in file
+    /// order; empty without a response (suite checks spec §2.4).
+    checks: Vec<ShownCheck>,
     output_file: Option<PathBuf>,
     /// Why there is no response (an unresolved variable, a send error).
     error: Option<String>,
     warnings: Vec<String>,
+    /// The request has a `status` check, which then decides the status in
+    /// place of the 400 rule (R3).
+    #[serde(skip)]
+    status_checked: bool,
     /// What the text's paths are relative to; the JSON's are absolute.
     #[serde(skip)]
     root: PathBuf,
@@ -439,14 +445,16 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
         .map_err(|e| CliError::at(format!("could not write {}: {e}", file.display()), file.into()))
 }
 
-/// Fills `report` from `raw`: the response, the jq results, the `-o` file.
-/// A file that can't be written is the report's `error`, with the response
-/// shown as if there were no `-o`. The body takes the form the report will
-/// print in: text, or with `json` parsed when it parses.
+/// Fills `report` from `raw`: the response, the request's `checks` run over
+/// it, the jq results, the `-o` file. A file that can't be written is the
+/// report's `error`, with the response shown as if there were no `-o`. The
+/// body takes the form the report will print in: text, or with `json`
+/// parsed when it parses.
 fn record(
     report: &mut RunReport,
     mask: &Mask,
     raw: RawResponse,
+    checks: &Checks,
     jq: Option<&str>,
     output: Option<&Path>,
     json: bool,
@@ -455,6 +463,10 @@ fn record(
     // byte-exact `-o` that succeeds never does).
     let decoded = OnceCell::new();
     let text = || decoded.get_or_init(|| String::from_utf8_lossy(&raw.bytes)).as_ref();
+    if !checks.is_empty() {
+        let outcomes = postui_core::checks::evaluate(checks, raw.status, text());
+        report.checks = shown(&outcomes, mask);
+    }
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -604,9 +616,11 @@ pub async fn run(
         dry_run,
         response: None,
         jq: None,
+        checks: Vec::new(),
         output_file: None,
         error: None,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).collect(),
+        status_checked: !read.checks.status.is_empty(),
         root: s.root.clone(),
     };
     let (request, warnings) = match prepared {
@@ -640,19 +654,26 @@ pub async fn run(
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, mask, raw, jq, output, g.json),
+        Ok(raw) => record(&mut report, mask, raw, &read.checks, jq, output, g.json),
         Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)
 }
 
 impl RunReport {
-    /// 1 when the run failed: an error, a status of 400 or more, or a jq
-    /// error; else 0.
+    /// Whether the response's status fails the run by the 400 rule, which
+    /// a `status` check replaces (R3).
+    fn failing_status(&self) -> Option<u16> {
+        let status = self.response.as_ref().map(|r| r.status)?;
+        (!self.status_checked && status >= FIRST_FAILING_STATUS).then_some(status)
+    }
+
+    /// 1 when the run failed: an error, a status of 400 or more (without a
+    /// `status` check), a failed check, or a jq error; else 0.
     pub fn status(&self) -> ExitCode {
-        let status = self.response.as_ref().map(|r| r.status);
         let jq_failed = self.jq.as_ref().is_some_and(|j| j.error.is_some());
-        if self.error.is_some() || jq_failed || status.is_some_and(|s| s >= FIRST_FAILING_STATUS) {
+        let check_failed = self.checks.iter().any(|c| !c.passed());
+        if self.error.is_some() || jq_failed || check_failed || self.failing_status().is_some() {
             ExitCode::from(FAILED)
         } else {
             ExitCode::SUCCESS
@@ -677,7 +698,8 @@ impl RunReport {
     /// `include`, the status line and response headers and a blank line;
     /// then the body as it came (nothing when `-o` took it), or the jq
     /// results one a line. Stderr, a `postui: ` line each (D6): the error, a
-    /// failing jq filter, a status of 400 or more, and the warnings.
+    /// failing jq filter, a status of 400 or more (without a `status`
+    /// check), each failed check, and the warnings.
     pub fn streams(&self, include: bool) -> (String, String) {
         let mut out = String::new();
         let mut err = String::new();
@@ -723,8 +745,11 @@ impl RunReport {
         if let Some(error) = &self.error {
             err.push_str(&format!("postui: {}\n", error.trim_end()));
         }
-        if let Some(r) = self.response.as_ref().filter(|r| r.status >= FIRST_FAILING_STATUS) {
-            err.push_str(&format!("postui: {}\n", status_line(r.status)));
+        if let Some(status) = self.failing_status() {
+            err.push_str(&format!("postui: {}\n", status_line(status)));
+        }
+        for line in failure_lines(&self.checks) {
+            err.push_str(&format!("postui: {}\n", line.trim_end()));
         }
         for w in &self.warnings {
             err.push_str(&format!("postui: warning: {}\n", w.trim_end()));
@@ -734,7 +759,7 @@ impl RunReport {
 
     /// The request line, what identifies the run, the request's headers and
     /// body, the response with its body exactly as it came (or the jq
-    /// results), then the error and warnings.
+    /// results), the checks, then the error and warnings.
     pub fn text(&self) -> String {
         let mut out = match (&self.method, &self.url) {
             (Some(method), Some(url)) => format!("{} {url}\n", method.as_str()),
@@ -788,6 +813,18 @@ impl RunReport {
             if let Some(failure) = j.failure() {
                 out.push_str(&table(&[vec![format!("error: {failure}")]]));
             }
+        }
+        if !self.checks.is_empty() {
+            let rows: Vec<Vec<String>> = self
+                .checks
+                .iter()
+                .map(|c| {
+                    let verdict = if c.passed() { "passed" } else { "failed" };
+                    vec![verdict.to_string(), c.summary()]
+                })
+                .collect();
+            out.push_str("\nchecks\n");
+            out.push_str(&table(&rows));
         }
         if let Some(file) = &self.output_file {
             // Absolute: the file is the user's, named from their working

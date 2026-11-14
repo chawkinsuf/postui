@@ -190,6 +190,13 @@ name = "Health"
 method = "GET"
 url = "{{base_url}}/health"
 jq = ".status"
+
+[checks]
+status = 200
+jq = [
+  '.status == "ok"',
+  '.checks | length > 0',
+]
 ```
 
 - `name`: the display name. `method`: `GET` (the default), `POST`, `PUT`,
@@ -215,6 +222,16 @@ jq = ".status"
   `jq_current` names the one in use, `jq_enabled = false` switches the
   filter off. postui writes these when the user filters in the TUI; you
   may add them too, and `run --view` uses them.
+- `[checks]`: what `run` and `suite` require of the response. `status` is
+  one code or a list (`[200, 201]`); given, it replaces the rule that a
+  status of 400 or more fails, so `status = 404` tests an error path.
+  `jq` is a list of filters, separate from the views, that must each give
+  `true` and nothing else: a filter giving `false`, no output, any other
+  value (`.name` alone, so compare it), or an error fails, and so does a
+  body that isn't JSON (a stream is read value by value, as `run --jq`
+  does). Write filters as `'...'` literal strings so their quotes need no
+  escaping. `check` reports a filter that doesn't compile. The TUI keeps
+  checks but doesn't show them.
 - postui adds `Accept: application/json` unless the request sets `Accept`,
   and the HTTP client adds `Host`, `Content-Length` and the like.
 - Any other key is an error: `check` names the file.

@@ -248,13 +248,17 @@ fn status_tone(status: u16) -> Tone {
 }
 
 /// One line of the list as segments. `state` is `None` for a space or folder
-/// line; `now` and `frame` drive a running row's time and spinner.
+/// line; `now` and `frame` drive a running row's time and spinner. A row
+/// that failed a check shows its first failure in place of the URL while
+/// it is in the `band`; printed for good, it shows the URL with every
+/// failure [`under`] it (suite checks spec §2.3).
 pub(super) fn line_row(
     line: &Line,
     state: Option<&RowState>,
     name_col: usize,
     now: Instant,
     frame: usize,
+    band: bool,
 ) -> Vec<Seg> {
     let (depth, method, name) = match line {
         Line::Space { name } => return vec![toned(printable(name), Tone::Space)],
@@ -322,26 +326,30 @@ pub(super) fn line_row(
             row.push(plain("  "));
             let bytes = r.size.map(size).unwrap_or_default();
             row.push(toned(pad_left(&bytes, NUM_COL), Tone::Dim));
-            if let Some(url) = &r.url {
-                row.push(seg(format!("  {url}"), Some(Tone::Dim), 1));
+            match (band, r.under().first()) {
+                (true, Some(failure)) => row.push(seg(format!("  {failure}"), Some(Tone::Bad), 1)),
+                _ => {
+                    if let Some(url) = &r.url {
+                        row.push(seg(format!("  {url}"), Some(Tone::Dim), 1));
+                    }
+                }
             }
         }
     }
     row
 }
 
-/// The lines of a final `!` row's message after the first, each indented 4
-/// more than the row (`depth` levels in).
-pub(super) fn error_under(state: &RowState, depth: usize) -> Vec<String> {
+/// The lines under a final row, each indented 4 more than the row (`depth`
+/// levels in): a `!` row's message after its first line, or a sent row's
+/// `check failed:` lines.
+pub(super) fn under(state: &RowState, depth: usize) -> Vec<Seg> {
     let RowState::Done(r) = state else { return Vec::new() };
-    if r.status.is_some() {
-        return Vec::new();
-    }
+    let (skip, tone) = match r.status {
+        None => (1, Tone::NotSent),
+        Some(_) => (0, Tone::Bad),
+    };
     let indent = " ".repeat(depth * 2 + 4);
-    r.error
-        .as_deref()
-        .map(|e| e.lines().skip(1).map(|l| format!("{indent}{l}")).collect())
-        .unwrap_or_default()
+    r.under().iter().skip(skip).map(|l| seg(format!("{indent}{l}"), Some(tone), 0)).collect()
 }
 
 /// The line above the list: what the run is, and how many go at once.
@@ -432,7 +440,22 @@ mod tests {
             elapsed_ms: status.map(|_| 120),
             size: status.map(|_| 512),
             error: error.map(Into::into),
+            passed: status.is_some_and(|s| s < 400),
+            checks: Vec::new(),
         }
+    }
+
+    /// A 200 whose two jq checks failed.
+    fn checks_failed() -> SuiteResult {
+        let checks = postui_core::model::Checks {
+            status: Vec::new(),
+            jq: vec![".a == 1".into(), ".b".into()],
+        };
+        let outcomes = postui_core::checks::evaluate(&checks, 200, r#"{"a":2,"b":"x"}"#);
+        let mut r = result(Some(200), None);
+        r.passed = false;
+        r.checks = crate::cli::checks::shown(&outcomes, &crate::cli::mask::Mask::none());
+        r
     }
 
     fn request(depth: usize, method: Option<Method>, name: &str) -> Line {
@@ -440,7 +463,37 @@ mod tests {
     }
 
     fn row(line: &Line, state: &RowState, name_col: usize) -> Vec<Seg> {
-        line_row(line, Some(state), name_col, Instant::now(), 0)
+        line_row(line, Some(state), name_col, Instant::now(), 0, false)
+    }
+
+    /// Suite checks spec §2.3: a row that failed a check is a `✗` with its
+    /// status in its usual colour, the first failure in red in place of the
+    /// URL while in the band; printed for good, the URL, and every failure
+    /// under it.
+    #[test]
+    fn a_failed_check_shows_in_the_band_and_under_the_final_row() {
+        let line = request(1, Some(Method::Get), "Chat");
+        let state = RowState::Done(checks_failed());
+        let band = line_row(&line, Some(&state), 4, Instant::now(), 0, true);
+        assert_eq!(
+            paint(&band, false),
+            "  ✗ GET    Chat  200  120 ms   512 B  check failed: .a == 1 gave false"
+        );
+        assert_eq!(band.last().unwrap().tone, Some(Tone::Bad));
+        assert_eq!(band.iter().find(|s| s.text == "200").unwrap().tone, Some(Tone::Ok));
+        let done = row(&line, &state, 4);
+        assert!(paint(&done, false).ends_with("  https://dev/users/42"), "{}", paint(&done, false));
+        let lines: Vec<String> =
+            under(&state, 1).iter().map(|s| paint(std::slice::from_ref(s), false)).collect();
+        assert_eq!(
+            lines,
+            ["      check failed: .a == 1 gave false", "      check failed: .b gave \"x\""]
+        );
+        assert!(under(&state, 1).iter().all(|s| s.tone == Some(Tone::Bad)));
+        // A row that passed keeps its URL in the band.
+        let ok = RowState::Done(result(Some(200), None));
+        let band = line_row(&line, Some(&ok), 4, Instant::now(), 0, true);
+        assert!(paint(&band, false).ends_with("https://dev/users/42"));
     }
 
     fn long_row() -> Vec<Seg> {
@@ -493,10 +546,16 @@ mod tests {
     fn control_characters_in_names_show_as_question_marks() {
         let odd = "a\nb\tc\u{1b}[31m";
         let shown = "a?b?c?[31m";
-        let space = line_row(&Line::Space { name: odd.into() }, None, 0, Instant::now(), 0);
+        let space = line_row(&Line::Space { name: odd.into() }, None, 0, Instant::now(), 0, false);
         assert_eq!(paint(&space, false), shown);
-        let folder =
-            line_row(&Line::Folder { depth: 1, name: odd.into() }, None, 0, Instant::now(), 0);
+        let folder = line_row(
+            &Line::Folder { depth: 1, name: odd.into() },
+            None,
+            0,
+            Instant::now(),
+            0,
+            false,
+        );
         assert_eq!(paint(&folder, false), format!("  {shown}/"));
         let lines = [request(1, Some(Method::Get), odd)];
         assert_eq!(name_column(&lines), cells(shown));
@@ -525,7 +584,7 @@ mod tests {
             (RowState::Done(done), "http://a?b"),
             (RowState::Done(refused), "bad?value?[31m"),
         ] {
-            let text = paint(&line_row(&line, Some(&state), 1, now, 0), false);
+            let text = paint(&line_row(&line, Some(&state), 1, now, 0, false), false);
             assert!(text.ends_with(shown), "{text:?}");
             assert!(!text.chars().any(char::is_control), "{text:?}");
         }
@@ -584,8 +643,8 @@ mod tests {
         let r = row(&request(1, Some(Method::Get), "L"), &state, 1);
         assert!(paint(&r, false).ends_with("  a"));
         assert!(!paint(&r, false).contains('b'));
-        assert_eq!(error_under(&state, 1), ["      b"]);
-        assert!(error_under(&RowState::Done(result(Some(200), None)), 1).is_empty());
+        assert_eq!(under(&state, 1), [seg("      b", Some(Tone::NotSent), 0)]);
+        assert!(under(&RowState::Done(result(Some(200), None)), 1).is_empty());
     }
 
     #[test]
@@ -604,10 +663,10 @@ mod tests {
     fn running_row_spins_with_the_frame() {
         let now = Instant::now();
         let state = RowState::Running { since: now, url: None };
-        let r = line_row(&request(1, Some(Method::Get), "Stats"), Some(&state), 5, now, 2);
+        let r = line_row(&request(1, Some(Method::Get), "Stats"), Some(&state), 5, now, 2, false);
         assert!(paint(&r, false).starts_with("  ⠹ GET"));
         assert_eq!(r[1].tone, Some(Tone::Spin));
-        let r = line_row(&request(1, Some(Method::Get), "Stats"), Some(&state), 5, now, 12);
+        let r = line_row(&request(1, Some(Method::Get), "Stats"), Some(&state), 5, now, 12, false);
         assert!(paint(&r, false).starts_with("  ⠹ GET"));
     }
 
@@ -615,7 +674,7 @@ mod tests {
     fn a_running_row_shows_its_time() {
         let now = Instant::now();
         let state = RowState::Running { since: now - Duration::from_millis(2100), url: None };
-        let r = line_row(&request(1, Some(Method::Put), "Update"), Some(&state), 6, now, 0);
+        let r = line_row(&request(1, Some(Method::Put), "Update"), Some(&state), 6, now, 0, false);
         assert!(paint(&r, false).contains("   2.1 s"));
     }
 
@@ -627,7 +686,7 @@ mod tests {
         let url = "https://dev/users/42";
         let line = request(2, Some(Method::Get), "Get user");
         let running = RowState::Running { since: now, url: Some(url.into()) };
-        let running = paint(&line_row(&line, Some(&running), 15, now, 0), false);
+        let running = paint(&line_row(&line, Some(&running), 15, now, 0, false), false);
         let done = paint(&row(&line, &RowState::Done(result(Some(200), None)), 15), false);
         let col = |s: &str| cells(&s[..s.find(url).unwrap()]);
         assert_eq!(col(&running), col(&done));
@@ -635,10 +694,16 @@ mod tests {
 
     #[test]
     fn space_and_folder_lines() {
-        let s = line_row(&Line::Space { name: "main".into() }, None, 0, Instant::now(), 0);
+        let s = line_row(&Line::Space { name: "main".into() }, None, 0, Instant::now(), 0, false);
         assert_eq!(s, [toned("main", Tone::Space)]);
-        let f =
-            line_row(&Line::Folder { depth: 2, name: "users".into() }, None, 0, Instant::now(), 0);
+        let f = line_row(
+            &Line::Folder { depth: 2, name: "users".into() },
+            None,
+            0,
+            Instant::now(),
+            0,
+            false,
+        );
         assert_eq!(paint(&f, false), "    users/");
         assert_eq!(f[1].tone, Some(Tone::Folder));
     }

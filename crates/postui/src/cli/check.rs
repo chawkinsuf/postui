@@ -185,6 +185,16 @@ pub fn check(g: &Global, env: Option<&str>) -> Result<CheckReport, CliError> {
                 continue;
             }
         };
+        // A filter that doesn't compile still reads, so the TUI opens the
+        // request; here it is an error (suite checks spec R5).
+        for filter in &req.checks.jq {
+            if let Err(e) = postui_core::jq::check(filter) {
+                errors.push(Finding::at(
+                    file.clone(),
+                    format!("[checks] jq filter {filter:?} doesn't compile: {e}"),
+                ));
+            }
+        }
         // A disabled row is never used, as `prepare` skips it, and a secret's
         // value is opaque data, never looked into (as `prepare` doesn't). A
         // row the URL uses gets the request's error below too: the two

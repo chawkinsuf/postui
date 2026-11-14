@@ -57,8 +57,9 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
 ```
 
 - `run` prints the response body and nothing else, as curl does. A status
-  of 400 or more (`postui: 404 Not Found`), an error and any warning go to
-  stderr, one `postui:` line each. `-i` prints the status line and response
+  of 400 or more (`postui: 404 Not Found`), a failed check
+  (`postui: check failed: …`), an error and any warning go to stderr, one
+  `postui:` line each. `-i` prints the status line and response
   headers before the body; `-v` prints the whole run: the request as sent
   (method, URL, headers, body), the status, timings and response headers,
   then the body.
@@ -96,9 +97,17 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   when there's no terminal; pass `--plain` if your shell runs under a
   pseudo-terminal. Don't use `-i` (it opens a picker for a person). Use
   `--jobs N` (N at once) only when the requests don't depend on each other.
-- Exit codes: 0 fine; 1 a status of 400 or more, a send or prepare error, a
-  failed jq filter, or (suite) any of these; 2 a mistake in the command or
-  the project.
+- A request's `[checks]` (see the reference) say what a right answer is:
+  `status` the codes that pass, and `jq` filters that must each give `true`.
+  `run` and `suite` both evaluate them: a failed check fails the request and
+  prints a `check failed:` line (under its row in the suite), and a `status`
+  check replaces the 400 rule, so a request testing an error path can pass
+  on a 404. Add checks when the status alone can't tell a right answer from
+  a wrong one; then `suite` is the test, and `run --view` is only for
+  looking.
+- Exit codes: 0 fine; 1 a status of 400 or more (without a `status` check),
+  a failed check, a send or prepare error, a failed jq filter, or (suite)
+  any of these; 2 a mistake in the command or the project.
 - Sends time out after 30 s by default (`--timeout 0` for none).
 
 `run` and `suite` write nothing into the project.

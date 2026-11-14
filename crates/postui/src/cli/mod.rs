@@ -6,6 +6,7 @@
 //! write nothing (R16).
 
 mod check;
+mod checks;
 mod edit;
 pub mod mask;
 pub mod out;
@@ -256,12 +257,13 @@ usage: postui run <request> [-p <dir|name>] [--env <env>] [--select <sel>=<opt>]
 Sends one request and prints the response body, as curl does, but as text
 (-o writes its exact bytes, or with a filter the text, masked); -i adds the
 status and headers, -v the whole
-run. A status of 400 or more, errors and warnings go to stderr. <request> is
-a slug as `postui requests` lists it.
+run. A status of 400 or more, a failed check, errors and warnings go to
+stderr. <request> is a slug as `postui requests` lists it. The request's
+[checks] are evaluated; a status check replaces the 400 rule.
 Nothing is written to the project. Each secret's exact value is masked in
 everything printed; a value the server or a jq filter transforms is not.
-Exits 1 for a status of 400 or more, when the request can't be prepared or
-sent, or when the jq filter fails.
+Exits 1 for a status of 400 or more, a failed check, when the request can't
+be prepared or sent, or when the jq filter fails.
 
 ",
     project_flag!(),
@@ -281,7 +283,7 @@ sent, or when the jq filter fails.
   -i, --include             print the status and response headers first
   -v, --verbose             print the whole run: the request sent, the
                             status, timings and headers, then the body (or
-                            the jq results)
+                            the jq results) and the checks
   --timeout <secs>          give up if the response hasn't started after this
                             long (connect, upload and redirects included),
                             or the body stalls this long between reads
@@ -302,10 +304,10 @@ usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
 Sends every request of the project (or of one space) in sidebar order, one
 at a time unless --jobs asks for more, and prints each one's status and
 time, then the totals. A request that can't be read or prepared is reported
-and the suite goes on. Nothing is written to the project. Each secret's
-exact value is masked in everything printed; a value the server transforms
-is not. Exits 1 when any request failed to prepare or send or returned 400
-or more.
+and the suite goes on. A request fails on a status of 400 or more, or on its
+[checks] (a status check replaces the 400 rule). Nothing is written to the
+project. Each secret's exact value is masked in everything printed; a value
+the server transforms is not. Exits 1 when any request failed.
 
 ",
     project_flag!(),

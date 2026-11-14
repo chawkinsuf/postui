@@ -175,3 +175,17 @@ the environment, space, selector options and jobs for that one run, and
 saves nothing. Esc or `q` cancels the picker with exit status 1, Ctrl+C
 with 130, and nothing is sent. A pipe, `--plain` or `TERM=dumb` gives plain
 text instead.
+
+A request fails the suite on a status of 400 or more. To test more than the
+status, give the request file a `[checks]` table: `status` lists the codes
+that pass (so a request can expect a 404), and `jq` lists filters that must
+each give `true`:
+
+```toml
+[checks]
+status = 200
+jq = ['.items | length > 0', '.items[0].id == 42']
+```
+
+`postui suite` and `postui run` both evaluate them and say which failed. The
+app keeps a request's checks when you edit it, but doesn't show them yet.

@@ -12,7 +12,7 @@ use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
 };
 use indexmap::IndexMap;
-use postui_core::model::{Body, Entry, HttpRequest, JqView, Method, ViewNameRefusal};
+use postui_core::model::{Body, Checks, Entry, HttpRequest, JqView, Method, ViewNameRefusal};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -193,6 +193,11 @@ pub struct Editor {
     /// The view the bar shows and edits, by name; `None` (or a name no
     /// view has) is the scratch. File content, as a plain edit (A4).
     pub jq_current: Option<String>,
+    /// The request's `[checks]`, which `postui suite` and `run` evaluate.
+    /// The editor shows and edits none of them; it carries them so every
+    /// save, undo step, duplicate and replace keeps them (suite checks spec
+    /// R10; showing them is #302).
+    pub checks: Checks,
     /// The id the next view gets, a new one or one `load` numbers: past
     /// every id this editor (and any it replaced, [`Self::fresh`]) ever
     /// handed out or took in (a load, a snapshot), so an id never names two views
@@ -417,6 +422,7 @@ impl Default for Editor {
             jq_enabled: true,
             jq_views: Vec::new(),
             jq_current: None,
+            checks: Checks::default(),
             next_view_id: 1,
             env_tls: None,
             params: IndexMap::new(),
@@ -589,6 +595,7 @@ impl Editor {
         self.jq_enabled = req.jq_enabled;
         self.jq_views = req.jq_views.clone();
         self.jq_current = req.jq_current.clone();
+        self.checks = req.checks.clone();
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -643,6 +650,7 @@ impl Editor {
         self.jq_current = req.jq_current.clone();
         let past = self.jq_views.iter().map(|v| v.id + 1).max().unwrap_or(0);
         self.next_view_id = self.next_view_id.max(past);
+        self.checks = req.checks.clone();
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -831,6 +839,7 @@ impl Editor {
             jq_enabled: self.jq_enabled,
             jq_views: self.jq_views.clone(),
             jq_current: self.jq_current.clone(),
+            checks: self.checks.clone(),
             params: self.params.clone(),
             headers: self.headers.clone(),
             variables: self.variables.clone(),
@@ -7290,6 +7299,28 @@ mod tests {
         let saved = ed.current_request().to_toml_string();
         assert_eq!(HttpRequest::from_toml_str(&saved).unwrap(), ed.current_request());
         assert!(saved.contains("jq_enabled = false") && !saved.contains("jq ="), "{saved}");
+    }
+
+    /// Suite checks R10: the editor carries `[checks]` it never shows, so a
+    /// load opens clean, an edit and a save keep them, and an undo step's
+    /// snapshot puts them back as they were.
+    #[test]
+    fn checks_are_carried_through_load_edit_save_and_snapshot() {
+        let text =
+            "method = \"GET\"\nurl = \"u\"\n\n[checks]\nstatus = 404\njq = ['.a == \"b\"']\n";
+        let read = HttpRequest::from_toml_str(text).unwrap();
+        let mut ed = Editor::default();
+        ed.load(Some("s".into()), read.clone());
+        assert!(!ed.is_dirty(), "opens clean");
+        ed.url = LineInput::new("https://x");
+        let saved = ed.current_request().to_toml_string();
+        let back = HttpRequest::from_toml_str(&saved).unwrap();
+        assert_eq!(back.checks, read.checks, "{saved}");
+        let other = HttpRequest { url: "v".into(), ..Default::default() };
+        ed.apply_snapshot(&other, None);
+        assert!(ed.current_request().checks.is_empty());
+        ed.apply_snapshot(&read, None);
+        assert_eq!(ed.current_request(), read);
     }
 
     /// Amendment A4: the switch is file content, a plain edit.

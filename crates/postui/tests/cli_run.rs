@@ -956,6 +956,109 @@ fn get(path: &str) -> String {
     format!("method = \"GET\"\nurl = \"{{{{base}}}}{path}\"\n")
 }
 
+/// main: `gone` (a 404 its `status` check expects), `good` (a 200 whose
+/// check passes), `bad` (a 200 whose two checks fail).
+fn checked_project(home: &Home, base: &str) -> PathBuf {
+    write_suite_project(
+        home,
+        base,
+        &[
+            ("main/gone", &format!("{}\n[checks]\nstatus = 404\n", get("/missing"))),
+            ("main/good", &format!("{}\n[checks]\njq = ['.id == 42']\n", get("/ok"))),
+            ("main/bad", &format!("{}\n[checks]\njq = ['.id == 7', '.id']\n", get("/ok"))),
+        ],
+    )
+}
+
+/// Suite checks spec §2.4: `run` evaluates the checks. A `status` check
+/// replaces the 400 rule, so an expected 404 exits 0 with no status line; a
+/// failed check exits 1 with a `postui: check failed:` line each on
+/// stderr, the body still printed.
+#[test]
+fn run_evaluates_the_requests_checks() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = checked_project(&home, &server.base());
+
+    let (code, out, err) = streams(&home, &root, "main/gone", &[]);
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(0), "nope\n", ""));
+    let (code, out, err) = streams(&home, &root, "main/good", &[]);
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(0), "{\"id\":42}\n", ""));
+    let (code, out, err) = streams(&home, &root, "main/bad", &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(out, "{\"id\":42}\n");
+    assert_eq!(
+        err,
+        "postui: check failed: .id == 7 gave false\npostui: check failed: .id gave 42\n"
+    );
+
+    let v = json(&send(&home, &root, "main/bad", &[]));
+    assert_eq!(
+        v["checks"],
+        serde_json::json!([
+            {"check": ".id == 7", "passed": false, "got": [false], "error": null},
+            {"check": ".id", "passed": false, "got": [42], "error": null},
+        ])
+    );
+    let v = json(&send(&home, &root, "main/gone", &[]));
+    assert_eq!(
+        v["checks"],
+        serde_json::json!([{"check": "status", "expected": [404], "got": 404, "passed": true}])
+    );
+
+    let text = send_text(&home, &root, "main/bad", &["-v"]);
+    assert!(
+        text.contains("\nchecks\n  failed  .id == 7 gave false\n  failed  .id gave 42\n"),
+        "{text}"
+    );
+    let text = send_text(&home, &root, "main/good", &["-v"]);
+    assert!(text.contains("\nchecks\n  passed  .id == 42\n"), "{text}");
+
+    // A dry run sends nothing and checks nothing.
+    let out = home.run_json(&["run", "main/bad", "--dry-run", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(json(&out)["checks"], serde_json::json!([]));
+}
+
+/// The suite fails a request on its checks and passes one on its expected
+/// status, and says why under the row.
+#[test]
+fn suite_fails_a_request_on_its_checks() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = checked_project(&home, &server.base());
+    let out = home.run(&["suite", "-p", s(&root), "--plain"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("main/bad"), "{text}");
+    assert!(
+        text.contains("\n    check failed: .id == 7 gave false\n    check failed: .id gave 42\n"),
+        "{text}"
+    );
+    assert!(text.contains("3 requests, 2 passed, 1 failed"), "{text}");
+}
+
+/// Suite checks spec R5: a check filter that doesn't compile is a `check`
+/// error naming the file; the request still reads.
+#[test]
+fn check_reports_a_check_filter_that_does_not_compile() {
+    let home = Home::new();
+    let root = write_suite_project(
+        &home,
+        "http://127.0.0.1:1",
+        &[("main/bad", &format!("{}\n[checks]\njq = ['.a ==']\n", get("/ok")))],
+    );
+    let out = home.run(&["check", "-p", s(&root)]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("requests/main/bad.toml: [checks] jq filter \".a ==\" doesn't compile: "),
+        "{text}"
+    );
+    let listed = json(&home.run_json(&["requests", "-p", s(&root)]));
+    assert!(listed["requests"][0]["broken"].is_null(), "{listed}");
+}
+
 /// main: a-ok, b-missing, c-unresolved, d-broken, e-ok; admin: x.
 fn suite_project(home: &Home, base: &str) -> PathBuf {
     write_suite_project(

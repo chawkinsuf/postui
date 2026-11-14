@@ -12,17 +12,17 @@ mod outline;
 mod paint;
 mod picker;
 
+use super::checks::{ShownCheck, failure_lines, shown};
 use super::mask::Mask;
 use super::out::{count, table_under};
 use super::read::{displayed, spaces_of, warnings_text};
-use super::run::{
-    FAILED, FIRST_FAILING_STATUS, RunOpts, millis, prepare_one, refused, session, shown_url,
-};
+use super::run::{FAILED, RunOpts, millis, prepare_one, refused, session, shown_url};
 use super::{CliError, Global};
 use crate::http::send_raw;
 use futures::stream::{FuturesUnordered, StreamExt};
 use outline::{Listed, SpaceRequests, outline};
-use postui_core::model::Method;
+use postui_core::checks::Outcome;
+use postui_core::model::{Checks, Method};
 use postui_core::project::Project;
 use serde::Serialize;
 use std::future::Future;
@@ -107,6 +107,12 @@ pub(super) struct SuiteResult {
     pub(super) elapsed_ms: Option<u64>,
     pub(super) size: Option<usize>,
     pub(super) error: Option<String>,
+    /// Sent, and its status and every check passed
+    /// ([`postui_core::checks::passed`]).
+    pub(super) passed: bool,
+    /// Each of its `[checks]`, in file order; empty for a request without
+    /// any, or one never sent (suite checks spec §2.3).
+    pub(super) checks: Vec<ShownCheck>,
 }
 
 #[derive(Serialize)]
@@ -121,7 +127,30 @@ struct Totals {
 
 impl SuiteResult {
     pub(super) fn passed(&self) -> bool {
-        self.status.is_some_and(|s| s < FIRST_FAILING_STATUS)
+        self.passed
+    }
+
+    /// What goes under the row: why it wasn't sent, else a `check failed:`
+    /// line for each check that failed.
+    pub(super) fn under(&self) -> Vec<String> {
+        let error = self.error.iter().flat_map(|e| e.lines().map(str::to_string));
+        error.chain(failure_lines(&self.checks)).collect()
+    }
+}
+
+/// Runs `checks` over a response, off the async loop: jq over a large body
+/// would otherwise stall the live view's ticks and the other sends.
+async fn evaluate(checks: Checks, status: u16, body: Vec<u8>) -> Vec<Outcome> {
+    if checks.is_empty() {
+        return Vec::new();
+    }
+    let run = tokio::task::spawn_blocking(move || {
+        postui_core::checks::evaluate(&checks, status, &String::from_utf8_lossy(&body))
+    });
+    match run.await {
+        Ok(outcomes) => outcomes,
+        // A panic in the checks is a bug: it surfaces as it would inline.
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
     }
 }
 
@@ -258,6 +287,8 @@ pub async fn suite(
                 elapsed_ms: None,
                 size: None,
                 error: None,
+                passed: false,
+                checks: Vec::new(),
             };
             match prepare_one(&mut s, slug) {
                 // A broken file is this request's result, naming the file
@@ -273,7 +304,7 @@ pub async fn suite(
                     (result.method, result.url, result.error) =
                         (Some(method), Some(url), Some(error));
                 }
-                Ok((_, Ok((request, prepare_warnings)))) => {
+                Ok((read, Ok((request, prepare_warnings)))) => {
                     request_warnings.extend(
                         prepare_warnings.iter().map(|w| s.mask.apply(&format!("{slug}: {w}"))),
                     );
@@ -283,8 +314,17 @@ pub async fn suite(
                     // The send owns its client (a cheap handle) and its
                     // request, so the next can be prepared while it runs.
                     let client = s.clients.for_request(&request).clone();
+                    let checks = read.checks;
                     flight.push(async move {
-                        let sent = send_raw(&client, &request).await;
+                        let sent = match send_raw(&client, &request).await {
+                            Ok(raw) => {
+                                let (status, elapsed, size) =
+                                    (raw.status, raw.elapsed, raw.bytes.len());
+                                let outcomes = evaluate(checks, status, raw.bytes).await;
+                                Ok((status, elapsed, size, outcomes))
+                            }
+                            Err(message) => Err(message),
+                        };
                         (index, result, sent)
                     });
                     continue;
@@ -299,10 +339,12 @@ pub async fn suite(
         tokio::select! {
             Some((index, mut result, sent)) = flight.next() => {
                 match sent {
-                    Ok(raw) => {
-                        result.status = Some(raw.status);
-                        result.elapsed_ms = Some(millis(raw.elapsed));
-                        result.size = Some(raw.bytes.len());
+                    Ok((status, elapsed, size, outcomes)) => {
+                        result.status = Some(status);
+                        result.elapsed_ms = Some(millis(elapsed));
+                        result.size = Some(size);
+                        result.passed = postui_core::checks::passed(status, &outcomes);
+                        result.checks = shown(&outcomes, &s.mask);
                     }
                     Err(message) => result.error = Some(s.mask.apply(&message)),
                 }
@@ -340,8 +382,8 @@ pub async fn suite(
 }
 
 impl SuiteReport {
-    /// 1 when any request failed to prepare or send or returned 400 or more,
-    /// or `-o` could not be written.
+    /// 1 when any request failed to prepare or send, or its status or a
+    /// check failed it, or `-o` could not be written.
     pub fn status(&self) -> ExitCode {
         if self.totals.failed > 0 || self.write_failed {
             ExitCode::from(FAILED)
@@ -369,8 +411,9 @@ impl SuiteReport {
     }
 
     /// A heading (naming the jobs when more than one went at once), a row a
-    /// request (status, time, method, slug, URL, size) with what failed
-    /// under it, the totals, and where `-o` wrote it.
+    /// request (status, time, method, slug, URL, size) with why it wasn't
+    /// sent or which checks failed under it, the totals, and where `-o`
+    /// wrote it.
     pub fn text(&self) -> String {
         let mut out = format!(
             "suite  environment {}  space {}",
@@ -381,10 +424,12 @@ impl SuiteReport {
             out.push_str(&format!("  jobs {}", self.jobs));
         }
         out.push('\n');
+        let unders: Vec<String> = self.results.iter().map(|r| r.under().join("\n")).collect();
         let rows: Vec<(Vec<String>, &str)> = self
             .results
             .iter()
-            .map(|r| {
+            .zip(&unders)
+            .map(|(r, under)| {
                 let cells = vec![
                     r.status.map_or_else(|| "error".to_string(), |s| s.to_string()),
                     r.elapsed_ms.map_or_else(String::new, |ms| format!("{ms} ms")),
@@ -393,7 +438,7 @@ impl SuiteReport {
                     r.url.clone().unwrap_or_default(),
                     r.size.map_or_else(String::new, |n| count(n, "byte")),
                 ];
-                (cells, r.error.as_deref().unwrap_or_default())
+                (cells, under.as_str())
             })
             .collect();
         out.push_str(&table_under(&rows));
@@ -578,6 +623,89 @@ mod tests {
             plan(&[("region", "east"), ("locale", "fr"), ("region", "west")]).await,
             [("locale".to_string(), "fr".to_string()), ("region".to_string(), "west".to_string())]
         );
+    }
+
+    /// A project whose one space holds `requests` (slug, TOML after the
+    /// URL line), each sent to `base` + `/` + its slug.
+    fn checked_project(root: &Path, base: &str, requests: &[(&str, &str)]) {
+        let put = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        put("project.toml", "name = \"T\"\nspaces = [\"main\"]\n");
+        for (slug, rest) in requests {
+            put(
+                &format!("requests/main/{slug}.toml"),
+                &format!("method = \"GET\"\nurl = \"{base}/{slug}\"\n{rest}"),
+            );
+        }
+    }
+
+    /// Suite checks spec §2.2, §2.3: a `status` check passes a 404 it
+    /// expects; a jq check fails a 200; each failure is a line under its
+    /// row, and in the JSON a `checks` array beside `passed`.
+    #[tokio::test]
+    async fn checks_pass_and_fail_requests_and_say_why() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        for (at, status, body) in [
+            ("/gone", 404, r#"{"error":"gone"}"#),
+            ("/chat", 200, r#"{"finish":"length","text":"I can't see it"}"#),
+            ("/plain", 200, r#"{"ok":true}"#),
+        ] {
+            Mock::given(path(at))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .mount(&server)
+                .await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        checked_project(
+            dir.path(),
+            &server.uri(),
+            &[
+                ("gone", "\n[checks]\nstatus = 404\njq = ['.error == \"gone\"']\n"),
+                ("chat", "\n[checks]\njq = ['.finish == \"stop\"', '.text']\n"),
+                ("plain", ""),
+            ],
+        );
+        let (report, _) =
+            suite(&global(dir.path()), None, &opts(&[]), 1, &mut Quiet, std::future::pending())
+                .await
+                .unwrap();
+        let passed: Vec<(&str, bool)> =
+            report.results.iter().map(|r| (r.request.as_str(), r.passed())).collect();
+        assert_eq!(passed, [("main/chat", false), ("main/gone", true), ("main/plain", true)]);
+        assert_eq!((report.totals.passed, report.totals.failed), (2, 1));
+        assert_eq!(report.status(), ExitCode::from(FAILED));
+
+        let text = report.text();
+        let chat = text.find("main/chat").expect(&text);
+        let under = &text[chat..];
+        assert!(
+            under.contains(
+                "\n    check failed: .finish == \"stop\" gave false\n    \
+                 check failed: .text gave \"I can't see it\"\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("check failed: status"), "{text}");
+
+        let json = serde_json::to_value(&report).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results[0]["passed"], false);
+        assert_eq!(results[0]["checks"][1]["got"], serde_json::json!(["I can't see it"]));
+        assert_eq!(results[1]["passed"], true);
+        assert_eq!(
+            results[1]["checks"],
+            serde_json::json!([
+                {"check": "status", "expected": [404], "got": 404, "passed": true},
+                {"check": ".error == \"gone\"", "passed": true, "got": [true], "error": null},
+            ])
+        );
+        assert_eq!(results[2]["checks"], serde_json::json!([]));
+        assert_eq!(results[2]["passed"], true);
     }
 
     /// Spec 2026-11-13 §4: which output a run gets.
