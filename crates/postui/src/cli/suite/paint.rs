@@ -4,6 +4,7 @@
 //! string, with the 16 ANSI colors or without any escape code. Nothing here
 //! touches a terminal, so the rows are tested as text.
 
+use super::super::checks::{ShownCheck, failure_lines, status_check};
 use super::outline::Line;
 use super::{Plan, SuiteResult};
 use crate::ui::{cells, graphemes, take_cells};
@@ -239,11 +240,14 @@ pub(super) fn printable(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
-fn status_tone(status: u16) -> Tone {
-    match status {
-        ..300 => Tone::Ok,
-        300..400 => Tone::Redirect,
-        _ => Tone::Bad,
+/// The colour of a sent row's status: by its status check's verdict when
+/// it has one (a 404 it expects is good), else by the code.
+fn status_tone(status: u16, checks: &[ShownCheck]) -> Tone {
+    match (status_check(checks), status) {
+        (Some(true), _) | (None, ..300) => Tone::Ok,
+        (Some(false), _) => Tone::Bad,
+        (None, 300..400) => Tone::Redirect,
+        (None, _) => Tone::Bad,
     }
 }
 
@@ -319,14 +323,14 @@ pub(super) fn line_row(
                 row.push(seg(first, Some(Tone::NotSent), 1));
                 return row;
             };
-            row.push(toned(format!("{status:>STATUS_COL$}"), status_tone(status)));
+            row.push(toned(format!("{status:>STATUS_COL$}"), status_tone(status, &r.checks)));
             row.push(plain("  "));
             let ms = r.elapsed_ms.map(time).unwrap_or_default();
             row.push(toned(pad_left(&ms, NUM_COL), Tone::Dim));
             row.push(plain("  "));
             let bytes = r.size.map(size).unwrap_or_default();
             row.push(toned(pad_left(&bytes, NUM_COL), Tone::Dim));
-            match (band, r.under().first()) {
+            match (band, failure_lines(&r.checks).next()) {
                 (true, Some(failure)) => row.push(seg(format!("  {failure}"), Some(Tone::Bad), 1)),
                 _ => {
                     if let Some(url) = &r.url {
@@ -429,6 +433,7 @@ pub(super) fn totals(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::checks::checked;
     use super::*;
 
     fn result(status: Option<u16>, error: Option<&str>) -> SuiteResult {
@@ -440,22 +445,34 @@ mod tests {
             elapsed_ms: status.map(|_| 120),
             size: status.map(|_| 512),
             error: error.map(Into::into),
-            passed: status.is_some_and(|s| s < 400),
             checks: Vec::new(),
         }
     }
 
     /// A 200 whose two jq checks failed.
     fn checks_failed() -> SuiteResult {
-        let checks = postui_core::model::Checks {
-            status: Vec::new(),
-            jq: vec![".a == 1".into(), ".b".into()],
-        };
-        let outcomes = postui_core::checks::evaluate(&checks, 200, r#"{"a":2,"b":"x"}"#);
         let mut r = result(Some(200), None);
-        r.passed = false;
-        r.checks = crate::cli::checks::shown(&outcomes, &crate::cli::mask::Mask::none());
+        r.checks = checked(&[], &[".a == 1", ".b"], 200, r#"{"a":2,"b":"x"}"#);
         r
+    }
+
+    /// A status check colours the status by its verdict: a 404 it expects
+    /// is good, a 200 it doesn't is bad. Without one, the code does.
+    #[test]
+    fn a_status_check_colours_the_status() {
+        let line = request(1, Some(Method::Get), "Gone");
+        let tone_of = |status: u16, expected: &[u16]| {
+            let mut r = result(Some(status), None);
+            r.checks = checked(expected, &[], status, "");
+            let state = RowState::Done(r);
+            let row = line_row(&line, Some(&state), 4, Instant::now(), 0, true);
+            let icon = row[1].text.clone();
+            (icon, row.iter().find(|s| s.text == status.to_string()).unwrap().tone)
+        };
+        assert_eq!(tone_of(404, &[404]), ("✓".into(), Some(Tone::Ok)));
+        assert_eq!(tone_of(200, &[201]), ("✗".into(), Some(Tone::Bad)));
+        assert_eq!(tone_of(404, &[]), ("✗".into(), Some(Tone::Bad)));
+        assert_eq!(tone_of(301, &[]), ("✓".into(), Some(Tone::Redirect)));
     }
 
     fn request(depth: usize, method: Option<Method>, name: &str) -> Line {

@@ -12,7 +12,7 @@ mod outline;
 mod paint;
 mod picker;
 
-use super::checks::{ShownCheck, failure_lines, shown};
+use super::checks::{self, ShownCheck, failure_lines, shown};
 use super::mask::Mask;
 use super::out::{count, table_under};
 use super::read::{displayed, spaces_of, warnings_text};
@@ -22,9 +22,10 @@ use crate::http::send_raw;
 use futures::stream::{FuturesUnordered, StreamExt};
 use outline::{Listed, SpaceRequests, outline};
 use postui_core::checks::Outcome;
+use postui_core::jq::JqDocument;
 use postui_core::model::{Checks, Method};
 use postui_core::project::Project;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::future::Future;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -81,6 +82,7 @@ pub struct SuiteReport {
     space: Option<String>,
     /// How many requests were sent at once at most (`--jobs`).
     jobs: usize,
+    #[serde(serialize_with = "results_json")]
     results: Vec<SuiteResult>,
     totals: Totals,
     warnings: Vec<String>,
@@ -97,7 +99,8 @@ pub struct SuiteReport {
 }
 
 /// One request's outcome. `status`, `elapsed_ms` and `size` are `null` when
-/// nothing came back; `method` and `url` too when its file is broken.
+/// nothing came back; `method` and `url` too when its file is broken. The
+/// JSON adds `passed` ([`SuiteResult::passed`]).
 #[derive(Clone, Serialize)]
 pub(super) struct SuiteResult {
     pub(super) request: String,
@@ -107,12 +110,20 @@ pub(super) struct SuiteResult {
     pub(super) elapsed_ms: Option<u64>,
     pub(super) size: Option<usize>,
     pub(super) error: Option<String>,
-    /// Sent, and its status and every check passed
-    /// ([`postui_core::checks::passed`]).
-    pub(super) passed: bool,
     /// Each of its `[checks]`, in file order; empty for a request without
     /// any, or one never sent (suite checks spec §2.3).
     pub(super) checks: Vec<ShownCheck>,
+}
+
+/// `results` as the JSON gives them: each one's fields and `passed`.
+fn results_json<S: Serializer>(results: &[SuiteResult], s: S) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Shown<'a> {
+        #[serde(flatten)]
+        result: &'a SuiteResult,
+        passed: bool,
+    }
+    s.collect_seq(results.iter().map(|result| Shown { result, passed: result.passed() }))
 }
 
 #[derive(Serialize)]
@@ -126,8 +137,9 @@ struct Totals {
 }
 
 impl SuiteResult {
+    /// Sent, and its status and every check passed ([`checks::passed`]).
     pub(super) fn passed(&self) -> bool {
-        self.passed
+        self.status.is_some_and(|status| checks::passed(status, &self.checks))
     }
 
     /// What goes under the row: why it wasn't sent, else a `check failed:`
@@ -138,15 +150,16 @@ impl SuiteResult {
     }
 }
 
-/// Runs `checks` over a response, off the async loop: jq over a large body
-/// would otherwise stall the live view's ticks and the other sends.
+/// Runs `checks` over a response. Its jq filters run off the async loop:
+/// over a large body they would otherwise stall the live view's ticks and
+/// the other sends. Without a filter the body is never read.
 async fn evaluate(checks: Checks, status: u16, body: Vec<u8>) -> Vec<Outcome> {
-    if checks.is_empty() {
-        return Vec::new();
+    let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
+    if checks.jq.is_empty() {
+        return postui_core::checks::evaluate(&checks, status, doc);
     }
-    let run = tokio::task::spawn_blocking(move || {
-        postui_core::checks::evaluate(&checks, status, &String::from_utf8_lossy(&body))
-    });
+    let run =
+        tokio::task::spawn_blocking(move || postui_core::checks::evaluate(&checks, status, doc));
     match run.await {
         Ok(outcomes) => outcomes,
         // A panic in the checks is a bug: it surfaces as it would inline.
@@ -287,7 +300,6 @@ pub async fn suite(
                 elapsed_ms: None,
                 size: None,
                 error: None,
-                passed: false,
                 checks: Vec::new(),
             };
             match prepare_one(&mut s, slug) {
@@ -343,7 +355,6 @@ pub async fn suite(
                         result.status = Some(status);
                         result.elapsed_ms = Some(millis(elapsed));
                         result.size = Some(size);
-                        result.passed = postui_core::checks::passed(status, &outcomes);
                         result.checks = shown(&outcomes, &s.mask);
                     }
                     Err(message) => result.error = Some(s.mask.apply(&message)),

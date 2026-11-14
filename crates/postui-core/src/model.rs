@@ -325,8 +325,8 @@ impl Checks {
 fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
     struct Codes;
 
-    fn code<E: de::Error>(v: i64) -> Result<u16, E> {
-        u16::try_from(v).ok().filter(|c| (100..=599).contains(c)).ok_or_else(|| {
+    fn code<E: de::Error, V: TryInto<u16> + fmt::Display + Copy>(v: V) -> Result<u16, E> {
+        v.try_into().ok().filter(|c| (100..=599).contains(c)).ok_or_else(|| {
             E::custom(format!("a check's status must be a code from 100 to 599, not {v}"))
         })
     }
@@ -343,7 +343,7 @@ fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
         }
 
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-            self.visit_i64(i64::try_from(v).unwrap_or(i64::MAX))
+            Ok(vec![code(v)?])
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {

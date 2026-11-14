@@ -69,6 +69,8 @@ jq = [
 
 - `status`: one code or a list (`[200, 201]`). Given, it **replaces** the
   `< 400` rule for this request; not given, the rule stays. (mine)
+  `status = []` names no code, so it reads as no `status`, and a save
+  writes nothing for it (review round 1, 2026-11-14, mine).
 - `jq`: filters that must each give `true`. They are their own filters, not
   the request's jq views. (Q1)
 - Both are optional; a request with no `[checks]` behaves exactly as today.
@@ -110,12 +112,19 @@ the reader's own message, as `run --jq` prints it (`not JSON: …`, or the
 nesting limit), rather than a fixed "the body isn't JSON", so the line says
 why. A status check given several codes says `expected 200 or 201`.
 
+Amended 2026-11-14, review round 1 (mine): an error is clipped to 60
+characters as a value is, since jaq's runtime errors hold the value they
+failed on. A filter that doesn't compile says so over a body that doesn't
+read too (R5), rather than the body's `not JSON`.
+
 - **Plain text:** the row as today (the real status shows), the failure
   lines under it, where an error goes now.
 - **Live view:** a `✗` row, its status in its usual colour; the first
   failure in red in place of the URL while the row is in the band (clipped,
   like the URL); once printed for good, every failure line goes under it,
-  as a `!` row's error does.
+  as a `!` row's error does. With a status check, the status is coloured
+  by its verdict instead: green when it passes (a 404 it expects), red
+  when it doesn't (review round 1, 2026-11-14, mine).
 - **JSON:** each result gains `passed` (bool) and `checks`, one object per
   check, in file order: `{"check": ".a == 1", "passed": false, "got":
   [false], "error": null}`; the status check is `{"check": "status",
@@ -180,6 +189,9 @@ ticket to add something to the tui in a later update." (you, 2026-11-14).
   jq runs off the async loop so a large body doesn't stall the live view's
   ticks.
 - `cli/run.rs`: the same, per §2.4.
+- `cli/checks.rs`: the pass rule (R3 with every check), one function `run`
+  and `suite` both derive pass/fail from, rather than storing it (review
+  round 1).
 - `cli/check.rs`: compile each check filter.
 - `components/editor.rs`, `app/curl_flow.rs`: carry `checks`.
 - Docs per §2.6.
@@ -200,7 +212,9 @@ ticket to add something to the tui in a later update." (you, 2026-11-14).
 
 ## 6. `mine` choices, for veto
 
-R3–R8 above; the failure wording in §2.3; values clipped to 60 characters;
+R3–R8 above; the failure wording in §2.3; values and errors clipped to 60
+characters; `status = []` read as no status check; the status coloured by
+its check;
 the TOML placement in §4; the docs in §2.6. Also left out, each could be
 its own task: header checks, response-time limits, checks on a body that
 isn't JSON (as a string), and naming a check.

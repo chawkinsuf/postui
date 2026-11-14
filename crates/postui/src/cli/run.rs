@@ -5,14 +5,13 @@
 //! back) and holds the one mask every printed string passes through.
 
 use super::check::{declared, reason};
-use super::checks::{ShownCheck, failure_lines, shown};
+use super::checks::{FIRST_FAILING_STATUS, ShownCheck, failure_lines, passed, shown, status_check};
 use super::mask::{self, Mask};
 use super::out::{count, fields, rel, table};
 use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
-use postui_core::checks::FIRST_FAILING_STATUS;
 use postui_core::model::{Checks, Entry, HttpRequest, JqView, Method, applied_jq_filter};
 use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
@@ -305,10 +304,6 @@ pub struct RunReport {
     /// Why there is no response (an unresolved variable, a send error).
     error: Option<String>,
     warnings: Vec<String>,
-    /// The request has a `status` check, which then decides the status in
-    /// place of the 400 rule (R3).
-    #[serde(skip)]
-    status_checked: bool,
     /// What the text's paths are relative to; the JSON's are absolute.
     #[serde(skip)]
     root: PathBuf,
@@ -386,19 +381,19 @@ pub(super) fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Runs `filter` over the body `text`, unmasked (masking first would break
-/// the JSON where a mask lands in a number or an escape): each result is
-/// parsed as the JSON jq printed, then masked as a tree. Returns the
-/// results and the error (unmasked) as `JqReport` holds them: a filter
+/// Runs `filter` over the body as `doc` read it, unmasked (masking first
+/// would break the JSON where a mask lands in a number or an escape): each
+/// result is parsed as the JSON jq printed, then masked as a tree. Returns
+/// the results and the error (unmasked) as `JqReport` holds them: a filter
 /// that failed on some values of a stream has both, the other values'
 /// results and the first error (#229); `None` results only when it failed
 /// with none.
 fn run_jq(
     filter: &str,
-    text: &str,
+    doc: Result<jq::JqDocument, jq::JqError>,
     mask: &Mask,
 ) -> (Option<Vec<serde_json::Value>>, Option<String>) {
-    let run = match jq::JqDocument::parse(text).and_then(|doc| jq::run(filter, &doc)) {
+    let run = match doc.and_then(|doc| jq::run(filter, &doc)) {
         Ok(run) => run,
         Err(e) => return (None, Some(e.message())),
     };
@@ -463,10 +458,11 @@ fn record(
     // byte-exact `-o` that succeeds never does).
     let decoded = OnceCell::new();
     let text = || decoded.get_or_init(|| String::from_utf8_lossy(&raw.bytes)).as_ref();
-    if !checks.is_empty() {
-        let outcomes = postui_core::checks::evaluate(checks, raw.status, text());
-        report.checks = shown(&outcomes, mask);
-    }
+    // The body as the jq checks and the filter read it, once for both.
+    let parsed = OnceCell::new();
+    let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
+    let outcomes = postui_core::checks::evaluate(checks, raw.status, doc);
+    report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
         status: raw.status,
         ttfb_ms: millis(raw.ttfb),
@@ -489,7 +485,7 @@ fn record(
     // against printing 24 KB of stream on a failure (mine (approved)); the
     // skill tells the agent to add `-o` for such requests.
     if let Some(filter) = jq {
-        let (results, error) = run_jq(filter, text(), mask);
+        let (results, error) = run_jq(filter, doc(), mask);
         report.jq = Some(JqReport {
             filter: mask.apply(filter),
             output: results,
@@ -620,7 +616,6 @@ pub async fn run(
         output_file: None,
         error: None,
         warnings: s.warnings.iter().map(|w| s.mask.apply(w)).collect(),
-        status_checked: !read.checks.status.is_empty(),
         root: s.root.clone(),
     };
     let (request, warnings) = match prepared {
@@ -661,19 +656,21 @@ pub async fn run(
 }
 
 impl RunReport {
-    /// Whether the response's status fails the run by the 400 rule, which
-    /// a `status` check replaces (R3).
+    /// The response's status when the 400 rule fails it: without a
+    /// `status` check, which replaces the rule (R3) and says a failure in
+    /// its own line.
     fn failing_status(&self) -> Option<u16> {
         let status = self.response.as_ref().map(|r| r.status)?;
-        (!self.status_checked && status >= FIRST_FAILING_STATUS).then_some(status)
+        (status_check(&self.checks).is_none() && status >= FIRST_FAILING_STATUS).then_some(status)
     }
 
-    /// 1 when the run failed: an error, a status of 400 or more (without a
-    /// `status` check), a failed check, or a jq error; else 0.
+    /// 1 when the run failed: an error, a jq error, or a response that
+    /// doesn't pass (a status of 400 or more without a `status` check, or a
+    /// failed check); else 0.
     pub fn status(&self) -> ExitCode {
         let jq_failed = self.jq.as_ref().is_some_and(|j| j.error.is_some());
-        let check_failed = self.checks.iter().any(|c| !c.passed());
-        if self.error.is_some() || jq_failed || check_failed || self.failing_status().is_some() {
+        let failed = self.response.as_ref().is_some_and(|r| !passed(r.status, &self.checks));
+        if self.error.is_some() || jq_failed || failed {
             ExitCode::from(FAILED)
         } else {
             ExitCode::SUCCESS

@@ -166,7 +166,6 @@ mod tests {
             elapsed_ms: None,
             size: None,
             error: None,
-            passed: status.is_some_and(|s| s < 400),
             checks: Vec::new(),
         }
     }

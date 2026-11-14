@@ -348,7 +348,6 @@ mod tests {
             elapsed_ms: Some(120),
             size: Some(512),
             error: None,
-            passed: true,
             checks: Vec::new(),
         }
     }
@@ -361,11 +360,8 @@ mod tests {
         let mut live = live(&mut out, false, 80, 24);
         live.begin(&plan(1, 1));
         live.started(0, Some("http://x/0"));
-        let checks = postui_core::model::Checks { status: vec![201], jq: Vec::new() };
-        let outcomes = postui_core::checks::evaluate(&checks, 200, "");
         let mut failed = ok(0);
-        failed.passed = false;
-        failed.checks = crate::cli::checks::shown(&outcomes, &crate::cli::mask::Mask::none());
+        failed.checks = crate::cli::checks::checked(&[201], &[], 200, "");
         live.finished(0, &failed);
         assert_eq!(live.finals[1], "  ✗ GET    req-00  200  120 ms   512 B  http://x/0");
         drop(live);

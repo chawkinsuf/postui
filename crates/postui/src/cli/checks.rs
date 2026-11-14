@@ -1,9 +1,29 @@
 //! A request's checks as `run` and `suite` print them (suite checks spec
-//! 2026-11-14 §2.3): each [`Outcome`] masked, for the text and the JSON.
+//! 2026-11-14 §2.3): each [`Outcome`] masked, for the text and the JSON,
+//! and the one rule both pass a response by ([`passed`]).
 
 use super::mask::Mask;
 use postui_core::checks::Outcome;
 use serde::Serialize;
+
+/// A status from here up fails a response that has no status check (R3).
+pub(super) const FIRST_FAILING_STATUS: u16 = 400;
+
+/// The status check's verdict; `None` when the request has none.
+pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
+    checks.iter().find_map(|c| match c.kind {
+        Kind::Status { passed, .. } => Some(passed),
+        Kind::Jq { .. } => None,
+    })
+}
+
+/// Whether a response with `status` passes, given its `checks`: its status
+/// passes the status check, or is below 400 when there is none (R3), and
+/// every check passed.
+pub(super) fn passed(status: u16, checks: &[ShownCheck]) -> bool {
+    status_check(checks).unwrap_or(status < FIRST_FAILING_STATUS)
+        && checks.iter().all(ShownCheck::passed)
+}
 
 /// One check's outcome, every string in it through the run's mask.
 #[derive(Clone, Debug, Serialize)]
@@ -82,15 +102,42 @@ pub(super) fn failure_lines(checks: &[ShownCheck]) -> impl Iterator<Item = Strin
     checks.iter().filter_map(|c| c.failure.as_ref()).map(|f| format!("check failed: {f}"))
 }
 
+/// Checks with `status` codes and `jq` filters run over a response with
+/// status `got` and `body`, unmasked: a test's fixture.
+#[cfg(test)]
+pub(super) fn checked(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<ShownCheck> {
+    shown(&tests::evaluate(status, jq, got, body), &Mask::none())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postui_core::jq::JqDocument;
     use postui_core::model::Checks;
 
-    fn evaluate(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<Outcome> {
+    pub(super) fn evaluate(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<Outcome> {
         let checks =
             Checks { status: status.to_vec(), jq: jq.iter().map(|f| f.to_string()).collect() };
-        postui_core::checks::evaluate(&checks, got, body)
+        postui_core::checks::evaluate(&checks, got, || JqDocument::parse(body))
+    }
+
+    /// R3: a status check replaces the below-400 rule; without one it
+    /// stays. Every check must pass too.
+    #[test]
+    fn a_status_check_replaces_the_400_rule() {
+        assert!(passed(404, &checked(&[404], &[], 404, "")));
+        assert_eq!(status_check(&checked(&[404], &[], 404, "")), Some(true));
+        assert!(!passed(201, &checked(&[200], &[], 201, "")));
+        assert_eq!(status_check(&checked(&[200], &[], 201, "")), Some(false));
+        assert!(!passed(500, &checked(&[200, 201], &[], 500, "")));
+        // No status check: the rule.
+        assert!(passed(399, &[]));
+        assert!(!passed(400, &[]));
+        assert_eq!(status_check(&checked(&[], &[".ok"], 200, r#"{"ok":true}"#)), None);
+        assert!(!passed(404, &checked(&[], &[".ok"], 404, r#"{"ok":true}"#)));
+        // A status that passes and a filter that fails.
+        assert!(!passed(200, &checked(&[200], &[".ok"], 200, r#"{"ok":false}"#)));
+        assert!(passed(200, &checked(&[200], &[".ok"], 200, r#"{"ok":true}"#)));
     }
 
     /// §2.3's JSON: the status check's object and a jq check's, in file
