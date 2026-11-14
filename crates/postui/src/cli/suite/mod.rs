@@ -6,6 +6,8 @@
 //! happens as it happens; the report keeps the rows in sidebar order
 //! whatever order they finished in.
 
+#[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
+mod board;
 mod outline;
 #[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
 mod paint;
@@ -105,9 +107,11 @@ pub(super) trait Watch {
         let _ = index;
         true
     }
-    /// Request `index` is about to be prepared and sent.
-    fn started(&mut self, index: usize) {
-        let _ = index;
+    /// Request `index` was prepared and is going out; `url` is its masked
+    /// URL. A request that is refused or broken has no start: it is
+    /// [`Watch::finished`] at once.
+    fn started(&mut self, index: usize, url: Option<&str>) {
+        let _ = (index, url);
     }
     /// Request `index` has its result.
     fn finished(&mut self, index: usize, result: &SuiteResult) {
@@ -200,7 +204,6 @@ pub async fn suite(
         while flight.len() < jobs && next < n && (flight.is_empty() || watch.may_start(next)) {
             let index = next;
             next += 1;
-            watch.started(index);
             let slug = &slugs[index];
             let mut result = SuiteResult {
                 request: slug.clone(),
@@ -231,6 +234,7 @@ pub async fn suite(
                     );
                     result.method = Some(request.method);
                     result.url = Some(shown_url(&request, opts.show_secrets));
+                    watch.started(index, result.url.as_deref());
                     // The send owns its client (a cheap handle) and its
                     // request, so the next can be prepared while it runs.
                     let client = s.clients.for_request(&request).clone();
@@ -444,8 +448,8 @@ mod tests {
             });
             self.events.push("begin".into());
         }
-        fn started(&mut self, index: usize) {
-            self.events.push(format!("started {index}"));
+        fn started(&mut self, index: usize, url: Option<&str>) {
+            self.events.push(format!("started {index} {}", url.unwrap_or("-")));
         }
         fn finished(&mut self, index: usize, result: &SuiteResult) {
             self.events.push(format!("finished {index} {}", result.request));
@@ -468,8 +472,9 @@ mod tests {
 
     /// The watch hears the plan (display names, the `--select`s that differ
     /// from the saved picks, the list as the sidebar nests it) before
-    /// anything starts, then each request start and finish in sidebar
-    /// order.
+    /// anything starts, then each request in sidebar order: a refused or
+    /// broken one is only finished (R11), a sent one is started with its
+    /// URL.
     #[tokio::test]
     async fn a_watch_hears_the_plan_then_each_request_in_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -502,16 +507,7 @@ mod tests {
                 total: 2,
             })
         );
-        assert_eq!(
-            watch.events,
-            [
-                "begin",
-                "started 0",
-                "finished 0 main/list",
-                "started 1",
-                "finished 1 main/users/get"
-            ]
-        );
+        assert_eq!(watch.events, ["begin", "finished 0 main/list", "finished 1 main/users/get"]);
         assert!(!report.cancelled());
         assert_eq!(report.results.len(), 2);
     }
@@ -539,11 +535,9 @@ mod tests {
             watch.events,
             [
                 "begin",
-                "started 0",
                 "finished 0 main/list",
-                "started 1",
                 "finished 1 main/users/get",
-                "started 2"
+                format!("started 2 {base}/h").as_str()
             ]
         );
         assert!(report.cancelled());
