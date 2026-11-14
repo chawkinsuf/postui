@@ -32,16 +32,17 @@ impl Outcome {
     }
 
     /// Why the check failed, as a failure line says it after
-    /// `check failed: ` (§2.3); `None` when it passed. Each text from the
-    /// request or the response (the filter, a value, an error) goes through
-    /// `shown` first, and a value or an error is clipped after it, so a mask
-    /// sees a secret whole. An error is clipped as a value is because jaq's
-    /// runtime errors hold the value they failed on.
+    /// `check failed: ` (§2.3), on one line; `None` when it passed. Each
+    /// text from the request or the response (the filter, a value, an
+    /// error) goes through `shown` first, and a value or an error is
+    /// clipped after it, so a mask sees a secret whole. An error is clipped
+    /// as a value is because jaq's runtime errors hold the value they
+    /// failed on.
     pub fn failure(&self, shown: impl Fn(&str) -> String) -> Option<String> {
         if self.passed() {
             return None;
         }
-        Some(match self {
+        Some(one_line(&match self {
             Outcome::Status { expected, got } => {
                 let codes: Vec<String> = expected.iter().map(u16::to_string).collect();
                 format!("status {got}, expected {}", codes.join(" or "))
@@ -54,8 +55,14 @@ impl Outcome {
                     (None, None) => format!("{filter} gave no output"),
                 }
             }
-        })
+        }))
     }
+}
+
+/// `text` with its lines joined by a space, each trimmed: a filter written
+/// over several lines in the file, shown in a line of output.
+pub fn one_line(text: &str) -> String {
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// `text` cut to [`SHOWN_CHARS`] characters, the last one `…` when cut.
@@ -162,6 +169,14 @@ mod tests {
             assert_eq!(error.chars().count(), 60, "{line}");
             assert!(error.ends_with('…'), "{line}");
         }
+    }
+
+    /// A filter written over several lines fails on one line.
+    #[test]
+    fn a_multi_line_filter_fails_on_one_line() {
+        let filter = ".a\n  | . == 2\n";
+        let out = over(&checks(&[], &[filter]), 200, r#"{"a":1}"#);
+        assert_eq!(failures(&out), [".a | . == 2 gave false"]);
     }
 
     #[test]

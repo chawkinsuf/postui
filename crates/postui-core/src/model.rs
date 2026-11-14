@@ -286,7 +286,9 @@ pub struct HttpRequest {
     pub jq_current: Option<String>,
     /// What `postui suite` and `postui run` check the response against
     /// (`[checks]`, suite checks spec 2026-11-14). The TUI carries them
-    /// unseen (R10).
+    /// unseen (R10). postui 0.4.1 and older refuse a file with this table
+    /// (an unknown key): the cost named when checks were put in the
+    /// request file (spec §2.1, R1).
     #[serde(default, skip_serializing_if = "Checks::is_empty")]
     pub checks: Checks,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]

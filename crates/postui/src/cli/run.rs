@@ -493,6 +493,9 @@ fn record(
             suggest_output: output.is_none() && !raw.bytes.is_empty(),
         });
     }
+    // The read body is done with: freed before the body is shown (`--json`
+    // parses it again).
+    drop(parsed);
     let mut show_body = jq.is_none() && output.is_none();
     if let Some(file) = output {
         // Alone, the file is the response itself, kept byte-exact (a binary

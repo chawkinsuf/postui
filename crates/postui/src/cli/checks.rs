@@ -3,7 +3,7 @@
 //! and the one rule both pass a response by ([`passed`]).
 
 use super::mask::Mask;
-use postui_core::checks::Outcome;
+use postui_core::checks::{Outcome, one_line};
 use serde::Serialize;
 
 /// A status from here up fails a response that has no status check (R3).
@@ -31,18 +31,18 @@ pub(super) struct ShownCheck {
     #[serde(flatten)]
     kind: Kind,
     /// Why it failed, the line after `check failed: `; `None` when it
-    /// passed.
-    #[serde(skip)]
+    /// passed. The JSON gives this line, clipped as the text is, rather
+    /// than a filter's outputs, which can be as large as the body (§2.3).
     failure: Option<String>,
 }
 
 /// The JSON's two shapes (§2.3): `{"check": "status", "expected", "got",
-/// "passed"}` and `{"check": FILTER, "passed", "got": [outputs], "error"}`.
+/// "passed", "failure"}` and `{"check": FILTER, "passed", "failure"}`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 enum Kind {
     Status { check: &'static str, expected: Vec<u16>, got: u16, passed: bool },
-    Jq { check: String, passed: bool, got: Vec<serde_json::Value>, error: Option<String> },
+    Jq { check: String, passed: bool },
 }
 
 impl ShownCheck {
@@ -60,14 +60,12 @@ impl ShownCheck {
         }
         match &self.kind {
             Kind::Status { got, .. } => format!("status {got}"),
-            Kind::Jq { check, .. } => check.clone(),
+            Kind::Jq { check, .. } => one_line(check),
         }
     }
 }
 
-/// `outcomes` masked by `mask`. An output is parsed as the JSON jq printed
-/// and masked as a tree, as `run --jq` masks its results; one serde can't
-/// read (jaq's `nan`) is kept as a masked string.
+/// `outcomes` masked by `mask`.
 pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
     outcomes
         .iter()
@@ -78,18 +76,7 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 Outcome::Status { expected, got } => {
                     Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
                 }
-                Outcome::Jq { filter, got, error } => Kind::Jq {
-                    check: mask.apply(filter),
-                    passed,
-                    got: got
-                        .iter()
-                        .map(|value| match serde_json::from_str(value) {
-                            Ok(json) => mask.apply_json(json),
-                            Err(_) => serde_json::Value::String(mask.apply(value)),
-                        })
-                        .collect(),
-                    error: error.as_deref().map(|e| mask.apply(e)),
-                },
+                Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
             ShownCheck { kind, failure }
         })
@@ -141,23 +128,37 @@ mod tests {
     }
 
     /// §2.3's JSON: the status check's object and a jq check's, in file
-    /// order.
+    /// order, each with its failure line.
     #[test]
     fn the_json_has_one_object_a_check() {
-        let out = shown(&evaluate(&[200], &[".a == 1"], 404, r#"{"a":2}"#), &Mask::none());
+        let out = shown(&evaluate(&[200], &[".a == 1", ".a"], 404, r#"{"a":2}"#), &Mask::none());
         let json = serde_json::to_value(&out).unwrap();
         assert_eq!(
             json,
             serde_json::json!([
-                {"check": "status", "expected": [200], "got": 404, "passed": false},
-                {"check": ".a == 1", "passed": false, "got": [false], "error": null},
+                {"check": "status", "expected": [200], "got": 404, "passed": false,
+                 "failure": "status 404, expected 200"},
+                {"check": ".a == 1", "passed": false, "failure": ".a == 1 gave false"},
+                {"check": ".a", "passed": false, "failure": ".a gave 2"},
             ])
         );
         let lines: Vec<String> = failure_lines(&out).collect();
+        assert_eq!(lines[0], "check failed: status 404, expected 200");
+        let out = shown(&evaluate(&[], &[".a == 2"], 200, r#"{"a":2}"#), &Mask::none());
         assert_eq!(
-            lines,
-            ["check failed: status 404, expected 200", "check failed: .a == 1 gave false"]
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!([{"check": ".a == 2", "passed": true, "failure": null}])
         );
+    }
+
+    /// A value or an error in the JSON is clipped as the line clips it, so
+    /// a check that forgot its comparison doesn't put the body there.
+    #[test]
+    fn the_json_clips_what_a_filter_gave() {
+        let body = format!(r#"{{"text":"{}"}}"#, "word ".repeat(2000));
+        let out = shown(&evaluate(&[], &[".text", ".text | fromjson"], 200, &body), &Mask::none());
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(json.len() < 400, "{json}");
     }
 
     /// Every string from the response is masked: an output, the failure
@@ -181,5 +182,16 @@ mod tests {
         assert_eq!(summaries, ["status 201", ".ok"]);
         assert!(out.iter().all(ShownCheck::passed));
         assert_eq!(failure_lines(&out).count(), 0);
+    }
+
+    /// A filter written over several lines summarises and fails on one.
+    #[test]
+    fn a_multi_line_filter_is_one_line_of_output() {
+        let filter = ".ok\n| . == true";
+        let out = shown(&evaluate(&[], &[filter], 200, r#"{"ok":true}"#), &Mask::none());
+        assert_eq!(out[0].summary(), ".ok | . == true");
+        let out = shown(&evaluate(&[], &[filter], 200, r#"{"ok":false}"#), &Mask::none());
+        let lines: Vec<String> = failure_lines(&out).collect();
+        assert_eq!(lines, ["check failed: .ok | . == true gave false"]);
     }
 }

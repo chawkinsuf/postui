@@ -706,13 +706,13 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         let results = json["results"].as_array().unwrap();
         assert_eq!(results[0]["passed"], false);
-        assert_eq!(results[0]["checks"][1]["got"], serde_json::json!(["I can't see it"]));
+        assert_eq!(results[0]["checks"][1]["failure"], ".text gave \"I can't see it\"");
         assert_eq!(results[1]["passed"], true);
         assert_eq!(
             results[1]["checks"],
             serde_json::json!([
-                {"check": "status", "expected": [404], "got": 404, "passed": true},
-                {"check": ".error == \"gone\"", "passed": true, "got": [true], "error": null},
+                {"check": "status", "expected": [404], "got": 404, "passed": true, "failure": null},
+                {"check": ".error == \"gone\"", "passed": true, "failure": null},
             ])
         );
         assert_eq!(results[2]["checks"], serde_json::json!([]));

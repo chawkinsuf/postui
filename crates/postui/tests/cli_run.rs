@@ -996,14 +996,16 @@ fn run_evaluates_the_requests_checks() {
     assert_eq!(
         v["checks"],
         serde_json::json!([
-            {"check": ".id == 7", "passed": false, "got": [false], "error": null},
-            {"check": ".id", "passed": false, "got": [42], "error": null},
+            {"check": ".id == 7", "passed": false, "failure": ".id == 7 gave false"},
+            {"check": ".id", "passed": false, "failure": ".id gave 42"},
         ])
     );
     let v = json(&send(&home, &root, "main/gone", &[]));
     assert_eq!(
         v["checks"],
-        serde_json::json!([{"check": "status", "expected": [404], "got": 404, "passed": true}])
+        serde_json::json!([
+            {"check": "status", "expected": [404], "got": 404, "passed": true, "failure": null}
+        ])
     );
 
     let text = send_text(&home, &root, "main/bad", &["-v"]);

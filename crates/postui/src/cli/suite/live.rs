@@ -14,7 +14,8 @@ use super::super::read::warnings_text;
 use super::board::Board;
 use super::outline::Line;
 use super::paint::{
-    Badge, Seg, Tone, fit, header, line_row, name_column, paint, progress, totals, under,
+    Badge, RowState, Seg, Tone, band_row, fit, header, line_row, name_column, paint, progress,
+    totals, under,
 };
 use super::{Plan, SuiteReport, SuiteResult, Watch};
 use crossterm::cursor::{Hide, MoveToNextLine, MoveToPreviousLine, Show};
@@ -24,6 +25,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+
+/// [`line_row`] or [`band_row`].
+type RowShape = fn(&Line, Option<&RowState>, usize, Instant, usize) -> Vec<Seg>;
 
 /// What the finish says of `-o`'s file.
 pub(in crate::cli) enum FileNote {
@@ -125,15 +129,15 @@ impl<W: Write> Live<W> {
         self.write(&buf);
     }
 
-    /// Line `at` of the list as segments, as the band shows it or as it is
-    /// printed for good.
-    fn row(&self, at: usize, now: Instant, band: bool) -> Vec<Seg> {
+    /// Line `at` of the list as segments, by `shape`: [`line_row`] as it is
+    /// printed for good, or [`band_row`] as the band shows it.
+    fn row(&self, at: usize, now: Instant, shape: RowShape) -> Vec<Seg> {
         let line = &self.board.lines()[at];
         let state = match line {
             Line::Request { index, .. } => Some(self.board.state(*index)),
             Line::Space { .. } | Line::Folder { .. } => None,
         };
-        line_row(line, state, self.name_col, now, self.frame, band)
+        shape(line, state, self.name_col, now, self.frame)
     }
 
     /// Wipes the band, prints the lines that just became final, whole and
@@ -147,7 +151,7 @@ impl<W: Write> Live<W> {
         // Before the band (R14): the band and `may_start` count from the
         // mark this moves.
         for at in self.board.take_final() {
-            let segs = self.row(at, now, false);
+            let segs = self.row(at, now, line_row);
             put(&mut buf, &paint(&segs, self.color));
             if let Line::Request { index, depth, .. } = &self.board.lines()[at] {
                 for line in under(self.board.state(*index), *depth) {
@@ -180,7 +184,7 @@ impl<W: Write> Live<W> {
             paint(&segs, self.color)
         };
         let (range, more) = self.board.band(rows.saturating_sub(3));
-        let mut lines: Vec<String> = range.map(|at| fitted(self.row(at, now, true))).collect();
+        let mut lines: Vec<String> = range.map(|at| fitted(self.row(at, now, band_row))).collect();
         let mut more = (more > 0)
             .then(|| fitted(vec![Seg::new(format!("… {more} more"), Some(Tone::Dim), 0)]));
         let mut blank = true;

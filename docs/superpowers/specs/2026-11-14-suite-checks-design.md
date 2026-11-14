@@ -74,6 +74,8 @@ jq = [
 - `jq`: filters that must each give `true`. They are their own filters, not
   the request's jq views. (Q1)
 - Both are optional; a request with no `[checks]` behaves exactly as today.
+- Cost, named with Q1: postui 0.4.1 and older refuse a request file with
+  `[checks]` (it shows as broken there).
 
 ### 2.2 When a request passes (mine)
 
@@ -117,6 +119,13 @@ characters as a value is, since jaq's runtime errors hold the value they
 failed on. A filter that doesn't compile says so over a body that doesn't
 read too (R5), rather than the body's `not JSON`.
 
+Amended 2026-11-14, review round 2 (mine): a failure is one line, its
+lines joined by a space, so a filter written over several lines in the
+file keeps stderr's one `postui:` line a message and the suite's lines
+under the row. The JSON gives each check's `failure`, the line's text,
+instead of the filter's outputs and error, which could be as large as the
+body.
+
 - **Plain text:** the row as today (the real status shows), the failure
   lines under it, where an error goes now.
 - **Live view:** a `✗` row, its status in its usual colour; the first
@@ -126,10 +135,11 @@ read too (R5), rather than the body's `not JSON`.
   by its verdict instead: green when it passes (a 404 it expects), red
   when it doesn't (review round 1, 2026-11-14, mine).
 - **JSON:** each result gains `passed` (bool) and `checks`, one object per
-  check, in file order: `{"check": ".a == 1", "passed": false, "got":
-  [false], "error": null}`; the status check is `{"check": "status",
-  "expected": [200], "got": 404, "passed": false}`. `checks` is `[]` for a
-  request without any, or one never sent.
+  check, in file order: `{"check": ".a == 1", "passed": false, "failure":
+  ".a == 1 gave false"}`; the status check is `{"check": "status",
+  "expected": [200], "got": 404, "passed": false, "failure": "status 404,
+  expected 200"}`. `failure` is `null` for a check that passed. `checks`
+  is `[]` for a request without any, or one never sent.
 - **Totals and exit:** unchanged in shape. `failed` now counts check
   failures too, so the exit is 1 when any check fails.
 - A failing check prints no body. The way to look is `run --view` or
@@ -214,7 +224,8 @@ ticket to add something to the tui in a later update." (you, 2026-11-14).
 
 R3–R8 above; the failure wording in §2.3; values and errors clipped to 60
 characters; `status = []` read as no status check; the status coloured by
-its check;
+its check; a failure on one line; the JSON's `failure` in place of a
+filter's outputs;
 the TOML placement in §4; the docs in §2.6. Also left out, each could be
 its own task: header checks, response-time limits, checks on a body that
 isn't JSON (as a string), and naming a check.
