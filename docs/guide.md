@@ -166,3 +166,12 @@ Outside the app, `postui` is also a command for scripts and coding agents: it
 lists a project's requests and variables, checks the project, and sends one
 request or all of them. The README's [command line](../README.md#command-line)
 section has examples, and `postui help` lists every command.
+
+At a terminal, `postui suite` shows each request as it runs, grouped by
+space, and ends with a total line. `--jobs N` (or `-j N`) runs N requests at
+once; the default is one at a time. Requests that depend on each other
+(create, then delete) may race when more than one runs at once. `-i` picks
+the environment, space, selector options and jobs for that one run, and
+saves nothing. Esc or `q` cancels the picker with exit status 1, Ctrl+C
+with 130, and nothing is sent. A pipe, `--plain` or `TERM=dumb` gives plain
+text instead.

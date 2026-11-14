@@ -299,8 +299,9 @@ usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
                     [-j <n>] [-i] [--plain]
                     [-o <file>] [--timeout <secs>] [--show-secrets] [--json]
 
-Sends every request of the project (or of one space), one at a time in
-sidebar order, and prints each one's status and time, then the totals. A
+Sends every request of the project (or of one space) in sidebar order, one
+at a time unless --jobs asks for more, and prints each one's status and
+time, then the totals. A
 request that can't be read or prepared is reported and the suite goes on.
 Nothing is written to the project. Each secret's exact value is masked in
 everything printed; a value the server transforms is not. Exits 1 when any

@@ -4,6 +4,23 @@ Notable changes to postui, newest first. Versions follow
 [Semantic Versioning](https://semver.org/); before 1.0, a release may still
 change the project file format.
 
+## [Unreleased]
+
+### Added
+
+- At a terminal, `postui suite` shows each request as it runs, grouped by
+  space, in sidebar order, and ends with a total line. `--jobs N` (`-j`)
+  sends N requests at once (the default is still one at a time), and `-i`
+  picks the environment, space, selector options and jobs for one run
+  without saving anything. `--plain`, a pipe or `TERM=dumb` gives the plain
+  text as before. The plain heading gains `jobs N` when N is more than 1,
+  and the JSON gains `"jobs"`.
+
+### Changed
+
+- `postui suite`'s total time (`totals.elapsed_ms` and the plain total) is
+  now the run's wall-clock time, not the sum of the requests' times.
+
 ## [0.4.1] - 2026-11-13
 
 Small improvements for variables and the project's default headers.
