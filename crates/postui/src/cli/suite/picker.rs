@@ -8,7 +8,7 @@
 
 use super::live::{put, wipe};
 use super::paint::{Seg, Tone, paint};
-use crate::cli::read::{displayed, env_load_error, open};
+use crate::cli::read::{displayed, env_load_error, match_env, no_such_space, open};
 use crate::cli::run::RunOpts;
 use crate::cli::{CliError, Global, target};
 use crate::ui::cells;
@@ -209,9 +209,11 @@ impl Form {
         let space_at = match space {
             None => 0,
             Some(wanted) => {
-                1 + catalog.spaces.iter().position(|(slug, _)| slug == wanted).ok_or_else(|| {
-                    CliError::new(format!("no such space \"{wanted}\" in this project"))
-                })?
+                1 + catalog
+                    .spaces
+                    .iter()
+                    .position(|(slug, _)| slug == wanted)
+                    .ok_or_else(|| no_such_space(wanted))?
             }
         };
         let mut rows = Vec::new();
@@ -343,29 +345,11 @@ fn pad(text: &str, cols: usize) -> String {
     format!("{text}{}", " ".repeat(cols.saturating_sub(cells(text))))
 }
 
-/// The index of the environment `wanted` names: its slug, else its display
-/// name, exact before case-insensitive, as `--env` matches (`pick_env`).
+/// The index of the environment `wanted` names, matched as `--env` is.
 fn find_env(catalog: &Catalog, wanted: &str) -> Result<usize, CliError> {
-    let envs = &catalog.envs;
-    envs.iter()
-        .position(|e| e.slug == wanted)
-        .or_else(|| envs.iter().position(|e| e.name == wanted))
-        .or_else(|| {
-            envs.iter().position(|e| {
-                e.slug.eq_ignore_ascii_case(wanted) || e.name.eq_ignore_ascii_case(wanted)
-            })
-        })
-        .ok_or_else(|| {
-            CliError::new(if envs.is_empty() {
-                format!("no such environment \"{wanted}\"; this project has none")
-            } else {
-                let slugs: Vec<&str> = envs.iter().map(|e| e.slug.as_str()).collect();
-                format!(
-                    "no such environment \"{wanted}\"; the environments are {}",
-                    slugs.join(", ")
-                )
-            })
-        })
+    let envs: Vec<(&str, &str)> =
+        catalog.envs.iter().map(|e| (e.slug.as_str(), e.name.as_str())).collect();
+    match_env(&envs, wanted)
 }
 
 /// What [`pick`] came to.
@@ -571,6 +555,27 @@ mod tests {
         let admin = Form::new(catalog(), Some("admin"), &opts(None, &[]), 1).unwrap();
         assert_eq!(value(&admin, "Space"), "Admin");
         assert!(Form::new(catalog(), Some("nope"), &opts(None, &[]), 1).is_err());
+    }
+
+    /// The picker matches `--env` and `--space` through the plain run's own
+    /// code, so the errors are the plain run's words (spec §7).
+    #[test]
+    fn unknown_env_and_space_say_what_the_plain_run_says() {
+        let message = |r: Result<Form, CliError>| r.err().unwrap().message;
+        assert_eq!(
+            message(Form::new(catalog(), None, &opts(Some("qa"), &[]), 1)),
+            "no such environment \"qa\"; the environments are dev, prod"
+        );
+        assert_eq!(
+            message(Form::new(catalog(), Some("nope"), &opts(None, &[]), 1)),
+            "no such space \"nope\" in this project"
+        );
+        let mut bare = catalog();
+        bare.envs.clear();
+        assert_eq!(
+            message(Form::new(bare, None, &opts(Some("qa"), &[]), 1)),
+            "no such environment \"qa\"; this project has none"
+        );
     }
 
     #[test]
