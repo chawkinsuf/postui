@@ -7,6 +7,8 @@
 //! whatever order they finished in.
 
 mod outline;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
+mod paint;
 
 use super::mask::Mask;
 use super::out::{count, table_under};
