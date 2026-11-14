@@ -6,10 +6,9 @@
 //! happens as it happens; the report keeps the rows in sidebar order
 //! whatever order they finished in.
 
-#[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
 mod board;
+mod live;
 mod outline;
-#[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
 mod paint;
 
 use super::mask::Mask;
@@ -29,6 +28,49 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+use tokio::time::MissedTickBehavior;
+
+pub(super) use live::{FileNote, Live};
+
+/// The status a run cancelled by Ctrl+C ends with: 128 + SIGINT, as a shell
+/// gives a command it interrupted (spec 2026-11-13 §5.4).
+pub(super) const INTERRUPTED: u8 = 130;
+
+/// Which output a run gets (spec 2026-11-13 §4).
+pub(super) enum Mode {
+    /// JSON at the end, even at a terminal.
+    Json,
+    /// Today's plain text, printed once at the end.
+    Plain,
+    /// The live view; `color` is false under `NO_COLOR`.
+    Live { color: bool },
+}
+
+/// The output for `--json` (`json`), `--plain` (`plain`), whether stdout is
+/// a terminal, `TERM` and `NO_COLOR`: JSON whenever asked for; plain when
+/// asked for, without a terminal, or on a `dumb` one; else the live view,
+/// colored unless `NO_COLOR` is set and not empty.
+pub(super) fn mode(
+    json: bool,
+    plain: bool,
+    stdout_tty: bool,
+    term: Option<&str>,
+    no_color: Option<&str>,
+) -> Mode {
+    if json {
+        Mode::Json
+    } else if plain || !stdout_tty || term == Some("dumb") {
+        Mode::Plain
+    } else {
+        Mode::Live { color: no_color.is_none_or(str::is_empty) }
+    }
+}
+
+/// Whether `-i` can pick: stdin and stdout both on a terminal that isn't
+/// `dumb` (spec 2026-11-13 §4).
+pub(super) fn can_pick(stdin_tty: bool, stdout_tty: bool, term: Option<&str>) -> bool {
+    stdin_tty && stdout_tty && term != Some("dumb")
+}
 
 /// `postui suite`. Every string in it has been through the session's mask.
 #[derive(Serialize)]
@@ -49,7 +91,6 @@ pub struct SuiteReport {
     /// The run was cancelled before every request finished: `results` holds
     /// only those that did.
     #[serde(skip)]
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
     cancelled: bool,
 }
 
@@ -86,7 +127,6 @@ impl SuiteResult {
 /// (display names; `space: None` is every space), the `--select`s that
 /// differ from the saved selections, how many go at once, the list as the
 /// sidebar nests it, and how many requests there are.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
 pub(super) struct Plan {
     pub env: Option<String>,
     pub space: Option<String>,
@@ -196,6 +236,9 @@ pub async fn suite(
     let mut flight = FuturesUnordered::new();
     let mut next = 0;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    // Prepares run inline between ticks: a late tick is one tick, not a
+    // burst of them.
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tokio::pin!(cancel);
     let mut cancelled = false;
     loop {
@@ -306,7 +349,6 @@ impl SuiteReport {
     }
 
     /// Whether the run was cancelled before every request finished.
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in by Task 4"))]
     pub fn cancelled(&self) -> bool {
         self.cancelled
     }
@@ -510,6 +552,34 @@ mod tests {
         assert_eq!(watch.events, ["begin", "finished 0 main/list", "finished 1 main/users/get"]);
         assert!(!report.cancelled());
         assert_eq!(report.results.len(), 2);
+    }
+
+    /// Spec 2026-11-13 §4: which output a run gets.
+    #[test]
+    fn output_mode_table() {
+        assert!(matches!(mode(true, false, true, None, None), Mode::Json));
+        assert!(matches!(mode(true, true, false, Some("dumb"), Some("1")), Mode::Json));
+        assert!(matches!(mode(false, false, false, None, None), Mode::Plain));
+        assert!(matches!(mode(false, true, true, None, None), Mode::Plain));
+        assert!(matches!(mode(false, false, true, Some("dumb"), None), Mode::Plain));
+        assert!(matches!(
+            mode(false, false, true, Some("xterm-256color"), None),
+            Mode::Live { color: true }
+        ));
+        assert!(matches!(mode(false, false, true, None, Some("1")), Mode::Live { color: false }));
+        assert!(matches!(mode(false, false, true, None, Some("")), Mode::Live { color: true }));
+    }
+
+    /// Spec 2026-11-13 §4: `-i` needs stdin and stdout on a terminal that
+    /// isn't `dumb`.
+    #[test]
+    fn picking_needs_both_ends_on_a_terminal() {
+        assert!(can_pick(true, true, None));
+        assert!(can_pick(true, true, Some("xterm-256color")));
+        assert!(!can_pick(false, true, None));
+        assert!(!can_pick(true, false, None));
+        assert!(!can_pick(false, false, None));
+        assert!(!can_pick(true, true, Some("dumb")));
     }
 
     /// Spec 2026-11-13 §5.4: once `cancel` completes nothing more starts,

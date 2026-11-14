@@ -869,7 +869,25 @@ pub async fn run(cmd: Command) -> ExitCode {
                 Err(e) => out::fail(&e, g.json),
             }
         }
-        Command::Suite { g, space, opts, output, jobs, .. } => {
+        Command::Suite { g, space, opts, output, jobs, plain, interactive } => {
+            use std::io::IsTerminal;
+            // Lossy: a value that isn't UTF-8 is still set, and isn't `dumb`.
+            let env = |name: &str| std::env::var_os(name).map(|v| v.to_string_lossy().into_owned());
+            let term = env("TERM");
+            let stdout_tty = std::io::stdout().is_terminal();
+            if interactive
+                && !suite::can_pick(std::io::stdin().is_terminal(), stdout_tty, term.as_deref())
+            {
+                return out::fail_usage("-i needs a terminal to pick in", g.json, SUITE_USAGE);
+            }
+            let no_color = env("NO_COLOR");
+            let mode = suite::mode(g.json, plain, stdout_tty, term.as_deref(), no_color.as_deref());
+            if let suite::Mode::Live { color } = mode {
+                return live_suite(&g, space.as_deref(), &opts, output.as_deref(), jobs, color)
+                    .await;
+            }
+            // JSON, or the plain text: printed once at the end, as before
+            // the live view (spec 2026-11-13 §4).
             let watch = &mut suite::Quiet;
             match suite::suite(&g, space.as_deref(), &opts, jobs, watch, std::future::pending())
                 .await
@@ -925,6 +943,67 @@ pub async fn run(cmd: Command) -> ExitCode {
             crate::cli_out::print_out(skill::FILES[0].1).unwrap_or(ExitCode::SUCCESS)
         }
     }
+}
+
+/// `postui suite` at a terminal: the live view on stdout while the run goes,
+/// Ctrl+C cancelling it, and `-o` given the plain text once it is over (spec
+/// 2026-11-13 §4, §5). An error before the run starts is printed as any
+/// command's; the view has printed nothing by then.
+async fn live_suite(
+    g: &Global,
+    space: Option<&str>,
+    opts: &RunOpts,
+    output: Option<&std::path::Path>,
+    jobs: usize,
+    color: bool,
+) -> ExitCode {
+    // 80×24 if the terminal can't say: the size of the view, not the run.
+    let size = Box::new(|| crossterm::terminal::size().unwrap_or((80, 24)));
+    let mut live = suite::Live::new(std::io::stdout(), color, size);
+    // Ctrl+C cancels the run (spec §5.4). Polled once now, so its handler
+    // is set before the view hides the cursor: from here a Ctrl+C ends the
+    // run, not the process. Without a handler nothing cancels the run,
+    // rather than its being cancelled at once.
+    let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
+    let first = futures::poll!(ctrl_c.as_mut());
+    let cancel = async move {
+        let pressed = match first {
+            std::task::Poll::Ready(pressed) => pressed,
+            std::task::Poll::Pending => ctrl_c.await,
+        };
+        if pressed.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    let (mut report, mask) = match suite::suite(g, space, opts, jobs, &mut live, cancel).await {
+        Ok(done) => done,
+        Err(e) => return out::fail(&e, g.json),
+    };
+    let note = match output {
+        None => suite::FileNote::None,
+        // A cancelled run writes nothing; a file there from an earlier run
+        // stays as it was (spec §5.4).
+        Some(file) if report.cancelled() => {
+            suite::FileNote::Cancelled(run::absolute(file).unwrap_or_else(|_| file.to_path_buf()))
+        }
+        // The plain report, as the plain path would write it. The requests
+        // are sent, so a failed write is a warning, as there.
+        Some(file) => {
+            let written = run::absolute(file).and_then(|path| {
+                report.set_output_file(path.clone());
+                run::write_output(&path, report.text().as_bytes()).map(|()| path)
+            });
+            match written {
+                Ok(path) => suite::FileNote::Written(path),
+                Err(e) => {
+                    report.note_write_failure(mask.apply(&e.message));
+                    suite::FileNote::None
+                }
+            }
+        }
+    };
+    live.finish(&report, note);
+    if report.cancelled() { ExitCode::from(suite::INTERRUPTED) } else { report.status() }
 }
 
 /// The status a `run` or `suite` ends with, given what printing its report
