@@ -1090,6 +1090,21 @@ fn suite_plain_heading_names_jobs_only_above_one() {
     assert!(text.starts_with("suite  environment dev  space (all)  jobs 3\n"), "{text}");
 }
 
+/// Spec 2026-11-13 §4: `-i` needs a terminal to pick in; the harness has
+/// none, so it is a usage error and nothing runs.
+#[test]
+fn suite_interactive_needs_a_terminal() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = slow_suite_project(&home, &server.base());
+
+    let out = home.run(&["suite", "-p", s(&root), "-i"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("-i needs a terminal to pick in"), "{err}");
+    assert!(out.stdout.is_empty());
+}
+
 #[test]
 fn suite_one_space() {
     let home = Home::new();

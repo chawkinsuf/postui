@@ -133,23 +133,8 @@ impl<W: Write> Live<W> {
     /// with a `!` row's further lines under it, then draws the band again,
     /// or `end` in its place when the run is over.
     fn redraw(&mut self, end: Option<&[Seg]>) {
-        let mut buf = vec![b'\r'];
-        // The band is wiped a line at a time, the line under it (where
-        // typed keys echo) too. Not one clear to the end of the screen: from
-        // the top-left corner, where a band as high as the screen starts,
-        // tmux (`scroll-on-clear`) takes that for clearing the screen and
-        // pushes it into scrollback first, leaving a copy of the band there.
-        let up = u16::try_from(self.drawn).unwrap_or(u16::MAX);
-        if up > 0 {
-            let _ = queue!(buf, MoveToPreviousLine(up));
-            for _ in 0..up {
-                let _ = queue!(buf, Clear(ClearType::CurrentLine), MoveToNextLine(1));
-            }
-        }
-        let _ = queue!(buf, Clear(ClearType::CurrentLine));
-        if up > 0 {
-            let _ = queue!(buf, MoveToPreviousLine(up));
-        }
+        let mut buf = Vec::new();
+        wipe(&mut buf, self.drawn);
         let now = Instant::now();
         // Before the band (R14): the band and `may_start` count from the
         // mark this moves.
@@ -244,8 +229,29 @@ impl<W: Write> Live<W> {
     }
 }
 
+/// Wipes the `up` lines above the cursor, and the line it is on, and leaves
+/// the cursor where the first of them was. A line at a time, not one clear to
+/// the end of the screen: from the top-left corner, where a band as high as
+/// the screen starts, tmux (`scroll-on-clear`) takes that for clearing the
+/// screen and pushes it into scrollback first, leaving a copy of the band
+/// there. The picker wipes its form the same way.
+pub(super) fn wipe(buf: &mut Vec<u8>, up: usize) {
+    buf.push(b'\r');
+    let up = u16::try_from(up).unwrap_or(u16::MAX);
+    if up > 0 {
+        let _ = queue!(buf, MoveToPreviousLine(up));
+        for _ in 0..up {
+            let _ = queue!(buf, Clear(ClearType::CurrentLine), MoveToNextLine(1));
+        }
+    }
+    let _ = queue!(buf, Clear(ClearType::CurrentLine));
+    if up > 0 {
+        let _ = queue!(buf, MoveToPreviousLine(up));
+    }
+}
+
 /// `line` and the line end the view uses.
-fn put(buf: &mut Vec<u8>, line: &str) {
+pub(super) fn put(buf: &mut Vec<u8>, line: &str) {
     buf.extend_from_slice(line.as_bytes());
     buf.extend_from_slice(b"\r\n");
 }

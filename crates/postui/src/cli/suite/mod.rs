@@ -10,6 +10,7 @@ mod board;
 mod live;
 mod outline;
 mod paint;
+mod picker;
 
 use super::mask::Mask;
 use super::out::{count, table_under};
@@ -31,6 +32,7 @@ use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
 
 pub(super) use live::{FileNote, Live};
+pub(super) use picker::{Picked, pick};
 
 /// The status a run cancelled by Ctrl+C ends with: 128 + SIGINT, as a shell
 /// gives a command it interrupted (spec 2026-11-13 §5.4).

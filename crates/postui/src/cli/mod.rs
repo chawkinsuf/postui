@@ -881,6 +881,18 @@ pub async fn run(cmd: Command) -> ExitCode {
                 return out::fail_usage("-i needs a terminal to pick in", g.json, SUITE_USAGE);
             }
             let no_color = env("NO_COLOR");
+            // The picks replace what the command line gave, and the run goes
+            // on from there as if they had been given on it (spec §7).
+            let (space, opts, jobs) = if interactive {
+                let color = no_color.as_deref().is_none_or(str::is_empty);
+                match suite::pick(&g, space.as_deref(), &opts, jobs, color).await {
+                    Ok(suite::Picked::Run { space, opts, jobs }) => (space, opts, jobs),
+                    Ok(suite::Picked::Cancelled(code)) => return ExitCode::from(code),
+                    Err(e) => return out::fail(&e, g.json),
+                }
+            } else {
+                (space, opts, jobs)
+            };
             let mode = suite::mode(g.json, plain, stdout_tty, term.as_deref(), no_color.as_deref());
             if let suite::Mode::Live { color } = mode {
                 return live_suite(&g, space.as_deref(), &opts, output.as_deref(), jobs, color)

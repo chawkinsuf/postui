@@ -67,18 +67,28 @@ pub(super) fn pick_env(
             })
         })?;
     if let Err(e) = project.load_environment(&slug) {
-        return Err(match e {
-            postui_core::project::Error::Parse { file, error } => {
-                CliError::at(format!("environment \"{slug}\": {error}"), project.root().join(file))
-            }
-            other => CliError::new(format!("environment \"{slug}\": {other}")),
-        });
+        return Err(env_load_error(project, &slug, e));
     }
     // The file just parsed, so this loads it too; a failure now is a race.
     if let Some(warning) = project.set_active_env(Some(slug.clone())).into_iter().next() {
         return Err(CliError::new(warning));
     }
     Ok(Some(slug))
+}
+
+/// `e`, from loading environment `slug`, as an error naming the file when it
+/// is the file that is wrong.
+pub(super) fn env_load_error(
+    project: &Project,
+    slug: &str,
+    e: postui_core::project::Error,
+) -> CliError {
+    match e {
+        postui_core::project::Error::Parse { file, error } => {
+            CliError::at(format!("environment \"{slug}\": {error}"), project.root().join(file))
+        }
+        other => CliError::new(format!("environment \"{slug}\": {other}")),
+    }
 }
 
 /// `postui projects`.
