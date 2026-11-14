@@ -5,7 +5,10 @@
 //! moving the cursor up over it and clearing its lines. [`Board`] says which
 //! lines are which, [`paint`](super::paint) makes them text. It never
 //! enters raw mode, so keys typed during the run echo as in any command
-//! (§5.5).
+//! (§5.5). The redraw goes up as many lines as it drew, so anything else
+//! that moves the cursor (an Enter typed during the run, a terminal that
+//! rewraps the band on a resize) makes the next wipe stop short, and part
+//! of the old band stays above the new one.
 
 use super::super::read::warnings_text;
 use super::board::Board;
@@ -146,7 +149,7 @@ impl<W: Write> Live<W> {
             put(&mut buf, &paint(&segs, self.color));
             if let Line::Request { index, depth, .. } = &self.board.lines()[at] {
                 for under in error_under(self.board.state(*index), *depth) {
-                    let under = [Seg { text: under, tone: Some(Tone::NotSent), shrink: 0 }];
+                    let under = [Seg::new(under, Some(Tone::NotSent), 0)];
                     put(&mut buf, &paint(&under, self.color));
                 }
             }
@@ -177,9 +180,8 @@ impl<W: Write> Live<W> {
         };
         let (range, more) = self.board.band(rows.saturating_sub(3));
         let mut lines: Vec<String> = range.map(|at| fitted(self.row(at, now))).collect();
-        let mut more = (more > 0).then(|| {
-            fitted(vec![Seg { text: format!("… {more} more"), tone: Some(Tone::Dim), shrink: 0 }])
-        });
+        let mut more = (more > 0)
+            .then(|| fitted(vec![Seg::new(format!("… {more} more"), Some(Tone::Dim), 0)]));
         let mut blank = true;
         // The progress line.
         let counts = self.board.counts();
@@ -622,6 +624,22 @@ mod tests {
         drop(live);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("{{id}} has no value\r\n      second line\r\n"), "{text:?}");
+    }
+
+    /// The lines of a refused row's message under it show a control
+    /// character as `?`, as the row itself does.
+    #[test]
+    fn control_characters_under_a_row_show_as_question_marks() {
+        let mut out = Vec::new();
+        let mut live = live(&mut out, false, 80, 24);
+        live.begin(&plan(1, 1));
+        let mut refused = ok(0);
+        (refused.status, refused.elapsed_ms, refused.size) = (None, None, None);
+        refused.error = Some("first\nsecond\t\u{1b}[2Jline".into());
+        live.finished(0, &refused);
+        drop(live);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\r\n      second??[2Jline\r\n"), "{text:?}");
     }
 
     /// Spec 2026-11-13 §4: without color the live view writes no SGR code,

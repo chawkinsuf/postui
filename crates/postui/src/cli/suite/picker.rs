@@ -7,9 +7,9 @@
 //! `--space` and `--jobs`.
 
 use super::live::{put, wipe};
-use super::paint::{Seg, Tone, fit, paint, printable, width};
+use super::paint::{Seg, Tone, fit, pad_right, paint, printable, width};
 use crate::cli::read::{displayed, env_load_error, match_env, no_such_space, open};
-use crate::cli::run::RunOpts;
+use crate::cli::run::{RunOpts, session};
 use crate::cli::{CliError, Global, target};
 use crate::ui::cells;
 use crossterm::cursor::{Hide, Show};
@@ -282,7 +282,7 @@ impl Form {
     /// the blank lines go first, then the count line, the key line and the
     /// title; then only the rows up to the cursor's show.
     pub(super) fn lines(&self, cols: usize, rows: usize) -> Vec<Vec<Seg>> {
-        let seg = |text: &str, tone, shrink| Seg { text: text.to_string(), tone, shrink };
+        let seg = |text: &str, tone, shrink| Seg::new(text, tone, shrink);
         let title = vec![
             seg("postui suite", Some(Tone::Bold), 0),
             seg("  ", None, 0),
@@ -300,10 +300,10 @@ impl Form {
                 let here = at == self.cursor;
                 vec![
                     seg(if here { "▸ " } else { "  " }, None, 0),
-                    seg(&pad(&printable(&row.label), label_col), Some(Tone::Dim), 3),
+                    seg(&pad_right(&printable(&row.label), label_col), Some(Tone::Dim), 3),
                     seg("  ‹ ", None, 0),
                     seg(value, here.then_some(Tone::Space), 2),
-                    seg(&pad("", widest - cells(value)), None, 1),
+                    seg(&pad_right("", widest - cells(value)), None, 1),
                     seg(" ›", None, 0),
                 ]
             })
@@ -384,19 +384,14 @@ impl Form {
     }
 }
 
-/// `text` padded with spaces to `cols` display columns.
-fn pad(text: &str, cols: usize) -> String {
-    format!("{text}{}", " ".repeat(cols.saturating_sub(cells(text))))
-}
-
 /// The key line with `hints`: each key bold, what it does dim and the
 /// first to clip.
 fn key_line(hints: &[(&str, &str)]) -> Vec<Seg> {
-    let mut line = vec![Seg { text: " ".into(), tone: None, shrink: 0 }];
+    let mut line = vec![Seg::new(" ", None, 0)];
     for (at, (key, what)) in hints.iter().enumerate() {
-        line.push(Seg { text: format!(" {key} "), tone: Some(Tone::Bold), shrink: 0 });
+        line.push(Seg::new(format!(" {key} "), Some(Tone::Bold), 0));
         let gap = if at + 1 < hints.len() { " " } else { "" };
-        line.push(Seg { text: format!("{what}{gap}"), tone: Some(Tone::Dim), shrink: 1 });
+        line.push(Seg::new(format!("{what}{gap}"), Some(Tone::Dim), 1));
     }
     line
 }
@@ -467,6 +462,9 @@ pub(in crate::cli) async fn pick(
     jobs: usize,
     color: bool,
 ) -> Result<Picked, CliError> {
+    // The run's own checks of `--env` and the `--select`s, so `-i` refuses
+    // what the run without it would (spec §7).
+    session(g, opts)?;
     let mut form = Form::new(Catalog::read(g)?, space, opts, jobs)?;
     let _raw = RawGuard::new()?;
     let mut events = EventStream::new();
@@ -839,7 +837,8 @@ mod tests {
         let form = form();
         let lines = form.lines(200, 100);
         let line = &lines[2];
-        let at = line.iter().find(|s| s.text.starts_with("Dev")).unwrap();
+        let at =
+            line.iter().find(|s| paint(std::slice::from_ref(s), false).starts_with("Dev")).unwrap();
         assert_eq!(at.tone, Some(Tone::Space));
         assert_eq!(line[1].tone, Some(Tone::Dim));
         let other = &lines[3];
@@ -877,7 +876,7 @@ mod tests {
         let narrow = text_in(&long, 30, 100);
         assert_eq!(narrow[0], "postui suite  a project with…");
         // Padded to `customer-account`, the widest label.
-        assert!(narrow[2].starts_with(&format!("▸ {}  ‹ D", pad("Environment", 16))));
+        assert!(narrow[2].starts_with(&format!("▸ {}  ‹ D", pad_right("Environment", 16))));
         assert!(narrow[2].contains('…'), "{narrow:#?}");
     }
 
@@ -950,34 +949,7 @@ mod tests {
     #[test]
     fn the_catalog_is_read_from_the_project() {
         let dir = tempfile::tempdir().unwrap();
-        let put = |rel: &str, text: &str| {
-            let path = dir.path().join(rel);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        };
-        put(
-            "project.toml",
-            "name = \"Shop\"\nspaces = [\"main\", \"admin\"]\nenvironments = [\"dev\", \"prod\"]\n\n\
-             [space.admin]\nname = \"Admin\"\n\n[environment.prod]\nname = \"Production\"\n",
-        );
-        put(
-            "variables.toml",
-            "[base]\n\n[selectors.customer]\nfields = [\"c\"]\n\n[selectors.region]\n\
-             fields = [\"r\"]\n\n[selectors.locale]\nfields = [\"l\"]\nshared = true\n\n\
-             [options.locale.en]\nl = \"en\"\n\n[options.locale.fr]\nl = \"fr\"\n",
-        );
-        put(
-            "environments/dev.toml",
-            "base = \"d\"\n\n[options.customer.acme]\nc = \"a\"\n\n[options.customer.globex]\nc = \"g\"\n",
-        );
-        put("environments/prod.toml", "base = \"p\"\n\n[options.region.eu]\nr = \"e\"\n");
-        put(
-            ".postui/state.toml",
-            "environment = \"prod\"\n\n[selections.dev]\ncustomer = \"globex\"\n",
-        );
-        for slug in ["main/a", "main/b", "admin/c"] {
-            put(&format!("requests/{slug}.toml"), "method = \"GET\"\nurl = \"http://x\"\n");
-        }
+        shop(dir.path());
         let g = Global { project: Some(dir.path().to_str().unwrap().into()), json: false };
         let catalog = Catalog::read(&g).unwrap();
         assert_eq!(catalog.project, "Shop");
@@ -1004,6 +976,62 @@ mod tests {
             [("main".to_string(), "main".to_string()), ("admin".to_string(), "Admin".to_string())]
         );
         assert_eq!(catalog.counts, [2, 1]);
+    }
+
+    /// A `--select` the run without `-i` would refuse is refused before the
+    /// form, in the run's words (spec §7).
+    #[tokio::test]
+    async fn a_select_the_run_refuses_is_refused_before_the_form() {
+        let dir = tempfile::tempdir().unwrap();
+        shop(dir.path());
+        let g = Global { project: Some(dir.path().to_str().unwrap().into()), json: false };
+        let refused = |selects: &[(&str, &str)]| {
+            let opts = opts(None, selects);
+            let g = &g;
+            async move { pick(g, None, &opts, 1, false).await.err().unwrap().message }
+        };
+        assert_eq!(
+            refused(&[("regoin", "eu")]).await,
+            "no such selector \"regoin\"; the selectors are customer, region, locale"
+        );
+        assert_eq!(
+            refused(&[("region", "nosuch")]).await,
+            "no such option \"nosuch\" for selector \"region\"; the options are eu"
+        );
+    }
+
+    /// Shop: environments dev and prod (prod open), a selector each with
+    /// options there, a shared one, and spaces main (2 requests) and Admin
+    /// (1).
+    fn shop(root: &std::path::Path) {
+        let put = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        put(
+            "project.toml",
+            "name = \"Shop\"\nspaces = [\"main\", \"admin\"]\nenvironments = [\"dev\", \"prod\"]\n\n\
+             [space.admin]\nname = \"Admin\"\n\n[environment.prod]\nname = \"Production\"\n",
+        );
+        put(
+            "variables.toml",
+            "[base]\n\n[selectors.customer]\nfields = [\"c\"]\n\n[selectors.region]\n\
+             fields = [\"r\"]\n\n[selectors.locale]\nfields = [\"l\"]\nshared = true\n\n\
+             [options.locale.en]\nl = \"en\"\n\n[options.locale.fr]\nl = \"fr\"\n",
+        );
+        put(
+            "environments/dev.toml",
+            "base = \"d\"\n\n[options.customer.acme]\nc = \"a\"\n\n[options.customer.globex]\nc = \"g\"\n",
+        );
+        put("environments/prod.toml", "base = \"p\"\n\n[options.region.eu]\nr = \"e\"\n");
+        put(
+            ".postui/state.toml",
+            "environment = \"prod\"\n\n[selections.dev]\ncustomer = \"globex\"\n",
+        );
+        for slug in ["main/a", "main/b", "admin/c"] {
+            put(&format!("requests/{slug}.toml"), "method = \"GET\"\nurl = \"http://x\"\n");
+        }
     }
 
     #[test]

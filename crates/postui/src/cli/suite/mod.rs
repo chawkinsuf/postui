@@ -556,6 +556,30 @@ mod tests {
         assert_eq!(report.results.len(), 2);
     }
 
+    /// A selector given twice is named in the plan by the option applied,
+    /// the last; back to the saved one, it is no change.
+    #[tokio::test]
+    async fn a_selector_given_twice_is_named_by_the_last() {
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path(), "http://127.0.0.1:9");
+        let plan = |selects: &[(&str, &str)]| {
+            let mut watch = Recorder::default();
+            let g = global(dir.path());
+            let opts = opts(selects);
+            async move {
+                suite(&g, Some("main"), &opts, 1, &mut watch, std::future::pending())
+                    .await
+                    .unwrap();
+                watch.plan.unwrap().changed
+            }
+        };
+        assert!(plan(&[("region", "west"), ("region", "east")]).await.is_empty());
+        assert_eq!(
+            plan(&[("region", "east"), ("locale", "fr"), ("region", "west")]).await,
+            [("locale".to_string(), "fr".to_string()), ("region".to_string(), "west".to_string())]
+        );
+    }
+
     /// Spec 2026-11-13 §4: which output a run gets.
     #[test]
     fn output_mode_table() {

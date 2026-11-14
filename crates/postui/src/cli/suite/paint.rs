@@ -29,12 +29,21 @@ pub(super) enum Tone {
 }
 
 /// A run of text in one tone. `shrink` is 0 for a segment [`fit`] never
-/// shortens; otherwise the order it is shortened in, 1 first.
+/// shortens; otherwise the order it is shortened in, 1 first. Its text is
+/// made by [`Seg::new`], which shows control characters as `?`.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) struct Seg {
-    pub text: String,
+    text: String,
     pub tone: Option<Tone>,
     pub shrink: u8,
+}
+
+impl Seg {
+    /// `text` with each control character shown as `?` ([`printable`]), so
+    /// what reaches the terminal is what [`width`] measured.
+    pub(super) fn new(text: impl Into<String>, tone: Option<Tone>, shrink: u8) -> Seg {
+        Seg { text: printable(&text.into()), tone, shrink }
+    }
 }
 
 /// Where a request is in the run, as its row shows it.
@@ -174,7 +183,7 @@ pub(super) fn name_column(lines: &[Line]) -> usize {
 }
 
 fn seg(text: impl Into<String>, tone: Option<Tone>, shrink: u8) -> Seg {
-    Seg { text: text.into(), tone, shrink }
+    Seg::new(text, tone, shrink)
 }
 
 fn plain(text: impl Into<String>) -> Seg {
@@ -186,7 +195,7 @@ fn toned(text: impl Into<String>, tone: Tone) -> Seg {
 }
 
 /// `text` padded with spaces on the right to `cols` display columns.
-fn pad_right(text: &str, cols: usize) -> String {
+pub(super) fn pad_right(text: &str, cols: usize) -> String {
     format!("{text}{}", " ".repeat(cols.saturating_sub(cells(text))))
 }
 
@@ -511,6 +520,27 @@ mod tests {
         let head = paint(&header(&p), false);
         assert_eq!(head.matches(shown).count(), 4, "{head:?}");
         assert!(!head.chars().any(char::is_control), "{head:?}");
+    }
+
+    /// A URL or a message with a control character in it shows it as `?`
+    /// too, in a running row, a finished one and a refused one.
+    #[test]
+    fn control_characters_in_urls_and_messages_show_as_question_marks() {
+        let line = request(1, Some(Method::Get), "x");
+        let now = Instant::now();
+        let running = RowState::Running { since: now, url: Some("http://a\tb/\u{1b}[2J".into()) };
+        let mut done = result(Some(200), None);
+        done.url = Some("http://a\rb".into());
+        let refused = result(None, Some("bad\tvalue\u{1b}[31m\nmore"));
+        for (state, shown) in [
+            (running, "http://a?b/?[2J"),
+            (RowState::Done(done), "http://a?b"),
+            (RowState::Done(refused), "bad?value?[31m"),
+        ] {
+            let text = paint(&line_row(&line, Some(&state), 1, now, 0), false);
+            assert!(text.ends_with(shown), "{text:?}");
+            assert!(!text.chars().any(char::is_control), "{text:?}");
+        }
     }
 
     #[test]

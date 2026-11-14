@@ -1017,7 +1017,13 @@ async fn live_suite(
         }
     };
     live.finish(&report, note);
-    if report.cancelled() { ExitCode::from(suite::INTERRUPTED) } else { report.status() }
+    drop(live);
+    if report.cancelled() {
+        // A dropped send can leave its DNS lookup on tokio's blocking pool,
+        // and the runtime waits for that pool when `main` returns: exit now.
+        std::process::exit(i32::from(suite::INTERRUPTED));
+    }
+    report.status()
 }
 
 /// The status a `run` or `suite` ends with, given what printing its report

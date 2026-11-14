@@ -139,7 +139,9 @@ pub(super) fn session(g: &Global, opts: &RunOpts) -> Result<Session, CliError> {
 
 /// The `selects` whose option isn't the one saved for `env`: a shared
 /// selector's pick is the one for every environment, any other's is the
-/// environment's own. Read before the `--select`s are applied.
+/// environment's own. Of a selector given more than once, only the last
+/// counts, as it is the one applied. Read before the `--select`s are
+/// applied.
 fn changed_selections(
     project: &Project,
     env: &str,
@@ -149,6 +151,9 @@ fn changed_selections(
         |selector: &str| project.variables().selectors.get(selector).is_some_and(|d| d.shared);
     selects
         .iter()
+        .enumerate()
+        .filter(|(at, (selector, _))| selects[at + 1..].iter().all(|(later, _)| later != selector))
+        .map(|(_, select)| select)
         .filter(|(selector, option)| {
             let saved = if shared(selector) {
                 project.local().shared_selections.get(selector)
