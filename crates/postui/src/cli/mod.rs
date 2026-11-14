@@ -76,6 +76,14 @@ pub enum Command {
         space: Option<String>,
         opts: RunOpts,
         output: Option<PathBuf>,
+        /// `-j/--jobs`: how many requests are in flight at once; 1 unless
+        /// given.
+        jobs: usize,
+        /// `--plain`: the plain text even at a terminal.
+        plain: bool,
+        /// `-i/--interactive`: pick the environment, space, selector options
+        /// and jobs first.
+        interactive: bool,
     },
     EditBegin {
         g: Global,
@@ -288,6 +296,7 @@ const SUITE_USAGE: &str = concat!(
     "\
 usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
                     [--select <sel>=<opt>]... [--var <name>=<value>]...
+                    [-j <n>] [-i] [--plain]
                     [-o <file>] [--timeout <secs>] [--show-secrets] [--json]
 
 Sends every request of the project (or of one space), one at a time in
@@ -307,6 +316,11 @@ request failed to prepare or send or returned 400 or more.
   --var <name>=<value>      give a variable this value for this run only,
                             over every other source; can be given more than
                             once
+  -j, --jobs <n>            send up to <n> requests at once (default: 1);
+                            requests that depend on each other may race
+  -i, --interactive         pick the environment, space, selector options
+                            and jobs first (needs a terminal)
+  --plain                   plain text even at a terminal
   -o, --output <file>       also write what is printed to <file>
   --timeout <secs>          give up on a request if its response hasn't
                             started after this long (connect, upload and
@@ -456,7 +470,7 @@ const SPECS: [Spec; 13] = [
     Spec { name: "check",    flags: &["--project", "--json", "--env"],                                                                                                                          positional: None,                      usage: CHECK_USAGE },
     Spec { name: "init",     flags: &["--json", "--name"],                                                                                                                                      positional: Some(Positional::Dir),     usage: INIT_USAGE },
     Spec { name: "run",      flags: &["--project", "--json", "--env", "--select", "--var", "--show-secrets", "--timeout", "--jq", "--view", "--output", "--dry-run", "--include", "--verbose"], positional: Some(Positional::Request), usage: RUN_USAGE },
-    Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--var", "--show-secrets", "--timeout", "--output"],                                               positional: None,                      usage: SUITE_USAGE },
+    Spec { name: "suite",    flags: &["--project", "--json", "--space", "--env", "--select", "--var", "--show-secrets", "--timeout", "--output", "--jobs", "--interactive", "--plain"],         positional: None,                      usage: SUITE_USAGE },
     Spec { name: "edit begin",  flags: &["--project", "--json", "--note"],                                                                                                                      positional: None,                      usage: EDIT_BEGIN_USAGE },
     Spec { name: "edit end",    flags: &["--project", "--json", "--force"],                                                                                                                     positional: None,                      usage: EDIT_END_USAGE },
     Spec { name: "edit status", flags: &["--project", "--json"],                                                                                                                                positional: None,                      usage: EDIT_STATUS_USAGE },
@@ -568,6 +582,9 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             space: options.space,
             opts,
             output: options.output.map(PathBuf::from),
+            jobs: jobs(options.jobs.as_deref())?,
+            plain: options.plain,
+            interactive: options.interactive,
         },
         "edit begin" => Command::EditBegin { g, note: options.note },
         "edit end" => Command::EditEnd { g, force: options.force },
@@ -640,6 +657,18 @@ fn run_opts(o: &Options) -> Result<RunOpts, String> {
     })
 }
 
+/// `--jobs`, read: a whole number of 1 or more, 1 when not given (spec
+/// 2026-11-13 §6).
+fn jobs(given: Option<&str>) -> Result<usize, String> {
+    match given {
+        None => Ok(1),
+        Some(n) => match n.parse::<usize>() {
+            Ok(jobs) if jobs >= 1 => Ok(jobs),
+            _ => Err(format!("--jobs takes a whole number of 1 or more, not '{n}'")),
+        },
+    }
+}
+
 /// Every option a command line can carry, before the command picks its own.
 #[derive(Default)]
 struct Options {
@@ -666,6 +695,9 @@ struct Options {
     force: bool,
     user: bool,
     into_project: bool,
+    jobs: Option<String>,
+    plain: bool,
+    interactive: bool,
 }
 
 /// Reads `args` (help flags already out) against what `spec` takes.
@@ -699,7 +731,11 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             // could name.
             "-p" if spec.name != "skill install" => "--project",
             "-o" => "--output",
+            // `suite`'s `-i` opens its picker; every other's is `run`'s
+            // `--include` (spec 2026-11-13 §8).
+            "-i" if spec.name == "suite" => "--interactive",
             "-i" => "--include",
+            "-j" => "--jobs",
             "-v" => "--verbose",
             other => other,
         };
@@ -729,6 +765,8 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             "--verbose" => Some(&mut o.verbose),
             "--force" => Some(&mut o.force),
             "--user" => Some(&mut o.user),
+            "--plain" => Some(&mut o.plain),
+            "--interactive" => Some(&mut o.interactive),
             // `skill install`'s place, where every other command's is a
             // project to name.
             "--project" if spec.name == "skill install" => Some(&mut o.into_project),
@@ -787,6 +825,7 @@ fn scan(spec: &Spec, args: &[&OsString]) -> Result<Options, String> {
             "--output" => &mut o.output,
             "--timeout" => &mut o.timeout,
             "--note" => &mut o.note,
+            "--jobs" => &mut o.jobs,
             _ => &mut o.name,
         };
         if slot.is_some() {
@@ -830,8 +869,11 @@ pub async fn run(cmd: Command) -> ExitCode {
                 Err(e) => out::fail(&e, g.json),
             }
         }
-        Command::Suite { g, space, opts, output } => {
-            match suite::suite(&g, space.as_deref(), &opts).await {
+        Command::Suite { g, space, opts, output, jobs, .. } => {
+            let watch = &mut suite::Quiet;
+            match suite::suite(&g, space.as_deref(), &opts, jobs, watch, std::future::pending())
+                .await
+            {
                 Ok((mut report, mask)) => {
                     // The file is named (made absolute once) before
                     // rendering, so the report in it and on stdout are the
@@ -1135,7 +1177,9 @@ mod tests {
         assert_eq!(run_parts(&["run", "a", "--include"]).2, Shown::Include);
         assert_eq!(run_parts(&["run", "a", "-v"]).2, Shown::Verbose);
         assert_eq!(run_parts(&["run", "a", "--verbose", "-i"]).2, Shown::Verbose);
-        assert_eq!(parsed(&["suite", "-i"]).unwrap_err(), "unknown option '-i'");
+        // Spec 2026-11-13 §8: on `suite`, `-i` is `--interactive`, not an
+        // unknown option.
+        assert!(matches!(command(&["suite", "-i"]), Command::Suite { interactive: true, .. }));
         let err = |args: &[&str]| parsed(args).unwrap_err();
         assert!(err(&["run", "a", "-v", "--json"]).contains("--json prints the whole run"));
         assert!(err(&["run", "a", "-i", "--json"]).contains("--json prints the whole run"));
@@ -1143,6 +1187,35 @@ mod tests {
         // more, so neither is refused.
         assert_eq!(run_parts(&["run", "a", "-v", "--dry-run"]).2, Shown::Verbose);
         assert_eq!(run_parts(&["run", "a", "-i", "--dry-run"]).2, Shown::Include);
+    }
+
+    /// Spec 2026-11-13 §6, §8: `-j/--jobs`, `-i/--interactive` and `--plain`
+    /// are `suite`'s; one at a time, plain-if-not-a-terminal and no picker
+    /// unless asked.
+    #[test]
+    fn suite_takes_jobs_interactive_and_plain() {
+        let suite_parts = |args: &[&str]| match command(args) {
+            Command::Suite { jobs, plain, interactive, .. } => (jobs, plain, interactive),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(suite_parts(&["suite"]), (1, false, false));
+        assert_eq!(suite_parts(&["suite", "-j", "4"]).0, 4);
+        assert_eq!(suite_parts(&["suite", "--jobs=4"]).0, 4);
+        assert_eq!(suite_parts(&["suite", "-i"]), (1, false, true));
+        assert_eq!(suite_parts(&["suite", "--interactive"]), (1, false, true));
+        assert_eq!(suite_parts(&["suite", "--plain"]), (1, true, false));
+        let err = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(err(&["suite", "-j", "0"]), "--jobs takes a whole number of 1 or more, not '0'");
+        assert_eq!(
+            err(&["suite", "--jobs", "x"]),
+            "--jobs takes a whole number of 1 or more, not 'x'"
+        );
+        assert_eq!(err(&["suite", "--jobs"]), "--jobs needs a value");
+        assert_eq!(err(&["run", "a", "--jobs", "2"]), "unknown option '--jobs'");
+        assert_eq!(err(&["run", "a", "--plain"]), "unknown option '--plain'");
+        assert_eq!(err(&["show", "-i"]), "unknown option '-i'");
+        // `run`'s `-i` is still `--include`.
+        assert_eq!(run_parts(&["run", "a", "-i"]).2, Shown::Include);
     }
 
     #[test]
