@@ -301,11 +301,11 @@ usage: postui suite [-p <dir|name>] [--space <space>] [--env <env>]
 
 Sends every request of the project (or of one space) in sidebar order, one
 at a time unless --jobs asks for more, and prints each one's status and
-time, then the totals. A
-request that can't be read or prepared is reported and the suite goes on.
-Nothing is written to the project. Each secret's exact value is masked in
-everything printed; a value the server transforms is not. Exits 1 when any
-request failed to prepare or send or returned 400 or more.
+time, then the totals. A request that can't be read or prepared is reported
+and the suite goes on. Nothing is written to the project. Each secret's
+exact value is masked in everything printed; a value the server transforms
+is not. Exits 1 when any request failed to prepare or send or returned 400
+or more.
 
 ",
     project_flag!(),
@@ -322,7 +322,8 @@ request failed to prepare or send or returned 400 or more.
   -i, --interactive         pick the environment, space, selector options
                             and jobs first (needs a terminal)
   --plain                   plain text even at a terminal
-  -o, --output <file>       also write what is printed to <file>
+  -o, --output <file>       also write the report to <file>: the plain text,
+                            or the JSON with --json
   --timeout <secs>          give up on a request if its response hasn't
                             started after this long (connect, upload and
                             redirects included), or the body stalls this
