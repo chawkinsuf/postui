@@ -16,12 +16,11 @@ use super::checks::{self, ShownCheck, failure_lines, shown};
 use super::mask::Mask;
 use super::out::{count, table_under};
 use super::read::{displayed, spaces_of, warnings_text};
-use super::run::{FAILED, RunOpts, millis, prepare_one, refused, session, shown_url};
+use super::run::{FAILED, RunOpts, millis, prepare_one, refused, session, shown_url, timing};
 use super::{CliError, Global};
 use crate::http::send_raw;
-use futures::stream::{FuturesUnordered, StreamExt};
 use outline::{Listed, SpaceRequests, outline};
-use postui_core::checks::Outcome;
+use postui_core::checks::{Outcome, Timing};
 use postui_core::jq::JqDocument;
 use postui_core::model::{Checks, Method};
 use postui_core::project::Project;
@@ -98,15 +97,18 @@ pub struct SuiteReport {
     cancelled: bool,
 }
 
-/// One request's outcome. `status`, `elapsed_ms` and `size` are `null` when
-/// nothing came back; `method` and `url` too when its file is broken. The
-/// JSON adds `passed` ([`SuiteResult::passed`]).
+/// One request's outcome. `status`, `ttfb_ms`, `elapsed_ms` and `size` are
+/// `null` when nothing came back; `method` and `url` too when its file is
+/// broken. The JSON adds `passed` ([`SuiteResult::passed`]).
 #[derive(Clone, Serialize)]
 pub(super) struct SuiteResult {
     pub(super) request: String,
     pub(super) method: Option<Method>,
     pub(super) url: Option<String>,
     pub(super) status: Option<u16>,
+    /// To the response head, as `max_ttfb_ms` judges it (spec §2.7, T1);
+    /// only the JSON gives it.
+    pub(super) ttfb_ms: Option<u64>,
     pub(super) elapsed_ms: Option<u64>,
     pub(super) size: Option<usize>,
     pub(super) error: Option<String>,
@@ -153,13 +155,14 @@ impl SuiteResult {
 /// Runs `checks` over a response. Its jq filters run off the async loop:
 /// over a large body they would otherwise stall the live view's ticks and
 /// the other sends. Without a filter the body is never read.
-async fn evaluate(checks: Checks, status: u16, body: Vec<u8>) -> Vec<Outcome> {
+async fn evaluate(checks: Checks, status: u16, timing: Timing, body: Vec<u8>) -> Vec<Outcome> {
     let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
     if checks.jq.is_empty() {
-        return postui_core::checks::evaluate(&checks, status, doc);
+        return postui_core::checks::evaluate(&checks, status, timing, doc);
     }
-    let run =
-        tokio::task::spawn_blocking(move || postui_core::checks::evaluate(&checks, status, doc));
+    let run = tokio::task::spawn_blocking(move || {
+        postui_core::checks::evaluate(&checks, status, timing, doc)
+    });
     match run.await {
         Ok(outcomes) => outcomes,
         // A panic in the checks is a bug: it surfaces as it would inline.
@@ -277,7 +280,10 @@ pub async fn suite(
     let mut request_warnings = Vec::new();
     let began = Instant::now();
     let mut results: Vec<Option<SuiteResult>> = vec![None; n];
-    let mut flight = FuturesUnordered::new();
+    // Each send is its own task, so the time it takes is its own: work here
+    // (a prepare, a repaint) doesn't hold it up. Dropping the set aborts
+    // what is still in flight.
+    let mut flight = tokio::task::JoinSet::new();
     let mut next = 0;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     // Prepares run inline between ticks: a late tick is one tick, not a
@@ -297,6 +303,7 @@ pub async fn suite(
                 method: None,
                 url: None,
                 status: None,
+                ttfb_ms: None,
                 elapsed_ms: None,
                 size: None,
                 error: None,
@@ -327,13 +334,13 @@ pub async fn suite(
                     // request, so the next can be prepared while it runs.
                     let client = s.clients.for_request(&request).clone();
                     let checks = read.checks;
-                    flight.push(async move {
+                    flight.spawn(async move {
                         let sent = match send_raw(&client, &request).await {
                             Ok(raw) => {
-                                let (status, elapsed, size) =
-                                    (raw.status, raw.elapsed, raw.bytes.len());
-                                let outcomes = evaluate(checks, status, raw.bytes).await;
-                                Ok((status, elapsed, size, outcomes))
+                                let (status, size, timing) =
+                                    (raw.status, raw.bytes.len(), timing(&raw));
+                                let outcomes = evaluate(checks, status, timing, raw.bytes).await;
+                                Ok((status, timing, size, outcomes))
                             }
                             Err(message) => Err(message),
                         };
@@ -349,11 +356,23 @@ pub async fn suite(
             break;
         }
         tokio::select! {
-            Some((index, mut result, sent)) = flight.next() => {
+            Some(joined) = flight.join_next() => {
+                let (index, mut result, sent) = match joined {
+                    Ok(joined) => joined,
+                    // A panic in a send is a bug: it surfaces as it would
+                    // inline.
+                    Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                    // A send that was aborted ends the run as a cancel does.
+                    Err(_) => {
+                        cancelled = true;
+                        break;
+                    }
+                };
                 match sent {
-                    Ok((status, elapsed, size, outcomes)) => {
+                    Ok((status, timing, size, outcomes)) => {
                         result.status = Some(status);
-                        result.elapsed_ms = Some(millis(elapsed));
+                        result.ttfb_ms = Some(timing.ttfb_ms);
+                        result.elapsed_ms = Some(timing.elapsed_ms);
                         result.size = Some(size);
                         result.checks = shown(&outcomes, &s.mask);
                     }
@@ -717,6 +736,48 @@ mod tests {
         );
         assert_eq!(results[2]["checks"], serde_json::json!([]));
         assert_eq!(results[2]["passed"], true);
+    }
+
+    /// A [`Watch`] that holds up the loop for `stall` when `slug` finishes,
+    /// as a slow repaint would.
+    struct Stall {
+        slug: &'static str,
+        stall: Duration,
+    }
+
+    impl Watch for Stall {
+        fn begin(&mut self, _plan: &Plan) {}
+        fn finished(&mut self, _index: usize, result: &SuiteResult) {
+            if result.request == self.slug {
+                std::thread::sleep(self.stall);
+            }
+        }
+    }
+
+    /// Suite checks spec §2.7 (T4): while the loop is held up, a send in
+    /// flight keeps its own time, so a time limit doesn't judge the loop.
+    /// One worker, as `Runtime::new()` starts on a one-CPU host: the loop
+    /// runs on the thread blocked on it, the sends on the worker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_held_up_loop_adds_nothing_to_a_send_time() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(path("/fast")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+        Mock::given(path("/slow"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(100)))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        checked_project(dir.path(), &server.uri(), &[("fast", ""), ("slow", "")]);
+        let mut watch = Stall { slug: "main/fast", stall: Duration::from_millis(1500) };
+        let (report, _) =
+            suite(&global(dir.path()), None, &opts(&[]), 2, &mut watch, std::future::pending())
+                .await
+                .unwrap();
+        let slow = report.results.iter().find(|r| r.request == "main/slow").unwrap();
+        let ms = slow.elapsed_ms.unwrap();
+        assert!((100..1200).contains(&ms), "{ms} ms");
     }
 
     /// Spec 2026-11-13 §4: which output a run gets.

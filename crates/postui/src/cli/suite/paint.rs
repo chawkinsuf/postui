@@ -4,7 +4,7 @@
 //! string, with the 16 ANSI colors or without any escape code. Nothing here
 //! touches a terminal, so the rows are tested as text.
 
-use super::super::checks::{ShownCheck, failure_lines, status_check};
+use super::super::checks::{ShownCheck, failure_lines, status_check, total_failed};
 use super::outline::Line;
 use super::{Plan, SuiteResult};
 use crate::ui::{cells, graphemes, take_cells};
@@ -346,8 +346,11 @@ fn row_of(
             };
             row.push(toned(format!("{status:>STATUS_COL$}"), status_tone(status, &r.checks)));
             row.push(plain("  "));
+            // The short form rounds a time over 1 s, failed or not; the
+            // check's line gives its exact milliseconds.
             let ms = r.elapsed_ms.map(time).unwrap_or_default();
-            row.push(toned(pad_left(&ms, NUM_COL), Tone::Dim));
+            let time_tone = if total_failed(&r.checks) { Tone::Bad } else { Tone::Dim };
+            row.push(toned(pad_left(&ms, NUM_COL), time_tone));
             row.push(plain("  "));
             let bytes = r.size.map(size).unwrap_or_default();
             row.push(toned(pad_left(&bytes, NUM_COL), Tone::Dim));
@@ -454,8 +457,11 @@ pub(super) fn totals(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::checks::checked;
+    use super::super::super::checks::{checked, over};
+    use super::super::super::mask::Mask;
     use super::*;
+    use postui_core::checks::Timing;
+    use postui_core::model::Checks;
 
     fn result(status: Option<u16>, error: Option<&str>) -> SuiteResult {
         SuiteResult {
@@ -463,6 +469,7 @@ mod tests {
             method: Some(Method::Get),
             url: Some("https://dev/users/42".into()),
             status,
+            ttfb_ms: status.map(|_| 40),
             elapsed_ms: status.map(|_| 120),
             size: status.map(|_| 512),
             error: error.map(Into::into),
@@ -494,6 +501,44 @@ mod tests {
         assert_eq!(tone_of(200, &[201]), ("✗".into(), Some(Tone::Bad)));
         assert_eq!(tone_of(404, &[]), ("✗".into(), Some(Tone::Bad)));
         assert_eq!(tone_of(301, &[]), ("✓".into(), Some(Tone::Redirect)));
+    }
+
+    /// Spec §2.7 (T3): a failed `max_elapsed_ms` paints the time, the
+    /// total, red, a `✗` with its line in the band; within its limit the
+    /// time stays dim. A failed `max_ttfb_ms` shows by the `✗` and its line
+    /// only.
+    #[test]
+    fn a_failed_total_limit_paints_the_time_red() {
+        let line = request(1, Some(Method::Get), "Slow");
+        let time_tone = |max_ttfb_ms: Option<u32>, max_elapsed_ms: Option<u32>| {
+            let mut r = result(Some(200), None);
+            let checks = Checks { max_ttfb_ms, max_elapsed_ms, ..Checks::default() };
+            let timing = Timing { ttfb_ms: 40, elapsed_ms: 120 };
+            r.checks = over(&checks, 200, timing, "", &Mask::none());
+            let state = RowState::Done(r);
+            let band = band_row(&line, Some(&state), 4, Instant::now(), 0);
+            let tone = band.iter().find(|s| s.text.trim() == "120 ms").unwrap().tone;
+            (paint(&band, false), tone)
+        };
+        assert_eq!(
+            time_tone(None, Some(100)),
+            (
+                "  ✗ GET    Slow  200  120 ms   512 B  check failed: total 120 ms, limit 100 ms"
+                    .into(),
+                Some(Tone::Bad)
+            )
+        );
+        let (painted, tone) = time_tone(None, Some(120));
+        assert!(painted.starts_with("  ✓ "), "{painted}");
+        assert_eq!(tone, Some(Tone::Dim));
+        assert_eq!(
+            time_tone(Some(30), Some(2000)),
+            (
+                "  ✗ GET    Slow  200  120 ms   512 B  check failed: first byte 40 ms, limit 30 ms"
+                    .into(),
+                Some(Tone::Dim)
+            )
+        );
     }
 
     fn request(depth: usize, method: Option<Method>, name: &str) -> Line {

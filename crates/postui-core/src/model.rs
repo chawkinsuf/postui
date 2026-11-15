@@ -1,3 +1,4 @@
+use crate::checks::Measure;
 use indexmap::IndexMap;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -311,6 +312,13 @@ pub struct Checks {
     /// the default rule, below 400 (R3).
     #[serde(default, deserialize_with = "status_codes", skip_serializing_if = "Vec::is_empty")]
     pub status: Vec<u16>,
+    /// The most milliseconds the response head may take to come in (spec
+    /// §2.7, T1); `None` checks nothing.
+    #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
+    pub max_ttfb_ms: Option<u32>,
+    /// The most milliseconds the whole response may take, body read (T1).
+    #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
+    pub max_elapsed_ms: Option<u32>,
     /// jq filters that must each give `true` and nothing else (R4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jq: Vec<String>,
@@ -318,7 +326,10 @@ pub struct Checks {
 
 impl Checks {
     pub fn is_empty(&self) -> bool {
-        self.status.is_empty() && self.jq.is_empty()
+        self.status.is_empty()
+            && self.max_ttfb_ms.is_none()
+            && self.max_elapsed_ms.is_none()
+            && self.jq.is_empty()
     }
 }
 
@@ -358,6 +369,40 @@ fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
     }
 
     d.deserialize_any(Codes)
+}
+
+/// `max_ttfb_ms = 500`: a time limit, a whole number of milliseconds from 1
+/// to `u32::MAX`; any other value refuses the read (spec §2.7, T2).
+fn limit_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    struct Limit;
+
+    fn limit<E: de::Error, V: TryInto<u32> + fmt::Display + Copy>(v: V) -> Result<u32, E> {
+        v.try_into().ok().filter(|ms| *ms > 0).ok_or_else(|| {
+            E::custom(format!(
+                "a check's time limit must be a whole number of milliseconds from 1 to {}, \
+                 not {v}",
+                u32::MAX
+            ))
+        })
+    }
+
+    impl<'de> Visitor<'de> for Limit {
+        type Value = u32;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "a whole number of milliseconds from 1 to {}", u32::MAX)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            limit(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            limit(v)
+        }
+    }
+
+    d.deserialize_any(Limit).map(Some)
 }
 
 fn default_true() -> bool {
@@ -452,6 +497,11 @@ impl HttpRequest {
                 [one] => t["status"] = value(i64::from(*one)),
                 many => {
                     t["status"] = value(many.iter().map(|c| i64::from(*c)).collect::<Array>());
+                }
+            }
+            for measure in Measure::ALL {
+                if let Some(ms) = measure.limit(&self.checks) {
+                    t[measure.key()] = value(i64::from(ms));
                 }
             }
             if !self.checks.jq.is_empty() {
@@ -841,6 +891,7 @@ mod tests {
         req.checks = Checks {
             status: vec![200],
             jq: vec![".a == 1".into(), ".choices[0].finish_reason == \"stop\"".into()],
+            ..Checks::default()
         };
         let out = req.to_toml_string();
         let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s}:\n{out}"));
@@ -886,6 +937,82 @@ mod tests {
         }
         for bad in ["status = \"200\"\n", "status = [\"200\"]\n", "jq = '.a'\n", "header = 1\n"] {
             assert!(read(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Spec §2.7 (T2): the time limits round-trip after `status` and before
+    /// `jq`, each alone too.
+    #[test]
+    fn time_limits_round_trip_between_status_and_jq() {
+        let mut req = sample();
+        req.checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(500),
+            max_elapsed_ms: Some(2000),
+            jq: vec![".a == 1".into()],
+        };
+        let out = req.to_toml_string();
+        assert!(
+            out.contains(
+                "[checks]\nstatus = 200\nmax_ttfb_ms = 500\nmax_elapsed_ms = 2000\njq = [\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        req.checks = Checks { max_elapsed_ms: Some(1), ..Checks::default() };
+        assert!(!req.checks.is_empty());
+        let out = req.to_toml_string();
+        assert!(out.contains("[checks]\nmax_elapsed_ms = 1\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        req.checks = Checks { max_ttfb_ms: Some(250), ..Checks::default() };
+        let out = req.to_toml_string();
+        assert!(out.contains("[checks]\nmax_ttfb_ms = 250\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        // The largest limit is written as it is.
+        req.checks = Checks { max_elapsed_ms: Some(u32::MAX), ..Checks::default() };
+        let out = req.to_toml_string();
+        assert!(out.contains("[checks]\nmax_elapsed_ms = 4294967295\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    /// `Checks` reads back what its `Serialize` gives in a format that hands
+    /// a positive integer to `visit_u64`, as JSON does.
+    #[test]
+    fn checks_round_trip_through_json() {
+        let checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(500),
+            max_elapsed_ms: Some(2000),
+            jq: vec![".a".into()],
+        };
+        let json = serde_json::to_string(&checks).unwrap();
+        assert_eq!(serde_json::from_str::<Checks>(&json).unwrap(), checks);
+    }
+
+    /// Spec §2.7 (T2): a limit that isn't a whole number of milliseconds
+    /// from 1 to `u32::MAX` refuses the read, as a bad `status` does (R6).
+    #[test]
+    fn a_bad_time_limit_refuses_the_read() {
+        let read =
+            |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
+        for key in ["max_ttfb_ms", "max_elapsed_ms"] {
+            for bad in ["0", "-5", "4294967296", "1.5", "\"500\"", "\"500ms\"", "[500]", "true"] {
+                let err = read(&format!("{key} = {bad}\n")).unwrap_err().to_string();
+                assert!(
+                    err.contains("a whole number of milliseconds from 1 to 4294967295"),
+                    "{bad}: {err}"
+                );
+            }
+            assert_eq!(
+                read(&format!("{key} = 1\n")).unwrap().checks,
+                match key {
+                    "max_ttfb_ms" => Checks { max_ttfb_ms: Some(1), ..Checks::default() },
+                    _ => Checks { max_elapsed_ms: Some(1), ..Checks::default() },
+                }
+            );
         }
     }
 

@@ -1040,6 +1040,85 @@ fn suite_fails_a_request_on_its_checks() {
     assert!(text.contains("3 requests, 2 passed, 1 failed"), "{text}");
 }
 
+/// main: `fast` (`/ok` within generous limits), `slow` (`/slow`, which
+/// answers after 300 ms, over a 100 ms first-byte limit, within its total).
+fn timed_project(home: &Home, base: &str) -> PathBuf {
+    write_suite_project(
+        home,
+        base,
+        &[
+            (
+                "main/fast",
+                &format!("{}\n[checks]\nmax_ttfb_ms = 60000\nmax_elapsed_ms = 60000\n", get("/ok")),
+            ),
+            (
+                "main/slow",
+                &format!("{}\n[checks]\nmax_ttfb_ms = 100\nmax_elapsed_ms = 60000\n", get("/slow")),
+            ),
+        ],
+    )
+}
+
+/// Suite checks spec §2.7 (T3): `run` fails a response over a time limit
+/// with a `postui: check failed:` line and exit 1; `--json` and `-v` give
+/// each limit with the time it judged.
+#[test]
+fn run_fails_a_response_over_its_time_limit() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = timed_project(&home, &server.base());
+
+    let (code, _, err) = streams(&home, &root, "main/fast", &[]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let (code, _, err) = streams(&home, &root, "main/slow", &[]);
+    assert_eq!(code, Some(1));
+    assert!(err.starts_with("postui: check failed: first byte "), "{err}");
+    assert!(err.ends_with(" ms, limit 100 ms\n") && err.lines().count() == 1, "{err}");
+
+    let v = json(&send(&home, &root, "main/slow", &[]));
+    let checks = v["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 2, "{v}");
+    let ttfb = v["response"]["ttfb_ms"].as_u64().unwrap();
+    assert!(ttfb >= 300, "{v}");
+    assert_eq!(
+        checks[0],
+        serde_json::json!({"check": "max_ttfb_ms", "limit": 100, "got": ttfb, "passed": false,
+            "failure": format!("first byte {ttfb} ms, limit 100 ms")})
+    );
+    assert_eq!(checks[1]["check"], "max_elapsed_ms");
+    assert_eq!(checks[1]["got"], v["response"]["elapsed_ms"]);
+    assert_eq!((checks[1]["passed"].as_bool(), checks[1]["failure"].is_null()), (Some(true), true));
+
+    let text = send_text(&home, &root, "main/slow", &["-v"]);
+    assert!(text.contains("\nchecks\n  failed  first byte "), "{text}");
+    assert!(text.contains(" ms, limit 100 ms\n  passed  total "), "{text}");
+    assert!(text.contains(" ms, limit 60000 ms\n"), "{text}");
+}
+
+/// Spec §2.7: the suite fails a request over a time limit and says so
+/// under its row; its JSON gives `ttfb_ms` beside `elapsed_ms`.
+#[test]
+fn suite_fails_a_request_over_its_time_limit() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = timed_project(&home, &server.base());
+    let out = home.run(&["suite", "-p", s(&root), "--plain"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("\n    check failed: first byte "), "{text}");
+    assert!(text.contains("2 requests, 1 passed, 1 failed"), "{text}");
+
+    let v = json(&home.run_json(&["suite", "-p", s(&root)]));
+    let results = v["results"].as_array().unwrap();
+    for r in results {
+        let (ttfb, total) = (r["ttfb_ms"].as_u64().unwrap(), r["elapsed_ms"].as_u64().unwrap());
+        assert!(ttfb <= total, "{r}");
+    }
+    assert_eq!(results[0]["passed"], true);
+    assert_eq!(results[1]["passed"], false);
+    assert_eq!(results[1]["checks"][0]["got"], results[1]["ttfb_ms"]);
+}
+
 /// Suite checks spec R5: a check filter that doesn't compile is a `check`
 /// error naming the file; the request still reads.
 #[test]

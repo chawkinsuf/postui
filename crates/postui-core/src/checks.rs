@@ -12,6 +12,9 @@ const SHOWN_CHARS: usize = 60;
 pub enum Outcome {
     /// The `status` check: the codes that pass, and the one that came.
     Status { expected: Vec<u16>, got: u16 },
+    /// A time limit (spec §2.7): which figure, its limit and what it took,
+    /// in milliseconds.
+    Time { measure: Measure, limit: u64, got: u64 },
     /// One `jq` filter: each output as compact JSON, in order, and the
     /// error that ended a run, the filter's or the body's.
     Jq { filter: String, got: Vec<String>, error: Option<String> },
@@ -25,6 +28,7 @@ impl Outcome {
     pub fn passed(&self) -> bool {
         match self {
             Outcome::Status { expected, got } => expected.contains(got),
+            Outcome::Time { limit, got, .. } => got <= limit,
             Outcome::Jq { got, error, .. } => {
                 error.is_none() && !got.is_empty() && got.iter().all(|v| v == "true")
             }
@@ -47,6 +51,7 @@ impl Outcome {
                 let codes: Vec<String> = expected.iter().map(u16::to_string).collect();
                 format!("status {got}, expected {}", codes.join(" or "))
             }
+            Outcome::Time { measure, limit, got } => measure.line(*limit, *got),
             Outcome::Jq { filter, got, error } => {
                 let filter = shown(filter);
                 match (error, got.iter().find(|v| *v != "true")) {
@@ -57,6 +62,62 @@ impl Outcome {
             }
         }))
     }
+}
+
+/// Which figure a time limit holds to (spec §2.7, T1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    /// Until the response head (status and headers) is in: `max_ttfb_ms`.
+    FirstByte,
+    /// Until the body is fully read: `max_elapsed_ms`.
+    Total,
+}
+
+impl Measure {
+    /// Both, in the order they are checked and written.
+    pub const ALL: [Measure; 2] = [Measure::FirstByte, Measure::Total];
+
+    /// The `[checks]` key that sets it, which the JSON names it by.
+    pub fn key(self) -> &'static str {
+        match self {
+            Measure::FirstByte => "max_ttfb_ms",
+            Measure::Total => "max_elapsed_ms",
+        }
+    }
+
+    /// Its limit in `checks`, the field [`Measure::key`] names.
+    pub fn limit(self, checks: &Checks) -> Option<u32> {
+        match self {
+            Measure::FirstByte => checks.max_ttfb_ms,
+            Measure::Total => checks.max_elapsed_ms,
+        }
+    }
+
+    /// Its figure in `timing`.
+    pub fn of(self, timing: Timing) -> u64 {
+        match self {
+            Measure::FirstByte => timing.ttfb_ms,
+            Measure::Total => timing.elapsed_ms,
+        }
+    }
+
+    /// The check as a line says it, passed or not: `first byte 812 ms,
+    /// limit 500 ms` or `total 2310 ms, limit 2000 ms`.
+    pub fn line(self, limit: u64, got: u64) -> String {
+        let name = match self {
+            Measure::FirstByte => "first byte",
+            Measure::Total => "total",
+        };
+        format!("{name} {got} ms, limit {limit} ms")
+    }
+}
+
+/// How long a response took, in whole milliseconds, as the reports give
+/// it: `ttfb_ms` to the response head, `elapsed_ms` to the body's end.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Timing {
+    pub ttfb_ms: u64,
+    pub elapsed_ms: u64,
 }
 
 /// `text` with its lines joined by a space, each trimmed: a filter written
@@ -74,20 +135,31 @@ fn clip(text: &str) -> String {
     format!("{kept}…")
 }
 
-/// Runs `checks` over a response with `status`: the status check first when
-/// there is one, then each jq filter in file order over the body `doc`
-/// gives, read as `run --jq` reads it (JSON, NDJSON or an SSE stream).
-/// `doc` is called once, and only when there is a filter. A body that
-/// doesn't read fails each filter with the reader's error, or with the
-/// filter's own when it doesn't compile (R5).
+/// Runs `checks` over a response with `status` that took `timing`: the
+/// status check first when there is one, then the time limits (first byte,
+/// then total; spec §2.7), then each jq filter in file order over the body
+/// `doc` gives, read as `run --jq` reads it (JSON, NDJSON or an SSE
+/// stream). `doc` is called once, and only when there is a filter. A body
+/// that doesn't read fails each filter with the reader's error, or with
+/// the filter's own when it doesn't compile (R5).
 pub fn evaluate(
     checks: &Checks,
     status: u16,
+    timing: Timing,
     doc: impl FnOnce() -> Result<JqDocument, JqError>,
 ) -> Vec<Outcome> {
     let mut outcomes = Vec::new();
     if !checks.status.is_empty() {
         outcomes.push(Outcome::Status { expected: checks.status.clone(), got: status });
+    }
+    for measure in Measure::ALL {
+        if let Some(limit) = measure.limit(checks) {
+            outcomes.push(Outcome::Time {
+                measure,
+                limit: u64::from(limit),
+                got: measure.of(timing),
+            });
+        }
     }
     if checks.jq.is_empty() {
         return outcomes;
@@ -112,12 +184,61 @@ mod tests {
     use super::*;
 
     fn checks(status: &[u16], jq: &[&str]) -> Checks {
-        Checks { status: status.to_vec(), jq: jq.iter().map(|f| f.to_string()).collect() }
+        Checks {
+            status: status.to_vec(),
+            jq: jq.iter().map(|f| f.to_string()).collect(),
+            ..Checks::default()
+        }
     }
 
-    /// `evaluate` over `body` as text.
+    /// `evaluate` over `body` as text, taking no time.
     fn over(checks: &Checks, status: u16, body: &str) -> Vec<Outcome> {
-        evaluate(checks, status, || JqDocument::parse(body))
+        evaluate(checks, status, Timing::default(), || JqDocument::parse(body))
+    }
+
+    /// Spec §2.7 (T1–T3): each limit passes at or under it and fails over
+    /// it, with its line; the two are independent.
+    #[test]
+    fn a_time_limit_passes_at_or_under_it() {
+        let limits =
+            Checks { max_ttfb_ms: Some(500), max_elapsed_ms: Some(2000), ..Checks::default() };
+        let at = |ttfb_ms, elapsed_ms| {
+            evaluate(&limits, 200, Timing { ttfb_ms, elapsed_ms }, || panic!("the body was read"))
+        };
+        assert!(at(500, 2000).iter().all(Outcome::passed));
+        assert!(at(0, 0).iter().all(Outcome::passed));
+        assert_eq!(failures(&at(501, 2000)), ["first byte 501 ms, limit 500 ms"]);
+        assert_eq!(failures(&at(500, 2310)), ["total 2310 ms, limit 2000 ms"]);
+        assert_eq!(
+            failures(&at(812, 2310)),
+            ["first byte 812 ms, limit 500 ms", "total 2310 ms, limit 2000 ms"]
+        );
+        let only_total = Checks { max_elapsed_ms: Some(100), ..Checks::default() };
+        let out = evaluate(&only_total, 200, Timing { ttfb_ms: 9000, elapsed_ms: 100 }, || {
+            panic!("the body was read")
+        });
+        assert_eq!(out, [Outcome::Time { measure: Measure::Total, limit: 100, got: 100 }]);
+        assert!(out[0].passed());
+    }
+
+    /// T3: the time checks come after the status check and before the jq
+    /// ones, first byte then total.
+    #[test]
+    fn time_checks_come_between_status_and_jq() {
+        let checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(10),
+            max_elapsed_ms: Some(20),
+            jq: vec![".a".into()],
+        };
+        let out = evaluate(&checks, 200, Timing { ttfb_ms: 5, elapsed_ms: 25 }, || {
+            JqDocument::parse(r#"{"a":true}"#)
+        });
+        assert!(matches!(&out[0], Outcome::Status { .. }));
+        assert_eq!(out[1], Outcome::Time { measure: Measure::FirstByte, limit: 10, got: 5 });
+        assert_eq!(out[2], Outcome::Time { measure: Measure::Total, limit: 20, got: 25 });
+        assert!(matches!(&out[3], Outcome::Jq { .. }));
+        assert_eq!(failures(&out), ["total 25 ms, limit 20 ms"]);
     }
 
     fn failures(outcomes: &[Outcome]) -> Vec<String> {
@@ -202,7 +323,8 @@ mod tests {
     /// calls `doc`.
     #[test]
     fn a_status_check_alone_reads_no_body() {
-        let out = evaluate(&checks(&[200], &[]), 200, || panic!("the body was read"));
+        let out =
+            evaluate(&checks(&[200], &[]), 200, Timing::default(), || panic!("the body was read"));
         assert_eq!(out, [Outcome::Status { expected: vec![200], got: 200 }]);
     }
 

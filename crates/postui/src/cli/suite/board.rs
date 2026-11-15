@@ -163,6 +163,7 @@ mod tests {
             method: Some(Method::Get),
             url: None,
             status,
+            ttfb_ms: None,
             elapsed_ms: None,
             size: None,
             error: None,

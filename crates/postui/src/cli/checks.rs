@@ -3,7 +3,7 @@
 //! and the one rule both pass a response by ([`passed`]).
 
 use super::mask::Mask;
-use postui_core::checks::{Outcome, one_line};
+use postui_core::checks::{Measure, Outcome, one_line};
 use serde::Serialize;
 
 /// A status from here up fails a response that has no status check (R3).
@@ -13,8 +13,16 @@ pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
     checks.iter().find_map(|c| match c.kind {
         Kind::Status { passed, .. } => Some(passed),
-        Kind::Jq { .. } => None,
+        Kind::Time { .. } | Kind::Jq { .. } => None,
     })
+}
+
+/// Whether the `max_elapsed_ms` check of `checks` failed (spec §2.7): the
+/// live view paints its time, the total, red.
+pub(super) fn total_failed(checks: &[ShownCheck]) -> bool {
+    checks
+        .iter()
+        .any(|c| matches!(c.kind, Kind::Time { measure: Measure::Total, passed: false, .. }))
 }
 
 /// Whether a response with `status` passes, given its `checks`: its status
@@ -36,30 +44,55 @@ pub(super) struct ShownCheck {
     failure: Option<String>,
 }
 
-/// The JSON's two shapes (§2.3): `{"check": "status", "expected", "got",
-/// "passed", "failure"}` and `{"check": FILTER, "passed", "failure"}`.
+/// The JSON's three shapes (§2.3, §2.7): `{"check": "status", "expected",
+/// "got", "passed", "failure"}`, `{"check": "max_ttfb_ms" or
+/// "max_elapsed_ms", "limit", "got", "passed", "failure"}` and `{"check":
+/// FILTER, "passed", "failure"}`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 enum Kind {
-    Status { check: &'static str, expected: Vec<u16>, got: u16, passed: bool },
-    Jq { check: String, passed: bool },
+    Status {
+        check: &'static str,
+        expected: Vec<u16>,
+        got: u16,
+        passed: bool,
+    },
+    Time {
+        #[serde(rename = "check", serialize_with = "measure_key")]
+        measure: Measure,
+        limit: u64,
+        got: u64,
+        passed: bool,
+    },
+    Jq {
+        check: String,
+        passed: bool,
+    },
+}
+
+/// A time check's `check`: the key that set it.
+fn measure_key<S: serde::Serializer>(measure: &Measure, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(measure.key())
 }
 
 impl ShownCheck {
     pub(super) fn passed(&self) -> bool {
         match &self.kind {
-            Kind::Status { passed, .. } | Kind::Jq { passed, .. } => *passed,
+            Kind::Status { passed, .. } | Kind::Time { passed, .. } | Kind::Jq { passed, .. } => {
+                *passed
+            }
         }
     }
 
     /// What `run -v` lists for the check: its failure, else what passed
-    /// (`status 200`, or the filter).
+    /// (`status 200`, `first byte 45 ms, limit 500 ms`, or the filter).
     pub(super) fn summary(&self) -> String {
         if let Some(failure) = &self.failure {
             return failure.clone();
         }
         match &self.kind {
             Kind::Status { got, .. } => format!("status {got}"),
+            Kind::Time { measure, limit, got, .. } => measure.line(*limit, *got),
             Kind::Jq { check, .. } => one_line(check),
         }
     }
@@ -76,6 +109,9 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 Outcome::Status { expected, got } => {
                     Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
                 }
+                Outcome::Time { measure, limit, got } => {
+                    Kind::Time { measure: *measure, limit: *limit, got: *got, passed }
+                }
                 Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
             ShownCheck { kind, failure }
@@ -89,24 +125,37 @@ pub(super) fn failure_lines(checks: &[ShownCheck]) -> impl Iterator<Item = Strin
     checks.iter().filter_map(|c| c.failure.as_ref()).map(|f| format!("check failed: {f}"))
 }
 
+/// `checks` run over a response with `status` and `body` that took
+/// `timing`, masked by `mask`: a test's fixture.
+#[cfg(test)]
+pub(super) fn over(
+    checks: &postui_core::model::Checks,
+    status: u16,
+    timing: postui_core::checks::Timing,
+    body: &str,
+    mask: &Mask,
+) -> Vec<ShownCheck> {
+    let doc = || postui_core::jq::JqDocument::parse(body);
+    shown(&postui_core::checks::evaluate(checks, status, timing, doc), mask)
+}
+
 /// Checks with `status` codes and `jq` filters run over a response with
-/// status `got` and `body`, unmasked: a test's fixture.
+/// status `got` and `body` that took no time, unmasked: a test's fixture.
 #[cfg(test)]
 pub(super) fn checked(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<ShownCheck> {
-    shown(&tests::evaluate(status, jq, got, body), &Mask::none())
+    let checks = postui_core::model::Checks {
+        status: status.to_vec(),
+        jq: jq.iter().map(|f| f.to_string()).collect(),
+        ..Default::default()
+    };
+    over(&checks, got, Default::default(), body, &Mask::none())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postui_core::jq::JqDocument;
+    use postui_core::checks::Timing;
     use postui_core::model::Checks;
-
-    pub(super) fn evaluate(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<Outcome> {
-        let checks =
-            Checks { status: status.to_vec(), jq: jq.iter().map(|f| f.to_string()).collect() };
-        postui_core::checks::evaluate(&checks, got, || JqDocument::parse(body))
-    }
 
     /// R3: a status check replaces the below-400 rule; without one it
     /// stays. Every check must pass too.
@@ -131,7 +180,7 @@ mod tests {
     /// order, each with its failure line.
     #[test]
     fn the_json_has_one_object_a_check() {
-        let out = shown(&evaluate(&[200], &[".a == 1", ".a"], 404, r#"{"a":2}"#), &Mask::none());
+        let out = checked(&[200], &[".a == 1", ".a"], 404, r#"{"a":2}"#);
         let json = serde_json::to_value(&out).unwrap();
         assert_eq!(
             json,
@@ -144,7 +193,7 @@ mod tests {
         );
         let lines: Vec<String> = failure_lines(&out).collect();
         assert_eq!(lines[0], "check failed: status 404, expected 200");
-        let out = shown(&evaluate(&[], &[".a == 2"], 200, r#"{"a":2}"#), &Mask::none());
+        let out = checked(&[], &[".a == 2"], 200, r#"{"a":2}"#);
         assert_eq!(
             serde_json::to_value(&out).unwrap(),
             serde_json::json!([{"check": ".a == 2", "passed": true, "failure": null}])
@@ -156,7 +205,7 @@ mod tests {
     #[test]
     fn the_json_clips_what_a_filter_gave() {
         let body = format!(r#"{{"text":"{}"}}"#, "word ".repeat(2000));
-        let out = shown(&evaluate(&[], &[".text", ".text | fromjson"], 200, &body), &Mask::none());
+        let out = checked(&[], &[".text", ".text | fromjson"], 200, &body);
         let json = serde_json::to_string(&out).unwrap();
         assert!(json.len() < 400, "{json}");
     }
@@ -166,8 +215,8 @@ mod tests {
     #[test]
     fn a_secret_in_a_value_is_masked() {
         let mask = Mask::new(["hunter22".to_string()]);
-        let out =
-            shown(&evaluate(&[], &[".t", ".t | fromjson"], 200, r#"{"t":"hunter22"}"#), &mask);
+        let checks = Checks { jq: vec![".t".into(), ".t | fromjson".into()], ..Checks::default() };
+        let out = over(&checks, 200, Timing::default(), r#"{"t":"hunter22"}"#, &mask);
         let json = serde_json::to_string(&out).unwrap();
         assert!(!json.contains("hunter22"), "{json}");
         let lines: Vec<String> = failure_lines(&out).collect();
@@ -177,20 +226,75 @@ mod tests {
 
     #[test]
     fn a_passed_check_summarises_as_what_passed() {
-        let out = shown(&evaluate(&[201], &[".ok"], 201, r#"{"ok":true}"#), &Mask::none());
+        let out = checked(&[201], &[".ok"], 201, r#"{"ok":true}"#);
         let summaries: Vec<String> = out.iter().map(ShownCheck::summary).collect();
         assert_eq!(summaries, ["status 201", ".ok"]);
         assert!(out.iter().all(ShownCheck::passed));
         assert_eq!(failure_lines(&out).count(), 0);
     }
 
+    /// Spec §2.7 (T3): a time check's JSON names its key, limit and time,
+    /// after the status check and before the jq ones; a breach fails the
+    /// response whatever its status; a first-byte breach alone is not
+    /// `total_failed`.
+    #[test]
+    fn a_time_check_has_its_own_json_and_fails_the_response() {
+        let checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(500),
+            max_elapsed_ms: Some(2000),
+            jq: vec![".ok".into()],
+        };
+        let timed = |ttfb_ms, elapsed_ms| {
+            let timing = Timing { ttfb_ms, elapsed_ms };
+            over(&checks, 200, timing, r#"{"ok":true}"#, &Mask::none())
+        };
+        let out = timed(812, 900);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!([
+                {"check": "status", "expected": [200], "got": 200, "passed": true, "failure": null},
+                {"check": "max_ttfb_ms", "limit": 500, "got": 812, "passed": false,
+                 "failure": "first byte 812 ms, limit 500 ms"},
+                {"check": "max_elapsed_ms", "limit": 2000, "got": 900, "passed": true,
+                 "failure": null},
+                {"check": ".ok", "passed": true, "failure": null},
+            ])
+        );
+        assert_eq!(
+            serde_json::to_string(&out[1]).unwrap(),
+            r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"failure":"first byte 812 ms, limit 500 ms"}"#
+        );
+        assert!(!passed(200, &out));
+        assert!(!total_failed(&out));
+        assert_eq!(status_check(&out), Some(true));
+        let lines: Vec<String> = failure_lines(&out).collect();
+        assert_eq!(lines, ["check failed: first byte 812 ms, limit 500 ms"]);
+        let summaries: Vec<String> = out.iter().map(ShownCheck::summary).collect();
+        assert_eq!(
+            summaries,
+            ["status 200", "first byte 812 ms, limit 500 ms", "total 900 ms, limit 2000 ms", ".ok"]
+        );
+
+        // Within its limits: passed, and no time failure.
+        let out = timed(500, 2000);
+        assert!(passed(200, &out));
+        assert!(!total_failed(&out));
+        // A time check alone keeps the 400 rule.
+        let alone = Checks { max_elapsed_ms: Some(10), ..Checks::default() };
+        let out = over(&alone, 404, Timing::default(), "", &Mask::none());
+        assert_eq!(status_check(&out), None);
+        assert!(!passed(404, &out));
+        assert!(passed(204, &out));
+    }
+
     /// A filter written over several lines summarises and fails on one.
     #[test]
     fn a_multi_line_filter_is_one_line_of_output() {
         let filter = ".ok\n| . == true";
-        let out = shown(&evaluate(&[], &[filter], 200, r#"{"ok":true}"#), &Mask::none());
+        let out = checked(&[], &[filter], 200, r#"{"ok":true}"#);
         assert_eq!(out[0].summary(), ".ok | . == true");
-        let out = shown(&evaluate(&[], &[filter], 200, r#"{"ok":false}"#), &Mask::none());
+        let out = checked(&[], &[filter], 200, r#"{"ok":false}"#);
         let lines: Vec<String> = failure_lines(&out).collect();
         assert_eq!(lines, ["check failed: .ok | . == true gave false"]);
     }
