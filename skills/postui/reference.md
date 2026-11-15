@@ -241,9 +241,10 @@ jq = [
   usually before the first token), `max_elapsed_ms` the time until the body
   is fully read: the `ttfb_ms` and `elapsed_ms` that `run` and `suite`
   report. A time is measured as the request went: `suite` sends on one
-  client, so the first request to a host pays for the connection and later
-  ones reuse it, and `--jobs N` runs requests side by side, which can slow
-  each one. A limit never cuts a request short; `--timeout` does that.
+  client per TLS mode (`insecure` or not), so the first request to a host
+  in each pays for the connection and later ones reuse it, and `--jobs N`
+  runs requests side by side, which can slow each one. A limit never cuts a
+  request short; `--timeout` does that.
 - postui adds `Accept: application/json` unless the request sets `Accept`,
   and the HTTP client adds `Host`, `Content-Length` and the like.
 - Any other key is an error: `check` names the file.

@@ -211,12 +211,13 @@ max_elapsed_ms = 2000
   in comment 1360: `mine (approved)`). The TUI shows nothing of them and
   keeps them on a save, as R10; showing them stays with #302.
 - **What the number includes (T4).** Measured as sent today. The docs say:
-  suite sends on one pooled client, so the first request to a host pays
-  DNS/TCP/TLS and later ones reuse the connection; `--jobs N` runs requests
-  side by side, which can slow each one; a time check never cuts a request
-  short (`--timeout` does that). Each suite send runs as its own task, so
-  the run's own work (preparing the next request, a repaint) is not
-  counted in a send's time (review round 2: `mine`).
+  suite sends on one pooled client per TLS mode (`insecure` or not), so the
+  first request to a host in each pays DNS/TCP/TLS and later ones reuse the
+  connection; `--jobs N` runs requests side by side, which can slow each
+  one; a time check never cuts a request short (`--timeout` does that).
+  Each suite send runs as its own task, so the run's own work (preparing
+  the next request, a repaint) is not counted in a send's time (review
+  round 2: `mine`).
 
 ## 3. Rules table
 
