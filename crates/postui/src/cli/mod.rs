@@ -259,8 +259,8 @@ Sends one request and prints the response body, as curl does, but as text
 status and headers, -v the whole
 run. A status of 400 or more, a failed check, errors and warnings go to
 stderr. <request> is a slug as `postui requests` lists it. The request's
-[checks] are evaluated; a status check replaces the 400 rule.
-Nothing is written to the project. Each secret's exact value is masked in
+[checks] (status, time limits, jq filters) are evaluated; a status check
+replaces the 400 rule. Nothing is written to the project. Each secret's exact value is masked in
 everything printed; a value the server or a jq filter transforms is not.
 Exits 1 for a status of 400 or more, a failed check, when the request can't
 be prepared or sent, or when the jq filter fails.
@@ -305,8 +305,8 @@ Sends every request of the project (or of one space) in sidebar order, one
 at a time unless --jobs asks for more, and prints each one's status and
 time, then the totals. A request that can't be read or prepared is reported
 and the suite goes on. A request fails on a status of 400 or more, or on its
-[checks] (a status check replaces the 400 rule). Nothing is written to the
-project. Each secret's exact value is masked in everything printed; a value
+[checks] (status, time limits, jq filters; a status check replaces the 400
+rule). Nothing is written to the project. Each secret's exact value is masked in everything printed; a value
 the server transforms is not. Exits 1 when any request failed.
 
 ",

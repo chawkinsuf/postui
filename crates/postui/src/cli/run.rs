@@ -12,6 +12,7 @@ use super::read::{open, pick_env, warnings_text};
 use super::{CliError, Global, target};
 use crate::hostfs;
 use crate::http::{Clients, RawResponse, send_raw};
+use postui_core::checks::Timing;
 use postui_core::model::{Checks, Entry, HttpRequest, JqView, Method, applied_jq_filter};
 use postui_core::prepare::{self, PrepareContext, PrepareWarning, PreparedRequest};
 use postui_core::project::Project;
@@ -461,12 +462,13 @@ fn record(
     // The body as the jq checks and the filter read it, once for both.
     let parsed = OnceCell::new();
     let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
-    let outcomes = postui_core::checks::evaluate(checks, raw.status, doc);
+    let timing = Timing { ttfb_ms: millis(raw.ttfb), elapsed_ms: millis(raw.elapsed) };
+    let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, doc);
     report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
         status: raw.status,
-        ttfb_ms: millis(raw.ttfb),
-        elapsed_ms: millis(raw.elapsed),
+        ttfb_ms: timing.ttfb_ms,
+        elapsed_ms: timing.elapsed_ms,
         size: raw.bytes.len(),
         headers: raw
             .headers

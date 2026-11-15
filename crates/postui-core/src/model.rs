@@ -311,6 +311,13 @@ pub struct Checks {
     /// the default rule, below 400 (R3).
     #[serde(default, deserialize_with = "status_codes", skip_serializing_if = "Vec::is_empty")]
     pub status: Vec<u16>,
+    /// The most milliseconds the response head may take to come in (spec
+    /// §2.7, T1); `None` checks nothing.
+    #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
+    pub max_ttfb_ms: Option<u64>,
+    /// The most milliseconds the whole response may take, body read (T1).
+    #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
+    pub max_elapsed_ms: Option<u64>,
     /// jq filters that must each give `true` and nothing else (R4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jq: Vec<String>,
@@ -318,7 +325,10 @@ pub struct Checks {
 
 impl Checks {
     pub fn is_empty(&self) -> bool {
-        self.status.is_empty() && self.jq.is_empty()
+        self.status.is_empty()
+            && self.max_ttfb_ms.is_none()
+            && self.max_elapsed_ms.is_none()
+            && self.jq.is_empty()
     }
 }
 
@@ -358,6 +368,17 @@ fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
     }
 
     d.deserialize_any(Codes)
+}
+
+/// `max_ttfb_ms = 500`: a time limit, a positive whole number of
+/// milliseconds; any other value refuses the read (spec §2.7, T2).
+fn limit_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let v = i64::deserialize(d)?;
+    u64::try_from(v).ok().filter(|ms| *ms > 0).map(Some).ok_or_else(|| {
+        de::Error::custom(format!(
+            "a check's time limit must be a positive whole number of milliseconds, not {v}"
+        ))
+    })
 }
 
 fn default_true() -> bool {
@@ -452,6 +473,15 @@ impl HttpRequest {
                 [one] => t["status"] = value(i64::from(*one)),
                 many => {
                     t["status"] = value(many.iter().map(|c| i64::from(*c)).collect::<Array>());
+                }
+            }
+            let limits = [
+                ("max_ttfb_ms", self.checks.max_ttfb_ms),
+                ("max_elapsed_ms", self.checks.max_elapsed_ms),
+            ];
+            for (key, limit) in limits {
+                if let Some(ms) = limit {
+                    t[key] = value(i64::try_from(ms).unwrap_or(i64::MAX));
                 }
             }
             if !self.checks.jq.is_empty() {
@@ -841,6 +871,7 @@ mod tests {
         req.checks = Checks {
             status: vec![200],
             jq: vec![".a == 1".into(), ".choices[0].finish_reason == \"stop\"".into()],
+            ..Checks::default()
         };
         let out = req.to_toml_string();
         let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s}:\n{out}"));
@@ -886,6 +917,62 @@ mod tests {
         }
         for bad in ["status = \"200\"\n", "status = [\"200\"]\n", "jq = '.a'\n", "header = 1\n"] {
             assert!(read(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Spec §2.7 (T2): the time limits round-trip after `status` and before
+    /// `jq`, each alone too.
+    #[test]
+    fn time_limits_round_trip_between_status_and_jq() {
+        let mut req = sample();
+        req.checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(500),
+            max_elapsed_ms: Some(2000),
+            jq: vec![".a == 1".into()],
+        };
+        let out = req.to_toml_string();
+        assert!(
+            out.contains(
+                "[checks]\nstatus = 200\nmax_ttfb_ms = 500\nmax_elapsed_ms = 2000\njq = [\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        req.checks = Checks { max_elapsed_ms: Some(1), ..Checks::default() };
+        assert!(!req.checks.is_empty());
+        let out = req.to_toml_string();
+        assert!(out.contains("[checks]\nmax_elapsed_ms = 1\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        req.checks = Checks { max_ttfb_ms: Some(250), ..Checks::default() };
+        let out = req.to_toml_string();
+        assert!(out.contains("[checks]\nmax_ttfb_ms = 250\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    /// Spec §2.7 (T2): a limit that isn't a positive whole number of
+    /// milliseconds refuses the read, as a bad `status` does (R6).
+    #[test]
+    fn a_bad_time_limit_refuses_the_read() {
+        let read =
+            |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
+        for key in ["max_ttfb_ms", "max_elapsed_ms"] {
+            for bad in ["0", "-5"] {
+                let err = read(&format!("{key} = {bad}\n")).unwrap_err().to_string();
+                assert!(err.contains("a positive whole number of milliseconds"), "{bad}: {err}");
+            }
+            for bad in ["1.5", "\"500\"", "\"500ms\"", "[500]", "true"] {
+                assert!(read(&format!("{key} = {bad}\n")).is_err(), "{key} = {bad}");
+            }
+            assert_eq!(
+                read(&format!("{key} = 1\n")).unwrap().checks,
+                match key {
+                    "max_ttfb_ms" => Checks { max_ttfb_ms: Some(1), ..Checks::default() },
+                    _ => Checks { max_elapsed_ms: Some(1), ..Checks::default() },
+                }
+            );
         }
     }
 

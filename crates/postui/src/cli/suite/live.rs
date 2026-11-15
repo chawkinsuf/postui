@@ -349,6 +349,7 @@ mod tests {
             method: Some(Method::Get),
             url: Some(format!("http://x/{index}")),
             status: Some(200),
+            ttfb_ms: Some(40),
             elapsed_ms: Some(120),
             size: Some(512),
             error: None,

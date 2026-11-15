@@ -21,7 +21,7 @@ use super::{CliError, Global};
 use crate::http::send_raw;
 use futures::stream::{FuturesUnordered, StreamExt};
 use outline::{Listed, SpaceRequests, outline};
-use postui_core::checks::Outcome;
+use postui_core::checks::{Outcome, Timing};
 use postui_core::jq::JqDocument;
 use postui_core::model::{Checks, Method};
 use postui_core::project::Project;
@@ -98,15 +98,18 @@ pub struct SuiteReport {
     cancelled: bool,
 }
 
-/// One request's outcome. `status`, `elapsed_ms` and `size` are `null` when
-/// nothing came back; `method` and `url` too when its file is broken. The
-/// JSON adds `passed` ([`SuiteResult::passed`]).
+/// One request's outcome. `status`, `ttfb_ms`, `elapsed_ms` and `size` are
+/// `null` when nothing came back; `method` and `url` too when its file is
+/// broken. The JSON adds `passed` ([`SuiteResult::passed`]).
 #[derive(Clone, Serialize)]
 pub(super) struct SuiteResult {
     pub(super) request: String,
     pub(super) method: Option<Method>,
     pub(super) url: Option<String>,
     pub(super) status: Option<u16>,
+    /// To the response head, as `max_ttfb_ms` judges it (spec §2.7, T1);
+    /// only the JSON gives it.
+    pub(super) ttfb_ms: Option<u64>,
     pub(super) elapsed_ms: Option<u64>,
     pub(super) size: Option<usize>,
     pub(super) error: Option<String>,
@@ -153,13 +156,14 @@ impl SuiteResult {
 /// Runs `checks` over a response. Its jq filters run off the async loop:
 /// over a large body they would otherwise stall the live view's ticks and
 /// the other sends. Without a filter the body is never read.
-async fn evaluate(checks: Checks, status: u16, body: Vec<u8>) -> Vec<Outcome> {
+async fn evaluate(checks: Checks, status: u16, timing: Timing, body: Vec<u8>) -> Vec<Outcome> {
     let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
     if checks.jq.is_empty() {
-        return postui_core::checks::evaluate(&checks, status, doc);
+        return postui_core::checks::evaluate(&checks, status, timing, doc);
     }
-    let run =
-        tokio::task::spawn_blocking(move || postui_core::checks::evaluate(&checks, status, doc));
+    let run = tokio::task::spawn_blocking(move || {
+        postui_core::checks::evaluate(&checks, status, timing, doc)
+    });
     match run.await {
         Ok(outcomes) => outcomes,
         // A panic in the checks is a bug: it surfaces as it would inline.
@@ -297,6 +301,7 @@ pub async fn suite(
                 method: None,
                 url: None,
                 status: None,
+                ttfb_ms: None,
                 elapsed_ms: None,
                 size: None,
                 error: None,
@@ -330,10 +335,13 @@ pub async fn suite(
                     flight.push(async move {
                         let sent = match send_raw(&client, &request).await {
                             Ok(raw) => {
-                                let (status, elapsed, size) =
-                                    (raw.status, raw.elapsed, raw.bytes.len());
-                                let outcomes = evaluate(checks, status, raw.bytes).await;
-                                Ok((status, elapsed, size, outcomes))
+                                let (status, size) = (raw.status, raw.bytes.len());
+                                let timing = Timing {
+                                    ttfb_ms: millis(raw.ttfb),
+                                    elapsed_ms: millis(raw.elapsed),
+                                };
+                                let outcomes = evaluate(checks, status, timing, raw.bytes).await;
+                                Ok((status, timing, size, outcomes))
                             }
                             Err(message) => Err(message),
                         };
@@ -351,9 +359,10 @@ pub async fn suite(
         tokio::select! {
             Some((index, mut result, sent)) = flight.next() => {
                 match sent {
-                    Ok((status, elapsed, size, outcomes)) => {
+                    Ok((status, timing, size, outcomes)) => {
                         result.status = Some(status);
-                        result.elapsed_ms = Some(millis(elapsed));
+                        result.ttfb_ms = Some(timing.ttfb_ms);
+                        result.elapsed_ms = Some(timing.elapsed_ms);
                         result.size = Some(size);
                         result.checks = shown(&outcomes, &s.mask);
                     }

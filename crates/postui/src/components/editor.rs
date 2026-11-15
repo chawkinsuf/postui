@@ -7306,9 +7306,10 @@ mod tests {
     /// snapshot puts them back as they were.
     #[test]
     fn checks_are_carried_through_load_edit_save_and_snapshot() {
-        let text =
-            "method = \"GET\"\nurl = \"u\"\n\n[checks]\nstatus = 404\njq = ['.a == \"b\"']\n";
+        let text = "method = \"GET\"\nurl = \"u\"\n\n[checks]\nstatus = 404\nmax_ttfb_ms = 500\n\
+                    max_elapsed_ms = 2000\njq = ['.a == \"b\"']\n";
         let read = HttpRequest::from_toml_str(text).unwrap();
+        assert_eq!((read.checks.max_ttfb_ms, read.checks.max_elapsed_ms), (Some(500), Some(2000)));
         let mut ed = Editor::default();
         ed.load(Some("s".into()), read.clone());
         assert!(!ed.is_dirty(), "opens clean");

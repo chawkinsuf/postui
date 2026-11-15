@@ -4,7 +4,7 @@
 //! string, with the 16 ANSI colors or without any escape code. Nothing here
 //! touches a terminal, so the rows are tested as text.
 
-use super::super::checks::{ShownCheck, failure_lines, status_check};
+use super::super::checks::{ShownCheck, failure_lines, status_check, time_failed};
 use super::outline::Line;
 use super::{Plan, SuiteResult};
 use crate::ui::{cells, graphemes, take_cells};
@@ -347,7 +347,8 @@ fn row_of(
             row.push(toned(format!("{status:>STATUS_COL$}"), status_tone(status, &r.checks)));
             row.push(plain("  "));
             let ms = r.elapsed_ms.map(time).unwrap_or_default();
-            row.push(toned(pad_left(&ms, NUM_COL), Tone::Dim));
+            let time_tone = if time_failed(&r.checks) { Tone::Bad } else { Tone::Dim };
+            row.push(toned(pad_left(&ms, NUM_COL), time_tone));
             row.push(plain("  "));
             let bytes = r.size.map(size).unwrap_or_default();
             row.push(toned(pad_left(&bytes, NUM_COL), Tone::Dim));
@@ -454,7 +455,7 @@ pub(super) fn totals(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::checks::checked;
+    use super::super::super::checks::{checked, timed};
     use super::*;
 
     fn result(status: Option<u16>, error: Option<&str>) -> SuiteResult {
@@ -463,6 +464,7 @@ mod tests {
             method: Some(Method::Get),
             url: Some("https://dev/users/42".into()),
             status,
+            ttfb_ms: status.map(|_| 40),
             elapsed_ms: status.map(|_| 120),
             size: status.map(|_| 512),
             error: error.map(Into::into),
@@ -494,6 +496,32 @@ mod tests {
         assert_eq!(tone_of(200, &[201]), ("✗".into(), Some(Tone::Bad)));
         assert_eq!(tone_of(404, &[]), ("✗".into(), Some(Tone::Bad)));
         assert_eq!(tone_of(301, &[]), ("✓".into(), Some(Tone::Redirect)));
+    }
+
+    /// Spec §2.7 (T3): a time limit that failed paints the time red, a `✗`
+    /// with its line in the band; within its limit the time stays dim.
+    #[test]
+    fn a_failed_time_limit_paints_the_time_red() {
+        let line = request(1, Some(Method::Get), "Slow");
+        let time_tone = |limit: u64| {
+            let mut r = result(Some(200), None);
+            r.checks = timed(limit, 120);
+            let state = RowState::Done(r);
+            let band = band_row(&line, Some(&state), 4, Instant::now(), 0);
+            let tone = band.iter().find(|s| s.text.trim() == "120 ms").unwrap().tone;
+            (paint(&band, false), tone)
+        };
+        assert_eq!(
+            time_tone(100),
+            (
+                "  ✗ GET    Slow  200  120 ms   512 B  check failed: total 120 ms, limit 100 ms"
+                    .into(),
+                Some(Tone::Bad)
+            )
+        );
+        let (painted, tone) = time_tone(120);
+        assert!(painted.starts_with("  ✓ "), "{painted}");
+        assert_eq!(tone, Some(Tone::Dim));
     }
 
     fn request(depth: usize, method: Option<Method>, name: &str) -> Line {

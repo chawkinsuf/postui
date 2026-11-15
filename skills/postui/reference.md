@@ -193,6 +193,8 @@ jq = ".status"
 
 [checks]
 status = 200
+max_ttfb_ms = 500
+max_elapsed_ms = 2000
 jq = [
   '.status == "ok"',
   '.checks | length > 0',
@@ -232,6 +234,16 @@ jq = [
   does). Write filters as `'...'` literal strings so their quotes need no
   escaping. `check` reports a filter that doesn't compile. The TUI keeps
   checks but doesn't show them.
+- `max_ttfb_ms` and `max_elapsed_ms` in `[checks]` are time limits in whole
+  milliseconds, each optional; a response passes at or under them.
+  `max_ttfb_ms` holds the time to the response's status and headers (DNS,
+  connect, TLS, upload and redirects included; for a streamed reply that is
+  usually before the first token), `max_elapsed_ms` the time until the body
+  is fully read: the `ttfb_ms` and `elapsed_ms` that `run` and `suite`
+  report. A time is measured as the request went: `suite` sends on one
+  client, so the first request to a host pays for the connection and later
+  ones reuse it, and `--jobs N` runs requests side by side, which can slow
+  each one. A limit never cuts a request short; `--timeout` does that.
 - postui adds `Accept: application/json` unless the request sets `Accept`,
   and the HTTP client adds `Host`, `Content-Length` and the like.
 - Any other key is an error: `check` names the file.

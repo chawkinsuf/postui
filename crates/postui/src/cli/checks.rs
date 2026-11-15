@@ -3,7 +3,7 @@
 //! and the one rule both pass a response by ([`passed`]).
 
 use super::mask::Mask;
-use postui_core::checks::{Outcome, one_line};
+use postui_core::checks::{Measure, Outcome, one_line};
 use serde::Serialize;
 
 /// A status from here up fails a response that has no status check (R3).
@@ -13,8 +13,14 @@ pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
     checks.iter().find_map(|c| match c.kind {
         Kind::Status { passed, .. } => Some(passed),
-        Kind::Jq { .. } => None,
+        Kind::Time { .. } | Kind::Jq { .. } => None,
     })
+}
+
+/// Whether a time limit of `checks` failed (spec §2.7): the live view paints
+/// the time red.
+pub(super) fn time_failed(checks: &[ShownCheck]) -> bool {
+    checks.iter().any(|c| matches!(c.kind, Kind::Time { passed: false, .. }))
 }
 
 /// Whether a response with `status` passes, given its `checks`: its status
@@ -36,30 +42,51 @@ pub(super) struct ShownCheck {
     failure: Option<String>,
 }
 
-/// The JSON's two shapes (§2.3): `{"check": "status", "expected", "got",
-/// "passed", "failure"}` and `{"check": FILTER, "passed", "failure"}`.
+/// The JSON's three shapes (§2.3, §2.7): `{"check": "status", "expected",
+/// "got", "passed", "failure"}`, `{"check": "max_ttfb_ms" or
+/// "max_elapsed_ms", "limit", "got", "passed", "failure"}` and `{"check":
+/// FILTER, "passed", "failure"}`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 enum Kind {
-    Status { check: &'static str, expected: Vec<u16>, got: u16, passed: bool },
-    Jq { check: String, passed: bool },
+    Status {
+        check: &'static str,
+        expected: Vec<u16>,
+        got: u16,
+        passed: bool,
+    },
+    Time {
+        check: &'static str,
+        limit: u64,
+        got: u64,
+        passed: bool,
+        #[serde(skip)]
+        measure: Measure,
+    },
+    Jq {
+        check: String,
+        passed: bool,
+    },
 }
 
 impl ShownCheck {
     pub(super) fn passed(&self) -> bool {
         match &self.kind {
-            Kind::Status { passed, .. } | Kind::Jq { passed, .. } => *passed,
+            Kind::Status { passed, .. } | Kind::Time { passed, .. } | Kind::Jq { passed, .. } => {
+                *passed
+            }
         }
     }
 
     /// What `run -v` lists for the check: its failure, else what passed
-    /// (`status 200`, or the filter).
+    /// (`status 200`, `first byte 45 ms, limit 500 ms`, or the filter).
     pub(super) fn summary(&self) -> String {
         if let Some(failure) = &self.failure {
             return failure.clone();
         }
         match &self.kind {
             Kind::Status { got, .. } => format!("status {got}"),
+            Kind::Time { measure, limit, got, .. } => measure.line(*limit, *got),
             Kind::Jq { check, .. } => one_line(check),
         }
     }
@@ -76,6 +103,13 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 Outcome::Status { expected, got } => {
                     Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
                 }
+                Outcome::Time { measure, limit, got } => Kind::Time {
+                    check: measure.key(),
+                    limit: *limit,
+                    got: *got,
+                    passed,
+                    measure: *measure,
+                },
                 Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
             ShownCheck { kind, failure }
@@ -96,16 +130,30 @@ pub(super) fn checked(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<
     shown(&tests::evaluate(status, jq, got, body), &Mask::none())
 }
 
+/// A `max_elapsed_ms` of `limit` run over a response that took
+/// `elapsed_ms`, unmasked: a test's fixture.
+#[cfg(test)]
+pub(super) fn timed(limit: u64, elapsed_ms: u64) -> Vec<ShownCheck> {
+    use postui_core::checks::Timing;
+    let checks = postui_core::model::Checks { max_elapsed_ms: Some(limit), ..Default::default() };
+    let timing = Timing { ttfb_ms: 0, elapsed_ms };
+    shown(&postui_core::checks::evaluate(&checks, 200, timing, || unreachable!()), &Mask::none())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postui_core::checks::Timing;
     use postui_core::jq::JqDocument;
     use postui_core::model::Checks;
 
     pub(super) fn evaluate(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<Outcome> {
-        let checks =
-            Checks { status: status.to_vec(), jq: jq.iter().map(|f| f.to_string()).collect() };
-        postui_core::checks::evaluate(&checks, got, || JqDocument::parse(body))
+        let checks = Checks {
+            status: status.to_vec(),
+            jq: jq.iter().map(|f| f.to_string()).collect(),
+            ..Checks::default()
+        };
+        postui_core::checks::evaluate(&checks, got, Timing::default(), || JqDocument::parse(body))
     }
 
     /// R3: a status check replaces the below-400 rule; without one it
@@ -182,6 +230,63 @@ mod tests {
         assert_eq!(summaries, ["status 201", ".ok"]);
         assert!(out.iter().all(ShownCheck::passed));
         assert_eq!(failure_lines(&out).count(), 0);
+    }
+
+    /// Spec §2.7 (T3): a time check's JSON names its key, limit and time,
+    /// after the status check and before the jq ones; a breach fails the
+    /// response whatever its status, and `time_failed` says so.
+    #[test]
+    fn a_time_check_has_its_own_json_and_fails_the_response() {
+        let checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(500),
+            max_elapsed_ms: Some(2000),
+            jq: vec![".ok".into()],
+        };
+        let timing = Timing { ttfb_ms: 812, elapsed_ms: 900 };
+        let outcomes = postui_core::checks::evaluate(&checks, 200, timing, || {
+            JqDocument::parse(r#"{"ok":true}"#)
+        });
+        let out = shown(&outcomes, &Mask::none());
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!([
+                {"check": "status", "expected": [200], "got": 200, "passed": true, "failure": null},
+                {"check": "max_ttfb_ms", "limit": 500, "got": 812, "passed": false,
+                 "failure": "first byte 812 ms, limit 500 ms"},
+                {"check": "max_elapsed_ms", "limit": 2000, "got": 900, "passed": true,
+                 "failure": null},
+                {"check": ".ok", "passed": true, "failure": null},
+            ])
+        );
+        assert!(!passed(200, &out));
+        assert!(time_failed(&out));
+        assert_eq!(status_check(&out), Some(true));
+        let lines: Vec<String> = failure_lines(&out).collect();
+        assert_eq!(lines, ["check failed: first byte 812 ms, limit 500 ms"]);
+        let summaries: Vec<String> = out.iter().map(ShownCheck::summary).collect();
+        assert_eq!(
+            summaries,
+            ["status 200", "first byte 812 ms, limit 500 ms", "total 900 ms, limit 2000 ms", ".ok"]
+        );
+
+        // Within its limits: passed, and no time failure.
+        let timing = Timing { ttfb_ms: 500, elapsed_ms: 2000 };
+        let outcomes = postui_core::checks::evaluate(&checks, 200, timing, || {
+            JqDocument::parse(r#"{"ok":true}"#)
+        });
+        let out = shown(&outcomes, &Mask::none());
+        assert!(passed(200, &out));
+        assert!(!time_failed(&out));
+        // A time check alone keeps the 400 rule.
+        let alone = Checks { max_elapsed_ms: Some(10), ..Checks::default() };
+        let out = shown(
+            &postui_core::checks::evaluate(&alone, 404, Timing::default(), || unreachable!()),
+            &Mask::none(),
+        );
+        assert_eq!(status_check(&out), None);
+        assert!(!passed(404, &out));
+        assert!(passed(204, &out));
     }
 
     /// A filter written over several lines summarises and fails on one.
