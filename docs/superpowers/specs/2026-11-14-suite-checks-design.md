@@ -170,6 +170,48 @@ ticket to add something to the tui in a later update." (you, 2026-11-14).
 `suite` and `run` paragraphs and exit codes say what a check does; the
 `suite` and `run` usage texts say checks fail a request.
 
+### 2.7 Time limits (#304, amended 2026-11-15)
+
+Task #304 "Add time SLO to checks". Four questions (ticket comment 1354)
+were each answered A ("A for each", comment 1356), so each is `mine
+(approved)` (T1–T4 below).
+
+```toml
+[checks]
+status = 200
+max_ttfb_ms = 500
+max_elapsed_ms = 2000
+```
+
+- **What is measured (T1).** Both figures `send_raw` already takes, each
+  limit optional and independent: `max_ttfb_ms` against the time to the
+  response head (status and headers in; DNS, connect, TLS, upload and
+  redirects included), `max_elapsed_ms` against the time until the body is
+  fully read. "First byte" is the head, so for a streaming answer it is not
+  time to first token. The suite's JSON gains `ttfb_ms` on each result
+  (`null` for a request not sent), so the figure a check judged is in the
+  report.
+- **Keys and values (T2).** Integer milliseconds named after the report
+  fields. A limit passes at or under it. A value that is not a positive
+  whole number is a read error, as a bad `status` is (R6). Not given, no
+  check.
+- **A breach is a failed check (T3).** Lines:
+  `check failed: first byte 812 ms, limit 500 ms` and
+  `check failed: total 2310 ms, limit 2000 ms`. JSON:
+  `{"check": "max_ttfb_ms", "limit": 500, "got": 812, "passed": false,
+  "failure": "first byte 812 ms, limit 500 ms"}` (and `max_elapsed_ms`),
+  after the status check and before the jq ones. Suite plain, live view
+  (`✗`, first failure in place of the URL) and totals as §2.3; `run` as
+  §2.4 (a `postui: check failed: …` line, exit 1, `-v` and `--json` list
+  it). In the live view the time cell is also red when a time check
+  fails. The TUI shows nothing of them and keeps them on a save, as R10;
+  showing them stays with #302.
+- **What the number includes (T4).** Measured as sent today. The docs say:
+  suite sends on one pooled client, so the first request to a host pays
+  DNS/TCP/TLS and later ones reuse the connection; `--jobs N` runs requests
+  side by side, which can slow each one; a time check never cuts a request
+  short (`--timeout` does that).
+
 ## 3. Rules table
 
 | # | Rule | From |
@@ -185,6 +227,10 @@ ticket to add something to the tui in a later update." (you, 2026-11-14).
 | R9 | `run` always evaluates checks the same way | mine (approved), Q2: A |
 | R10 | The TUI keeps checks through every save path, shows none | mine (approved), Q3: A |
 | R11 | Showing checks in the TUI is a later task, #302 | you: "Make a ticket to add something to the tui in a later update." |
+| T1 | Time limits on both first byte and total, each optional; suite JSON gains `ttfb_ms` (#304) | mine (approved), Q1: A, 2026-11-15 |
+| T2 | `max_ttfb_ms` / `max_elapsed_ms`, integer ms; pass at or under; not a positive whole number is a read error | mine (approved), Q2: A, 2026-11-15 |
+| T3 | A breach is a failed check: lines, live `✗` and red time cell, JSON `{check, limit, got, passed, failure}` after status and before jq; `run` stderr line and exit 1 | mine (approved), Q3: A, 2026-11-15 |
+| T4 | Measured as sent today; docs name connection reuse, `--jobs`, and that a time check never aborts a request | mine (approved), Q4: A, 2026-11-15 |
 
 ## 4. What changes
 
@@ -227,5 +273,5 @@ characters; `status = []` read as no status check; the status coloured by
 its check; a failure on one line; the JSON's `failure` in place of a
 filter's outputs;
 the TOML placement in §4; the docs in §2.6. Also left out, each could be
-its own task: header checks, response-time limits, checks on a body that
-isn't JSON (as a string), and naming a check.
+its own task: header checks, response-time limits (since taken up by #304,
+§2.7), checks on a body that isn't JSON (as a string), and naming a check.
