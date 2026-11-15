@@ -205,9 +205,11 @@ max_elapsed_ms = 2000
   after the status check and before the jq ones. Suite plain, live view
   (`✗`, first failure in place of the URL) and totals as §2.3; `run` as
   §2.4 (a `postui: check failed: …` line, exit 1, `-v` and `--json` list
-  it). In the live view the time cell is also red when a time check
-  fails. The TUI shows nothing of them and keeps them on a save, as R10;
-  showing them stays with #302.
+  it). In the live view the time cell is also red when `max_elapsed_ms`
+  fails, since the cell shows the total; a first-byte breach shows by the
+  `✗` and its line only (review round 1, ticket comment 1358, answered A
+  in comment 1360: `mine (approved)`). The TUI shows nothing of them and
+  keeps them on a save, as R10; showing them stays with #302.
 - **What the number includes (T4).** Measured as sent today. The docs say:
   suite sends on one pooled client, so the first request to a host pays
   DNS/TCP/TLS and later ones reuse the connection; `--jobs N` runs requests
@@ -231,7 +233,7 @@ max_elapsed_ms = 2000
 | R11 | Showing checks in the TUI is a later task, #302 | you: "Make a ticket to add something to the tui in a later update." |
 | T1 | Time limits on both first byte and total, each optional; suite JSON gains `ttfb_ms` (#304) | mine (approved), Q1: A, 2026-11-15 |
 | T2 | `max_ttfb_ms` / `max_elapsed_ms`, integer ms; pass at or under; not a positive whole number is a read error | mine (approved), Q2: A, 2026-11-15 |
-| T3 | A breach is a failed check: lines, live `✗` and red time cell, JSON `{check, limit, got, passed, failure}` after status and before jq; `run` stderr line and exit 1 | mine (approved), Q3: A, 2026-11-15 |
+| T3 | A breach is a failed check: lines, live `✗`, JSON `{check, limit, got, passed, failure}` after status and before jq; `run` stderr line and exit 1. The live time cell is red only when `max_elapsed_ms` fails | mine (approved), Q3: A, 2026-11-15; red cell: mine (approved), comment 1358: A, 2026-11-15 |
 | T4 | Measured as sent today; docs name connection reuse, `--jobs`, and that a time check never aborts a request | mine (approved), Q4: A, 2026-11-15 |
 
 ## 4. What changes

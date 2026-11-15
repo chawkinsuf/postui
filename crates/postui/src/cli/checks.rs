@@ -17,10 +17,12 @@ pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
     })
 }
 
-/// Whether a time limit of `checks` failed (spec §2.7): the live view paints
-/// the time red.
-pub(super) fn time_failed(checks: &[ShownCheck]) -> bool {
-    checks.iter().any(|c| matches!(c.kind, Kind::Time { passed: false, .. }))
+/// Whether the `max_elapsed_ms` check of `checks` failed (spec §2.7): the
+/// live view paints its time, the total, red.
+pub(super) fn total_failed(checks: &[ShownCheck]) -> bool {
+    checks
+        .iter()
+        .any(|c| matches!(c.kind, Kind::Time { measure: Measure::Total, passed: false, .. }))
 }
 
 /// Whether a response with `status` passes, given its `checks`: its status
@@ -130,13 +132,19 @@ pub(super) fn checked(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<
     shown(&tests::evaluate(status, jq, got, body), &Mask::none())
 }
 
-/// A `max_elapsed_ms` of `limit` run over a response that took
-/// `elapsed_ms`, unmasked: a test's fixture.
+/// Time limits `max_ttfb_ms` and `max_elapsed_ms` run over a response whose
+/// first byte took `ttfb_ms` and whole `elapsed_ms`, unmasked: a test's
+/// fixture.
 #[cfg(test)]
-pub(super) fn timed(limit: u64, elapsed_ms: u64) -> Vec<ShownCheck> {
+pub(super) fn timed(
+    max_ttfb_ms: Option<u64>,
+    max_elapsed_ms: Option<u64>,
+    ttfb_ms: u64,
+    elapsed_ms: u64,
+) -> Vec<ShownCheck> {
     use postui_core::checks::Timing;
-    let checks = postui_core::model::Checks { max_elapsed_ms: Some(limit), ..Default::default() };
-    let timing = Timing { ttfb_ms: 0, elapsed_ms };
+    let checks = postui_core::model::Checks { max_ttfb_ms, max_elapsed_ms, ..Default::default() };
+    let timing = Timing { ttfb_ms, elapsed_ms };
     shown(&postui_core::checks::evaluate(&checks, 200, timing, || unreachable!()), &Mask::none())
 }
 
@@ -234,7 +242,8 @@ mod tests {
 
     /// Spec §2.7 (T3): a time check's JSON names its key, limit and time,
     /// after the status check and before the jq ones; a breach fails the
-    /// response whatever its status, and `time_failed` says so.
+    /// response whatever its status; a first-byte breach alone is not
+    /// `total_failed`.
     #[test]
     fn a_time_check_has_its_own_json_and_fails_the_response() {
         let checks = Checks {
@@ -264,7 +273,7 @@ mod tests {
             r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"failure":"first byte 812 ms, limit 500 ms"}"#
         );
         assert!(!passed(200, &out));
-        assert!(time_failed(&out));
+        assert!(!total_failed(&out));
         assert_eq!(status_check(&out), Some(true));
         let lines: Vec<String> = failure_lines(&out).collect();
         assert_eq!(lines, ["check failed: first byte 812 ms, limit 500 ms"]);
@@ -281,7 +290,7 @@ mod tests {
         });
         let out = shown(&outcomes, &Mask::none());
         assert!(passed(200, &out));
-        assert!(!time_failed(&out));
+        assert!(!total_failed(&out));
         // A time check alone keeps the 400 rule.
         let alone = Checks { max_elapsed_ms: Some(10), ..Checks::default() };
         let out = shown(
