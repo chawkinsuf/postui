@@ -315,10 +315,10 @@ pub struct Checks {
     /// The most milliseconds the response head may take to come in (spec
     /// §2.7, T1); `None` checks nothing.
     #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
-    pub max_ttfb_ms: Option<u64>,
+    pub max_ttfb_ms: Option<u32>,
     /// The most milliseconds the whole response may take, body read (T1).
     #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
-    pub max_elapsed_ms: Option<u64>,
+    pub max_elapsed_ms: Option<u32>,
     /// jq filters that must each give `true` and nothing else (R4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jq: Vec<String>,
@@ -371,29 +371,38 @@ fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
     d.deserialize_any(Codes)
 }
 
-/// `max_ttfb_ms = 500`: a time limit, a positive whole number of
-/// milliseconds; any other value refuses the read (spec §2.7, T2).
-fn limit_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+/// `max_ttfb_ms = 500`: a time limit, a whole number of milliseconds from 1
+/// to `u32::MAX`; any other value refuses the read (spec §2.7, T2).
+fn limit_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
     struct Limit;
 
+    fn limit<E: de::Error, V: TryInto<u32> + fmt::Display + Copy>(v: V) -> Result<u32, E> {
+        v.try_into().ok().filter(|ms| *ms > 0).ok_or_else(|| {
+            E::custom(format!(
+                "a check's time limit must be a whole number of milliseconds from 1 to {}, \
+                 not {v}",
+                u32::MAX
+            ))
+        })
+    }
+
     impl<'de> Visitor<'de> for Limit {
-        type Value = u64;
+        type Value = u32;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a positive whole number of milliseconds")
+            write!(f, "a whole number of milliseconds from 1 to {}", u32::MAX)
         }
 
         fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-            u64::try_from(v).ok().filter(|ms| *ms > 0).ok_or_else(|| {
-                E::custom(format!(
-                    "a check's time limit must be a positive whole number of milliseconds, \
-                     not {v}"
-                ))
-            })
+            limit(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            limit(v)
         }
     }
 
-    d.deserialize_i64(Limit).map(Some)
+    d.deserialize_any(Limit).map(Some)
 }
 
 fn default_true() -> bool {
@@ -492,9 +501,7 @@ impl HttpRequest {
             }
             for measure in Measure::ALL {
                 if let Some(ms) = measure.limit(&self.checks) {
-                    // Every limit read fits an i64 (`limit_ms`), so this
-                    // clamps none of them.
-                    t[measure.key()] = value(i64::try_from(ms).unwrap_or(i64::MAX));
+                    t[measure.key()] = value(i64::from(ms));
                 }
             }
             if !self.checks.jq.is_empty() {
@@ -963,18 +970,41 @@ mod tests {
         let out = req.to_toml_string();
         assert!(out.contains("[checks]\nmax_ttfb_ms = 250\n"), "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+
+        // The largest limit is written as it is.
+        req.checks = Checks { max_elapsed_ms: Some(u32::MAX), ..Checks::default() };
+        let out = req.to_toml_string();
+        assert!(out.contains("[checks]\nmax_elapsed_ms = 4294967295\n"), "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
     }
 
-    /// Spec §2.7 (T2): a limit that isn't a positive whole number of
-    /// milliseconds refuses the read, as a bad `status` does (R6).
+    /// `Checks` reads back what its `Serialize` gives in a format that hands
+    /// a positive integer to `visit_u64`, as JSON does.
+    #[test]
+    fn checks_round_trip_through_json() {
+        let checks = Checks {
+            status: vec![200],
+            max_ttfb_ms: Some(500),
+            max_elapsed_ms: Some(2000),
+            jq: vec![".a".into()],
+        };
+        let json = serde_json::to_string(&checks).unwrap();
+        assert_eq!(serde_json::from_str::<Checks>(&json).unwrap(), checks);
+    }
+
+    /// Spec §2.7 (T2): a limit that isn't a whole number of milliseconds
+    /// from 1 to `u32::MAX` refuses the read, as a bad `status` does (R6).
     #[test]
     fn a_bad_time_limit_refuses_the_read() {
         let read =
             |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
         for key in ["max_ttfb_ms", "max_elapsed_ms"] {
-            for bad in ["0", "-5", "1.5", "\"500\"", "\"500ms\"", "[500]", "true"] {
+            for bad in ["0", "-5", "4294967296", "1.5", "\"500\"", "\"500ms\"", "[500]", "true"] {
                 let err = read(&format!("{key} = {bad}\n")).unwrap_err().to_string();
-                assert!(err.contains("a positive whole number of milliseconds"), "{bad}: {err}");
+                assert!(
+                    err.contains("a whole number of milliseconds from 1 to 4294967295"),
+                    "{bad}: {err}"
+                );
             }
             assert_eq!(
                 read(&format!("{key} = 1\n")).unwrap().checks,

@@ -86,7 +86,7 @@ impl Measure {
     }
 
     /// Its limit in `checks`, the field [`Measure::key`] names.
-    pub fn limit(self, checks: &Checks) -> Option<u64> {
+    pub fn limit(self, checks: &Checks) -> Option<u32> {
         match self {
             Measure::FirstByte => checks.max_ttfb_ms,
             Measure::Total => checks.max_elapsed_ms,
@@ -154,7 +154,11 @@ pub fn evaluate(
     }
     for measure in Measure::ALL {
         if let Some(limit) = measure.limit(checks) {
-            outcomes.push(Outcome::Time { measure, limit, got: measure.of(timing) });
+            outcomes.push(Outcome::Time {
+                measure,
+                limit: u64::from(limit),
+                got: measure.of(timing),
+            });
         }
     }
     if checks.jq.is_empty() {

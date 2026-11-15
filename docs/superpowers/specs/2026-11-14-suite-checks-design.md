@@ -192,11 +192,13 @@ max_elapsed_ms = 2000
   (`null` for a request not sent), so the figure a check judged is in the
   report.
 - **Keys and values (T2).** Integer milliseconds named after the report
-  fields. A limit passes at or under it. A value that is not a positive
-  whole number is a read error, as a bad `status` is (R6). Not given, no
-  check. A limit judges the whole milliseconds the report prints (the
-  time truncated), so a line never reads `total 500 ms, limit 500 ms` and
-  fails; 500.9 ms passes a 500 ms limit (`mine`).
+  fields. A limit passes at or under it. A value that is not a whole
+  number from 1 to 4294967295 (`u32::MAX`, about 49 days) is a read
+  error, as a bad `status` is (R6); the model holds a limit as a `u32`, so
+  every limit it holds is written as it is (review round 4: `mine`). Not
+  given, no check. A limit judges the whole milliseconds the report prints
+  (the time truncated), so a line never reads `total 500 ms, limit 500 ms`
+  and fails; 500.9 ms passes a 500 ms limit (`mine`).
 - **A breach is a failed check (T3).** Lines:
   `check failed: first byte 812 ms, limit 500 ms` and
   `check failed: total 2310 ms, limit 2000 ms`. JSON:
@@ -217,7 +219,8 @@ max_elapsed_ms = 2000
   one; a time check never cuts a request short (`--timeout` does that).
   Each suite send runs as its own task, so the run's own work (preparing
   the next request, a repaint) is not counted in a send's time (review
-  round 2: `mine`).
+  round 2: `mine`). A send task that ends aborted rather than finished
+  ends the run as Ctrl+C does (review round 4: `mine`).
 
 ## 3. Rules table
 
@@ -235,7 +238,7 @@ max_elapsed_ms = 2000
 | R10 | The TUI keeps checks through every save path, shows none | mine (approved), Q3: A |
 | R11 | Showing checks in the TUI is a later task, #302 | you: "Make a ticket to add something to the tui in a later update." |
 | T1 | Time limits on both first byte and total, each optional; suite JSON gains `ttfb_ms` (#304) | mine (approved), Q1: A, 2026-11-15 |
-| T2 | `max_ttfb_ms` / `max_elapsed_ms`, integer ms; pass at or under; not a positive whole number is a read error | mine (approved), Q2: A, 2026-11-15 |
+| T2 | `max_ttfb_ms` / `max_elapsed_ms`, integer ms; pass at or under; not a whole number from 1 to `u32::MAX` is a read error | mine (approved), Q2: A, 2026-11-15; `u32::MAX` cap: mine, review round 4 |
 | T3 | A breach is a failed check: lines, live `✗`, JSON `{check, limit, got, passed, failure}` after status and before jq; `run` stderr line and exit 1. The live time cell is red only when `max_elapsed_ms` fails | mine (approved), Q3: A, 2026-11-15; red cell: mine (approved), comment 1358: A, 2026-11-15 |
 | T4 | Measured as sent today; docs name connection reuse, `--jobs`, and that a time check never aborts a request. Each suite send is its own task, so the run's work isn't counted in its time | mine (approved), Q4: A, 2026-11-15; own task: mine, review round 2 |
 

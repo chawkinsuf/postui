@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn a_failed_total_limit_paints_the_time_red() {
         let line = request(1, Some(Method::Get), "Slow");
-        let time_tone = |max_ttfb_ms: Option<u64>, max_elapsed_ms: Option<u64>| {
+        let time_tone = |max_ttfb_ms: Option<u32>, max_elapsed_ms: Option<u32>| {
             let mut r = result(Some(200), None);
             let checks = Checks { max_ttfb_ms, max_elapsed_ms, ..Checks::default() };
             let timing = Timing { ttfb_ms: 40, elapsed_ms: 120 };

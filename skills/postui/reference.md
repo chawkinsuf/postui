@@ -235,7 +235,9 @@ jq = [
   escaping. `check` reports a filter that doesn't compile. The TUI keeps
   checks but doesn't show them.
 - `max_ttfb_ms` and `max_elapsed_ms` in `[checks]` are time limits in whole
-  milliseconds, each optional; a response passes at or under them.
+  milliseconds, each optional; a response passes at or under them, its
+  time cut to whole milliseconds as the reports print it (500.9 ms passes
+  a 500 ms limit).
   `max_ttfb_ms` holds the time to the response's status and headers (DNS,
   connect, TLS, upload and redirects included; for a streamed reply that is
   usually before the first token), `max_elapsed_ms` the time until the body

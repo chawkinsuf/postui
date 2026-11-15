@@ -357,9 +357,17 @@ pub async fn suite(
         }
         tokio::select! {
             Some(joined) = flight.join_next() => {
-                // A panic in a send is a bug: it surfaces as it would inline.
-                let (index, mut result, sent) =
-                    joined.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+                let (index, mut result, sent) = match joined {
+                    Ok(joined) => joined,
+                    // A panic in a send is a bug: it surfaces as it would
+                    // inline.
+                    Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                    // A send that was aborted ends the run as a cancel does.
+                    Err(_) => {
+                        cancelled = true;
+                        break;
+                    }
+                };
                 match sent {
                     Ok((status, timing, size, outcomes)) => {
                         result.status = Some(status);
@@ -748,7 +756,9 @@ mod tests {
 
     /// Suite checks spec §2.7 (T4): while the loop is held up, a send in
     /// flight keeps its own time, so a time limit doesn't judge the loop.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// One worker, as `Runtime::new()` starts on a one-CPU host: the loop
+    /// runs on the thread blocked on it, the sends on the worker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_held_up_loop_adds_nothing_to_a_send_time() {
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -760,14 +770,14 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         checked_project(dir.path(), &server.uri(), &[("fast", ""), ("slow", "")]);
-        let mut watch = Stall { slug: "main/fast", stall: Duration::from_millis(800) };
+        let mut watch = Stall { slug: "main/fast", stall: Duration::from_millis(1500) };
         let (report, _) =
             suite(&global(dir.path()), None, &opts(&[]), 2, &mut watch, std::future::pending())
                 .await
                 .unwrap();
         let slow = report.results.iter().find(|r| r.request == "main/slow").unwrap();
         let ms = slow.elapsed_ms.unwrap();
-        assert!((100..600).contains(&ms), "{ms} ms");
+        assert!((100..1200).contains(&ms), "{ms} ms");
     }
 
     /// Spec 2026-11-13 §4: which output a run gets.
