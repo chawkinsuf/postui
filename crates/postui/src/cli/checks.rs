@@ -56,17 +56,21 @@ enum Kind {
         passed: bool,
     },
     Time {
-        check: &'static str,
+        #[serde(rename = "check", serialize_with = "measure_key")]
+        measure: Measure,
         limit: u64,
         got: u64,
         passed: bool,
-        #[serde(skip)]
-        measure: Measure,
     },
     Jq {
         check: String,
         passed: bool,
     },
+}
+
+/// A time check's `check`: the key that set it.
+fn measure_key<S: serde::Serializer>(measure: &Measure, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(measure.key())
 }
 
 impl ShownCheck {
@@ -103,13 +107,9 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 Outcome::Status { expected, got } => {
                     Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
                 }
-                Outcome::Time { measure, limit, got } => Kind::Time {
-                    check: measure.key(),
-                    limit: *limit,
-                    got: *got,
-                    passed,
-                    measure: *measure,
-                },
+                Outcome::Time { measure, limit, got } => {
+                    Kind::Time { measure: *measure, limit: *limit, got: *got, passed }
+                }
                 Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
             ShownCheck { kind, failure }
@@ -258,6 +258,10 @@ mod tests {
                  "failure": null},
                 {"check": ".ok", "passed": true, "failure": null},
             ])
+        );
+        assert_eq!(
+            serde_json::to_string(&out[1]).unwrap(),
+            r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"failure":"first byte 812 ms, limit 500 ms"}"#
         );
         assert!(!passed(200, &out));
         assert!(time_failed(&out));

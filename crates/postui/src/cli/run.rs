@@ -382,6 +382,13 @@ pub(super) fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// How long `raw` took, in the whole milliseconds the reports print. The
+/// time checks judge these same figures, so a check's line never reads
+/// `total 500 ms, limit 500 ms` and fails (spec §2.7, T2).
+pub(super) fn timing(raw: &RawResponse) -> Timing {
+    Timing { ttfb_ms: millis(raw.ttfb), elapsed_ms: millis(raw.elapsed) }
+}
+
 /// Runs `filter` over the body as `doc` read it, unmasked (masking first
 /// would break the JSON where a mask lands in a number or an escape): each
 /// result is parsed as the JSON jq printed, then masked as a tree. Returns
@@ -462,7 +469,7 @@ fn record(
     // The body as the jq checks and the filter read it, once for both.
     let parsed = OnceCell::new();
     let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
-    let timing = Timing { ttfb_ms: millis(raw.ttfb), elapsed_ms: millis(raw.elapsed) };
+    let timing = timing(&raw);
     let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, doc);
     report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
@@ -839,5 +846,31 @@ impl RunReport {
         }
         out.push_str(&warnings_text(&self.warnings));
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec §2.7 (T2): a time check judges the whole milliseconds the report
+    /// prints, so 500.9 ms is `500 ms` and passes a 500 ms limit.
+    #[test]
+    fn a_time_check_judges_the_printed_milliseconds() {
+        let raw = RawResponse {
+            status: 200,
+            url: String::new(),
+            headers: Vec::new(),
+            sent_headers: Vec::new(),
+            bytes: Vec::new(),
+            ttfb: Duration::from_micros(40_999),
+            elapsed: Duration::from_micros(500_900),
+            content_type: None,
+        };
+        let timing = timing(&raw);
+        assert_eq!(timing, Timing { ttfb_ms: 40, elapsed_ms: 500 });
+        let checks = Checks { max_elapsed_ms: Some(500), ..Checks::default() };
+        let outcomes = postui_core::checks::evaluate(&checks, 200, timing, || unreachable!());
+        assert_eq!(failure_lines(&shown(&outcomes, &Mask::none())).count(), 0);
     }
 }

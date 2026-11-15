@@ -194,7 +194,9 @@ max_elapsed_ms = 2000
 - **Keys and values (T2).** Integer milliseconds named after the report
   fields. A limit passes at or under it. A value that is not a positive
   whole number is a read error, as a bad `status` is (R6). Not given, no
-  check.
+  check. A limit judges the whole milliseconds the report prints (the
+  time truncated), so a line never reads `total 500 ms, limit 500 ms` and
+  fails; 500.9 ms passes a 500 ms limit (`mine`).
 - **A breach is a failed check (T3).** Lines:
   `check failed: first byte 812 ms, limit 500 ms` and
   `check failed: total 2310 ms, limit 2000 ms`. JSON:
