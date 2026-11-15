@@ -214,7 +214,9 @@ max_elapsed_ms = 2000
   suite sends on one pooled client, so the first request to a host pays
   DNS/TCP/TLS and later ones reuse the connection; `--jobs N` runs requests
   side by side, which can slow each one; a time check never cuts a request
-  short (`--timeout` does that).
+  short (`--timeout` does that). Each suite send runs as its own task, so
+  the run's own work (preparing the next request, a repaint) is not
+  counted in a send's time (review round 2: `mine`).
 
 ## 3. Rules table
 
@@ -234,7 +236,7 @@ max_elapsed_ms = 2000
 | T1 | Time limits on both first byte and total, each optional; suite JSON gains `ttfb_ms` (#304) | mine (approved), Q1: A, 2026-11-15 |
 | T2 | `max_ttfb_ms` / `max_elapsed_ms`, integer ms; pass at or under; not a positive whole number is a read error | mine (approved), Q2: A, 2026-11-15 |
 | T3 | A breach is a failed check: lines, live `✗`, JSON `{check, limit, got, passed, failure}` after status and before jq; `run` stderr line and exit 1. The live time cell is red only when `max_elapsed_ms` fails | mine (approved), Q3: A, 2026-11-15; red cell: mine (approved), comment 1358: A, 2026-11-15 |
-| T4 | Measured as sent today; docs name connection reuse, `--jobs`, and that a time check never aborts a request | mine (approved), Q4: A, 2026-11-15 |
+| T4 | Measured as sent today; docs name connection reuse, `--jobs`, and that a time check never aborts a request. Each suite send is its own task, so the run's work isn't counted in its time | mine (approved), Q4: A, 2026-11-15; own task: mine, review round 2 |
 
 ## 4. What changes
 

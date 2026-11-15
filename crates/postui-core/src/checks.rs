@@ -74,6 +74,33 @@ pub enum Measure {
 }
 
 impl Measure {
+    /// Both, in the order they are checked and written.
+    pub const ALL: [Measure; 2] = [Measure::FirstByte, Measure::Total];
+
+    /// The `[checks]` key that sets it, which the JSON names it by.
+    pub fn key(self) -> &'static str {
+        match self {
+            Measure::FirstByte => "max_ttfb_ms",
+            Measure::Total => "max_elapsed_ms",
+        }
+    }
+
+    /// Its limit in `checks`, the field [`Measure::key`] names.
+    pub fn limit(self, checks: &Checks) -> Option<u64> {
+        match self {
+            Measure::FirstByte => checks.max_ttfb_ms,
+            Measure::Total => checks.max_elapsed_ms,
+        }
+    }
+
+    /// Its figure in `timing`.
+    pub fn of(self, timing: Timing) -> u64 {
+        match self {
+            Measure::FirstByte => timing.ttfb_ms,
+            Measure::Total => timing.elapsed_ms,
+        }
+    }
+
     /// The check as a line says it, passed or not: `first byte 812 ms,
     /// limit 500 ms` or `total 2310 ms, limit 2000 ms`.
     pub fn line(self, limit: u64, got: u64) -> String {
@@ -82,14 +109,6 @@ impl Measure {
             Measure::Total => "total",
         };
         format!("{name} {got} ms, limit {limit} ms")
-    }
-
-    /// The `[checks]` key that sets it, which the JSON names it by.
-    pub fn key(self) -> &'static str {
-        match self {
-            Measure::FirstByte => "max_ttfb_ms",
-            Measure::Total => "max_elapsed_ms",
-        }
     }
 }
 
@@ -133,13 +152,9 @@ pub fn evaluate(
     if !checks.status.is_empty() {
         outcomes.push(Outcome::Status { expected: checks.status.clone(), got: status });
     }
-    let limits = [
-        (Measure::FirstByte, checks.max_ttfb_ms, timing.ttfb_ms),
-        (Measure::Total, checks.max_elapsed_ms, timing.elapsed_ms),
-    ];
-    for (measure, limit, got) in limits {
-        if let Some(limit) = limit {
-            outcomes.push(Outcome::Time { measure, limit, got });
+    for measure in Measure::ALL {
+        if let Some(limit) = measure.limit(checks) {
+            outcomes.push(Outcome::Time { measure, limit, got: measure.of(timing) });
         }
     }
     if checks.jq.is_empty() {

@@ -1,3 +1,4 @@
+use crate::checks::Measure;
 use indexmap::IndexMap;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -373,12 +374,26 @@ fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
 /// `max_ttfb_ms = 500`: a time limit, a positive whole number of
 /// milliseconds; any other value refuses the read (spec §2.7, T2).
 fn limit_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    let v = i64::deserialize(d)?;
-    u64::try_from(v).ok().filter(|ms| *ms > 0).map(Some).ok_or_else(|| {
-        de::Error::custom(format!(
-            "a check's time limit must be a positive whole number of milliseconds, not {v}"
-        ))
-    })
+    struct Limit;
+
+    impl<'de> Visitor<'de> for Limit {
+        type Value = u64;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a positive whole number of milliseconds")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            u64::try_from(v).ok().filter(|ms| *ms > 0).ok_or_else(|| {
+                E::custom(format!(
+                    "a check's time limit must be a positive whole number of milliseconds, \
+                     not {v}"
+                ))
+            })
+        }
+    }
+
+    d.deserialize_i64(Limit).map(Some)
 }
 
 fn default_true() -> bool {
@@ -475,13 +490,11 @@ impl HttpRequest {
                     t["status"] = value(many.iter().map(|c| i64::from(*c)).collect::<Array>());
                 }
             }
-            let limits = [
-                ("max_ttfb_ms", self.checks.max_ttfb_ms),
-                ("max_elapsed_ms", self.checks.max_elapsed_ms),
-            ];
-            for (key, limit) in limits {
-                if let Some(ms) = limit {
-                    t[key] = value(i64::try_from(ms).unwrap_or(i64::MAX));
+            for measure in Measure::ALL {
+                if let Some(ms) = measure.limit(&self.checks) {
+                    // Every limit read fits an i64 (`limit_ms`), so this
+                    // clamps none of them.
+                    t[measure.key()] = value(i64::try_from(ms).unwrap_or(i64::MAX));
                 }
             }
             if !self.checks.jq.is_empty() {
@@ -959,12 +972,9 @@ mod tests {
         let read =
             |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
         for key in ["max_ttfb_ms", "max_elapsed_ms"] {
-            for bad in ["0", "-5"] {
+            for bad in ["0", "-5", "1.5", "\"500\"", "\"500ms\"", "[500]", "true"] {
                 let err = read(&format!("{key} = {bad}\n")).unwrap_err().to_string();
                 assert!(err.contains("a positive whole number of milliseconds"), "{bad}: {err}");
-            }
-            for bad in ["1.5", "\"500\"", "\"500ms\"", "[500]", "true"] {
-                assert!(read(&format!("{key} = {bad}\n")).is_err(), "{key} = {bad}");
             }
             assert_eq!(
                 read(&format!("{key} = 1\n")).unwrap().checks,

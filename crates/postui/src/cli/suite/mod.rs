@@ -19,7 +19,6 @@ use super::read::{displayed, spaces_of, warnings_text};
 use super::run::{FAILED, RunOpts, millis, prepare_one, refused, session, shown_url, timing};
 use super::{CliError, Global};
 use crate::http::send_raw;
-use futures::stream::{FuturesUnordered, StreamExt};
 use outline::{Listed, SpaceRequests, outline};
 use postui_core::checks::{Outcome, Timing};
 use postui_core::jq::JqDocument;
@@ -281,7 +280,10 @@ pub async fn suite(
     let mut request_warnings = Vec::new();
     let began = Instant::now();
     let mut results: Vec<Option<SuiteResult>> = vec![None; n];
-    let mut flight = FuturesUnordered::new();
+    // Each send is its own task, so the time it takes is its own: work here
+    // (a prepare, a repaint) doesn't hold it up. Dropping the set aborts
+    // what is still in flight.
+    let mut flight = tokio::task::JoinSet::new();
     let mut next = 0;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     // Prepares run inline between ticks: a late tick is one tick, not a
@@ -332,7 +334,7 @@ pub async fn suite(
                     // request, so the next can be prepared while it runs.
                     let client = s.clients.for_request(&request).clone();
                     let checks = read.checks;
-                    flight.push(async move {
+                    flight.spawn(async move {
                         let sent = match send_raw(&client, &request).await {
                             Ok(raw) => {
                                 let (status, size, timing) =
@@ -354,7 +356,10 @@ pub async fn suite(
             break;
         }
         tokio::select! {
-            Some((index, mut result, sent)) = flight.next() => {
+            Some(joined) = flight.join_next() => {
+                // A panic in a send is a bug: it surfaces as it would inline.
+                let (index, mut result, sent) =
+                    joined.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
                 match sent {
                     Ok((status, timing, size, outcomes)) => {
                         result.status = Some(status);
@@ -723,6 +728,46 @@ mod tests {
         );
         assert_eq!(results[2]["checks"], serde_json::json!([]));
         assert_eq!(results[2]["passed"], true);
+    }
+
+    /// A [`Watch`] that holds up the loop for `stall` when `slug` finishes,
+    /// as a slow repaint would.
+    struct Stall {
+        slug: &'static str,
+        stall: Duration,
+    }
+
+    impl Watch for Stall {
+        fn begin(&mut self, _plan: &Plan) {}
+        fn finished(&mut self, _index: usize, result: &SuiteResult) {
+            if result.request == self.slug {
+                std::thread::sleep(self.stall);
+            }
+        }
+    }
+
+    /// Suite checks spec §2.7 (T4): while the loop is held up, a send in
+    /// flight keeps its own time, so a time limit doesn't judge the loop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_up_loop_adds_nothing_to_a_send_time() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(path("/fast")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+        Mock::given(path("/slow"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(100)))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        checked_project(dir.path(), &server.uri(), &[("fast", ""), ("slow", "")]);
+        let mut watch = Stall { slug: "main/fast", stall: Duration::from_millis(800) };
+        let (report, _) =
+            suite(&global(dir.path()), None, &opts(&[]), 2, &mut watch, std::future::pending())
+                .await
+                .unwrap();
+        let slow = report.results.iter().find(|r| r.request == "main/slow").unwrap();
+        let ms = slow.elapsed_ms.unwrap();
+        assert!((100..600).contains(&ms), "{ms} ms");
     }
 
     /// Spec 2026-11-13 §4: which output a run gets.

@@ -346,6 +346,8 @@ fn row_of(
             };
             row.push(toned(format!("{status:>STATUS_COL$}"), status_tone(status, &r.checks)));
             row.push(plain("  "));
+            // The short form rounds a time over 1 s, failed or not; the
+            // check's line gives its exact milliseconds.
             let ms = r.elapsed_ms.map(time).unwrap_or_default();
             let time_tone = if total_failed(&r.checks) { Tone::Bad } else { Tone::Dim };
             row.push(toned(pad_left(&ms, NUM_COL), time_tone));
@@ -455,8 +457,11 @@ pub(super) fn totals(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::checks::{checked, timed};
+    use super::super::super::checks::{checked, over};
+    use super::super::super::mask::Mask;
     use super::*;
+    use postui_core::checks::Timing;
+    use postui_core::model::Checks;
 
     fn result(status: Option<u16>, error: Option<&str>) -> SuiteResult {
         SuiteResult {
@@ -507,7 +512,9 @@ mod tests {
         let line = request(1, Some(Method::Get), "Slow");
         let time_tone = |max_ttfb_ms: Option<u64>, max_elapsed_ms: Option<u64>| {
             let mut r = result(Some(200), None);
-            r.checks = timed(max_ttfb_ms, max_elapsed_ms, 40, 120);
+            let checks = Checks { max_ttfb_ms, max_elapsed_ms, ..Checks::default() };
+            let timing = Timing { ttfb_ms: 40, elapsed_ms: 120 };
+            r.checks = over(&checks, 200, timing, "", &Mask::none());
             let state = RowState::Done(r);
             let band = band_row(&line, Some(&state), 4, Instant::now(), 0);
             let tone = band.iter().find(|s| s.text.trim() == "120 ms").unwrap().tone;
