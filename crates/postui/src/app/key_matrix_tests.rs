@@ -799,6 +799,7 @@ pub(super) fn build(f: Fixture) -> App {
                     elapsed: std::time::Duration::from_millis(1),
                     size: body.len(),
                     content_type: Some(content_type.into()),
+                    checks: Vec::new(),
                 })),
                 app.session.send_generation,
             );

@@ -305,6 +305,7 @@ fn vim_alt_arrows_do_nothing_on_the_response() {
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
+            checks: Vec::new(),
         })),
         app.session.send_generation,
     );
@@ -414,6 +415,7 @@ fn the_tab_chord_walks_the_response_strip_both_ways() {
             elapsed: std::time::Duration::from_millis(1),
             size: 8,
             content_type: None,
+            checks: Vec::new(),
         })),
         app.session.send_generation,
     );

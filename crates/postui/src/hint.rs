@@ -46,6 +46,11 @@ pub struct HintCtx {
     /// not its body. `false` for controls with no second state (nothing
     /// reads it there).
     pub on: bool,
+    /// The hovered control acts on checks: a response toolbar button
+    /// while the Checks tab is up, or a row's pill or chip on the
+    /// request's Checks tab. Its hint says "check", not what the same
+    /// control acts on elsewhere.
+    pub checks: bool,
     /// The scope the open value popup's "✕ remove" would clear, from
     /// `ModalStack::value_popup_remove_scope`.
     pub remove_scope: Option<ExtractDestination>,
@@ -277,6 +282,9 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::ResponseViewMode(ViewMode::Raw) => "Show the raw response body".to_string(),
         Action::ResponseViewMode(ViewMode::Headers) => "Show the response headers".to_string(),
         Action::ResponseViewMode(ViewMode::Pretty) => "Show the body as a JSON tree".to_string(),
+        Action::ResponseViewMode(ViewMode::Checks) => {
+            "Show how the response did against the request's checks".to_string()
+        }
         Action::CycleTabs(d) if *d < 0 => "Switch to the previous tab".to_string(),
         Action::CycleTabs(_) => "Switch to the next tab".to_string(),
         Action::CloseScreen => "Go back to the request screen".to_string(),
@@ -544,6 +552,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         // `PromptSaveView`, where the palette's own copy/save commands
         // always take the body. So they say what the open tab holds
         // rather than borrowing those palette lines.
+        Hit::CopyBodyButton if ctx.checks => text("Copy the check results"),
+        Hit::SaveBodyButton if ctx.checks => text("Save the check results to a file"),
+        Hit::ResponseEditorButton if ctx.checks => text("Open the check results in your editor"),
+        Hit::ResponseSearchButton if ctx.checks => text("Search the check results"),
         Hit::CopyBodyButton => {
             text(if ctx.on { "Copy the response headers" } else { "Copy the response body" })
         }
@@ -1131,7 +1143,7 @@ mod tests {
         for i in 0..4 {
             seen.push(hint_for(&Hit::EditorTab(i), &keymap, &ctx()).unwrap());
         }
-        for mode in [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers] {
+        for mode in [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers, ViewMode::Checks] {
             seen.push(hint_for(&Hit::ResponseTab(mode), &keymap, &ctx()).unwrap());
         }
         for i in 0..ManageTab::ALL.len() {

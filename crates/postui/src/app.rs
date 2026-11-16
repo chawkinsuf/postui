@@ -1506,8 +1506,19 @@ impl App {
             // Every other control has one state; nothing reads `on` there.
             _ => false,
         };
+        use crate::components::response::ViewMode;
+        let checks = match hit {
+            Hit::CopyBodyButton
+            | Hit::SaveBodyButton
+            | Hit::ResponseEditorButton
+            | Hit::ResponseSearchButton => {
+                self.session.response.view().is_some_and(|v| v.mode == ViewMode::Checks)
+            }
+            _ => false,
+        };
         crate::hint::HintCtx {
             on,
+            checks,
             remove_scope: self.modals.value_popup_remove_scope(),
             manage_tab: (self.screen == Screen::Manage).then_some(self.manage.tab),
             // The Manager's `[Rename]`/`[Delete]` act on whatever the
@@ -4308,13 +4319,10 @@ impl App {
                     .unwrap_or_else(|| "response".to_string())
                     .replace('/', "-");
                 // The extension follows the tab like the content does: the
-                // header list is plain text whatever the body was.
-                let on_headers = self
-                    .session
-                    .response
-                    .view()
-                    .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers);
-                let ext = if !on_headers
+                // header list and the checks' lines are plain text whatever
+                // the body was.
+                let on_body = self.session.response.view().is_some_and(|v| v.mode.is_body());
+                let ext = if on_body
                     && data.content_type.as_deref().is_some_and(|c| c.contains("json"))
                 {
                     "json"
@@ -5335,8 +5343,12 @@ impl App {
                 let generation = self.session.begin_send(&self.editor.slug);
                 let tx = self.tx.clone();
                 let client = self.clients.for_request(&prepared).clone();
+                // The checks as they are at the send: the response is judged
+                // by these, once, in the send's own task (checks tabs spec
+                // 2026-11-16, P5).
+                let checks = self.editor.current_request().checks;
                 let task = tokio::spawn(async move {
-                    match crate::http::send(&client, &prepared).await {
+                    match crate::http::send_checked(&client, &prepared, checks).await {
                         Ok(data) => {
                             let _ = tx
                                 .send(Action::ResponseArrived { generation, data: Box::new(data) });
@@ -12053,7 +12065,9 @@ impl App {
                 let view = self.session.response.view()?;
                 let what = match view.mode {
                     crate::components::response::ViewMode::Headers => "response headers",
-                    _ => "response body",
+                    crate::components::response::ViewMode::Checks => "check results",
+                    crate::components::response::ViewMode::Pretty
+                    | crate::components::response::ViewMode::Raw => "response body",
                 };
                 Some((view.view_text(), format!("Copied {what}")))
             }

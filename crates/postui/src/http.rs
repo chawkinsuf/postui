@@ -29,6 +29,33 @@ pub struct ResponseData {
     pub elapsed: Duration,
     pub size: usize,
     pub content_type: Option<String>,
+    /// How the request's checks came out over this response, judged once,
+    /// with the checks as they were at the send ([`send_checked`]); empty
+    /// when it had none. The response's Checks tab reads only this.
+    pub checks: Vec<postui_core::checks::Outcome>,
+}
+
+/// [`send`], then `checks` run over the response
+/// (`postui_core::checks::evaluate`, as `postui run` judges it): the
+/// response comes back with its outcomes. A jq check reads the body, so
+/// they run on the blocking pool. The response's own times are measured
+/// inside the send and don't include them.
+pub async fn send_checked(
+    client: &reqwest::Client,
+    req: &PreparedRequest,
+    checks: postui_core::model::Checks,
+) -> Result<ResponseData, String> {
+    let mut data = send(client, req).await?;
+    if checks.is_empty() {
+        return Ok(data);
+    }
+    let judge = move || {
+        let timing = postui_core::checks::Timing::of(data.ttfb, data.elapsed);
+        let doc = || postui_core::jq::JqDocument::parse(&data.body);
+        data.checks = postui_core::checks::evaluate(&checks, data.status, timing, doc);
+        data
+    };
+    tokio::task::spawn_blocking(judge).await.map_err(|e| format!("the checks did not run: {e}"))
 }
 
 /// Builds the client used for all requests. Deliberately no timeout of any
@@ -148,6 +175,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         elapsed: raw.elapsed,
         size,
         content_type: raw.content_type,
+        checks: Vec::new(),
     })
 }
 
@@ -371,6 +399,49 @@ mod tests {
         server.await.unwrap();
         assert_eq!(data.body, "ok\u{fffd}\u{fffd}");
         assert_eq!(data.size, 4);
+    }
+
+    /// Checks tabs spec 2026-11-16 (P5): the response arrives with its
+    /// checks' outcomes, judged as `postui run` judges them; a request
+    /// with no checks gets none.
+    #[tokio::test]
+    async fn send_checked_brings_the_outcomes_with_the_response() {
+        use postui_core::checks::{Outcome, lines, passed};
+        use postui_core::model::Checks;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let _ = sock.read(&mut buf).await.unwrap();
+                let body = r#"{"ok":true,"items":[1,2]}"#;
+                let head = "HTTP/1.1 500 Oops\r\nconnection: close\r\ncontent-length:";
+                let reply = format!("{head} {}\r\n\r\n{body}", body.len());
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let req = get(&format!("http://127.0.0.1:{port}/"));
+        let none = send_checked(&client(), &req, Checks::default()).await.unwrap();
+        assert!(none.checks.is_empty());
+        let checks = Checks {
+            max_elapsed_ms: Some(60_000),
+            jq: vec![".ok".into(), ".items | length == 4".into()],
+            ..Checks::default()
+        };
+        let data = send_checked(&client(), &req, checks).await.unwrap();
+        assert_eq!(data.status, 500);
+        assert!(matches!(&data.checks[0], Outcome::Time { limit: 60_000, .. }), "{data:?}");
+        let said: Vec<String> = lines(500, &data.checks).into_iter().map(|l| l.1).collect();
+        assert_eq!(said[0], "status 500, expected below 400");
+        assert_eq!(said[2..], [".ok", ".items | length == 4 gave false"]);
+        assert!(!passed(500, &data.checks));
+        // A status check that names the code, over the same reply.
+        let named = Checks { status: vec![500], jq: vec![".ok".into()], ..Checks::default() };
+        let data = send_checked(&client(), &req, named).await.unwrap();
+        server.await.unwrap();
+        assert!(passed(500, &data.checks), "{:?}", data.checks);
     }
 
     #[tokio::test]

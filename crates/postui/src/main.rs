@@ -414,7 +414,7 @@ fn view_response_externally(
     let Some(view) = app.session.response.view() else {
         return Ok(()); // gated in App::update; races to nothing here
     };
-    let is_json_body = view.mode != postui::components::response::ViewMode::Headers
+    let is_json_body = view.mode.is_body()
         && matches!(
             app.session.response.state(),
             postui::components::response::ResponseState::Ready(d)
