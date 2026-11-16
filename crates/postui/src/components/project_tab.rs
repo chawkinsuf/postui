@@ -51,6 +51,9 @@ pub struct ProjectTab {
     name: Option<LineInput>,
     /// The default headers' table: its cursor, its open cell and its view.
     pub table: TableEditorState,
+    /// The last frame had no room for the tab ([`Self::draw`]) and drew
+    /// none of it, so nothing on it acts at rest (R19).
+    pub hidden: bool,
 }
 
 impl ProjectTab {
@@ -124,6 +127,13 @@ impl ProjectTab {
         self.table.set_selected(Some(Stop::of_row(0, len)));
     }
 
+    /// The cursor onto `+ Add header`, the tab's last stop, bringing a
+    /// view the wheel scrolled away back to it as the table's End does.
+    pub fn to_add(&mut self) {
+        self.stop = ProjectStop::Table;
+        self.table.set_selected_showing(Some(Stop::Add));
+    }
+
     /// The header row under the table's cursor, when it is on one: the
     /// stop drawn lit ([`Self::settle`]).
     pub fn selected_row(&self, len: usize) -> Option<usize> {
@@ -144,8 +154,12 @@ impl ProjectTab {
 
     /// What a list verb means here (`App::selection_action`): add a header
     /// from anywhere on the tab, the Name row included (R12), and delete or
-    /// copy the header under the cursor (R13). Nothing else applies.
+    /// copy the header under the cursor (R13). Nothing else applies, and
+    /// nothing at all on a tab the last frame didn't draw (R19).
     pub fn verb_action(&self, len: usize, verb: Verb) -> Option<Action> {
+        if self.hidden {
+            return None;
+        }
         match verb {
             Verb::Add => Some(Action::AddDefaultHeader),
             Verb::Delete { .. } => self.selected_row(len).map(Action::DeleteDefaultHeader),
@@ -154,13 +168,18 @@ impl ProjectTab {
         }
     }
 
-    /// The tab's footer chips. A live edit advertises its own pair.
+    /// The tab's footer chips. A live edit advertises its own pair, and a
+    /// tab the last frame didn't draw only the way back (R19).
     pub fn footer_chips(&self, len: usize) -> Vec<(Key, &'static str, Option<Action>)> {
         if self.field().is_some() {
             return vec![
                 (Key::Named("enter"), "save", None),
                 (Key::Named("esc"), "done", Some(Action::CloseField)),
             ];
+        }
+        let back = (Key::Named("esc"), "back", Some(Action::CloseScreen));
+        if self.hidden {
+            return vec![back];
         }
         let chip = |verb: Verb, label: &'static str| {
             (Key::Of(Action::OnSelection(verb)), label, self.verb_action(len, verb))
@@ -175,7 +194,7 @@ impl ProjectTab {
             chips.push((Key::Named("space"), "toggle", None));
             chips.push(chip(Verb::Delete { count: 1 }, "delete"));
         }
-        chips.push((Key::Named("esc"), "back", Some(Action::CloseScreen)));
+        chips.push(back);
         chips
     }
 
@@ -184,6 +203,10 @@ impl ProjectTab {
     /// (`Project::given_name`: none when blank), and `folder` the name it
     /// shows without one. `ctx.focused` is ignored: the tab's own
     /// [`Self::focused`] says whether its cursor is drawn.
+    ///
+    /// The tab is drawn whole or not at all: a body with no room for the
+    /// Name row and two lines of the table draws none of it, and records
+    /// that in [`Self::hidden`] (R19).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -198,7 +221,9 @@ impl ProjectTab {
     ) {
         let theme = ctx.theme;
         fill(frame.buffer_mut(), body, theme.page);
-        if body.width < 24 || body.height < 6 {
+        // Two heading lines, the Name row and the gaps take the first 7.
+        self.hidden = body.width < 24 || body.height < 9;
+        if self.hidden {
             self.settle(headers.len(), 0);
             return;
         }
@@ -242,10 +267,6 @@ impl ProjectTab {
             hits.register(well, Hit::ProjectName);
         }
         y += 2;
-        if y + 3 >= bottom {
-            self.settle(headers.len(), 0);
-            return;
-        }
         heading(frame.buffer_mut(), x0, y, "Default headers", ctx);
         y += 2;
 

@@ -33,11 +33,14 @@ impl Project {
     /// Writes `headers` as the whole `[default_headers]` table, in its
     /// order: a header the file holds that `headers` lacks goes, even one
     /// added by hand since the last read (spec 2026-11-15 R17, the user's
-    /// ruling; undo puts it back). An entry a `[default_headers]` table
-    /// already holds as it is keeps its own item; a changed entry under a
-    /// name the table holds keeps that key's comments; an empty map removes
-    /// the table. An inline `default_headers = { … }` is written as a
-    /// `[default_headers]` table.
+    /// ruling; undo puts it back). Every header is written as a value on
+    /// its own line, so the file holds them in `headers`' order: a value the
+    /// table already holds as it is stays as written, a changed one under a
+    /// name the table holds keeps that key's comments, and any other form
+    /// (a `[default_headers.X]` sub-table, a dotted `X.value`), which would
+    /// print in another place, is written in the plain form. An empty map
+    /// removes the table. An inline `default_headers = { … }` is written as
+    /// a `[default_headers]` table.
     pub fn set_default_headers(&mut self, headers: &IndexMap<String, Entry>) -> Result<(), Error> {
         self.transaction("set default headers", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| {
@@ -49,8 +52,11 @@ impl Project {
                 // The old table's own decor and place in the file stay.
                 let mut table = old.clone().unwrap_or_default();
                 table.clear();
+                table.set_implicit(false);
+                table.set_dotted(false);
                 for (name, entry) in headers {
-                    match old.as_ref().and_then(|t| t.get_key_value(name)) {
+                    let held = old.as_ref().and_then(|t| t.get_key_value(name));
+                    match held.filter(|(_, item)| item.is_value()) {
                         Some((key, item)) if entry_of(item).as_ref() == Some(entry) => {
                             table.insert_formatted(key, item.clone());
                         }
@@ -73,19 +79,14 @@ impl Project {
     }
 }
 
-/// The entry an item of `[default_headers]` holds: a plain string, or a
-/// table with `value` and an optional `enabled` (the forms `Entry` reads).
+/// The entry a value of `[default_headers]` holds, read by `Entry`'s own
+/// `Deserialize`, as the file is read; `None` for one it doesn't read.
 fn entry_of(item: &toml_edit::Item) -> Option<Entry> {
-    if let Some(value) = item.as_str() {
-        return Some(Entry { value: value.to_string(), enabled: true });
-    }
-    let t = item.as_table_like()?;
-    let value = t.get("value")?.as_str()?.to_string();
-    let enabled = match t.get("enabled") {
-        Some(e) => e.as_bool()?,
-        None => true,
-    };
-    Some(Entry { value, enabled })
+    use serde::Deserialize;
+    let mut value = item.as_value()?.clone();
+    value.decor_mut().clear();
+    let raw = value.to_string();
+    Entry::deserialize(toml::de::ValueDeserializer::parse(&raw).ok()?).ok()
 }
 
 /// `new` with `old`'s value decor (the comment after it on its line), when
@@ -267,6 +268,86 @@ mod tests {
         p.set_default_headers(&h).unwrap();
         let keys: Vec<&str> = p.meta().default_headers.keys().map(String::as_str).collect();
         assert_eq!(keys, ["a", "B", "c"]);
+    }
+
+    /// A header written as a `[default_headers.X]` sub-table or a dotted
+    /// `X.value` would print after the plain values, or keep a form the
+    /// tab didn't write: each is written as a plain value, so the file
+    /// holds the headers in the order written, and reads back in it.
+    #[test]
+    fn every_form_is_written_in_the_order_given() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!(
+                "{text}\n[default_headers]\na = \"1\"\nd.value = \"4\"\nc = \"3\"\n\n\
+                 [default_headers.b]\nvalue = \"2\"\nenabled = false\n"
+            ),
+        )
+        .unwrap();
+        let mut p = reopen(&dir);
+        let read_order: Vec<&str> = p.meta().default_headers.keys().map(String::as_str).collect();
+        assert_eq!(read_order, ["a", "d", "c", "b"]);
+        // The tab adds `e` last.
+        let mut h = p.meta().default_headers.clone();
+        h.insert("e".to_string(), on("5"));
+        p.set_default_headers(&h).unwrap();
+        for p in [&p, &reopen(&dir)] {
+            let keys: Vec<&str> = p.meta().default_headers.keys().map(String::as_str).collect();
+            assert_eq!(keys, ["a", "d", "c", "b", "e"]);
+            assert_eq!(p.meta().default_headers, h);
+        }
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(
+            text.contains(
+                "[default_headers]\na = \"1\"\nd = \"4\"\nc = \"3\"\n\
+                 b = { value = \"2\", enabled = false }\ne = \"5\"\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Headers held only as sub-tables, under no `[default_headers]` line
+    /// of their own, are written under one.
+    #[test]
+    fn sub_tables_alone_are_written_under_a_table() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!("{text}\n[default_headers.a]\nvalue = \"1\"\n"),
+        )
+        .unwrap();
+        let mut p = reopen(&dir);
+        let mut h = p.meta().default_headers.clone();
+        h.insert("b".to_string(), on("2"));
+        p.set_default_headers(&h).unwrap();
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains("[default_headers]\na = \"1\"\nb = \"2\"\n"), "{text}");
+        assert_eq!(reopen(&dir).meta().default_headers, h);
+    }
+
+    /// An entry is compared by `Entry`'s own reading of it: a value the
+    /// tab didn't change keeps the form it was written in.
+    #[test]
+    fn an_unchanged_value_keeps_its_written_form() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            format!(
+                "{text}\n[default_headers]\na = {{ value = 'x', enabled = true }}  # kept\nb = \"2\"\n"
+            ),
+        )
+        .unwrap();
+        let mut p = reopen(&dir);
+        let mut h = p.meta().default_headers.clone();
+        h.get_mut("b").unwrap().enabled = false;
+        p.set_default_headers(&h).unwrap();
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains("a = { value = 'x', enabled = true }  # kept\n"), "{text}");
+        assert_eq!(reopen(&dir).meta().default_headers, h);
     }
 
     #[test]

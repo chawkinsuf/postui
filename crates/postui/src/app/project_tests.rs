@@ -548,7 +548,16 @@ fn the_table_tips_read_the_default_headers() {
     let tip = |app: &App, hit: Hit| crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit));
     assert_eq!(tip(&app, pt(Hit::TableCheckbox(0))).as_deref(), Some("Enable this row"));
     assert_eq!(tip(&app, pt(Hit::TableCheckbox(1))).as_deref(), Some("Disable this row"));
-    assert_eq!(tip(&app, pt(Hit::TableCopy(1))).as_deref(), Some("Copy this row's value"));
+    // Each pill's tip is the action its click runs, the footer chip's own.
+    for (pill, action) in [
+        (Hit::TableCopy(1), Action::CopyDefaultHeader(1)),
+        (Hit::TableDelete(1), Action::DeleteDefaultHeader(1)),
+    ] {
+        let chip = Hit::FooterChip(action);
+        let pill_tip = tip(&app, pt(pill.clone()));
+        assert!(pill_tip.is_some(), "{pill:?}");
+        assert_eq!(pill_tip, tip(&app, chip), "{pill:?}");
+    }
 }
 
 /// R14: a click on another cell whose commit `project.toml` refuses keeps
@@ -831,6 +840,144 @@ fn the_footer_delete_chip_keeps_the_cursor() {
     assert_eq!(keys(&app), ["a", "c"]);
     assert!(app.project_tab.focused, "the cursor is drawn");
     assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(1)));
+}
+
+/// Every footer chip the tab shows keeps its cursor drawn, as its keys
+/// do: add, copy and delete on a row, and done on an open field.
+#[test]
+fn every_footer_chip_keeps_the_cursor() {
+    for chip in ["add", "copy", "delete", "done"] {
+        let mut app = project_app(THREE, KeyProfile::Arrows);
+        feed(&mut app, if chip == "done" { "<CR>" } else { "<Down><Down>" });
+        let chips = app.project_tab.footer_chips(3);
+        let action = chips
+            .iter()
+            .find(|(_, l, _)| *l == chip)
+            .and_then(|(_, _, a)| a.clone())
+            .unwrap_or_else(|| panic!("no {chip} chip"));
+        click(&mut app, Hit::FooterChip(action));
+        assert!(app.project_tab.focused, "{chip}: the cursor is drawn");
+    }
+}
+
+/// The verb keys light the cursor a click away dropped, as every key the
+/// tab takes does: `y` copies and the row is drawn lit again.
+#[test]
+fn a_verb_key_after_a_click_away_lights_the_cursor() {
+    for (profile, yank) in [(KeyProfile::Arrows, "y"), (KeyProfile::Vim, "yy")] {
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "j" } else { "<Down>" });
+        click(&mut app, Hit::ManageTab(ManageTab::Project.index()));
+        assert!(!app.project_tab.focused, "{profile:?}");
+        feed(&mut app, yank);
+        assert_eq!(super::tests::last_copied(&app).as_deref(), Some("1"), "{profile:?}");
+        assert!(app.project_tab.focused, "{profile:?}: the cursor is drawn");
+    }
+}
+
+/// The keys to the first and last stop act the same from either stop:
+/// Home, PageUp, ctrl+Home and ctrl+b go to the Name row; End, PageDown,
+/// ctrl+End and ctrl+f to `+ Add header`. ctrl+PageDown is none of them,
+/// on either stop.
+#[test]
+fn the_first_and_last_keys_act_from_either_stop() {
+    let stops: [(&str, &str); 2] = [("Name", ""), ("a row", "<Down><Down>")];
+    for (from, walk) in stops {
+        for last in ["<End>", "<PageDown>", "<C-End>", "<C-f>"] {
+            let mut app = project_app(THREE, KeyProfile::Arrows);
+            feed(&mut app, walk);
+            feed(&mut app, last);
+            assert_eq!(app.project_tab.table.selected(), Some(Stop::Add), "{from} {last}");
+            assert_eq!(app.project_tab.stop, ProjectStop::Table, "{from} {last}");
+        }
+        for first in ["<Home>", "<PageUp>", "<C-Home>", "<C-b>"] {
+            let mut app = project_app(THREE, KeyProfile::Arrows);
+            feed(&mut app, walk);
+            feed(&mut app, first);
+            assert_eq!(app.project_tab.stop, ProjectStop::Name, "{from} {first}");
+        }
+        let mut app = project_app(THREE, KeyProfile::Arrows);
+        feed(&mut app, walk);
+        let (stop, row) = (app.project_tab.stop, app.project_tab.table.selected());
+        let ev = KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL);
+        assert_eq!(app.handle_project_key(ev), None, "{from}: handed on");
+        assert_eq!((app.project_tab.stop, app.project_tab.table.selected()), (stop, row));
+    }
+}
+
+/// R12: ↑↓ walk the stops whether or not a field is open, committing it
+/// first: ↑ from a cell open on the first row reaches the Name row as ↑
+/// at rest does, and ↓ from the open name reaches the first header.
+#[test]
+fn the_arrows_walk_on_from_an_open_field() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "ji" } else { "<Down><CR>" });
+        let edit = app.project_tab.table.editing.as_mut().expect("a's name is open");
+        assert_eq!(edit.row, 0, "{profile:?}");
+        edit.input.set_text("A");
+        feed(&mut app, "<Up>");
+        assert_eq!(keys(&app), ["A", "b", "c"], "{profile:?}: committed");
+        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
+        assert!(app.project_tab.table.editing.is_none(), "{profile:?}");
+
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "i" } else { "<CR>" });
+        app.project_tab.name_input_mut().expect("the name is open").set_text("Down");
+        feed(&mut app, "<Down>");
+        assert_eq!(app.proj().meta().name.as_deref(), Some("Down"), "{profile:?}");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        assert!(!app.project_tab.name_open(), "{profile:?}");
+    }
+    // ↑ from the open name commits it and stays: there is no stop above.
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    feed(&mut app, "<CR>");
+    app.project_tab.name_input_mut().unwrap().set_text("Up");
+    feed(&mut app, "<Up>");
+    assert_eq!(app.proj().meta().name.as_deref(), Some("Up"));
+    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert!(!app.project_tab.name_open());
+}
+
+/// R19: a body too small for the tab draws none of it, and nothing on it
+/// acts at rest: no key or verb toggles, deletes, adds or opens what is
+/// not on screen; Esc still leaves, and the footer offers only that.
+#[test]
+fn a_tab_too_small_to_draw_acts_on_nothing() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "jj" } else { "<Down><Down>" });
+        let before = file(&app);
+        let mut terminal = Terminal::new(TestBackend::new(160, 12)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        assert!(app.project_tab.hidden, "{profile:?}");
+        assert!(app.hits.rect_of(&Hit::ProjectName).is_none(), "{profile:?}: nothing drawn");
+        let labels: Vec<&str> =
+            app.project_tab.footer_chips(3).iter().map(|(_, l, _)| *l).collect();
+        assert_eq!(labels, ["back"], "{profile:?}");
+        let presses = if profile == KeyProfile::Vim {
+            ["<Space>", "dd", "a", "i", "yy", "G", "k"]
+        } else {
+            ["<Space>", "d", "a", "<CR>", "y", "<End>", "<Up>"]
+        };
+        for keys in presses {
+            for ev in crate::keyroute::notation::events(keys) {
+                app.handle_key(ev);
+            }
+            assert_eq!(file(&app), before, "{profile:?} {keys}: nothing written");
+            assert!(app.project_tab.field().is_none(), "{profile:?} {keys}: nothing opened");
+            assert_eq!(
+                app.project_tab.table.selected(),
+                Some(Stop::Row(1)),
+                "{profile:?} {keys}: the cursor stays"
+            );
+        }
+        assert_eq!(super::tests::last_copied(&app), None, "{profile:?}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Main, "{profile:?}: Esc leaves");
+    }
 }
 
 /// Vim's `ZQ` and `:q!` leave the screen abandoning an open name, as they

@@ -374,9 +374,10 @@ fn open_col(row: usize, col: Col, map_len: usize) -> Col {
     if row >= map_len { Col::Key } else { col }
 }
 
-/// Whether `ev`, typed into an open cell, closes or leaves it (Esc,
-/// Enter, ↑↓, Tab, Shift-Tab), committing it, rather than editing its
-/// text: the one place an open cell's keys are sorted.
+/// Whether `ev`, typed into an open cell, is one of the keys that close or
+/// leave it (Esc, Enter, ↑↓, Tab, Shift-Tab), committing it, rather than
+/// one that edits its text. `handle_editing_key` gives each its own arm;
+/// a key without one is typed into the cell there too.
 fn commits_cell(ev: KeyEvent) -> bool {
     matches!(
         ev.code,
@@ -409,7 +410,7 @@ impl TableEditorState {
     /// even when the key lands on the stop the cursor is on (End on the
     /// last stop, ↓ at the end). The key asked for the cursor, so it finds
     /// it (S23).
-    fn set_selected_showing(&mut self, stop: Option<Stop>) {
+    pub(crate) fn set_selected_showing(&mut self, stop: Option<Stop>) {
         self.write_cursor(stop, true);
     }
 
@@ -958,11 +959,6 @@ impl TableEditorState {
         mut edit: CellEdit,
     ) -> TableOutcome {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
-        if !commits_cell(ev) {
-            let consumed = edit.input.handle_key(ev);
-            self.editing = Some(edit);
-            return if consumed { TableOutcome::consumed() } else { TableOutcome::not_consumed() };
-        }
         match ev.code {
             // The field rule: Esc closes the cell keeping its text, and the
             // cursor stays on the row — Enter does the same (spec
@@ -1000,11 +996,12 @@ impl TableEditorState {
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::BackTab => self.walk_cell(map, &edit, false),
-            KeyCode::Tab => self.walk_cell(map, &edit, !shift),
-            // `commits_cell` lets no other key through.
+            KeyCode::Tab if shift => self.walk_cell(map, &edit, false),
+            KeyCode::Tab => self.walk_cell(map, &edit, true),
             _ => {
+                let consumed = edit.input.handle_key(ev);
                 self.editing = Some(edit);
-                TableOutcome::not_consumed()
+                if consumed { TableOutcome::consumed() } else { TableOutcome::not_consumed() }
             }
         }
     }

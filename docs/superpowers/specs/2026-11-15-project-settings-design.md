@@ -56,13 +56,14 @@ journaled, undoable steps (`Project::set_env_tls`, the renames), through
 | R9 | Every change the table makes to the headers (a committed cell, a toggle, a delete) writes `project.toml` at once as one undo step; no save step | mine (approved), Q3 |
 | R10 | Rows keep file order; a new row goes last; no reordering | mine (approved), Q3 |
 | R11 | Renaming onto a name already there, blanking a name, and a `+ Add` name already there do what a request's Headers table does on `main` (merge with a warning; refused with a warning; no row added) | mine (approved), restart |
-| R12 | Keys: ↑↓ (vim `j k`, `gg G`) walk the Name row, the header rows and `+ Add`; the page keys go to the first or last stop, and ctrl+d/ctrl+u step half the table, crossing to and from the Name row as ↓↑ do; ←→ (`h l`) pick the name or value cell; Enter (`i`) opens; Space toggles; Delete or `d` (vim `dd`) deletes; Tab and Shift-Tab walk the cells while one is open; Esc with nothing open leaves the screen. `a` adds a header from anywhere on the tab, the Name row included, in both profiles, and the footer shows the add chip on both rows | mine; `a` from anywhere mine (approved), comment 1382 |
+| R12 | Keys: ↑↓ (vim `j k`, `gg G`) walk the Name row, the header rows and `+ Add`, from an open name or cell too, which they commit first (↑ from a cell on the first row reaches the Name row, ↓ from the open name the first header); the keys a request table takes to its first or last stop (Home, PageUp, ctrl+Home, ctrl+b; End, PageDown, ctrl+End, ctrl+f) go to the Name row or `+ Add` from either stop, and ctrl+d/ctrl+u step half the table, crossing to and from the Name row as ↓↑ do; ←→ (`h l`) pick the name or value cell; Enter (`i`) opens; Space toggles; Delete or `d` (vim `dd`) deletes; Tab and Shift-Tab walk the cells while one is open; Esc with nothing open leaves the screen. `a` adds a header from anywhere on the tab, the Name row included, in both profiles, and the footer shows the add chip on both rows. Every key, verb, pill and footer chip that acts on the tab draws its cursor; a pill's and a chip's tip name the action its click runs | mine; `a` from anywhere mine (approved), comment 1382 |
 | R13 | A row's copy pill copies its value to the clipboard; `y` (vim `yy`) on the row does the same, in both profiles, since the tab has no put (as a request table's auto row), and the footer shows the copy chip on a row | mine |
 | R14 | A tab switch, closing the screen, an undo, an environment switch, a reload, a journaled op, or a click away commits an open name or cell first (close-input-first, task #75). A write `project.toml` refuses (it no longer parses) toasts and keeps the field open with the typing; a reload of changed files cancels it instead, as it does the Variable Manager's | mine; the journaled op and the reload's cancel mine (approved), comment 1367 |
 | R15 | No link from a request's default row to this tab in this task; filed as its own task (#305) | mine (approved), Q5 |
 | R16 | Undo of a project step redraws the tab from the restored file; the tab's cursor is clamped, not restored | mine |
 | R17 | Each change writes the whole `[default_headers]` table as the tab shows it. A hand edit made to `[default_headers]` while the tab is open, not yet re-read, is overwritten by the next change made on the tab; undo puts it back | you, 2026-11-16: "Just start this branch over with the simpler version" (the simpler version as main proposed it, overwrite and undo named) |
 | R18 | A click on a header row whose own commit of an open name or cell changed how many headers there are (an add, or a rename that merged two) does nothing; the next click acts | mine |
+| R19 | The tab is drawn whole (its Name row and at least two lines of the header table) or not at all. On a body too small for it, nothing on it acts at rest: no key, verb or chip opens, toggles, deletes, adds or copies what is not on screen, and the footer offers only the way back, which Esc still takes. A name or cell already open keeps its keys | mine, 2026-11-16 (round 5) |
 
 **R17 is decided.** A review that finds "a header added to `project.toml`
 outside the app is lost by the next change on the tab" has found R17: the
@@ -85,11 +86,15 @@ chooser) brings the hand edit into the tab before any change there.
   writes `headers` as the whole `[default_headers]` table, in its order
   (R17). Enabled entries are plain strings and disabled ones
   `{ value, enabled = false }`, as a request file's table rows. As a
-  cheap courtesy, a key the file's table already holds keeps its
-  comments (its item, when unchanged; its decor, when changed); this is
-  not a merge, since every header not in `headers` goes. A hand-written
-  inline `default_headers = { … }` is written back as a table. An empty
-  map removes the table. Journaled; no change records nothing.
+  cheap courtesy, a value the file's table already holds keeps its
+  comments (its item, when `Entry`'s own reading of it is unchanged; its
+  decor, when changed); this is not a merge, since every header not in
+  `headers` goes. Every header is written as a value on its own line,
+  so a hand-written `[default_headers.X]` sub-table or dotted `X.value`,
+  which would print elsewhere, takes the plain form and the file keeps
+  `headers`' order (R10). A hand-written inline
+  `default_headers = { … }` is written back as a table. An empty map
+  removes the table. Journaled; no change records nothing.
 
 **App** (`postui`):
 
@@ -139,8 +144,9 @@ chooser) brings the hand edit into the tab before any change there.
   the arrows wheel moves the view and leaves the cursor, the vim wheel
   moves the cursor into the view, and a notch that moves nothing marks
   nothing. An open name or cell offers the Copy/Paste menu on a right
-  click. A click away drops the tab's cursor, as on the Settings tab; a
-  key the tab hands on leaves it dropped.
+  click. A click away drops the tab's cursor, as on the Settings tab,
+  except on a footer chip, which commits what is open and leaves the
+  cursor drawn; a key the tab hands on leaves it dropped.
 - Close-input-first (R14): the tab's input holds project state, as the
   Variable Manager's does, so it closes wherever the Manager's closes,
   through one helper (`close_project_inputs`): `close_open_inputs`, a
@@ -173,8 +179,11 @@ chooser) brings the hand edit into the tab before any change there.
   checkbox, copy and delete pills leaving the cursor where it was, from
   the Name row and from a table row; a delete pill above, below and on
   the cursor's header; the delete toast; `y`/`yy` copying a value; the
-  half-page keys to and from the Name row; a blank name drawn as the
-  folder name; the wheel; the footer chips.
+  half-page keys to and from the Name row; the first and last keys from
+  either stop; ↑↓ out of an open name or cell; a blank name drawn as the
+  folder name; the wheel; the footer chips, each keeping the cursor, and
+  the pills' tips; a tab too small to draw acting on nothing (R19). Core:
+  sub-tables and dotted headers written in order.
 - Key matrix: a `ManageProject` fixture in the sweeps (verb chips,
   keycaps, the way back) and cases for move, open, add and delete in both
   profiles.
@@ -220,6 +229,12 @@ chooser) brings the hand edit into the tab before any change there.
 - A right click opens no menu on the tab, except the Copy/Paste menu on
   an open name or cell. Only the Name row's well is clickable, not its
   label.
+- Round 5 of the restart (2026-11-16): ↑↓ leave an open name or cell
+  and walk on, so the Name row's field takes them where a Settings field
+  swallows them; a footer chip's click leaves the tab's cursor drawn,
+  where the Settings tab's drops it; R19's whole-or-nothing draw; and a
+  sub-table or dotted header in `project.toml` is rewritten in the plain
+  form at the next change.
 - Tokens in the values are tinted as they resolve for the open request
   (the editor's variable snapshot), the same colours its Headers tab gives
   the auto rows.

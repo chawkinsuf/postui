@@ -35,20 +35,24 @@ impl App {
     fn project_tab_key(&mut self, ev: KeyEvent) -> Option<bool> {
         let plain = ev.modifiers.is_empty();
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
-        // An open name owns the keyboard: Enter and Esc both commit (the
-        // field rule, R6); a refusal keeps it open and fails the key.
+        let len = self.default_headers_len();
+        let up = ev.code == KeyCode::Up && plain;
+        let down = ev.code == KeyCode::Down && plain;
+        // ↑↓ walk the Name row, the headers and `+ Add` whether or not a
+        // field is open (R12): from an open name or cell they commit it
+        // first, and a refusal keeps it open and fails the key.
+        //
+        // An open name owns the keyboard: Enter and Esc commit too (the
+        // field rule, R6).
         if self.project_tab.name_open() {
-            match ev.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    if !self.commit_project_name() {
-                        self.last_action_failed = true;
-                    }
+            if matches!(ev.code, KeyCode::Esc | KeyCode::Enter) || up || down {
+                if !self.commit_project_name() {
+                    self.last_action_failed = true;
+                } else if down {
+                    self.project_tab.to_table(len);
                 }
-                _ => {
-                    if let Some(input) = self.project_tab.name_input_mut() {
-                        input.handle_key(ev);
-                    }
-                }
+            } else if let Some(input) = self.project_tab.name_input_mut() {
+                input.handle_key(ev);
             }
             return Some(self.update(Action::Render));
         }
@@ -57,23 +61,32 @@ impl App {
         // that only edits the cell's text writes nothing, so it goes
         // straight in. A key neither takes is swallowed, not handed on, as
         // on the Name row above, the Settings fields and the Variables grid.
-        if self.project_tab.table.editing.is_some() {
-            if self.project_tab.table.type_into_cell(ev).is_none()
-                && self.run_header_table(|t, map| t.handle_key(ev, map)).1
-            {
-                self.last_action_failed = true;
+        if let Some(row) = self.project_tab.table.editing.as_ref().map(|e| e.row) {
+            if self.project_tab.table.type_into_cell(ev).is_none() {
+                if self.run_header_table(|t, map| t.handle_key(ev, map)).1 {
+                    self.last_action_failed = true;
+                } else if up && row == 0 {
+                    // ↑ from the first row goes on to the Name row.
+                    self.project_tab.to_name();
+                }
             }
             return Some(self.update(Action::Render));
         }
         if ev.code == KeyCode::Esc {
             return Some(self.update(Action::CloseScreen));
         }
-        let len = self.default_headers_len();
+        // Nothing else acts on a tab the last frame didn't draw (R19).
+        if self.project_tab.hidden {
+            return None;
+        }
         // The Name row is the first stop and `+ Add header` the last: the
-        // keys the table takes to its first or last stop go there.
-        let first = matches!(ev.code, KeyCode::Home | KeyCode::PageUp) && (plain || ctrl)
+        // keys the table takes to its first or last stop go there, from
+        // either stop.
+        let first = ev.code == KeyCode::Home && (plain || ctrl)
+            || ev.code == KeyCode::PageUp && plain
             || ev.code == KeyCode::Char('b') && ctrl;
-        let last = matches!(ev.code, KeyCode::End | KeyCode::PageDown) && (plain || ctrl)
+        let last = ev.code == KeyCode::End && (plain || ctrl)
+            || ev.code == KeyCode::PageDown && plain
             || ev.code == KeyCode::Char('f') && ctrl;
         // The half-page keys cross onto and off the Name row as ↑↓ do:
         // ctrl+d off it, and ctrl+u from the table's first stop.
@@ -82,20 +95,16 @@ impl App {
         let at_top = self.project_tab.table.selected().map(|s| s.clamp(len, 0))
             == Some(Stop::of_row(0, len));
         match self.project_tab.stop {
+            _ if first => self.project_tab.to_name(),
+            _ if last => self.project_tab.to_add(),
             ProjectStop::Name => match ev.code {
-                KeyCode::Down if plain => self.project_tab.to_table(len),
-                _ if half_down => self.project_tab.to_table(len),
-                _ if last => {
-                    self.project_tab.to_table(len);
-                    self.project_tab.table.set_selected(Some(Stop::Add));
-                }
+                _ if down || half_down => self.project_tab.to_table(len),
                 KeyCode::Enter if plain => self.open_project_name(),
-                KeyCode::Up if plain => {}
-                _ if first || half_up => {}
+                _ if up || half_up => {}
                 _ => return None,
             },
             // ↑ off the first row goes to the Name row too, below.
-            ProjectStop::Table if first || half_up && at_top => self.project_tab.to_name(),
+            ProjectStop::Table if half_up && at_top => self.project_tab.to_name(),
             ProjectStop::Table => {
                 let (outcome, refused) = self.run_header_table(|t, map| t.handle_key(ev, map));
                 if refused {
@@ -105,7 +114,7 @@ impl App {
                     return Some(self.update(Action::DeleteDefaultHeader(i)));
                 }
                 if !outcome.consumed {
-                    if ev.code != KeyCode::Up || !plain {
+                    if !up {
                         return None;
                     }
                     self.project_tab.to_name();
@@ -250,7 +259,6 @@ impl App {
             return;
         }
         self.project_tab.stop = ProjectStop::Table;
-        self.project_tab.focused = true;
         self.run_header_table(|t, map| {
             t.begin_add(map);
             TableOutcome::default()
@@ -258,9 +266,8 @@ impl App {
     }
 
     /// `Action::DeleteDefaultHeader`: header `i` goes, one undo step, with
-    /// the request table's "Deleted row" toast. The tab's cursor is drawn
-    /// again, as for an add: a footer chip's click is a click away that
-    /// dropped it. The cursor stays on what it was on: the Name row, `+ Add`,
+    /// the request table's "Deleted row" toast. The cursor stays on what
+    /// it was on: the Name row, `+ Add`,
     /// or the same header, which a delete above it moves up one. When the
     /// header under it is the one deleted (a delete key, or that row's
     /// pill), it lands on the row that moved up, as the table's own delete
@@ -270,7 +277,6 @@ impl App {
             self.last_action_failed = true;
             return;
         }
-        self.project_tab.focused = true;
         let key = self
             .project()
             .and_then(|p| p.meta().default_headers.get_index(i).map(|(k, _)| k.clone()));

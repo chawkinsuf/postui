@@ -4759,12 +4759,19 @@ impl App {
                 }
                 true
             }
-            Action::AddDefaultHeader => {
-                self.add_default_header();
-                true
-            }
-            Action::DeleteDefaultHeader(i) => {
-                self.delete_default_header(i);
+            // The Project tab's actions: each acts on the tab, so its cursor
+            // is drawn, as for a key the tab claims (a footer chip's click
+            // is a click away that dropped it).
+            Action::AddDefaultHeader
+            | Action::DeleteDefaultHeader(_)
+            | Action::CopyDefaultHeader(_) => {
+                self.project_tab.focused = true;
+                match action {
+                    Action::AddDefaultHeader => self.add_default_header(),
+                    Action::DeleteDefaultHeader(i) => self.delete_default_header(i),
+                    Action::CopyDefaultHeader(i) => self.copy_default_header(i),
+                    _ => {}
+                }
                 true
             }
             Action::DeleteTableRow(i) => {
@@ -4780,10 +4787,6 @@ impl App {
                 if let Some(key) = key {
                     self.toast_deleted_row(&key, i);
                 }
-                true
-            }
-            Action::CopyDefaultHeader(i) => {
-                self.copy_default_header(i);
                 true
             }
             Action::DeleteTableRows { start, count } => {

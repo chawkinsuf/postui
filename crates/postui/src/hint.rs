@@ -406,10 +406,19 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::ManageMoveAll => text("Move all requests to another space"),
         Hit::ProjectName => text("Edit the project's name"),
-        // Worded as the request table's same control; its `on`
-        // `App::hint_ctx` reads from the default headers.
+        // Each pill described by the action its click runs, as the footer's
+        // chip for it is; the checkbox's `on` is the default header's
+        // (`App::hint_ctx`). A row and its cells are surfaces, with no hint.
         Hit::ProjectTable(inner) => {
-            hint_source(&crate::components::table_editor::TableOwner::Request.hit(*inner), ctx)
+            use crate::components::table_editor::TableHit;
+            match inner {
+                TableHit::Checkbox(_) => {
+                    text(if ctx.on { "Disable this row" } else { "Enable this row" })
+                }
+                TableHit::Copy(i) => of(Action::CopyDefaultHeader(*i)),
+                TableHit::Delete(i) => of(Action::DeleteDefaultHeader(*i)),
+                TableHit::Row(_) | TableHit::Cell { .. } => None,
+            }
         }
 
         // -- Settings tab --

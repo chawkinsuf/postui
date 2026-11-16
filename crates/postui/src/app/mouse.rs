@@ -1947,12 +1947,15 @@ impl App {
         // as the Settings tab's: a click off the tab's own controls commits
         // it and drops the tab's cursor, and a commit the write refuses
         // swallows the click. The tab's own hits commit in their arms
-        // below.
+        // below. A footer chip commits it too, but leaves the cursor drawn:
+        // the footer is the tab's, its chips naming the tab's keys.
         if !(keeps_table_selection || matches!(hit, Hit::ProjectName | Hit::ProjectTable(_))) {
             if !self.commit_project_tab_input() {
                 return self.update(Action::Render);
             }
-            self.project_tab.focused = false;
+            if !matches!(hit, Hit::FooterChip(_)) {
+                self.project_tab.focused = false;
+            }
         }
         // Likewise, clicking away blurs whichever editor input is active
         // (URL line / table / body). Hits that themselves place the
