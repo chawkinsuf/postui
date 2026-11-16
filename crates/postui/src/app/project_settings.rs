@@ -55,22 +55,26 @@ impl App {
             return Some(self.update(Action::CloseScreen));
         }
         let len = self.default_headers_len();
+        // The Name row is the first stop and `+ Add header` the last: the
+        // keys the table takes to its first or last stop go there.
+        let first = matches!(ev.code, KeyCode::Home | KeyCode::PageUp) && (plain || ctrl)
+            || ev.code == KeyCode::Char('b') && ctrl;
+        let last = matches!(ev.code, KeyCode::End | KeyCode::PageDown) && (plain || ctrl)
+            || ev.code == KeyCode::Char('f') && ctrl;
         match self.project_tab.stop {
             ProjectStop::Name => match ev.code {
                 KeyCode::Down if plain => self.project_tab.to_table(len),
-                KeyCode::End | KeyCode::PageDown if plain || ctrl => {
+                _ if last => {
                     self.project_tab.to_table(len);
                     self.project_tab.table.set_selected(Some(Stop::Add));
                 }
                 KeyCode::Enter if plain => self.open_project_name(),
-                KeyCode::Up | KeyCode::Home | KeyCode::PageUp if plain || ctrl => {}
+                KeyCode::Up if plain => {}
+                _ if first => {}
                 _ => return None,
             },
-            // The Name row is the first stop: Home, and ↑ off the first
-            // row, go to it.
-            ProjectStop::Table if matches!(ev.code, KeyCode::Home) && (plain || ctrl) => {
-                self.project_tab.to_name();
-            }
+            // ↑ off the first row goes to the Name row too, below.
+            ProjectStop::Table if first => self.project_tab.to_name(),
             ProjectStop::Table => {
                 let (outcome, refused) = self.run_header_table(|t, map| t.handle_key(ev, map));
                 if refused {
@@ -140,45 +144,53 @@ impl App {
     /// the write was refused (toasted).
     fn write_default_headers(&mut self, map: &IndexMap<String, Entry>) -> bool {
         let t = self.begin_op();
-        let Some(p) = self.project.as_mut() else { return false };
-        match p.set_default_headers(map) {
-            Ok(()) => {
+        match self.project.as_mut().map(|p| p.set_default_headers(map)) {
+            Some(Ok(())) => {
                 self.record_project_step(t, crate::undo::StepLabel::change("default headers"));
                 true
             }
-            Err(e) => {
+            Some(Err(e)) => {
+                self.op_in_flight = false;
                 self.toasts.push(format!("cannot save default headers: {e}"), ToastKind::Error);
+                false
+            }
+            None => {
+                self.op_in_flight = false;
                 false
             }
         }
     }
 
-    /// Commits the Name row's edit (R7): trimmed, empty removes `name`,
-    /// unchanged writes nothing. `false` when the write was refused: the
-    /// edit stays open with the typing (R14), and the caller decides
-    /// whether that fails the action. The edit is taken out before the
-    /// write's `begin_op`, so that close finds nothing open.
+    /// Commits the Name row's edit (R7): trimmed (by `set_project_name`),
+    /// empty removes `name`, and text the same as the seed writes nothing.
+    /// `false` when the write was refused: the edit stays open with the
+    /// typing (R14), and the caller decides whether that fails the action.
+    /// The edit is taken out before the write's `begin_op`, so that close
+    /// finds nothing open.
     pub(crate) fn commit_project_name(&mut self) -> bool {
         let Some(input) = self.project_tab.take_name() else { return true };
-        let typed = input.text().trim().to_string();
         let Some(current) = self.project().map(|p| p.meta().name.clone().unwrap_or_default())
         else {
             return true;
         };
-        if typed == current {
+        if input.text() == current {
             return true;
         }
         let t = self.begin_op();
-        let Some(p) = self.project.as_mut() else { return true };
-        match p.set_project_name(Some(&typed)) {
-            Ok(()) => {
+        match self.project.as_mut().map(|p| p.set_project_name(Some(input.text()))) {
+            Some(Ok(())) => {
                 self.record_project_step(t, crate::undo::StepLabel::change("project name"));
                 true
             }
-            Err(e) => {
+            Some(Err(e)) => {
+                self.op_in_flight = false;
                 self.project_tab.restore_name(input);
                 self.toasts.push(format!("cannot save the project name: {e}"), ToastKind::Error);
                 false
+            }
+            None => {
+                self.op_in_flight = false;
+                true
             }
         }
     }

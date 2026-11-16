@@ -633,7 +633,7 @@ impl App {
                 // typed text survives) swallows the press: no menu is
                 // offered over the typing. A right press in a dialog is the
                 // dialog's, as a left one is (`on_hit`'s dialog rule).
-                if self.modals.is_empty() && !self.close_manager_input() {
+                if self.modals.is_empty() && !self.close_project_inputs() {
                     return self.update(Action::Render);
                 }
                 // A table hit is normalized to `TableRow(resolved)` for the

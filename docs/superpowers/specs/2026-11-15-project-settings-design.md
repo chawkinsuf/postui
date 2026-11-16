@@ -87,8 +87,9 @@ chooser) brings the hand edit into the tab before any change there.
   `{ value, enabled = false }`, as a request file's table rows. As a
   cheap courtesy, a key the file's table already holds keeps its
   comments (its item, when unchanged; its decor, when changed); this is
-  not a merge, since every header not in `headers` goes. An empty map
-  removes the table. Journaled; no change records nothing.
+  not a merge, since every header not in `headers` goes. A hand-written
+  inline `default_headers = { … }` is written back as a table. An empty
+  map removes the table. Journaled; no change records nothing.
 
 **App** (`postui`):
 

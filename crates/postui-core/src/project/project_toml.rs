@@ -33,9 +33,11 @@ impl Project {
     /// Writes `headers` as the whole `[default_headers]` table, in its
     /// order: a header the file holds that `headers` lacks goes, even one
     /// added by hand since the last read (spec 2026-11-15 R17, the user's
-    /// ruling; undo puts it back). An entry the table already holds as it
-    /// is keeps its own item; a changed entry under a name the table holds
-    /// keeps that key's comments; an empty map removes the table.
+    /// ruling; undo puts it back). An entry a `[default_headers]` table
+    /// already holds as it is keeps its own item; a changed entry under a
+    /// name the table holds keeps that key's comments; an empty map removes
+    /// the table. An inline `default_headers = { … }` is written as a
+    /// `[default_headers]` table.
     pub fn set_default_headers(&mut self, headers: &IndexMap<String, Entry>) -> Result<(), Error> {
         self.transaction("set default headers", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| {
@@ -53,15 +55,17 @@ impl Project {
                             table.insert_formatted(key, item.clone());
                         }
                         Some((key, item)) => {
-                            table.insert_formatted(
-                                key,
-                                with_decor_of(Some(item), entry_item(entry)),
-                            );
+                            table.insert_formatted(key, with_decor_of(Some(item), entry.to_item()));
                         }
                         None => {
-                            table.insert(name, entry_item(entry));
+                            table.insert(name, entry.to_item());
                         }
                     }
+                }
+                if old.is_none() {
+                    // Not a table (an inline one): its key goes too, with
+                    // its inline spacing.
+                    doc.remove(DEFAULT_HEADERS);
                 }
                 doc[DEFAULT_HEADERS] = toml_edit::Item::Table(table);
             })
@@ -92,18 +96,6 @@ fn with_decor_of(old: Option<&toml_edit::Item>, mut new: toml_edit::Item) -> tom
         *value.decor_mut() = old.decor().clone();
     }
     new
-}
-
-/// `entry` as `HttpRequest::to_toml_string` writes a table row: enabled as
-/// a plain string, disabled as `{ value, enabled = false }`.
-fn entry_item(entry: &Entry) -> toml_edit::Item {
-    if entry.enabled {
-        return toml_edit::value(entry.value.as_str());
-    }
-    let mut inline = toml_edit::InlineTable::new();
-    inline.insert("value", toml_edit::Value::from(entry.value.as_str()));
-    inline.insert("enabled", toml_edit::Value::from(false));
-    toml_edit::Item::Value(toml_edit::Value::InlineTable(inline))
 }
 
 #[cfg(test)]
@@ -244,6 +236,22 @@ mod tests {
             text.contains("# the chip\nname = \"Orders API\"  # shown in the header"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn an_inline_table_is_written_as_a_table_with_every_header() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        let inline = format!("default_headers = {{ a = \"1\", b = \"2\" }}  # note\n{text}");
+        std::fs::write(dir.path().join("project.toml"), inline).unwrap();
+        let mut p = reopen(&dir);
+        let mut h = p.meta().default_headers.clone();
+        h.get_mut("b").unwrap().enabled = false;
+        p.set_default_headers(&h).unwrap();
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains("[default_headers]\na = \"1\"\n"), "{text}");
+        assert_eq!(reopen(&dir).meta().default_headers, h);
+        assert_eq!(reopen(&dir).display_name(), "Demo");
     }
 
     #[test]

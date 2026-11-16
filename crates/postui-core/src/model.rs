@@ -71,6 +71,21 @@ pub struct Entry {
     pub enabled: bool,
 }
 
+impl Entry {
+    /// The entry as a table row in a file: enabled as a plain string,
+    /// disabled as `{ value, enabled = false }`.
+    pub(crate) fn to_item(&self) -> toml_edit::Item {
+        use toml_edit::{InlineTable, Item, Value};
+        if self.enabled {
+            return toml_edit::value(self.value.as_str());
+        }
+        let mut inline = InlineTable::new();
+        inline.insert("value", Value::from(self.value.as_str()));
+        inline.insert("enabled", Value::from(false));
+        Item::Value(Value::InlineTable(inline))
+    }
+}
+
 impl Serialize for Entry {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -521,14 +536,7 @@ impl HttpRequest {
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
             for (k, e) in map {
-                if e.enabled {
-                    t[k] = value(&e.value);
-                } else {
-                    let mut inline = toml_edit::InlineTable::new();
-                    inline.insert("value", Value::from(e.value.as_str()));
-                    inline.insert("enabled", Value::from(false));
-                    t[k] = Item::Value(Value::InlineTable(inline));
-                }
+                t[k] = e.to_item();
             }
             Item::Table(t)
         };

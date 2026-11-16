@@ -230,8 +230,27 @@ fn the_cursor_walks_between_the_name_and_the_table() {
     assert_eq!(app.project_tab.table.selected(), Some(Stop::Add));
     feed(&mut app, "<Home>");
     assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    // PageDown and PageUp go to the last and the first stop, as End and
+    // Home do.
+    feed(&mut app, "<PageDown>");
+    assert_eq!(app.project_tab.table.selected(), Some(Stop::Add));
+    feed(&mut app, "<Up><PageUp>");
+    assert_eq!(app.project_tab.stop, ProjectStop::Name);
     feed(&mut app, "<Esc>");
     assert_eq!(app.screen, Screen::Main);
+}
+
+/// The add verb is the table's: on the Name row, whose footer offers no
+/// add, `a` adds nothing.
+#[test]
+fn a_on_the_name_row_adds_nothing() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, "a");
+        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
+        assert!(app.project_tab.table.editing.is_none(), "{profile:?}");
+        assert_eq!(keys(&app), ["a", "b", "c"], "{profile:?}");
+    }
 }
 
 /// R14: a tab switch commits an open cell first.
@@ -263,6 +282,7 @@ fn a_refused_write_keeps_the_typing() {
         "{:?}",
         app.toasts.messages()
     );
+    assert!(!app.op_in_flight, "the refused write ends its op");
     // The name is refused the same way.
     app.project_tab.table.editing = None;
     app.project_tab.to_name();
@@ -270,6 +290,37 @@ fn a_refused_write_keeps_the_typing() {
     app.project_tab.name_input_mut().unwrap().set_text("New");
     feed(&mut app, "<CR>");
     assert_eq!(app.project_tab.name_input_mut().map(|i| i.text().to_string()), Some("New".into()));
+    assert!(!app.op_in_flight, "the refused name ends its op");
+}
+
+/// R7: a name the file holds with spaces round it, committed as it was
+/// seeded, writes nothing.
+#[test]
+fn a_padded_name_committed_unchanged_writes_nothing() {
+    let mut app = project_app("name = \" Orders \"\n", KeyProfile::Arrows);
+    let before = file(&app);
+    feed(&mut app, "<CR><CR>");
+    assert_eq!(file(&app), before);
+    assert!(!app.proj().can_undo());
+}
+
+/// R14: a right click away from an open header cell commits it first, as
+/// a left click does.
+#[test]
+fn a_right_click_away_commits_an_open_cell() {
+    let mut app = open_b_value("22");
+    draw(&mut app);
+    let r = app.hits.rect_of(&Hit::ProjectName).unwrap();
+    app.handle_mouse(ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(
+            ratatui::crossterm::event::MouseButton::Right,
+        ),
+        column: r.x + 1,
+        row: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.project_tab.table.editing.is_none(), "the cell closed");
+    assert_eq!(app.proj().meta().default_headers["b"].value, "22");
 }
 
 fn click(app: &mut App, hit: Hit) {

@@ -184,11 +184,12 @@ impl ProjectTab {
         self.table.mark_scrolled_away();
     }
 
-    /// What a list verb means here (`App::selection_action`): add a header
-    /// and delete the one under the cursor. Nothing else applies.
+    /// What a list verb means here (`App::selection_action`): on the
+    /// table, add a header and delete the one under the cursor. Nothing
+    /// else applies, and nothing on the Name row.
     pub fn verb_action(&self, len: usize, verb: Verb) -> Option<Action> {
         match verb {
-            Verb::Add => Some(Action::AddDefaultHeader),
+            Verb::Add if self.stop == ProjectStop::Table => Some(Action::AddDefaultHeader),
             Verb::Delete { .. } => self.selected_row(len).map(Action::DeleteDefaultHeader),
             _ => None,
         }
