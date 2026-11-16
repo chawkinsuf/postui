@@ -218,6 +218,9 @@ fn a_field_takes_a_value_or_refuses_it_and_undoes_in_one_step() {
         assert_eq!(checks(&app).status, [200], "{profile:?}: one step back");
         assert!(!app.editor.is_dirty(), "{profile:?}: an edit taken back is no change");
         assert_eq!(cursor(&app), Some(Stop::Head(0)), "{profile:?}: the cursor stays");
+        app.update(Action::Redo);
+        assert_eq!(checks(&app).status, [200, 201], "{profile:?}: redo");
+        feed(&mut app, undo);
         // The limits: empty is no limit, 0 and text are refused.
         app.editor.table.set_selected(Some(Stop::Head(2)));
         for (typed, want) in

@@ -113,17 +113,21 @@ editor.
   its inputs take variables. `EditorTab::table_spec` is the one spot the
   Checks tab's words and shape come from.
 
-**The editor.** `EditorTab::Checks`. `Editor::checks` keeps the status
-codes and the limits; the jq checks live in `Editor::check_rows`, an
-`IndexMap` keyed by the check's text, so every table path (add, delete,
-copy, put, undo's caret) is the one the other tabs use.
-`current_request` puts them back in order. A check's text is the row's
-name: a blank one is refused and a repeat merges, by the table's own
-rules, worded for a check. A check that spans lines in a hand-written
-file is the row's name as read; unedited, it is written back as read.
-The fields draw above the table and don't scroll with it. A field's
-close parses its text with core's `parse_status` / `parse_limit`; a
-refusal is a warning toast and the old value stays (Q5).
+**The editor.** `EditorTab::Checks`. The status codes and the limits
+are `Editor::check_status` and `check_limits`; the jq checks live in
+`Editor::check_rows`, an `IndexMap` keyed by the check's text, so every
+table path (add, delete, copy, put, undo's caret) is the one the other
+tabs use. `Editor::checks` puts them together for a save and a send. A
+check's text is the row's name: a blank one is refused and a repeat
+merges, by the table's own rules, worded for a check. A check that
+spans lines in a hand-written file is the row's name as read; unedited,
+it is written back as read. The fields draw above the table and don't
+scroll with it. An open field is `FieldId::CheckField` under
+`Hit::CheckField`. A field's close parses its text with core's
+`parse_status` / `parse_limit`; a refusal is a warning toast and the
+old value stays (Q5). Every call into the table that can close an
+input ends in `Editor::finish_table`, which writes a closed field and
+opens the one a Tab walk reached.
 
 **Variables.** `Editor::caret_takes_vars` is the one question; it
 answers no for the Checks tab's content. Its askers are listed in
@@ -150,34 +154,37 @@ stop is the status field), `caret` / `restore_caret` / `recorded_stop`
 field: add and put as on `+ Add`, copy and delete nothing),
 `cursor_row`, `section_cursor`, the unconsumed-Up climb to the URL line
 (from the status field), `draw_table_tab`; `App`: the footer's row
-chips (`pane_chip_args`), `focused_extract_text`, the row click and
-right-click paths in `mouse.rs` (`resolve_table_row_across_commit`, the
-row hit, the hover-follow at `mouse.rs:701`), `repeat_cap`; the Project
-tab's `on_name`, `begin_name`, its draw and its wheel.
+chips (`PaneChipArgs`, `TableCursor::Checks`), `focused_extract_text`,
+the row click and right-click paths in `mouse.rs`
+(`resolve_table_row_across_commit`, the row hit, the right click's
+cursor move, which a field takes too), `repeat_cap`; the Project tab's
+`on_name`, `begin_name`, its draw and its wheel.
 
 **The open cell (`TableEditorState::editing`).** By presence only, so a
 head needs nothing: `Editor::plain_keys_type`, `load`,
 `apply_snapshot`, `table_cursor_live`; `App::commit_table_edit`, the
 dirty mark (`ui.rs`), `capture_undo`, `pane_field_open`,
-`OverrideAutoHeader`, `landing.rs`, `repeat_cap`, `line_buf`. By row,
-each told a head from a row: `screen_field` (the field's id),
-`App::editing`, `resolve_table_row_across_commit`, the row-hit click
-(`mouse.rs:2251`), `Editor::adding_row`, the table's `editing_ghost`,
-`clamp_view`, `draw_row`, `commit_cell`, the editing keys.
+`OverrideAutoHeader`, `landing.rs`, `repeat_cap`, `line_buf`, the
+selection's copy, the paste. By row, each told a head from a row
+(`CellEdit::map_row`): `screen_field` (the field's id), `App::editing`,
+`text_surface_menu`, `resolve_table_row_across_commit`, the row-hit
+click, `Editor::adding_row`, the table's `editing_ghost`, `clamp_view`,
+`draw_row`, `commit_cell`, the editing keys.
 
 **Variables in a text input**, each asking `caret_takes_vars` (or, for
 drawing, the table's spec): the `{{` picker (`Editor::handle_key`, vim's
-`after_typed`), the picker by key, chip and palette
-(`Action::OpenVarPicker`), a picked token's insert
-(`Action::InsertVarText`, `vim_insert`), the selector picker on a token
-under the caret, Extract to variable / selector (palette, row menu,
-text menu), token colour and hover tips (`paint_cell_tokens`), the
-caret's tooltip and its keys (`Editor::caret_token`), the footer's
-`vars` chip.
+`after_typed`), the picker by key, chip and palette and the selector
+picker on a token under the caret (`Action::OpenVarPicker`, which a
+picked token's insert can only follow), Extract to variable / selector
+(palette and key through `focused_extract_text`; the row menu and the
+text menu don't offer it), token colour and hover tips
+(`paint_cell_tokens`), the caret's tooltip and its keys
+(`Editor::caret_token`), the footer's `vars` chip.
 
-**Words** (`TableSpec::noun`): the table's three warnings, the delete
-toasts, the copy toast, the row menu, the footer's add chip, the pill
-hints.
+**Words** (`TableSpec`): the table's three warnings, the delete toasts,
+the row menu. Beside it, by the tab: the copy toast, the footer's add
+chip (`EditorTab::add_row_label`), the pills' and chips' hints
+(`HintCtx::checks`).
 
 ## 5. Tests
 
@@ -213,6 +220,17 @@ hints.
 4. The fields stay put above the list while the list scrolls. In a
    pane too short for all three, the ones that fit are drawn.
 5. A scratch request that holds only checks counts as unsaved work.
-6. The response tab's copy toast says "Copied check results".
+6. The response tab's copy toast says "Copied check results", and its
+   toolbar's hints name the check results.
 7. In the app the lines are not masked: they quote the response body,
    which the app shows in the clear.
+8. A put of a check that is still in the list adds none, with the
+   warning a repeat typed into `+ Add check` gets; a count puts one.
+9. A check's right-click menu is `Delete check` alone: no Duplicate (a
+   list holds a check once) and no Extract. A right click on a field
+   puts the cursor on it and opens no menu.
+10. The palette lists its variable commands everywhere, as it lists
+    every command; run with the caret in the Checks tab's content, each
+    is refused with "a check takes no variables".
+11. The read drops a repeated status code as well as a repeated jq
+    filter, and a status typed twice in the field counts once.

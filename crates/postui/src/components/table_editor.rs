@@ -1868,23 +1868,14 @@ mod tests {
         let press = |t: &mut TableEditorState, map: &mut IndexMap<String, Entry>, c| {
             t.handle_key_walk(key(c), map, &spec, 0)
         };
-        // ↓ from nothing selected, then through every stop, and back.
+        // ↓ from nothing selected, then through every stop (the app's
+        // tests walk every move key from each).
         let stops =
             [Stop::Head(0), Stop::Head(1), Stop::Head(2), Stop::Row(0), Stop::Row(1), Stop::Add];
         for stop in stops {
             assert!(press(&mut t, &mut map, KeyCode::Down).consumed);
             assert_eq!(t.selected, Some(stop));
         }
-        assert!(press(&mut t, &mut map, KeyCode::Down).consumed, "↓ at the end stays");
-        for stop in stops.iter().rev().skip(1) {
-            press(&mut t, &mut map, KeyCode::Up);
-            assert_eq!(t.selected, Some(*stop));
-        }
-        press(&mut t, &mut map, KeyCode::End);
-        assert_eq!(t.selected, Some(Stop::Add));
-        let half_up = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        t.handle_key_walk(half_up, &mut map, &spec, 0);
-        assert_eq!(t.selected, Some(Stop::Head(2)), "half of the places back");
         press(&mut t, &mut map, KeyCode::Home);
         assert_eq!(t.selected, Some(Stop::Head(0)));
         // A head's own keys are the caller's; ←/→ and Space do nothing on
