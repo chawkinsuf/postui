@@ -54,12 +54,26 @@ picked, `mine` my call. Sources are copied from the ticket.
 |---|---|---|
 | W1 | The main column's minimum stays 65. When the request's tab row doesn't fit before the split chips, every tab drops its count. | you: "yes, go back to 65 and compact the tab row"; dropping the counts as the one compact form: mine |
 | W2 | The form follows the room only, never the selected tab, so switching tabs never moves the row. | the no-layout-shift rule |
+| W3 | The mark that a body's variables are on is part of the Body tab's label, as a count is part of its tab's: `Body · vars`, inside the tab's width, click target and underline. | you: "the vars should be part of the body tab like the 2 is part of the checks tab"; the details (section 6, 15): mine |
 
 "Not in this task" on the ticket is binding: no judging but at a send,
 no multi-line checks, no check from a view or the jq bar, no variables
 in a check, no on/off switch, names or sidebar marks, no file format
 change, no second compact form, no unit in a time field, nothing for
-#308 or #282.
+#308, #310 or #282.
+
+**Answers to review block 1 (2026-11-16, the ticket's comment 1400).**
+
+1. A check that never ends keeps the response from showing. `you`:
+   "This doesn't sound like an issue with this ticket. Why would we let
+   checks run forever even in the cli? Each jq check should have a max
+   runtime or it fails." Nothing is built for it here. The limit is its
+   own task, #310, for `run`, `suite` and the app alike.
+2. The `vars` mark sat after the last tab, so beside Checks. `you`: "the
+   vars should be part of the body tab like the 2 is part of the checks
+   tab." That is W3. The user plans to change this display later.
+3. The branch's size. No cut: `mine (approved)`. `you`: "The limit is a
+   target."
 
 ## 3. The design
 
@@ -85,9 +99,11 @@ hop too) and the response arrives with its lines. Nothing is pending,
 nothing is matched back, a cancel drops the task as before. The
 response keeps the lines and not the outcomes, which hold every output
 of a jq check whole (#309 review round 1). The costs, from the ticket's
-"How to build it" 1: the response shows later by the time its checks
-take, with no limit on a filter that never ends (#308, as a saved jq
-view), and the body is read again when the jq bar is used on it.
+"How to build it" 1: the response is handed on after its checks, so it
+shows later by the time they take, and the body is read again when the
+jq bar is used on it. A jq check has no time limit yet, so one that
+never ends keeps the response from showing: that limit is #310 (answer
+1 above).
 
 **The response tab.** `ViewMode::Checks`, offered when the response's
 `checks` is not empty. Its lines are built once in `ReadyView::new`
@@ -144,8 +160,9 @@ answers no for the Checks tab's content. Its askers are listed in
 section 4.
 
 **The tab row.** `draw_tab_bar` lays the row out with counts; when its
-end (the `vars` mark included) reaches the split chips it lays it out
-again without them.
+end reaches the split chips it lays it out again without them. The Body
+tab's label carries ` · vars` in both forms while the body's variables
+are on (W3), and the row is measured with it whether or not they are.
 
 Removed: `cli/checks.rs`'s own `FIRST_FAILING_STATUS`, `passed` body
 and `summary` body; `settle_view_under_head`,
@@ -251,3 +268,11 @@ chips (`TableCursor::Checks`), the pills' and chips' hints
 13. Tab or Shift-Tab out of a check that drew a warning (a repeat, a
     blank) ends on the check the warning names, as Enter does (round 2).
 14. Checks that panic leave the response, with one failed line (round 2).
+15. W3's details. The label reads `Body · vars`, with the body's `✓` or
+    `✗` after it, in the label's own colour (the mark was in the accent
+    colour). It is not a count, so the compact form keeps it. The row
+    is measured with it whether or not it is on, so switching the
+    body's variables never changes the form; the Checks tab moves by
+    its 7 columns, as a tab moves when a count gains a digit.
+16. The response is handed on after its checks, with no time limit on a
+    jq check until #310 sets one (answer 1).
