@@ -607,7 +607,9 @@ fn paging_chords_survive_the_guard() {
     let cursor = |app: &App, f: Fixture| match f {
         SidebarThree => app.sidebar.selected,
         // The stop's place in the walk: rows, `+ Add`, the section.
-        TableThreeHeaders => app.editor.table.selected().map(|s| s.ordinal(app.editor.table_len())),
+        TableThreeHeaders => {
+            app.editor.table.selected().map(|s| s.ordinal(0, app.editor.table_len()))
+        }
         ResponseWide => app.session.response.view().map(|v| v.cursor),
         ManageEnvs | ManageSpaces => app.manage.list.cursor_in(app.manage_items(app.manage.tab)),
         VarList => Some(app.varmanager.left_cursor),

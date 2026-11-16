@@ -389,9 +389,12 @@ impl App {
             Screen::Main => match self.focus {
                 PaneId::Editor => {
                     if let Some(e) = &self.editor.table.editing {
-                        return Some(FieldId::TableCell {
-                            row: e.row,
-                            col: usize::from(e.col == Col::Value),
+                        return Some(match e.head() {
+                            Some(k) => FieldId::CheckField(k),
+                            None => FieldId::TableCell {
+                                row: e.row,
+                                col: usize::from(e.col == Col::Value),
+                            },
                         });
                     }
                     if self.editor.url_open() {

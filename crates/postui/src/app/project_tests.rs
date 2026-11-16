@@ -382,7 +382,7 @@ fn a_refused_write_keeps_the_typing() {
     assert!(!app.op_in_flight, "the refused write ends its op");
     // The name is refused the same way.
     app.project_tab.table.editing = None;
-    app.project_tab.table.set_selected(None);
+    app.project_tab.table.set_selected(Some(Stop::Head(0)));
     feed(&mut app, "<CR>");
     app.project_tab.name_input_mut().unwrap().set_text("New");
     feed(&mut app, "<CR>");
@@ -533,7 +533,7 @@ fn the_pills_leave_the_cursor_where_it_was() {
         let mut app = project_app(THREE, KeyProfile::Arrows);
         app.hovered = Some(cell(1, 1));
         click(&mut app, hit.clone());
-        assert_eq!(app.project_tab.table.selected(), None, "{hit:?}: on the Name row");
+        assert!(app.project_tab.on_name(), "{hit:?}: on the Name row");
         assert!(app.project_tab.focused, "{hit:?}: the Name row is lit");
         feed(&mut app, "<Down>");
         assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{hit:?}");
@@ -1025,13 +1025,13 @@ fn place_stop(p: usize) -> Option<Stop> {
 }
 
 /// The stop at place `p` of the tab's walk over `n` headers: the Name row
-/// (no table cursor), the headers, then `+ Add header`.
+/// (the table's head), the headers, then `+ Add header`.
 fn walk_place(n: usize, p: usize) -> Option<Stop> {
-    match p {
-        0 => None,
-        p if p <= n => Some(Stop::Row(p - 1)),
-        _ => Some(Stop::Add),
-    }
+    Some(match p {
+        0 => Stop::Head(0),
+        p if p <= n => Stop::Row(p - 1),
+        _ => Stop::Add,
+    })
 }
 
 /// The header table's view shows the cursor: from its top on the Name
@@ -1039,10 +1039,9 @@ fn walk_place(n: usize, p: usize) -> Option<Stop> {
 /// stop of the table.
 fn assert_view_shows_cursor(app: &App, n: usize, at: &str) {
     let t = &app.project_tab.table;
-    match t.selected() {
+    match t.selected().and_then(|stop| stop.line(n)) {
         None => assert_eq!(t.scroll, 0, "{at}: the Name row shows the table's top"),
-        Some(stop) => {
-            let line = stop.line(n);
+        Some(line) => {
             assert!(
                 line >= t.scroll && line < t.scroll + t.viewport,
                 "{at}: line {line} out of view {}+{}",

@@ -17,14 +17,82 @@ pub enum Col {
     #[default]
     Key,
     Value,
+    /// Not a row's cell: a head, a field the caller draws above the rows
+    /// ([`Stop::Head`]), open in the table's edit slot ([`CellEdit`]).
+    /// Never the cursor's column.
+    Head,
+}
+
+/// What a table lists, handed to its keys, its commit, its click and its
+/// draw: the one spot a table's words and shape come from (checks tabs
+/// spec 2026-11-16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableSpec {
+    /// What a row is called in a message: `row`, or `check`.
+    pub noun: &'static str,
+    /// The header line's label over the name column.
+    pub name_header: &'static str,
+    /// How many heads the caller draws above the rows ([`Stop::Head`]).
+    pub heads: usize,
+    /// A row is its name alone: no value cell, no on/off toggle. The
+    /// cursor's column stays on the name.
+    pub one_column: bool,
+    /// Whether the table's inputs take `{{variables}}`: their tokens are
+    /// tinted and hover-tipped, and the app offers its pickers there.
+    pub vars: bool,
+}
+
+impl TableSpec {
+    /// A table of name and value rows with no head: a request's params,
+    /// headers and variables.
+    pub const ROWS: TableSpec =
+        TableSpec { noun: "row", name_header: "NAME", heads: 0, one_column: false, vars: true };
+    /// The Project tab's default headers, under its Name row.
+    pub const PROJECT: TableSpec = TableSpec { heads: 1, ..Self::ROWS };
+    /// A request's jq checks, under the status and time-limit fields.
+    pub const CHECKS: TableSpec =
+        TableSpec { noun: "check", name_header: "CHECK", heads: 3, one_column: true, vars: false };
+
+    /// `key` as a message quotes it: a check on one line, cut short.
+    pub fn quoted(&self, key: &str) -> String {
+        if self.one_column { postui_core::checks::brief(key) } else { key.to_string() }
+    }
+
+    /// The warning for a `+ Add` name that is already a row's.
+    pub fn taken(&self, typed: &str) -> String {
+        format!("'{}' already exists \u{2014} no {} added", self.quoted(typed), self.noun)
+    }
+
+    /// The warning for a row's name blanked, which keeps the name `kept`.
+    fn blank(&self, kept: &str) -> String {
+        let kept = self.quoted(kept);
+        if self.one_column {
+            format!("a {} can't be empty — kept '{kept}'", self.noun)
+        } else {
+            format!("a row needs a name — kept '{kept}'")
+        }
+    }
+
+    /// The warning for a row renamed onto another row's name `key`, which
+    /// leaves the one row.
+    fn merged(&self, key: &str) -> String {
+        let key = self.quoted(key);
+        if self.one_column {
+            format!("'{key}' already exists — the two {}s are now one", self.noun)
+        } else {
+            format!("duplicate key '{key}' replaced the existing value")
+        }
+    }
 }
 
 impl Col {
-    /// The `Hit::TableCell` column index this cell registers under.
+    /// The `Hit::TableCell` column index this cell registers under. A
+    /// head is no cell and registers no such hit; its index matches none.
     pub fn index(self) -> u8 {
         match self {
             Col::Key => 0,
             Col::Value => 1,
+            Col::Head => 2,
         }
     }
 
@@ -39,13 +107,33 @@ impl Col {
 /// clicked (or Enter'd) cell turns into a `LineInput` right where it sits.
 ///
 /// Esc commits like Enter; the cell's history is the input's own.
+///
+/// A head (`col` is [`Col::Head`]) opens in this same slot, so whatever
+/// asks "is a cell open" (the commit on a click away, a save, a send, the
+/// undo bracket, a paste) meets it as it meets a cell. The table writes
+/// no head: closing one hands its text to the caller
+/// ([`TableOutcome::head_commit`]).
 #[derive(Debug, Clone)]
 pub struct CellEdit {
     /// Index into the map — or `map.len()`, the always-present ghost row
     /// that becomes a real entry the moment its key cell commits non-empty.
+    /// For a head, the head's index instead: read a row through
+    /// [`Self::map_row`].
     pub row: usize,
     pub col: Col,
     pub input: LineInput,
+}
+
+impl CellEdit {
+    /// The row whose cell is open; `None` for an open head.
+    pub fn map_row(&self) -> Option<usize> {
+        (self.col != Col::Head).then_some(self.row)
+    }
+
+    /// The head that is open; `None` for a row's cell.
+    pub fn head(&self) -> Option<usize> {
+        (self.col == Col::Head).then_some(self.row)
+    }
 }
 
 /// What committing one cell did ([`TableEditorState::commit_cell`]). It
@@ -84,11 +172,25 @@ pub struct TableOutcome {
     /// table never removes the row itself — the caller routes this through
     /// a confirmation modal first.
     pub request_delete: Option<usize>,
+    /// An open head closed holding this text: `(head, text)`. The caller,
+    /// who holds the head's value, writes it or refuses it; the table has
+    /// already closed the head and moved on.
+    pub head_commit: Option<(usize, String)>,
+    /// A Tab walk reached this head: the caller opens it
+    /// ([`TableEditorState::begin_head`]) after any `head_commit`. A
+    /// caller that keeps its head's edit to itself (the Project tab)
+    /// ignores it, and the walk has ended as it always did there.
+    pub open_head: Option<usize>,
 }
 
 impl TableOutcome {
     fn consumed() -> Self {
         Self { consumed: true, ..Self::default() }
+    }
+
+    /// Head `edit` closed: consumed, its text handed back.
+    fn head_closed(edit: &CellEdit) -> Self {
+        Self { head_commit: Some((edit.row, edit.input.text().to_string())), ..Self::consumed() }
     }
 
     fn not_consumed() -> Self {
@@ -246,6 +348,9 @@ pub enum RowNote {
     /// struck through in the error colour, and nothing trails it. The
     /// footer says why instead (task #59), from the name carried here.
     Unsent(&'static str),
+    /// The row is kept as typed but is wrong (a jq check that doesn't
+    /// compile): its text draws in the error colour, unstruck.
+    Error,
 }
 
 /// A stop the table's keyboard cursor sits on (task #56): a request row,
@@ -255,6 +360,11 @@ pub enum RowNote {
 /// section row can never be taken for a request row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
+    /// Head `k`: a field above the rows that the caller draws and acts on
+    /// (the Project tab's Name row, the Checks tab's status and time-limit
+    /// fields). The walk puts the heads first; no other key of the table
+    /// acts on one.
+    Head(usize),
     /// Request row `i`.
     Row(usize),
     /// The `+ Add` row, one past the request rows.
@@ -271,15 +381,16 @@ impl Stop {
         if i < len { Stop::Row(i) } else { Stop::Add }
     }
 
-    /// The stop's place in the order the keys walk (rows, `+ Add`, then
-    /// the section), for `len` rows: the one place that order is written
-    /// down. The moves step and page through it; [`Stop::at`] reads it
-    /// back.
-    pub(crate) fn ordinal(self, len: usize) -> usize {
+    /// The stop's place in the order the keys walk (the `heads`, the rows,
+    /// `+ Add`, then the section), for `len` rows: the one place that
+    /// order is written down. The moves step and page through it;
+    /// [`Stop::at`] reads it back. A head past `heads` is the last one.
+    pub(crate) fn ordinal(self, heads: usize, len: usize) -> usize {
         match self {
-            Stop::Row(i) => i,
-            Stop::Add => len,
-            Stop::Section(j) => len + 1 + j,
+            Stop::Head(k) => k.min(heads.saturating_sub(1)),
+            Stop::Row(i) => heads + i,
+            Stop::Add => heads + len,
+            Stop::Section(j) => heads + len + 1 + j,
         }
     }
 
@@ -287,19 +398,21 @@ impl Stop {
     /// `i + 1` (under the table's header), `+ Add` line `len + 1`, and
     /// section row `j` the `j`th line after the table's closing edge and
     /// the section's divider. The one place the stops' lines are worked
-    /// out.
-    pub(crate) fn line(self, len: usize) -> usize {
+    /// out. A head is drawn above the table and has none.
+    pub(crate) fn line(self, len: usize) -> Option<usize> {
         match self {
-            Stop::Row(i) => i + 1,
-            Stop::Add => len + 1,
-            Stop::Section(j) => usize::from(table_height(len)) + 1 + j,
+            Stop::Head(_) => None,
+            Stop::Row(i) => Some(i + 1),
+            Stop::Add => Some(len + 1),
+            Stop::Section(j) => Some(usize::from(table_height(len)) + 1 + j),
         }
     }
 
     /// The stop at place `ord` of that order.
-    pub(crate) fn at(ord: usize, len: usize) -> Stop {
-        match ord.checked_sub(len) {
-            None => Stop::Row(ord),
+    pub(crate) fn at(ord: usize, heads: usize, len: usize) -> Stop {
+        let Some(row) = ord.checked_sub(heads) else { return Stop::Head(ord) };
+        match row.checked_sub(len) {
+            None => Stop::Row(row),
             Some(0) => Stop::Add,
             Some(n) => Stop::Section(n - 1),
         }
@@ -380,14 +493,6 @@ pub struct TableEditorState {
 /// `start_edit`), and only draws the ghost's lift on the name.
 fn open_col(row: usize, col: Col, map_len: usize) -> Col {
     if row >= map_len { Col::Key } else { col }
-}
-
-/// The cursor at place `place` of a key walk over `len` rows: with a
-/// `head` (see [`TableEditorState::handle_key_walk`]) place 0 is the head,
-/// where nothing is selected, and the stops follow in [`Stop::ordinal`]'s
-/// order.
-fn walk_stop(place: usize, len: usize, head: bool) -> Option<Stop> {
-    place.checked_sub(usize::from(head)).map(|ord| Stop::at(ord, len))
 }
 
 /// Whether `ev`, typed into an open cell, is one of the keys that close or
@@ -486,8 +591,9 @@ impl TableEditorState {
     /// 2026-10-25 S8; typing would otherwise land out of sight), and the
     /// view stops with the last line on the bottom row (S3).
     fn clamp_view(&mut self, len: usize, tail: usize) {
-        if let Some(row) = self.editing.as_ref().map(|e| e.row) {
-            self.show_line(Stop::of_row(row, len).line(len));
+        let open = self.editing.as_ref().and_then(CellEdit::map_row);
+        if let Some(line) = open.and_then(|row| Stop::of_row(row, len).line(len)) {
+            self.show_line(line);
         }
         self.scroll = self.scroll.min(content_lines(len, tail).saturating_sub(self.viewport));
     }
@@ -500,14 +606,19 @@ impl TableEditorState {
     /// layout alone, so a cursor that moved, rows that moved under it, and
     /// a pane that shrank all come out the same. The one exception is a
     /// view the arrows wheel scrolled away (S23), which stays where the
-    /// wheel put it until the cursor moves.
+    /// wheel put it until the cursor moves. A head is drawn above the
+    /// table, so with the cursor on one the view shows the table from its
+    /// top.
     pub fn settle_view(&mut self, len: usize, tail: usize, viewport: usize) {
         self.viewport = viewport;
         self.clamp_cursor(len, tail);
         if !self.scrolled_away
             && let Some(stop) = self.selected
         {
-            self.show_line(stop.line(len));
+            match stop.line(len) {
+                Some(line) => self.show_line(line),
+                None => self.scroll = 0,
+            }
         }
         self.clamp_view(len, tail);
     }
@@ -531,35 +642,15 @@ impl TableEditorState {
     /// marks it scrolled away from the cursor (S23), and the vim profile
     /// moves the cursor into it instead (S24, [`Self::cursor_into_view`]).
     /// A scroll that moved nothing comes nowhere near here, so it marks
-    /// nothing.
+    /// nothing. A head stays in sight whatever the table's view, so a
+    /// scroll with the cursor on one moves no cursor, in either profile,
+    /// and the view stays where the scroll put it until the cursor moves
+    /// (S23).
     pub fn view_scrolled(&mut self, vim: bool, len: usize, tail: usize) {
-        if vim {
+        if vim && !matches!(self.selected, Some(Stop::Head(_))) {
             self.cursor_into_view(len, tail);
         } else {
             self.mark_scrolled_away();
-        }
-    }
-
-    /// [`Self::settle_view`] for a walk with a head
-    /// ([`Self::handle_key_walk`]). The head is drawn above the table, so
-    /// with the cursor on it the view shows the table from its top, unless
-    /// a scroll moved it since (S23).
-    pub fn settle_view_under_head(&mut self, len: usize, tail: usize, viewport: usize) {
-        if self.selected.is_none() && !self.scrolled_away {
-            self.scroll = 0;
-        }
-        self.settle_view(len, tail, viewport);
-    }
-
-    /// [`Self::view_scrolled`] for a walk with a head. The head stays in
-    /// sight whatever the table's view, so a scroll with the cursor on it
-    /// moves no cursor, in either profile, and the view stays where the
-    /// scroll put it until the cursor moves (S23).
-    pub fn view_scrolled_under_head(&mut self, vim: bool, len: usize, tail: usize) {
-        if self.selected.is_none() {
-            self.mark_scrolled_away();
-        } else {
-            self.view_scrolled(vim, len, tail);
         }
     }
 
@@ -580,17 +671,17 @@ impl TableEditorState {
         if self.editing.is_some() || viewport == 0 {
             return;
         }
-        let Some(s) = self.selected else { return };
+        let Some(line) = self.selected.and_then(|s| s.line(len)) else { return };
         let (top, bottom) = (self.scroll, self.scroll + viewport - 1);
-        let line = s.line(len);
         let last = len + tail;
-        let mut stops = (0..=last).map(|ord| Stop::at(ord, len));
+        // The stops with a line: every one but the heads.
+        let mut stops = (0..=last).map(|ord| Stop::at(ord, 0, len));
         // The first stop on or below the view's top, or the last on or
         // above its bottom.
         let stop = if line < top {
-            stops.find(|t| t.line(len) >= top).or(Some(Stop::at(last, len)))
+            stops.find(|t| t.line(len) >= Some(top)).or(Some(Stop::at(last, 0, len)))
         } else if line > bottom {
-            stops.rfind(|t| t.line(len) <= bottom)
+            stops.rfind(|t| t.line(len) <= Some(bottom))
         } else {
             return;
         };
@@ -607,11 +698,20 @@ impl TableEditorState {
     fn cell_text(map: &IndexMap<String, Entry>, row: usize, col: Col) -> String {
         match map.get_index(row) {
             Some((k, e)) => match col {
-                Col::Key => k.clone(),
                 Col::Value => e.value.clone(),
+                // A head is never asked for here: `begin_head` seeds it.
+                Col::Key | Col::Head => k.clone(),
             },
             None => String::new(),
         }
+    }
+
+    /// Opens head `k` in the edit slot, seeded with `seed` (the head's
+    /// text, which the caller holds), the caret at its end, and puts the
+    /// cursor on it. Any previous edit must already have been committed.
+    pub fn begin_head(&mut self, k: usize, seed: &str) {
+        self.set_selected(Some(Stop::Head(k)));
+        self.editing = Some(CellEdit { row: k, col: Col::Head, input: LineInput::new(seed) });
     }
 
     /// Puts `row`/`col` under edit, seeded with its current text and the
@@ -659,32 +759,63 @@ impl TableEditorState {
         col: Col,
         map: &mut IndexMap<String, Entry>,
     ) -> TableOutcome {
+        self.click_cell_as(row, col, map, &TableSpec::ROWS)
+    }
+
+    /// [`Self::click_cell`] on a table `spec` describes. An open head
+    /// closes as any cell does, its text handed back.
+    pub fn click_cell_as(
+        &mut self,
+        row: usize,
+        col: Col,
+        map: &mut IndexMap<String, Entry>,
+        spec: &TableSpec,
+    ) -> TableOutcome {
         let row = row.min(map.len());
-        if self.editing.as_ref().is_some_and(|e| e.row == row && e.col == col) {
+        if self.editing.as_ref().is_some_and(|e| e.map_row() == Some(row) && e.col == col) {
             return TableOutcome::consumed();
         }
-        let warning = self.commit(map).warning;
+        let closed = self.commit_as(map, spec);
         // A commit can collapse rows, so re-clamp against the new length.
         let row = row.min(map.len());
         self.start_edit(row, col, map);
-        TableOutcome::maybe_warn(warning)
+        TableOutcome { consumed: true, ..closed }
     }
 
     /// Commits whatever is being edited (click-away, focus loss, `Enter`).
     /// A ghost row whose key is still empty is discarded silently.
     pub fn commit(&mut self, map: &mut IndexMap<String, Entry>) -> TableOutcome {
+        self.commit_as(map, &TableSpec::ROWS)
+    }
+
+    /// [`Self::commit`] on a table `spec` describes. An open head closes
+    /// with the cursor still on it, its text handed back
+    /// ([`TableOutcome::head_commit`]).
+    pub fn commit_as(
+        &mut self,
+        map: &mut IndexMap<String, Entry>,
+        spec: &TableSpec,
+    ) -> TableOutcome {
         let Some(edit) = self.editing.take() else {
             return TableOutcome::not_consumed();
         };
-        let Committed { row, here, warning } = self.commit_cell(map, &edit);
+        if edit.col == Col::Head {
+            return TableOutcome::head_closed(&edit);
+        }
+        let Committed { row, here, warning } = self.commit_cell(map, &edit, spec);
         self.set_selected(Some(Stop::of_row(row.unwrap_or(here), map.len())));
         TableOutcome::maybe_warn(warning)
     }
 
     /// Writes one cell into the map, and says which row that names and
     /// where the caret's row is now ([`Committed`]), plus any warning to
-    /// surface.
-    fn commit_cell(&mut self, map: &mut IndexMap<String, Entry>, edit: &CellEdit) -> Committed {
+    /// surface. Never called for a head, which the table doesn't write.
+    fn commit_cell(
+        &mut self,
+        map: &mut IndexMap<String, Entry>,
+        edit: &CellEdit,
+        spec: &TableSpec,
+    ) -> Committed {
         let typed = edit.input.text().to_string();
         if let Some((key, e)) = map.get_index_mut(edit.row) {
             let (row, warning) = match edit.col {
@@ -692,9 +823,9 @@ impl TableEditorState {
                     e.value = typed;
                     (edit.row, None)
                 }
-                Col::Key => {
+                Col::Key | Col::Head => {
                     let (orig, entry) = (key.clone(), e.clone());
-                    Self::commit_key(map, edit.row, orig, entry, typed)
+                    Self::commit_key(map, edit.row, orig, entry, typed, spec)
                 }
             };
             return Committed { row: Some(row), here: row, warning };
@@ -714,8 +845,7 @@ impl TableEditorState {
             return Committed { row: None, here, warning: None };
         }
         if let Some(other) = map.get_index_of(&typed) {
-            let warning = format!("'{typed}' already exists \u{2014} no row added");
-            return Committed { row: Some(other), here, warning: Some(warning) };
+            return Committed { row: Some(other), here, warning: Some(spec.taken(&typed)) };
         }
         map.insert(typed, Entry { value: String::new(), enabled: true });
         Committed { row: Some(here), here, warning: None }
@@ -732,12 +862,13 @@ impl TableEditorState {
         orig: String,
         entry: Entry,
         new_key: String,
+        spec: &TableSpec,
     ) -> (usize, Option<String>) {
         if new_key == orig {
             return (idx, None);
         }
         if new_key.trim().is_empty() {
-            return (idx, Some(format!("a row needs a name — kept '{orig}'")));
+            return (idx, Some(spec.blank(&orig)));
         }
         if let Some(other_idx) = map.get_index_of(&new_key) {
             map.shift_remove_index(idx);
@@ -745,10 +876,7 @@ impl TableEditorState {
             if let Some((_, e)) = map.get_index_mut(adjusted) {
                 e.value = entry.value;
             }
-            return (
-                adjusted,
-                Some(format!("duplicate key '{new_key}' replaced the existing value")),
-            );
+            return (adjusted, Some(spec.merged(&new_key)));
         }
         map.shift_remove_index(idx);
         map.shift_insert(idx, new_key, entry);
@@ -763,7 +891,8 @@ impl TableEditorState {
         let row = match self.selected {
             Some(Stop::Row(i)) => i,
             Some(Stop::Add) => map.len(),
-            Some(Stop::Section(_)) | None => return,
+            // A head is the caller's to open (`begin_head`).
+            Some(Stop::Head(_) | Stop::Section(_)) | None => return,
         };
         self.start_edit(row, self.col, map);
     }
@@ -815,7 +944,7 @@ impl TableEditorState {
 
     /// Whether the ghost row (not any existing row) is the one under edit.
     pub fn editing_ghost(&self, map_len: usize) -> bool {
-        self.editing.as_ref().is_some_and(|e| e.row >= map_len)
+        self.editing.as_ref().and_then(CellEdit::map_row).is_some_and(|row| row >= map_len)
     }
 
     /// Clamps a stop the rows went from under (the map or the section
@@ -852,29 +981,32 @@ impl TableEditorState {
         map: &mut IndexMap<String, Entry>,
         tail: usize,
     ) -> TableOutcome {
-        self.handle_key_walk(ev, map, false, tail)
+        self.handle_key_walk(ev, map, &TableSpec::ROWS, tail)
     }
 
-    /// [`Self::handle_key_with_tail`] with, when `head` is set, one stop
-    /// above the rows that the caller draws and acts on (the Project tab's
-    /// Name row). The table holds no cursor there: with a head, nothing
-    /// selected is the head. The walk puts it first, so every move key
-    /// reaches it by the walk's one rule (↑ from the first row, open or
-    /// not, the first-stop keys, a half page up) and leaves nothing
-    /// selected, and a move from it starts there. ↑ on it stays there,
-    /// consumed, as ↓ on the last stop does: there is nothing above to
-    /// climb out to. No other key acts on it, so Enter there is the
-    /// caller's. A request's tables have no head.
+    /// [`Self::handle_key_with_tail`] on a table `spec` describes. Its
+    /// heads ([`Stop::Head`]) are stops above the rows that the caller
+    /// draws and acts on (the Project tab's Name row, the Checks tab's
+    /// three fields). The walk puts them first, so every move key reaches
+    /// them by the walk's one rule (↑ from the first row, open or not, the
+    /// first-stop keys, a half page up), and a move from one starts there.
+    /// ↑ on the first head stays there, consumed, as ↓ on the last stop
+    /// does. No other key acts on a head, so Enter there is the caller's.
+    /// A head open in the edit slot ([`Self::begin_head`]) takes the keys
+    /// an open cell does, and hands its text back when one closes it
+    /// ([`TableOutcome::head_commit`]). A table with no heads has none of
+    /// this.
     pub fn handle_key_walk(
         &mut self,
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
-        head: bool,
+        spec: &TableSpec,
         tail: usize,
     ) -> TableOutcome {
         match self.editing.take() {
-            Some(edit) => self.handle_editing_key(ev, map, edit, head),
-            None => self.handle_nav_key(ev, map, head, tail),
+            Some(edit) if edit.col == Col::Head => self.handle_head_key(ev, map, edit, spec),
+            Some(edit) => self.handle_editing_key(ev, map, edit, spec),
+            None => self.handle_nav_key(ev, map, spec, tail),
         }
     }
 
@@ -882,32 +1014,29 @@ impl TableEditorState {
         &mut self,
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
-        head: bool,
+        spec: &TableSpec,
         tail: usize,
     ) -> TableOutcome {
         // A named key acts bare only: any other chord is unconsumed rather
         // than acting as the bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
-        let len = map.len();
-        // The stops, in the order the keys walk them: the head when there
-        // is one, the data rows, the ghost row (so the keyboard can reach
-        // it the same way the mouse can, and an empty table still has that
-        // one stop to land on), then the section's rows. Moves step through
-        // their places in it.
-        let last = usize::from(head) + len + tail;
+        let (len, heads) = (map.len(), spec.heads);
+        // The stops, in the order the keys walk them: the heads, the data
+        // rows, the ghost row (so the keyboard can reach it the same way
+        // the mouse can, and an empty table still has that one stop to
+        // land on), then the section's rows. Moves step through their
+        // places in it.
+        let last = heads + len + tail;
         // Every arm below (the moves, Enter, Space, Delete, ←/→) acts on the
         // stop that is drawn lit (spec 2026-10-25 S25).
         self.clamp_cursor(len, tail);
-        let place = match self.selected {
-            Some(s) => Some(usize::from(head) + s.ordinal(len)),
-            None => head.then_some(0),
-        };
+        let place = self.selected.map(|s| s.ordinal(heads, len));
         // A move key asks for the cursor even when it lands on the stop it
         // is on (End on the last stop, ↓ at the end), so it brings a view
         // the wheel scrolled away back as any move does (S23): otherwise
         // the key meant to find the cursor would do nothing.
         let go = |this: &mut Self, ord: usize| {
-            this.set_selected_showing(walk_stop(ord.min(last), len, head));
+            this.set_selected_showing(Some(Stop::at(ord.min(last), heads, len)));
             TableOutcome::consumed()
         };
         // ←/→ move between the name and value cells of a row or `+ Add`.
@@ -922,10 +1051,10 @@ impl TableEditorState {
             KeyCode::Up if plain => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
-                // instead of leaving the user stuck with no way back. A
-                // head is the top, with nothing to climb to.
+                // instead of leaving the user stuck with no way back. The
+                // first head is the top, with nothing to climb to.
                 match place {
-                    Some(p) if p > 0 || head => go(self, p.saturating_sub(1)),
+                    Some(p) if p > 0 || heads > 0 => go(self, p.saturating_sub(1)),
                     _ => TableOutcome::not_consumed(),
                 }
             }
@@ -933,7 +1062,8 @@ impl TableEditorState {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
-                if has_cells {
+                // A one-column row has the one cell to be on.
+                if has_cells && !spec.one_column {
                     self.col = if ev.code == KeyCode::Left { Col::Key } else { Col::Value };
                 }
                 TableOutcome::consumed()
@@ -961,7 +1091,8 @@ impl TableEditorState {
                 let Some(Stop::Row(i)) = self.selected else {
                     return TableOutcome::not_consumed();
                 };
-                if Self::toggle_row(map, i) {
+                // A one-column row has no switch to turn.
+                if !spec.one_column && Self::toggle_row(map, i) {
                     TableOutcome::consumed()
                 } else {
                     TableOutcome::not_consumed()
@@ -974,16 +1105,16 @@ impl TableEditorState {
             // ctrl+d/u ± half the stops.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
                 let ev = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
-                self.handle_nav_key(ev, map, head, tail)
+                self.handle_nav_key(ev, map, spec, tail)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
                 let ev = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
-                self.handle_nav_key(ev, map, head, tail)
+                self.handle_nav_key(ev, map, spec, tail)
             }
             // ctrl+Home/End are a second spelling of Home/End, and what
             // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
             KeyCode::Home | KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map, head, tail)
+                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map, spec, tail)
             }
             KeyCode::Home | KeyCode::PageUp if plain => go(self, 0),
             KeyCode::End | KeyCode::PageDown if plain => go(self, last),
@@ -1001,7 +1132,7 @@ impl TableEditorState {
                 let Some(Stop::Row(i)) = self.selected else {
                     return TableOutcome::not_consumed();
                 };
-                TableOutcome { consumed: true, warning: None, request_delete: Some(i) }
+                TableOutcome { request_delete: Some(i), ..TableOutcome::consumed() }
             }
             _ => TableOutcome::not_consumed(),
         }
@@ -1024,15 +1155,16 @@ impl TableEditorState {
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
         mut edit: CellEdit,
-        head: bool,
+        spec: &TableSpec,
     ) -> TableOutcome {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+        let heads = spec.heads;
         match ev.code {
             // The field rule: Esc closes the cell keeping its text, and the
             // cursor stays on the row — Enter does the same (spec
             // 2026-09-16), it just also commits. Discard is undo.
             KeyCode::Esc => {
-                let Committed { row, here, warning } = self.commit_cell(map, &edit);
+                let Committed { row, here, warning } = self.commit_cell(map, &edit, spec);
                 self.exit_editing(row.unwrap_or(here), map);
                 TableOutcome::maybe_warn(warning)
             }
@@ -1043,7 +1175,7 @@ impl TableEditorState {
                 // drops the selection. `commit` already leaves `selected`
                 // parked on the row (or on the warning's pointer row), so
                 // no explicit set is needed here either way.
-                self.commit(map)
+                self.commit_as(map, spec)
             }
             // Up/Down leave the cell rather than falling through to
             // `LineInput` (which ignores them): they commit it and move the
@@ -1056,17 +1188,18 @@ impl TableEditorState {
             // closes it onto `+ Add`, and the next ↓ goes on to the section.
             // They step from where the caret was (`here`), so a `+ Add` name
             // that is taken moves from `+ Add`, not from the row it matched
-            // (task #176). A head counts: ↑ from the first row reaches it.
+            // (task #176). The heads count: ↑ from the first row reaches
+            // the last of them.
             KeyCode::Up | KeyCode::Down => {
-                let Committed { here, warning, .. } = self.commit_cell(map, &edit);
-                let (len, place) = (map.len(), usize::from(head) + here);
+                let Committed { here, warning, .. } = self.commit_cell(map, &edit, spec);
+                let (len, place) = (map.len(), heads + here);
                 let to = if ev.code == KeyCode::Up { place.saturating_sub(1) } else { place + 1 };
-                self.set_selected(walk_stop(to.min(usize::from(head) + len), len, head));
+                self.set_selected(Some(Stop::at(to.min(heads + len), heads, len)));
                 TableOutcome::maybe_warn(warning)
             }
-            KeyCode::BackTab => self.walk_cell(map, &edit, false),
-            KeyCode::Tab if shift => self.walk_cell(map, &edit, false),
-            KeyCode::Tab => self.walk_cell(map, &edit, true),
+            KeyCode::BackTab => self.walk_cell(map, &edit, false, spec),
+            KeyCode::Tab if shift => self.walk_cell(map, &edit, false, spec),
+            KeyCode::Tab => self.walk_cell(map, &edit, true, spec),
             _ => {
                 let consumed = edit.input.handle_key(ev);
                 self.editing = Some(edit);
@@ -1075,23 +1208,79 @@ impl TableEditorState {
         }
     }
 
+    /// A key with head `edit` open: the keys an open cell takes
+    /// ([`Self::handle_editing_key`]), over the heads. Esc and Enter close
+    /// it where it is; ↑↓ close it and move one stop; Tab and Shift-Tab
+    /// close it and go on into the next or the previous field (a head,
+    /// which the caller opens, or after the last head the first row's
+    /// name, `+ Add`'s on an empty table); Shift-Tab on the first head
+    /// closes it there, as it does on the first cell. Whatever closes it
+    /// hands its text back; the table writes no head.
+    fn handle_head_key(
+        &mut self,
+        ev: KeyEvent,
+        map: &mut IndexMap<String, Entry>,
+        mut edit: CellEdit,
+        spec: &TableSpec,
+    ) -> TableOutcome {
+        let (k, heads, len) = (edit.row, spec.heads, map.len());
+        let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+        // Where the key leaves the cursor, and whether a field opens there.
+        let (to, opens) = match ev.code {
+            KeyCode::Esc | KeyCode::Enter => (k, false),
+            KeyCode::Up => (k.saturating_sub(1), false),
+            KeyCode::Down => (k + 1, false),
+            KeyCode::BackTab => (k.saturating_sub(1), k > 0),
+            KeyCode::Tab if shift => (k.saturating_sub(1), k > 0),
+            KeyCode::Tab => (k + 1, true),
+            _ => {
+                let consumed = edit.input.handle_key(ev);
+                self.editing = Some(edit);
+                return if consumed {
+                    TableOutcome::consumed()
+                } else {
+                    TableOutcome::not_consumed()
+                };
+            }
+        };
+        let mut outcome = TableOutcome::head_closed(&edit);
+        let stop = Stop::at(to.min(heads + len), heads, len);
+        self.set_selected(Some(stop));
+        match stop {
+            Stop::Head(h) if opens => outcome.open_head = Some(h),
+            _ if opens => self.start_edit(to - heads, Col::Key, map),
+            _ => {}
+        }
+        outcome
+    }
+
     /// Tab / Shift-Tab: commit the cell, then step one cell right
     /// (`forward`) or left, wrapping onto the next/previous row. Stepping
     /// off either end — past the ghost row, or back off the first cell —
-    /// commits and leaves editing.
+    /// commits and leaves editing. Back off the first cell of a table with
+    /// heads, the walk asks the caller to open the last head
+    /// ([`TableOutcome::open_head`]). A one-column row's only cell is its
+    /// name, so the walk goes from name to name.
     fn walk_cell(
         &mut self,
         map: &mut IndexMap<String, Entry>,
         edit: &CellEdit,
         forward: bool,
+        spec: &TableSpec,
     ) -> TableOutcome {
-        let Committed { row, here, warning } = self.commit_cell(map, edit);
+        let Committed { row, here, warning } = self.commit_cell(map, edit, spec);
+        let mut outcome = TableOutcome::maybe_warn(warning);
         if forward {
             match (row, edit.col) {
+                // The name after the row the caret was on. A `+ Add` name
+                // that is taken made no row, so `+ Add` opens again.
+                (Some(r), _) if spec.one_column => {
+                    self.start_edit(if r == here { here + 1 } else { here }, Col::Key, map)
+                }
                 (Some(r), Col::Key) => self.start_edit(r, Col::Value, map),
                 // A value cell is always a real row's (`open_col`), so the
                 // next row is at most the ghost, whose name opens.
-                (Some(r), Col::Value) => self.start_edit(r + 1, Col::Key, map),
+                (Some(r), _) => self.start_edit(r + 1, Col::Key, map),
                 // Past the ghost row, its name left empty: done.
                 (None, _) => self.exit_editing(here, map),
             }
@@ -1099,13 +1288,17 @@ impl TableEditorState {
             // Step back from where the caret was (`here`), not from the
             // existing row a taken `+ Add` name matched, which forward Tab
             // opens (task #111).
+            let back = if spec.one_column { Col::Key } else { Col::Value };
             match edit.col {
                 Col::Value => self.start_edit(here, Col::Key, map),
-                Col::Key if here > 0 => self.start_edit(here - 1, Col::Value, map),
-                Col::Key => self.exit_editing(here, map),
+                _ if here > 0 => self.start_edit(here - 1, back, map),
+                _ => {
+                    self.exit_editing(here, map);
+                    outcome.open_head = spec.heads.checked_sub(1);
+                }
             }
         }
-        TableOutcome::maybe_warn(warning)
+        outcome
     }
 
     /// Draws the table as one contiguous painted control: a muted-uppercase
@@ -1131,6 +1324,10 @@ impl TableEditorState {
     /// `owner` names the rows' hits ([`TableOwner::hit`]), and the hover
     /// styling reads back only its own; the `{{token}}` spans register as
     /// they do anywhere.
+    ///
+    /// `spec` is the table's shape: a one-column table draws its rows'
+    /// names across the whole width, with no value column and no toggle,
+    /// and a table whose inputs take no variables tints no token.
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
     pub fn draw(
         &self,
@@ -1144,6 +1341,7 @@ impl TableEditorState {
         vars: &VarView,
         skip: usize,
         owner: TableOwner,
+        spec: &TableSpec,
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
@@ -1159,10 +1357,12 @@ impl TableEditorState {
         if let Some(y) = row_y(0) {
             let cols = columns(area.x, area.width);
             fill(buf, Rect::new(area.x, y, area.width, 1), theme.panel);
-            text(buf, cols.name_x, y, "NAME", theme.text_muted, theme.panel, true);
-            text(buf, cols.value_x, y, "VALUE", theme.text_muted, theme.panel, true);
-            if cols.divider_x < area.right() {
-                text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, theme.panel, false);
+            text(buf, cols.name_x, y, spec.name_header, theme.text_muted, theme.panel, true);
+            if !spec.one_column {
+                text(buf, cols.value_x, y, "VALUE", theme.text_muted, theme.panel, true);
+                if cols.divider_x < area.right() {
+                    text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, theme.panel, false);
+                }
             }
         }
 
@@ -1172,7 +1372,7 @@ impl TableEditorState {
         for (i, (k, e)) in map.iter().enumerate().skip(first) {
             let Some(y) = row_y(i + 1) else { break };
             let note = notes.get(i).and_then(Option::as_ref);
-            self.draw_row(buf, hits, area, y, i, k, e, ctx, note, vars, true, None, owner);
+            self.draw_row(buf, hits, area, y, i, k, e, ctx, note, vars, true, None, owner, spec);
         }
 
         // --- the ghost row -------------------------------------------------
@@ -1186,7 +1386,7 @@ impl TableEditorState {
             let entry = Entry { value: String::new(), enabled: true };
             let label = (!ghost_editing).then_some(add_label);
             self.draw_row(
-                buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label, owner,
+                buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label, owner, spec,
             );
         }
 
@@ -1326,11 +1526,13 @@ impl TableEditorState {
         real: bool,
         ghost_label: Option<&str>,
         owner: TableOwner,
+        spec: &TableSpec,
     ) {
         use crate::ui::clip;
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
-        let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
+        let one = spec.one_column;
+        let editing_col = self.editing.as_ref().filter(|e| e.map_row() == Some(i)).map(|e| e.col);
         // The keyboard cursor lights its row only while the pane actually
         // holds the keyboard — a lift on an unfocused pane would claim keys
         // land here. A pointer resting on the row lights it either way.
@@ -1346,13 +1548,14 @@ impl TableEditorState {
         let show_actions = real && (lit || cursor) && area.width >= TOGGLE_W + ACTIONS_W;
         let value_right =
             if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
-        let value_w = value_right.saturating_sub(cols.value_x);
-        let name_w = cols.divider_x.saturating_sub(cols.name_x);
+        // A one-column row is its name across the whole row: no value
+        // cell (a width of 0 draws and registers none), no divider.
+        let (name_x, name_w, value_x, value_w) = cols_span(&cols, value_right, one);
         let unsent = matches!(note, Some(RowNote::Unsent(_)));
         let fg = match (real, entry.enabled, lit) {
             (false, _, true) => theme.text,
             (false, _, false) => theme.text_muted,
-            (true, true, _) if unsent => theme.error,
+            (true, true, _) if unsent || note == Some(&RowNote::Error) => theme.error,
             (true, true, _) => theme.text,
             (true, false, _) => theme.text_muted,
         };
@@ -1375,7 +1578,7 @@ impl TableEditorState {
         match cursor_cell {
             Some(Col::Key) => fill(buf, Rect::new(cols.name_x, y, name_w, 1), name_bg),
             Some(Col::Value) => fill(buf, Rect::new(cols.value_x, y, value_w, 1), value_bg),
-            None => {}
+            Some(Col::Head) | None => {}
         }
 
         // Each cell at rest is drawn by a field holding its text, as that
@@ -1422,12 +1625,13 @@ impl TableEditorState {
             Self::strike_cells(buf, cols.value_x, y, value_drew);
         }
 
-        if cols.divider_x < area.right() {
+        if !one && cols.divider_x < area.right() {
             text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, bg, false);
         }
 
         hits.register(Rect::new(area.x, y, area.width, 1), owner.hit(TableHit::Row(i)));
-        Self::register_cells(hits, cols_span(&cols, value_right), y, i, owner);
+        let span = (name_x, name_w, value_x, value_w);
+        Self::register_cells(hits, span, y, i, owner);
         // Token treatment over whatever each cell drew: the field at rest,
         // or for the cell under edit the live input — the URL bar's rule,
         // so a token stays a token while it is being typed. A left click
@@ -1439,11 +1643,14 @@ impl TableEditorState {
         };
         let key_cell = open(Col::Key).or(real.then_some((&key_rest, false)));
         let value_cell = open(Col::Value).or(Some((&value_rest, false)));
-        paint_cell_tokens(buf, hits, &cols, value_right, y, key_cell, value_cell, vars, theme);
+        if spec.vars {
+            paint_cell_tokens(buf, hits, span, y, key_cell, value_cell, vars, theme);
+        }
         // The toggle owns the left gutter on every real row; the actions
         // are revealed by hover or the cursor. Both paint (and register)
-        // last so they win over the cells underneath.
-        if real && area.width >= TOGGLE_W {
+        // last so they win over the cells underneath. A one-column row has
+        // no toggle: its gutter is padding.
+        if real && !one && area.width >= TOGGLE_W {
             let (x, on) = (area.x, entry.enabled);
             Self::draw_row_toggle(buf, hits, x, y, i, on, bg, ctx.hovered, theme, owner);
         }
@@ -1485,15 +1692,14 @@ impl TableEditorState {
 fn paint_cell_tokens(
     buf: &mut ratatui::buffer::Buffer,
     hits: &mut HitMap,
-    cols: &Columns,
-    value_right: u16,
+    span: (u16, u16, u16, u16),
     y: u16,
     key: Option<(&LineInput, bool)>,
     value: Option<(&LineInput, bool)>,
     vars: &VarView,
     theme: &Theme,
 ) {
-    let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
+    let (name_x, name_w, value_x, value_w) = span;
     let mut paint = |cell: Rect, field: Option<(&LineInput, bool)>| {
         if let Some((input, open)) = field {
             paint_field_tokens(buf, cell, input, open, vars, theme, hits)
@@ -1513,8 +1719,12 @@ fn paint_cell_tokens(
 /// the area's right edge on a row showing its actions. The registered
 /// width has to be the drawn width: a cell under edit windows its text to
 /// it, and the click that places the caret reads the width back off the
-/// hit rect.
-fn cols_span(cols: &Columns, value_right: u16) -> (u16, u16, u16, u16) {
+/// hit rect. A `one_column` row has the name cell alone, out to
+/// `value_right`, and a value cell of no width.
+fn cols_span(cols: &Columns, value_right: u16, one_column: bool) -> (u16, u16, u16, u16) {
+    if one_column {
+        return (cols.name_x, value_right.saturating_sub(cols.name_x), cols.value_x, 0);
+    }
     let name_w = cols.divider_x.saturating_sub(cols.name_x);
     let value_w = value_right.saturating_sub(cols.value_x);
     (cols.name_x, name_w, cols.value_x, value_w)
@@ -1607,35 +1817,144 @@ mod tests {
         assert_eq!(t.selected, Some(Stop::Add));
     }
 
-    /// A head is the walk's first stop, where nothing is selected: ↑ from
-    /// row 0, open or not, and Home reach it, ↓ leaves it for row 0, and ↑
-    /// on it stays, consumed. Without a head, ↑ on row 0 is unconsumed and
-    /// a closed cell's ↑ stays on row 0, as before.
+    /// A head is the walk's first stop, `Stop::Head`: ↑ from row 0, open
+    /// or not, and Home reach it, ↓ leaves it for row 0, and ↑ on it stays,
+    /// consumed. Without a head, ↑ on row 0 is unconsumed and a closed
+    /// cell's ↑ stays on row 0, as before.
     #[test]
     fn a_head_is_the_walks_first_stop() {
         let mut map = map_of(&[("a", "1"), ("b", "2")]);
         let mut t = TableEditorState { selected: Some(Stop::Row(0)), ..Default::default() };
         let walk = |t: &mut TableEditorState, map: &mut IndexMap<String, Entry>, c, head| {
-            t.handle_key_walk(key(c), map, head, 0)
+            let spec = if head { TableSpec::PROJECT } else { TableSpec::ROWS };
+            t.handle_key_walk(key(c), map, &spec, 0)
         };
+        let head = Some(Stop::Head(0));
         assert!(!walk(&mut t, &mut map, KeyCode::Up, false).consumed);
         assert_eq!(t.selected, Some(Stop::Row(0)));
         assert!(walk(&mut t, &mut map, KeyCode::Up, true).consumed);
-        assert_eq!(t.selected, None, "on the head");
+        assert_eq!(t.selected, head, "on the head");
         assert!(walk(&mut t, &mut map, KeyCode::Up, true).consumed, "the head is the top");
-        assert_eq!(t.selected, None);
+        assert_eq!(t.selected, head);
         walk(&mut t, &mut map, KeyCode::Down, true);
         assert_eq!(t.selected, Some(Stop::Row(0)));
         walk(&mut t, &mut map, KeyCode::End, true);
         walk(&mut t, &mut map, KeyCode::Home, true);
-        assert_eq!(t.selected, None, "Home is the head");
+        assert_eq!(t.selected, head, "Home is the head");
         // Out of an open cell on row 0.
         t.click_cell(0, Col::Value, &mut map);
         walk(&mut t, &mut map, KeyCode::Up, false);
         assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Row(0)), true));
         t.click_cell(0, Col::Value, &mut map);
         walk(&mut t, &mut map, KeyCode::Up, true);
-        assert_eq!((t.selected, t.editing.is_none()), (None, true));
+        assert_eq!((t.selected, t.editing.is_none()), (head, true));
+        // Shift-Tab off the first cell ends there, and names the head for a
+        // caller that opens its heads in the table (the Project tab doesn't).
+        t.click_cell(0, Col::Key, &mut map);
+        let out = t.handle_key_walk(shift_tab(), &mut map, &TableSpec::PROJECT, 0);
+        assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Row(0)), true));
+        assert_eq!(out.open_head, Some(0));
+    }
+
+    /// Checks tabs spec 2026-11-16: three heads over one-column rows. The
+    /// move keys walk heads, rows and `+ Add` as one list; an open head
+    /// takes an open cell's keys and hands its text back; a row has the
+    /// one cell, no switch.
+    #[test]
+    fn three_heads_walk_and_edit_over_one_column_rows() {
+        let spec = TableSpec::CHECKS;
+        let mut map = map_of(&[(".a", ""), (".b", "")]);
+        let mut t = TableEditorState::default();
+        let press = |t: &mut TableEditorState, map: &mut IndexMap<String, Entry>, c| {
+            t.handle_key_walk(key(c), map, &spec, 0)
+        };
+        // ↓ from nothing selected, then through every stop, and back.
+        let stops =
+            [Stop::Head(0), Stop::Head(1), Stop::Head(2), Stop::Row(0), Stop::Row(1), Stop::Add];
+        for stop in stops {
+            assert!(press(&mut t, &mut map, KeyCode::Down).consumed);
+            assert_eq!(t.selected, Some(stop));
+        }
+        assert!(press(&mut t, &mut map, KeyCode::Down).consumed, "↓ at the end stays");
+        for stop in stops.iter().rev().skip(1) {
+            press(&mut t, &mut map, KeyCode::Up);
+            assert_eq!(t.selected, Some(*stop));
+        }
+        press(&mut t, &mut map, KeyCode::End);
+        assert_eq!(t.selected, Some(Stop::Add));
+        let half_up = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        t.handle_key_walk(half_up, &mut map, &spec, 0);
+        assert_eq!(t.selected, Some(Stop::Head(2)), "half of the places back");
+        press(&mut t, &mut map, KeyCode::Home);
+        assert_eq!(t.selected, Some(Stop::Head(0)));
+        // A head's own keys are the caller's; ←/→ and Space do nothing on
+        // one, or on a one-column row.
+        for c in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Delete] {
+            assert!(!press(&mut t, &mut map, c).consumed, "{c:?} on a head");
+        }
+        t.set_selected(Some(Stop::Row(0)));
+        press(&mut t, &mut map, KeyCode::Right);
+        assert_eq!(t.col, Col::Key);
+        assert!(!press(&mut t, &mut map, KeyCode::Char(' ')).consumed);
+        assert!(map[".a"].enabled);
+
+        // An open head: Enter and Esc close it where it is, text handed back.
+        for close in [KeyCode::Enter, KeyCode::Esc] {
+            t.begin_head(1, "500");
+            press(&mut t, &mut map, KeyCode::Char('0'));
+            let out = press(&mut t, &mut map, close);
+            assert_eq!(out.head_commit, Some((1, "5000".to_string())));
+            assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Head(1)), true));
+        }
+        // ↑↓ close it and move one stop; Tab goes on into the next field,
+        // then the first row's name; Shift-Tab comes back the same way.
+        t.begin_head(2, "");
+        let out = press(&mut t, &mut map, KeyCode::Down);
+        assert_eq!((out.head_commit, t.selected), (Some((2, String::new())), Some(Stop::Row(0))));
+        t.begin_head(0, "200");
+        let out = press(&mut t, &mut map, KeyCode::Tab);
+        assert_eq!((out.head_commit, out.open_head), (Some((0, "200".to_string())), Some(1)));
+        assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Head(1)), true));
+        t.begin_head(2, "");
+        let out = press(&mut t, &mut map, KeyCode::Tab);
+        assert_eq!(out.open_head, None);
+        assert_eq!(t.editing.as_ref().map(|e| (e.map_row(), e.col)), Some((Some(0), Col::Key)));
+        let out = t.handle_key_walk(shift_tab(), &mut map, &spec, 0);
+        assert_eq!((out.open_head, t.editing.is_none()), (Some(2), true));
+        t.begin_head(0, "200");
+        let out = t.handle_key_walk(shift_tab(), &mut map, &spec, 0);
+        assert_eq!((out.open_head, t.selected), (None, Some(Stop::Head(0))), "the first: it ends");
+        // Tab walks the rows name to name, into `+ Add`, and out.
+        t.click_cell_as(0, Col::Key, &mut map, &spec);
+        press(&mut t, &mut map, KeyCode::Tab);
+        assert_eq!(t.editing.as_ref().map(|e| (e.row, e.col)), Some((1, Col::Key)));
+        press(&mut t, &mut map, KeyCode::Tab);
+        assert!(t.editing_ghost(map.len()));
+        press(&mut t, &mut map, KeyCode::Tab);
+        assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Add), true));
+        // A click away closes an open head as it closes a cell.
+        t.begin_head(0, "200, 201");
+        let out = t.commit_as(&mut map, &spec);
+        assert_eq!(out.head_commit, Some((0, "200, 201".to_string())));
+        assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Head(0)), true));
+    }
+
+    /// The Checks table's words: its three warnings say "check", and
+    /// quote one on a single short line.
+    #[test]
+    fn a_one_column_tables_warnings_are_worded_for_its_noun() {
+        let spec = TableSpec::CHECKS;
+        let mut map = map_of(&[(".a", ""), (".b\n  | not", "")]);
+        let mut t = TableEditorState::default();
+        let mut retype = |t: &mut TableEditorState, row: usize, text: &str| {
+            t.click_cell_as(row, Col::Key, &mut map, &spec);
+            t.editing.as_mut().unwrap().input.set_text(text);
+            t.commit_as(&mut map, &spec).warning.unwrap()
+        };
+        assert_eq!(retype(&mut t, 2, ".a"), "'.a' already exists \u{2014} no check added");
+        assert_eq!(retype(&mut t, 1, " "), "a check can't be empty — kept '.b | not'");
+        assert_eq!(retype(&mut t, 1, ".a"), "'.a' already exists — the two checks are now one");
+        assert_eq!(map.len(), 1);
     }
 
     /// A row the map shrank from under (before a frame clamped it) steps
@@ -2759,7 +3078,8 @@ mod tests {
             .draw(|f| {
                 let vars = VarView::default();
                 let owner = TableOwner::Request;
-                t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &vars, 0, owner)
+                let spec = &TableSpec::ROWS;
+                t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &vars, 0, owner, spec)
             })
             .unwrap();
         terminal
@@ -2781,7 +3101,8 @@ mod tests {
                 let ctx = ctx(&theme, None);
                 let vars = VarView::default();
                 let owner = TableOwner::Request;
-                t.draw(f, area, &map, &ctx, "+ Add param", &mut hits, &[], &vars, 2, owner)
+                let spec = &TableSpec::ROWS;
+                t.draw(f, area, &map, &ctx, "+ Add param", &mut hits, &[], &vars, 2, owner, spec)
             })
             .unwrap();
         // Lines 2..5 show: rows 1, 2, 3 (the header and row 0 are above).
@@ -2950,6 +3271,7 @@ mod tests {
                     &VarView::default(),
                     0,
                     TableOwner::Request,
+                    &TableSpec::ROWS,
                 )
             })
             .unwrap();
@@ -2970,6 +3292,17 @@ mod tests {
         notes: &[Option<RowNote>],
         hits: &mut HitMap,
     ) -> Terminal<TestBackend> {
+        draw_narrow_as(map, width, notes, hits, &TableSpec::ROWS)
+    }
+
+    /// [`draw_narrow`] for a table `spec` describes.
+    fn draw_narrow_as(
+        map: &IndexMap<String, Entry>,
+        width: u16,
+        notes: &[Option<RowNote>],
+        hits: &mut HitMap,
+        spec: &TableSpec,
+    ) -> Terminal<TestBackend> {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         let area = Rect::new(0, 0, width, 10);
@@ -2987,10 +3320,40 @@ mod tests {
                     &VarView::default(),
                     0,
                     TableOwner::Request,
+                    spec,
                 )
             })
             .unwrap();
         terminal
+    }
+
+    /// Checks tabs spec 2026-11-16: a one-column table draws a row's name
+    /// across the row, with no value cell, divider or toggle, tints no
+    /// `{{token}}`, and draws an `Error` row in the error colour, unstruck.
+    #[test]
+    fn a_one_column_table_draws_names_alone() {
+        let theme = Theme::dark();
+        let long = ".items | map(select(.price > 100)) | length == 4";
+        let map = map_of(&[(long, ""), (".a ==", ""), ("{{x}} == 1", "")]);
+        let mut hits = HitMap::default();
+        let notes = [None, Some(RowNote::Error), None];
+        let term = draw_narrow_as(&map, 40, &notes, &mut hits, &TableSpec::CHECKS);
+        let buf = term.backend().buffer();
+        let line = |y: u16| (0..40).map(|x| buf.cell((x, y)).unwrap().symbol()).collect::<String>();
+        assert_eq!(line(0).trim(), "CHECK", "one header, no VALUE");
+        let drawn = line(1);
+        assert!(drawn.contains("map(select(.price > 100))"), "past the name column: {drawn}");
+        for row in 0..3 {
+            let name = hits.rect_of(&Hit::TableCell { row, col: 0 }).unwrap();
+            assert_eq!((name.x, name.right()), (TOGGLE_W, 40), "row {row}");
+            assert!(hits.rect_of(&Hit::TableCell { row, col: 1 }).is_none(), "row {row}");
+            assert!(hits.rect_of(&Hit::TableCheckbox(row)).is_none(), "row {row}");
+        }
+        let cell = buf.cell((TOGGLE_W, 2)).unwrap();
+        assert_eq!(cell.fg, theme.error);
+        assert!(!cell.modifier.contains(Modifier::CROSSED_OUT));
+        assert_eq!(buf.cell((TOGGLE_W, 3)).unwrap().fg, theme.text, "no token tint");
+        assert!(hits.var_token_at(TOGGLE_W + 1, 3).is_none());
     }
 
     /// A value in 2-cell glyphs is cut in cells: on a narrow pane it stops

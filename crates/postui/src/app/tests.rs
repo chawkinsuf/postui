@@ -1113,7 +1113,7 @@ fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
 }
 
 #[test]
-fn editor_tab_cycle_order_is_headers_params_vars_body() {
+fn editor_tab_cycle_order_is_headers_params_vars_body_checks() {
     let mut app = App::new_for_test();
     // Body is only reachable for a method that sends one.
     app.update(Action::SetMethod(postui_core::model::Method::Post));
@@ -1124,6 +1124,9 @@ fn editor_tab_cycle_order_is_headers_params_vars_body() {
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
+    // Checks tabs spec 2026-11-16, Q1: Checks is the fifth tab, last.
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Checks);
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "cycle wraps back to Headers");
 }
@@ -1211,7 +1214,7 @@ fn body_tab_is_unreachable_for_get_and_head() {
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "select is a no-op");
     app.update(Action::EditorTabSelect(2)); // Vars, the tab before Body
     app.update(Action::EditorTabCycle(1));
-    assert_eq!(app.editor.active_tab, EditorTab::Headers, "forward skips Body");
+    assert_eq!(app.editor.active_tab, EditorTab::Checks, "forward skips Body");
     app.update(Action::EditorTabCycle(-1));
     assert_eq!(app.editor.active_tab, EditorTab::Vars, "backward skips Body");
 

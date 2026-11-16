@@ -5,9 +5,12 @@
 //! Split from `app.rs`; every method here is `impl App`.
 
 use super::*;
-use crate::components::table_editor::{Stop, TableEditorState, TableOutcome};
+use crate::components::table_editor::{Stop, TableEditorState, TableOutcome, TableSpec};
 use indexmap::IndexMap;
 use postui_core::model::Entry;
+
+/// The default headers' table: the Name row is its one head.
+const HEADERS: TableSpec = TableSpec::PROJECT;
 
 impl App {
     /// How many default headers the open project has.
@@ -64,7 +67,7 @@ impl App {
             // handed on, as on the Name row above, the Settings fields and
             // the Variables grid.
             if self.project_tab.table.type_into_cell(ev).is_none()
-                && self.run_header_table(|t, map| t.handle_key_walk(ev, map, true, 0)).1
+                && self.run_header_table(|t, map| t.handle_key_walk(ev, map, &HEADERS, 0)).1
             {
                 self.last_action_failed = true;
             }
@@ -76,7 +79,7 @@ impl App {
             return None;
         }
         let (outcome, refused) =
-            self.run_header_table(|t, map| t.handle_key_walk(ev, map, true, 0));
+            self.run_header_table(|t, map| t.handle_key_walk(ev, map, &HEADERS, 0));
         if refused {
             self.last_action_failed = true;
         }
@@ -218,8 +221,8 @@ impl App {
     /// The wheel over the tab at (`col`, `row`), `delta` lines: over the
     /// header table, its view moves by the request table's rules
     /// ([`TableEditorState::scroll_view`],
-    /// [`TableEditorState::view_scrolled_under_head`]); anywhere else on
-    /// the tab it moves nothing.
+    /// [`TableEditorState::view_scrolled`]); anywhere else on the tab it
+    /// moves nothing.
     pub(super) fn scroll_project_table(&mut self, col: u16, row: u16, delta: i16) {
         if !self.project_tab.table_area.contains((col, row).into()) {
             return;
@@ -228,7 +231,7 @@ impl App {
         let vim = self.profile() == crate::config::KeyProfile::Vim;
         let table = &mut self.project_tab.table;
         if table.scroll_view(delta, len, 0) {
-            table.view_scrolled_under_head(vim, len, 0);
+            table.view_scrolled(vim, len, 0);
         }
     }
 
@@ -278,7 +281,7 @@ impl App {
         if refused {
             self.last_action_failed = true;
         } else if let Some(key) = key {
-            self.toast_deleted_row(&key, i);
+            self.toast_deleted_row(&HEADERS, &key, i);
         }
     }
 

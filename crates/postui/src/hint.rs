@@ -359,8 +359,12 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
                 EditorTab::Headers => "Edit the request headers",
                 EditorTab::Vars => "Edit the request variables",
                 EditorTab::Body => "Edit the request body",
+                EditorTab::Checks => "Edit the checks the response must pass",
             })
         }
+        Hit::CheckField(0) => text("Edit the status codes that pass"),
+        Hit::CheckField(1) => text("Edit the first-byte limit, in milliseconds"),
+        Hit::CheckField(_) => text("Edit the total-time limit, in milliseconds"),
         Hit::ResponseTab(mode) => of(Action::ResponseViewMode(*mode)),
         // Not `SelectManageTab`'s own wording ("Show the Spaces tab"),
         // which is written for a footer chip a strip away from the tab;
@@ -387,6 +391,17 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             text(if ctx.on { "Close the Manage screen" } else { "Open the Manage screen" })
         }
         Hit::HeaderTheme => of(Action::OpenThemeChooser),
+        // On the request's Checks tab a row is a check (`ctx.checks`), and
+        // its pills and chips say so.
+        Hit::TableCopy(_) | Hit::FooterChip(Action::CopyToClipboard(CopyTarget::TableRow(_)))
+            if ctx.checks =>
+        {
+            text("Copy this check")
+        }
+        Hit::TableDelete(_) | Hit::FooterChip(Action::DeleteTableRow(_)) if ctx.checks => {
+            text("Delete this check")
+        }
+        Hit::FooterChip(Action::TableAddRow) if ctx.checks => text("Add a check"),
         // The row toggle's chip drives the same two-state control as the
         // row's own checkbox, so it says the same thing. Handled here
         // rather than through `describe_action`, which has no `ctx`.

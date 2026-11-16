@@ -864,6 +864,7 @@ impl App {
         if ev.code != KeyCode::Char('{')
             || !typing
             || !matches!(id, FieldId::Url | FieldId::TableCell { .. })
+            || !self.editor.caret_takes_vars()
         {
             return;
         }

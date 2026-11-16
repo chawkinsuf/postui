@@ -57,9 +57,23 @@ pub enum Sending {
 /// Headers view (copy). One copy chip each (spec 2026-10-26 H5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableCursor {
-    Row { index: usize, enabled: bool, headers: bool },
-    Auto { index: usize, pencil: bool },
+    Row {
+        index: usize,
+        enabled: bool,
+        headers: bool,
+    },
+    Auto {
+        index: usize,
+        pencil: bool,
+    },
     ResponseHeader,
+    /// The caret is in the request's Checks tab: on check `row` (its copy
+    /// and delete; a check has no switch), or with `None` on a field, on
+    /// `+ Add check`, or in an open input. Its inputs take no variables,
+    /// so the row has no `vars` chip.
+    Checks {
+        row: Option<usize>,
+    },
 }
 
 /// The chips the request table's cursor adds to the editor's footer, the
@@ -112,7 +126,15 @@ fn table_cursor_chips(cursor: TableCursor) -> Vec<(Key, &'static str, Option<Act
             }
             chips
         }
-        TableCursor::ResponseHeader => Vec::new(),
+        TableCursor::Checks { row: Some(i) } => vec![
+            (Key::Of(Action::OnSelection(Verb::Yank)), "copy", copy_value(CopyTarget::TableRow(i))),
+            (
+                Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
+                "delete",
+                Some(Action::DeleteTableRow(i)),
+            ),
+        ],
+        TableCursor::ResponseHeader | TableCursor::Checks { row: None } => Vec::new(),
     }
 }
 
@@ -241,11 +263,14 @@ pub(crate) fn footer_chips(
             if let Some(cursor) = table_row_selected {
                 chips.extend(table_cursor_chips(cursor));
             }
-            chips.push((
-                Key::Of(Action::OpenVarPicker { completing: false }),
-                "vars",
-                Some(Action::OpenVarPicker { completing: false }),
-            ));
+            // Not in the Checks tab, whose inputs take no variables.
+            if !matches!(table_row_selected, Some(TableCursor::Checks { .. })) {
+                chips.push((
+                    Key::Of(Action::OpenVarPicker { completing: false }),
+                    "vars",
+                    Some(Action::OpenVarPicker { completing: false }),
+                ));
+            }
             // The split cycle's alt+w is found in the palette (spec E12a),
             // not here. Arrows are the primary route (method ← URL ↓
             // content) and get no chip of their own (2026-09-18: the old

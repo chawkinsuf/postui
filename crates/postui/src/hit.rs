@@ -69,6 +69,10 @@ pub enum Hit {
     },
     /// The Project tab's Name well: click opens the name's edit.
     ProjectName,
+    /// A field's well on the request's Checks tab, by its place: the
+    /// status codes, the first-byte limit, the total limit. Click opens
+    /// the field's edit.
+    CheckField(usize),
     /// A hit in the Project tab's default-headers table, which its draw
     /// registers under this owner (`TableOwner::Project`) so the request
     /// table's handlers never take it.
