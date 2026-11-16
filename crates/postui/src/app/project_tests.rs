@@ -43,9 +43,10 @@ fn undo_key(profile: KeyProfile) -> &'static str {
     if profile == KeyProfile::Vim { "u" } else { "<C-z>" }
 }
 
-/// `hit` as the Project table registers it.
+/// `hit`, a request table's hit, as the Project table registers it.
 fn pt(hit: Hit) -> Hit {
-    Hit::ProjectTable(Box::new(hit))
+    use crate::components::table_editor::TableOwner;
+    TableOwner::Project.hit(TableOwner::Request.of(&hit).expect("a table hit"))
 }
 
 fn cell(row: usize, col: u8) -> Hit {
@@ -304,6 +305,33 @@ fn a_padded_name_committed_unchanged_writes_nothing() {
     assert!(!app.proj().can_undo());
 }
 
+/// R7: a name that differs from the file's only by spaces round it names
+/// the same project, so it starts no write at all: one the file would
+/// refuse is never tried, and the name closes.
+#[test]
+fn a_name_differing_only_by_spaces_starts_no_write() {
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    feed(&mut app, "<CR>");
+    app.project_tab.name_input_mut().unwrap().set_text("Orders ");
+    std::fs::write(app.proj().root().join("project.toml"), "name = \n").unwrap();
+    feed(&mut app, "<CR>");
+    assert!(!app.project_tab.name_open(), "the name closed");
+    assert!(app.toasts.messages().is_empty(), "{:?}", app.toasts.messages());
+    assert!(!app.op_in_flight);
+}
+
+/// A key the tab hands on leaves its cursor as it was: after a click away
+/// dropped it, Tab on the Name row does nothing here and lights nothing.
+#[test]
+fn a_key_the_tab_hands_on_leaves_the_cursor_dropped() {
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    click(&mut app, Hit::ManageTab(ManageTab::Project.index()));
+    assert!(!app.project_tab.focused);
+    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert_eq!(app.handle_project_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)), None);
+    assert!(!app.project_tab.focused, "the unclaimed key relit the cursor");
+}
+
 /// R14: a right click away from an open header cell commits it first, as
 /// a left click does.
 #[test]
@@ -475,6 +503,41 @@ fn the_wheel_scrolls_the_header_table() {
         wheel(&mut app, Hit::ProjectName, false);
     }
     assert!(app.hits.rect_of(&cell(59, 1)).is_some(), "the open cell stays drawn");
+}
+
+/// A wheel notch that moves nothing (the headers fit) marks nothing, as
+/// on a request's table: the view still follows the cursor.
+#[test]
+fn a_wheel_that_moves_nothing_marks_nothing() {
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    feed(&mut app, "<Down>");
+    wheel(&mut app, Hit::ProjectName, true);
+    assert_eq!(app.project_tab.table.scroll, 0);
+    assert!(!app.project_tab.table.scrolled_away());
+}
+
+/// In vim the wheel pulls the table's cursor into the view, as on a
+/// request's table (spec 2026-10-25 S24); the arrows wheel leaves it.
+#[test]
+fn the_vim_wheel_pulls_the_cursor_into_view() {
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut app = project_app(&many(60), profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "j" } else { "<Down>" });
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        for _ in 0..5 {
+            wheel(&mut app, Hit::ProjectName, true);
+        }
+        let table = &app.project_tab.table;
+        assert!(table.scroll > 1, "{profile:?}: the view scrolled");
+        if profile == KeyProfile::Vim {
+            // Row `r` is line `r + 1`: the first row in view.
+            assert_eq!(table.selected(), Some(Stop::Row(table.scroll - 1)), "{profile:?}");
+            assert!(!table.scrolled_away(), "{profile:?}");
+        } else {
+            assert_eq!(table.selected(), Some(Stop::Row(0)), "{profile:?}");
+            assert!(table.scrolled_away(), "{profile:?}");
+        }
+    }
 }
 
 /// The keys scroll the table the least they can: ↓ past the bottom

@@ -1448,13 +1448,11 @@ impl App {
             Hit::HeaderManage => self.screen == Screen::Manage,
             // The Project tab's checkbox is a default header's; its copy
             // pill copies the value alone (R13), so it is never `on`.
-            Hit::ProjectTable(inner) => match **inner {
-                Hit::TableCheckbox(i) => self
-                    .project()
-                    .and_then(|p| p.meta().default_headers.get_index(i))
-                    .is_some_and(|(_, e)| e.enabled),
-                _ => false,
-            },
+            Hit::ProjectTable(crate::components::table_editor::TableHit::Checkbox(i)) => self
+                .project()
+                .and_then(|p| p.meta().default_headers.get_index(*i))
+                .is_some_and(|(_, e)| e.enabled),
+            Hit::ProjectTable(_) => false,
             Hit::TableCheckbox(i) | Hit::FooterChip(Action::ToggleTableRow(i)) => {
                 self.editor.table_row_enabled(*i)
             }
@@ -9972,11 +9970,9 @@ impl App {
         if self.editor.active_tab == EditorTab::Body || self.editor.view_offset() == before {
             return;
         }
-        if self.profile() == crate::config::KeyProfile::Vim {
-            self.editor.table_cursor_into_view();
-        } else {
-            self.editor.table.mark_scrolled_away();
-        }
+        let vim = self.profile() == crate::config::KeyProfile::Vim;
+        let (len, section_len) = (self.editor.table_len(), self.editor.section_len());
+        self.editor.table.view_scrolled(vim, len, section_len);
     }
 
     /// Writes the editor over the open request's file with no drift

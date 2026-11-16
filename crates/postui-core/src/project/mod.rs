@@ -398,6 +398,11 @@ impl Project {
         meta::display_name(self.root(), &self.meta)
     }
 
+    /// The name the project shows with no `name` set ([`meta::folder_name`]).
+    pub fn folder_name(&self) -> String {
+        meta::folder_name(self.root())
+    }
+
     pub fn meta(&self) -> &ProjectMeta {
         &self.meta
     }

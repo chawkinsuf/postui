@@ -69,10 +69,10 @@ pub enum Hit {
     },
     /// The Project tab's Name well: click opens the name's edit.
     ProjectName,
-    /// A hit in the Project tab's default-headers table: the table's own
-    /// hit (`TableCell`, `TableCheckbox` and the rest), wrapped by the
-    /// tab's draw so the request table's handlers never take it.
-    ProjectTable(Box<Hit>),
+    /// A hit in the Project tab's default-headers table, which its draw
+    /// registers under this owner (`TableOwner::Project`) so the request
+    /// table's handlers never take it.
+    ProjectTable(crate::components::table_editor::TableHit),
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,
@@ -587,21 +587,6 @@ impl HitMap {
 
     pub fn register(&mut self, rect: Rect, hit: Hit) {
         self.regions.push((rect, hit));
-    }
-
-    /// How many hits are registered: a mark for [`Self::map_since`].
-    pub fn mark(&self) -> usize {
-        self.regions.len()
-    }
-
-    /// Replaces each hit registered since `mark` with what `f` answers for
-    /// it, where it answers one.
-    pub fn map_since(&mut self, mark: usize, f: impl Fn(&Hit) -> Option<Hit>) {
-        for (_, hit) in self.regions.iter_mut().skip(mark) {
-            if let Some(new) = f(hit) {
-                *hit = new;
-            }
-        }
     }
 
     /// Registers `hit` over the buffer columns `cols` on `row.y`, cut to

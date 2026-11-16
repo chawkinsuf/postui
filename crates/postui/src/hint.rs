@@ -405,9 +405,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::ManageMoveAll => text("Move all requests to another space"),
         Hit::ProjectName => text("Edit the project's name"),
-        // The table's own hit, whose `on` `App::hint_ctx` reads from the
-        // default headers.
-        Hit::ProjectTable(inner) => hint_source(inner, ctx),
+        // Worded as the request table's same control; its `on`
+        // `App::hint_ctx` reads from the default headers.
+        Hit::ProjectTable(inner) => {
+            hint_source(&crate::components::table_editor::TableOwner::Request.hit(*inner), ctx)
+        }
 
         // -- Settings tab --
         // Each control names the single action a click performs, in the

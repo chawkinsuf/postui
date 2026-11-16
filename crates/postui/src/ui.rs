@@ -225,10 +225,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                                 anims,
                                 now,
                             };
-                            let folder = p
-                                .root()
-                                .file_name()
-                                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                            let folder = p.folder_name();
                             project_tab.draw(
                                 frame,
                                 body,

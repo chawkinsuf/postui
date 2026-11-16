@@ -96,7 +96,10 @@ pub(super) fn field_hit(field: FieldId) -> Option<Hit> {
         FieldId::Settings(field) => Hit::SettingsControl(field),
         FieldId::ProjectName => Hit::ProjectName,
         FieldId::ProjectCell { row, col } => {
-            Hit::ProjectTable(Box::new(Hit::TableCell { row, col: u8::try_from(col).ok()? }))
+            Hit::ProjectTable(crate::components::table_editor::TableHit::Cell {
+                row,
+                col: u8::try_from(col).ok()?,
+            })
         }
         FieldId::ModalInput(i) => Hit::ModalInput(i),
         _ => return None,
@@ -788,10 +791,7 @@ impl App {
                         ManageTab::Environments | ManageTab::Spaces => {
                             self.manage.list.handle_scroll(d);
                         }
-                        ManageTab::Project => {
-                            let len = self.default_headers_len();
-                            self.project_tab.scroll_table(d, len);
-                        }
+                        ManageTab::Project => self.scroll_project_table(d),
                         ManageTab::Settings => {}
                     }
                     return self.update(Action::Render);
@@ -1312,15 +1312,15 @@ impl App {
     /// not looked up again after a write).
     fn click_project_table(
         &mut self,
-        hit: Hit,
+        hit: crate::components::table_editor::TableHit,
         m: ratatui::crossterm::event::MouseEvent,
         clicks: Clicks,
     ) -> bool {
         use crate::components::project_tab::ProjectStop;
-        use crate::components::table_editor::{Col, TableOutcome};
+        use crate::components::table_editor::{Col, TableEditorState, TableHit, TableOutcome};
         let len = self.default_headers_len();
         self.project_tab.focused = true;
-        if let Hit::TableCell { row, col } = hit {
+        if let TableHit::Cell { row, col } = hit {
             let cell_col = Col::from_index(col);
             let already_editing = self.editing(FieldId::ProjectCell { row, col: usize::from(col) });
             if !already_editing {
@@ -1355,12 +1355,10 @@ impl App {
         }
         self.project_tab.stop = ProjectStop::Table;
         match hit {
-            Hit::TableCheckbox(i) => {
+            TableHit::Checkbox(i) => {
                 let refused = self
                     .run_header_table(|_, map| {
-                        if let Some((_, e)) = map.get_index_mut(i) {
-                            e.enabled = !e.enabled;
-                        }
+                        TableEditorState::toggle_row(map, i);
                         TableOutcome::default()
                     })
                     .1;
@@ -1368,8 +1366,8 @@ impl App {
                     self.last_action_failed = true;
                 }
             }
-            Hit::TableRow(i) => self.project_tab.table.set_selected(Some(Stop::of_row(i, len))),
-            Hit::TableCopy(i) => {
+            TableHit::Row(i) => self.project_tab.table.set_selected(Some(Stop::of_row(i, len))),
+            TableHit::Copy(i) => {
                 let row = self.project().and_then(|p| {
                     p.meta().default_headers.get_index(i).map(|(k, e)| (k.clone(), e.value.clone()))
                 });
@@ -1377,8 +1375,8 @@ impl App {
                     self.copy_text_with_toast(&value, format!("Copied {name}"));
                 }
             }
-            Hit::TableDelete(i) => return self.update(Action::DeleteDefaultHeader(i)),
-            _ => {}
+            TableHit::Delete(i) => return self.update(Action::DeleteDefaultHeader(i)),
+            TableHit::Cell { .. } => {}
         }
         self.update(Action::Render)
     }
@@ -2004,7 +2002,7 @@ impl App {
                 self.press_text(FieldId::ProjectName, m, clicks, already_editing);
                 self.update(Action::Render)
             }
-            Hit::ProjectTable(inner) => self.click_project_table(*inner, m, clicks),
+            Hit::ProjectTable(inner) => self.click_project_table(inner, m, clicks),
             Hit::ManageRow(i) => {
                 let Self { project, manage, .. } = self;
                 if let Some(p) = project {
@@ -2246,9 +2244,7 @@ impl App {
                         unreachable!("TableCheckbox only fires on Params/Headers/Vars")
                     }
                 };
-                if let Some((_, e)) = map.get_index_mut(i) {
-                    e.enabled = !e.enabled;
-                }
+                crate::components::table_editor::TableEditorState::toggle_row(map, i);
                 self.update(Action::Render)
             }
             // The row background is only reachable at the slivers its cells

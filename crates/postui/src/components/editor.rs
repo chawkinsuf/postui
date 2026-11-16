@@ -1,5 +1,7 @@
 use super::line_input::LineInput;
-use super::table_editor::{Col, RowNote, Stop, TableEditorState, TableOutcome, table_height};
+use super::table_editor::{
+    Col, RowNote, Stop, TableEditorState, TableOutcome, TableOwner, content_lines, table_height,
+};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, Verb};
@@ -114,7 +116,7 @@ pub enum Caret {
     /// (task #56): undo puts it back there, as it was ("undo restores
     /// exactly"), found by `name` on the Vars tab (the referenced
     /// variable's), by place on the Headers tab; a section that shrank
-    /// meanwhile is clamped on the next frame (`settle_table_scroll`). The
+    /// meanwhile is clamped on the next frame (`settle_view`). The
     /// auto rows are worked out by `App` from the project's defaults and
     /// the environment after the swap, so at restore time the new list
     /// isn't known yet: the cursor keeps its place there, as it does when
@@ -3169,12 +3171,11 @@ impl Component for Editor {
         if self.active_tab != EditorTab::Body {
             // No table on screen (collapsed, not drawn yet, or a content
             // area no rows tall): there is no view to scroll.
-            if self.table_collapsed || self.table.viewport == 0 {
+            if self.table_collapsed {
                 return;
             }
-            let moved = self.table.scroll as i64 + i64::from(delta);
-            self.table.scroll = usize::try_from(moved).unwrap_or(0);
-            self.clamp_table_scroll(self.table.viewport, self.table_content_lines());
+            let (len, section_len) = (self.table_len(), self.section_len());
+            self.table.scroll_view(delta, len, section_len);
             return;
         }
         self.scroll_body(delta.into());
@@ -4371,37 +4372,14 @@ impl Editor {
     }
 
     /// Every line a table tab's content has, for a section of
-    /// `section_len` rows: the table's, then the section's divider and
-    /// rows. The tab scrolls over these as one column (spec 2026-10-25 S1).
+    /// `section_len` rows ([`content_lines`]).
     fn content_lines_for(&self, section_len: usize) -> usize {
-        let section = if section_len == 0 { 0 } else { section_len + 1 };
-        usize::from(table_height(self.table_len())) + section
+        content_lines(self.table_len(), section_len)
     }
 
     /// [`Self::content_lines_for`] the active tab's section.
     fn table_content_lines(&self) -> usize {
         self.content_lines_for(self.section_len())
-    }
-
-    /// The content line cursor stop `stop` sits on: row `i` is line
-    /// `i + 1` (under the table's header), `+ Add` line `len + 1`, and
-    /// section row `j` the `j`th line after the table's closing edge and
-    /// the section's divider. The one place the stops' lines are worked
-    /// out.
-    fn stop_line(&self, stop: Stop) -> usize {
-        let len = self.table_len();
-        match stop {
-            Stop::Row(i) => i + 1,
-            Stop::Add => len + 1,
-            Stop::Section(j) => usize::from(table_height(len)) + 1 + j,
-        }
-    }
-
-    /// Every stop, in the order the keys walk them ([`Stop::ordinal`]), for
-    /// a section of `section_len` rows.
-    fn stops(&self, section_len: usize) -> impl DoubleEndedIterator<Item = Stop> + use<> {
-        let len = self.table_len();
-        (0..=len + section_len).map(move |ord| Stop::at(ord, len))
     }
 
     /// The section row under the table's cursor. A section stop is its
@@ -4412,7 +4390,7 @@ impl Editor {
     ///
     /// It reads the stop as stored, with no clamp. A stale stop does not
     /// reach a key here: the loop redraws after every event that reports a
-    /// change, and the frame clamps the stop (`settle_table_scroll`) before
+    /// change, and the frame clamps the stop (`settle_view`) before
     /// the next event is read. The bound check only answers `None` rather
     /// than name a row that isn't there. The clamp at the top of the
     /// table's own keys (S25) is the same rule kept where the keys come in.
@@ -4435,102 +4413,22 @@ impl Editor {
         self.computed.rows.get(j).is_some_and(|r| r.overriding_row().is_some())
     }
 
-    /// Vim's rule for a window the view scrolled (the vim profile's, as the
-    /// response's `cursor_into_view` is; the user's "follow what Vim
-    /// does"): a cursor the wheel or the scrollbar left off screen moves
-    /// onto the nearest stop in view, so a key never acts on a row out of
-    /// sight. The arrows profile keeps the sidebar's rule instead (spec
+    /// Vim's rule for a window the view scrolled
+    /// ([`TableEditorState::cursor_into_view`]), on a table tab that is
+    /// drawn. The arrows profile keeps the sidebar's rule instead (spec
     /// 2026-10-25 S5, S23): the view moves alone, marked scrolled away, and
-    /// the next cursor move brings it back to the cursor. An open cell
-    /// already holds the view (S8).
+    /// the next cursor move brings it back to the cursor.
     ///
     /// It runs whether or not the table holds the keyboard, as in Vim: the
     /// wheel over a window that isn't the current one scrolls it and moves
     /// that window's cursor into view all the same, so the cursor is never
     /// off screen when the keyboard comes back to it.
-    ///
-    /// On a pane too short to hold a stop where the wheel left the view
-    /// (one or two lines on the closing edge or the divider), the nearest
-    /// stop is out of view, and the next frame scrolls back to show it.
-    /// That is the cost of the view keeping the cursor in sight (S22, the
-    /// block 2 rework, the user's "keep it in sight"): no line can rest on
-    /// screen without a stop.
     pub fn table_cursor_into_view(&mut self) {
-        let viewport = self.table.viewport;
-        if self.active_tab == EditorTab::Body
-            || self.table_collapsed
-            || self.table.editing.is_some()
-            || viewport == 0
-        {
+        if self.active_tab == EditorTab::Body || self.table_collapsed {
             return;
         }
-        let Some(s) = self.table.selected() else { return };
-        let (top, bottom) = (self.table.scroll, self.table.scroll + viewport - 1);
-        let line = self.stop_line(s);
-        let section_len = self.section_len();
-        let mut stops = self.stops(section_len);
-        // The first stop on or below the view's top, or the last on or
-        // above its bottom.
-        let stop = if line < top {
-            stops.find(|&t| self.stop_line(t) >= top).or_else(|| self.stops(section_len).last())
-        } else if line > bottom {
-            stops.rfind(|&t| self.stop_line(t) <= bottom)
-        } else {
-            return;
-        };
-        // A view showing only the closing edge and the divider holds no
-        // stop: the nearest one sits just past it, and the next frame keeps
-        // it in sight (S22), a line or two back, as Vim's window keeps its
-        // cursor (the cost S24 names).
-        if let Some(stop) = stop {
-            self.table.set_selected(Some(stop));
-        }
-    }
-
-    /// Scrolls the table tab as little as it can to show content `line`.
-    fn show_table_line(&mut self, line: usize, viewport: usize) {
-        if viewport == 0 {
-            return;
-        }
-        let scroll = &mut self.table.scroll;
-        if line < *scroll {
-            *scroll = line;
-        } else if line >= *scroll + viewport {
-            *scroll = line + 1 - viewport;
-        }
-    }
-
-    /// The rules every placement of the table tab's view ends with: an
-    /// open cell never leaves the view (spec 2026-10-25 S8; typing would
-    /// otherwise land out of sight), and the view stops with the last line
-    /// on the bottom row (S3). The wheel, the scrollbar and each frame run
-    /// it, `content` being the content's line count.
-    fn clamp_table_scroll(&mut self, viewport: usize, content: usize) {
-        if let Some(row) = self.table.editing.as_ref().map(|e| e.row) {
-            self.show_table_line(self.stop_line(Stop::of_row(row, self.table_len())), viewport);
-        }
-        let max = content.saturating_sub(viewport);
-        self.table.scroll = self.table.scroll.min(max);
-    }
-
-    /// Settles the table tab's view for a frame `viewport` lines tall. A
-    /// cursor left past the last stop (the section shrank under it) is
-    /// drawn on the last stop ([`Stop::clamp`]). Then the view keeps the
-    /// cursor in sight, scrolling the least it can (S22): worked out from
-    /// the cursor and the layout alone, so a cursor that moved, rows that
-    /// moved under it, and a pane that shrank all come out the same. The
-    /// one exception is a view the arrows wheel scrolled away (S23), which
-    /// stays where the wheel put it until the cursor moves.
-    /// `section_len` is the section's row count this frame.
-    fn settle_table_scroll(&mut self, viewport: usize, section_len: usize) {
-        let len = self.table_len();
-        self.table.clamp_cursor(len, section_len);
-        if !self.table.scrolled_away()
-            && let Some(stop) = self.table.selected()
-        {
-            self.show_table_line(self.stop_line(stop), viewport);
-        }
-        self.clamp_table_scroll(viewport, self.content_lines_for(section_len));
+        let (len, section_len) = (self.table_len(), self.section_len());
+        self.table.cursor_into_view(len, section_len);
     }
 
     /// Draws a table tab's content (Params, Headers, Vars) into `area`:
@@ -4552,8 +4450,7 @@ impl Editor {
         // The section's rows, worked out once for the whole frame.
         let refs = self.section_refs();
         let section_len = self.section_len_with(&refs);
-        self.table.viewport = viewport;
-        self.settle_table_scroll(viewport, section_len);
+        self.table.settle_view(self.table_len(), section_len, viewport);
         let skip = self.table.scroll;
         let table_ctx = DrawCtx {
             theme: ctx.theme,
@@ -4581,7 +4478,9 @@ impl Editor {
             }
             _ => (&self.params, "+ Add param", &[]),
         };
-        self.table.draw(frame, area, map, &table_ctx, add_label, hits, notes, &self.vars, skip);
+        let owner = TableOwner::Request;
+        self.table
+            .draw(frame, area, map, &table_ctx, add_label, hits, notes, &self.vars, skip, owner);
 
         // The section starts on the line after the table's closing edge;
         // `top` is how far down the view its divider lands, and

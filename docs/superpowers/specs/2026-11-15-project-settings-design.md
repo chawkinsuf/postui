@@ -115,16 +115,23 @@ chooser) brings the hand edit into the tab before any change there.
   table's state back (its open cell and typing) and toasts. The name
   commit writes through `set_project_name`. Nothing is read back after a
   write, and no row is looked up again: the table's cursor and open cell
-  stay where the table's call left them, as in a request's table.
-- Mouse: the table draws the request table's hits (`Hit::TableCell`,
-  `TableCheckbox`, `TableCopy`, `TableDelete`, `TableRow`), and the tab
-  wraps each in `Hit::ProjectTable`, so no request-table handler takes
-  them. The Name well registers `Hit::ProjectName`. A click on a row
-  first commits what is open; if that commit changed the header count,
-  the click does nothing (R18). The wheel scrolls the table's view and
-  leaves the cursor, as the Manage list's wheel does. An open name or
-  cell offers the Copy/Paste menu on a right click. A click away drops
-  the tab's cursor, as on the Settings tab.
+  stay where the table's call left them, as in a request's table. A key
+  that only edits an open cell's text goes straight into the cell
+  (`type_into_cell`), since it cannot change the headers. A name that
+  trims to the one the file holds, trimmed, starts no write.
+- Mouse: the table's draw takes the owner its hits register for
+  (`TableOwner`): a request's table registers `Hit::TableCell`,
+  `TableCheckbox` and the rest, and the Project tab's registers each as
+  `Hit::ProjectTable`, so no request-table handler takes them. The Name
+  well registers `Hit::ProjectName`. A click on a row first commits what
+  is open; if that commit changed the header count, the click does
+  nothing (R18). The wheel and the table's view follow a request
+  table's rules, shared on `TableEditorState` (spec 2026-10-25 S22–S24):
+  the arrows wheel moves the view and leaves the cursor, the vim wheel
+  moves the cursor into the view, and a notch that moves nothing marks
+  nothing. An open name or cell offers the Copy/Paste menu on a right
+  click. A click away drops the tab's cursor, as on the Settings tab; a
+  key the tab hands on leaves it dropped.
 - Close-input-first (R14): the tab's input holds project state, as the
   Variable Manager's does, so it closes wherever the Manager's closes,
   through one helper (`close_project_inputs`): `close_open_inputs`, a

@@ -18,14 +18,23 @@ impl App {
 
     /// Keys on the Project tab. `Some` is the redraw answer for a key the
     /// tab claimed; `None` hands it to the router's unclaimed-key step.
+    /// A key the tab claims asks for the cursor back, as on the Settings
+    /// tab; one it hands on leaves the cursor as it was.
     pub(super) fn handle_project_key(&mut self, ev: KeyEvent) -> Option<bool> {
-        let plain = ev.modifiers.is_empty();
-        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         if self.project.is_none() {
             return (ev.code == KeyCode::Esc).then(|| self.update(Action::CloseScreen));
         }
-        // A key here asks for the cursor back, as on the Settings tab.
-        self.project_tab.focused = true;
+        let answer = self.project_tab_key(ev);
+        if answer.is_some() {
+            self.project_tab.focused = true;
+        }
+        answer
+    }
+
+    /// [`Self::handle_project_key`] with a project open.
+    fn project_tab_key(&mut self, ev: KeyEvent) -> Option<bool> {
+        let plain = ev.modifiers.is_empty();
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         // An open name owns the keyboard: Enter and Esc both commit (the
         // field rule, R6); a refusal keeps it open and fails the key.
         if self.project_tab.name_open() {
@@ -44,9 +53,13 @@ impl App {
             return Some(self.update(Action::Render));
         }
         // An open cell owns the keyboard too: the table's own keys (Enter
-        // and Esc commit, Tab walks, ↑↓ leave), each change written.
+        // and Esc commit, Tab walks, ↑↓ leave), each change written. A key
+        // that only edits the cell's text writes nothing, so it goes
+        // straight in.
         if self.project_tab.table.editing.is_some() {
-            if self.run_header_table(|t, map| t.handle_key(ev, map)).1 {
+            if self.project_tab.table.type_into_cell(ev).is_none()
+                && self.run_header_table(|t, map| t.handle_key(ev, map)).1
+            {
                 self.last_action_failed = true;
             }
             return Some(self.update(Action::Render));
@@ -113,11 +126,9 @@ impl App {
     /// any op does, finds nothing open: the change `f` made is already in
     /// the copy.
     ///
-    /// This runs for every key typed into an open cell: two copies (the
-    /// default headers, and the table's state with the open cell's text)
-    /// and one compare per key, whether or not the key writes. Skipping
-    /// them for keys that don't would mean sorting keys into those that
-    /// commit and those that don't, which the table already decides.
+    /// Each run copies the default headers and the table's state. Typing
+    /// into an open cell doesn't come here
+    /// ([`TableEditorState::type_into_cell`]).
     pub(super) fn run_header_table(
         &mut self,
         f: impl FnOnce(&mut TableEditorState, &mut IndexMap<String, Entry>) -> TableOutcome,
@@ -162,7 +173,8 @@ impl App {
     }
 
     /// Commits the Name row's edit (R7): trimmed (by `set_project_name`),
-    /// empty removes `name`, and text the same as the seed writes nothing.
+    /// empty removes `name`, and text that trims to the name the file
+    /// holds, trimmed, writes nothing and starts no op.
     /// `false` when the write was refused: the edit stays open with the
     /// typing (R14), and the caller decides whether that fails the action.
     /// The edit is taken out before the write's `begin_op`, so that close
@@ -173,7 +185,7 @@ impl App {
         else {
             return true;
         };
-        if input.text() == current {
+        if input.text().trim() == current.trim() {
             return true;
         }
         let t = self.begin_op();
@@ -205,6 +217,18 @@ impl App {
         }
         let refused = self.run_header_table(|t, map| t.commit(map)).1;
         name && !refused
+    }
+
+    /// The wheel over the tab, `delta` lines: the header table's view
+    /// moves by the request table's rules ([`TableEditorState::scroll_view`],
+    /// [`TableEditorState::view_scrolled`]).
+    pub(super) fn scroll_project_table(&mut self, delta: i16) {
+        let len = self.default_headers_len();
+        let vim = self.profile() == crate::config::KeyProfile::Vim;
+        let table = &mut self.project_tab.table;
+        if table.scroll_view(delta, len, 0) {
+            table.view_scrolled(vim, len, 0);
+        }
     }
 
     /// `Action::AddDefaultHeader`: the `+ Add header` row's name opens,

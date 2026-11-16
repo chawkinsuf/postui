@@ -10,7 +10,7 @@
 use crate::action::{Action, Verb};
 use crate::components::DrawCtx;
 use crate::components::line_input::LineInput;
-use crate::components::table_editor::{Stop, TableEditorState, table_height};
+use crate::components::table_editor::{Stop, TableEditorState, TableOwner, table_height};
 use crate::components::var_tokens::VarView;
 use crate::hit::{Hit, HitMap};
 use crate::keyroute::FieldId;
@@ -49,14 +49,6 @@ pub struct ProjectTab {
     name: Option<LineInput>,
     /// The default headers' table: its cursor, its open cell and its view.
     pub table: TableEditorState,
-}
-
-/// The Project table's own hit inside a [`Hit::ProjectTable`].
-pub fn table_hit(hit: &Hit) -> Option<&Hit> {
-    match hit {
-        Hit::ProjectTable(inner) => Some(inner),
-        _ => None,
-    }
 }
 
 impl ProjectTab {
@@ -139,49 +131,13 @@ impl ProjectTab {
         }
     }
 
-    /// The table's line the view keeps in sight (the header is line 0):
-    /// the open cell's, else the cursor's while it is on the table.
-    fn cursor_line(&self, len: usize) -> Option<usize> {
-        match (&self.table.editing, self.table.selected()) {
-            (Some(e), _) => Some(e.row.min(len) + 1),
-            (None, Some(stop)) if self.stop == ProjectStop::Table => Some(stop.ordinal(len) + 1),
-            _ => None,
-        }
-    }
-
-    /// Settles the table for a frame whose view is `viewport` lines tall.
-    /// A cursor the rows went from under (an undo, a reload) goes on the
-    /// last row still there, as the request table's frame does (R16).
-    /// The view then scrolls the least it can to show the cursor's line,
-    /// unless the wheel scrolled it away (an open cell is always shown),
-    /// and never past the last line.
+    /// Settles the table for a frame whose view is `viewport` lines tall,
+    /// by the request table's rules ([`TableEditorState::settle_view`]): a
+    /// cursor the rows went from under (an undo, a reload) goes on the
+    /// last row still there (R16), and the view keeps the cursor and an
+    /// open cell in sight. On the Name row the table has no cursor.
     fn settle(&mut self, len: usize, viewport: usize) {
-        self.table.clamp_cursor(len, 0);
-        self.table.viewport = viewport;
-        let follow = self.table.editing.is_some() || !self.table.scrolled_away();
-        if let Some(line) = self.cursor_line(len).filter(|_| follow && viewport > 0) {
-            let scroll = &mut self.table.scroll;
-            if line < *scroll {
-                *scroll = line;
-            } else if line >= *scroll + viewport {
-                *scroll = line + 1 - viewport;
-            }
-        }
-        let max = usize::from(table_height(len)).saturating_sub(viewport);
-        self.table.scroll = self.table.scroll.min(max);
-    }
-
-    /// The wheel over the tab: the table's view moves `delta` lines and
-    /// the cursor stays, as the Manage list's wheel does. The next cursor
-    /// move brings the view back to it.
-    pub fn scroll_table(&mut self, delta: i16, len: usize) {
-        if self.table.viewport == 0 {
-            return;
-        }
-        let moved = self.table.scroll as i64 + i64::from(delta);
-        let max = usize::from(table_height(len)).saturating_sub(self.table.viewport);
-        self.table.scroll = usize::try_from(moved).unwrap_or(0).min(max);
-        self.table.mark_scrolled_away();
+        self.table.settle_view(len, 0, viewport);
     }
 
     /// What a list verb means here (`App::selection_action`): on the
@@ -294,20 +250,14 @@ impl ProjectTab {
         let table_ctx = DrawCtx {
             theme,
             focused: self.focused && self.stop == ProjectStop::Table,
-            hovered: ctx.hovered.and_then(table_hit),
+            hovered: ctx.hovered,
             pointer: ctx.pointer,
             dragging: false,
             anims: ctx.anims,
             now: ctx.now,
         };
-        // The table registers the request table's hits; each but its
-        // `{{token}}` spans is tagged as this table's.
-        let mark = hits.mark();
-        let skip = self.table.scroll;
-        self.table.draw(frame, area, headers, &table_ctx, ADD_HEADER, hits, &[], vars, skip);
-        hits.map_since(mark, |hit| {
-            (!matches!(hit, Hit::VarToken(_))).then(|| Hit::ProjectTable(Box::new(hit.clone())))
-        });
+        let (skip, owner) = (self.table.scroll, TableOwner::Project);
+        self.table.draw(frame, area, headers, &table_ctx, ADD_HEADER, hits, &[], vars, skip, owner);
     }
 }
 

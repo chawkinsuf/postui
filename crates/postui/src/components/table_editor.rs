@@ -145,17 +145,86 @@ pub fn table_height(rows: usize) -> u16 {
     1 + rows as u16 + 1 + 1
 }
 
-/// The row a hit belongs to, for hover styling: every hit a table row
-/// registers (its background, checkbox, cells and delete affordance) lights
-/// that one row.
-fn hovered_row(ctx: &DrawCtx) -> Option<usize> {
-    match ctx.hovered? {
-        Hit::TableRow(i) | Hit::TableCheckbox(i) | Hit::TableCopy(i) | Hit::TableDelete(i) => {
-            Some(*i)
+/// Every line a table's content has, for `len` rows and a section of
+/// `tail` rows under it: the table's, then the section's divider and rows.
+/// The view scrolls over these as one column (spec 2026-10-25 S1).
+pub fn content_lines(len: usize, tail: usize) -> usize {
+    let section = if tail == 0 { 0 } else { tail + 1 };
+    usize::from(table_height(len)) + section
+}
+
+/// One of a table's own hits, before it is named for the table that drew
+/// it ([`TableOwner`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableHit {
+    /// A row's background.
+    Row(usize),
+    /// A row's name (`col` 0) or value (`col` 1) cell; `+ Add`'s is at the
+    /// row count.
+    Cell {
+        row: usize,
+        col: u8,
+    },
+    Checkbox(usize),
+    Copy(usize),
+    Delete(usize),
+}
+
+impl TableHit {
+    /// The row the hit belongs to: every hit a row registers (its
+    /// background, checkbox, cells and pills) lights that one row.
+    fn row(self) -> usize {
+        match self {
+            TableHit::Row(i) | TableHit::Checkbox(i) | TableHit::Copy(i) | TableHit::Delete(i) => i,
+            TableHit::Cell { row, .. } => row,
         }
-        Hit::TableCell { row, .. } => Some(*row),
-        _ => None,
     }
+}
+
+/// Which table a [`TableEditorState::draw`] registers its hits for: a
+/// request's, as the `Hit::Table*` hits its handlers take, or the Project
+/// tab's, as [`Hit::ProjectTable`], which those handlers never see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableOwner {
+    Request,
+    Project,
+}
+
+impl TableOwner {
+    /// The hit `hit` registers as for this owner.
+    pub fn hit(self, hit: TableHit) -> Hit {
+        match self {
+            TableOwner::Project => Hit::ProjectTable(hit),
+            TableOwner::Request => match hit {
+                TableHit::Row(i) => Hit::TableRow(i),
+                TableHit::Cell { row, col } => Hit::TableCell { row, col },
+                TableHit::Checkbox(i) => Hit::TableCheckbox(i),
+                TableHit::Copy(i) => Hit::TableCopy(i),
+                TableHit::Delete(i) => Hit::TableDelete(i),
+            },
+        }
+    }
+
+    /// The table hit `hit` is, when this owner's table registered it.
+    pub fn of(self, hit: &Hit) -> Option<TableHit> {
+        match (self, hit) {
+            (TableOwner::Project, Hit::ProjectTable(h)) => Some(*h),
+            (TableOwner::Request, Hit::TableRow(i)) => Some(TableHit::Row(*i)),
+            (TableOwner::Request, Hit::TableCell { row, col }) => {
+                Some(TableHit::Cell { row: *row, col: *col })
+            }
+            (TableOwner::Request, Hit::TableCheckbox(i)) => Some(TableHit::Checkbox(*i)),
+            (TableOwner::Request, Hit::TableCopy(i)) => Some(TableHit::Copy(*i)),
+            (TableOwner::Request, Hit::TableDelete(i)) => Some(TableHit::Delete(*i)),
+            _ => None,
+        }
+    }
+}
+
+/// The row under the pointer, for hover styling, when the pointer is on a
+/// hit of `owner`'s table.
+fn hovered_row(ctx: &DrawCtx, owner: TableOwner) -> Option<usize> {
+    owner.of(ctx.hovered?).map(TableHit::row)
 }
 
 /// What one row says about itself, given to [`TableEditorState::draw`] per
@@ -207,6 +276,19 @@ impl Stop {
         }
     }
 
+    /// The content line the stop sits on, for `len` rows: row `i` is line
+    /// `i + 1` (under the table's header), `+ Add` line `len + 1`, and
+    /// section row `j` the `j`th line after the table's closing edge and
+    /// the section's divider. The one place the stops' lines are worked
+    /// out.
+    pub(crate) fn line(self, len: usize) -> usize {
+        match self {
+            Stop::Row(i) => i + 1,
+            Stop::Add => len + 1,
+            Stop::Section(j) => usize::from(table_height(len)) + 1 + j,
+        }
+    }
+
     /// The stop at place `ord` of that order.
     pub(crate) fn at(ord: usize, len: usize) -> Stop {
         match ord.checked_sub(len) {
@@ -252,14 +334,14 @@ pub struct TableEditorState {
     /// (header, rows, `+ Add`, closing edge) and then the read-only
     /// section under it scroll as one column. The wheel and the scrollbar
     /// move it, and every frame otherwise keeps the cursor in sight
-    /// (`Editor::settle_table_scroll`, spec 2026-10-25 S22). Where the user
+    /// ([`Self::settle_view`], spec 2026-10-25 S22). Where the user
     /// scrolled can't be worked out from anything else, so it is kept;
     /// nothing derived from the cursor or the layout is.
     pub scroll: usize,
     /// The arrows wheel or scrollbar scrolled the view away from the
     /// cursor (S23): while set, frames keep `scroll` as it is. Private, as
-    /// `selected` is, so its writers are the ones named here. `App` sets it
-    /// ([`Self::mark_scrolled_away`]) when a scroll moves the view, and
+    /// `selected` is, so its writers are the ones named here. A scroll that
+    /// moved the view sets it ([`Self::view_scrolled`]), and
     /// [`Self::set_selected`] clears it
     /// when the cursor moves, so whatever moves the cursor brings the view
     /// back and nothing else does. A move key that lands on the stop it is
@@ -290,6 +372,21 @@ pub struct TableEditorState {
 /// `start_edit`), and only draws the ghost's lift on the name.
 fn open_col(row: usize, col: Col, map_len: usize) -> Col {
     if row >= map_len { Col::Key } else { col }
+}
+
+/// Whether `ev`, typed into an open cell, closes or leaves it (Esc,
+/// Enter, ↑↓, Tab, Shift-Tab), committing it, rather than editing its
+/// text: the one place an open cell's keys are sorted.
+fn commits_cell(ev: KeyEvent) -> bool {
+    matches!(
+        ev.code,
+        KeyCode::Esc
+            | KeyCode::Enter
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Tab
+            | KeyCode::BackTab
+    )
 }
 
 impl TableEditorState {
@@ -352,6 +449,118 @@ impl TableEditorState {
     pub fn reset_view(&mut self) {
         self.scroll = 0;
         self.scrolled_away = false;
+    }
+
+    /// Scrolls the view as little as it can to show content `line`.
+    fn show_line(&mut self, line: usize) {
+        let viewport = self.viewport;
+        if viewport == 0 {
+            return;
+        }
+        if line < self.scroll {
+            self.scroll = line;
+        } else if line >= self.scroll + viewport {
+            self.scroll = line + 1 - viewport;
+        }
+    }
+
+    /// The rules every placement of the view ends with, for `len` rows and
+    /// a section of `tail` rows: an open cell never leaves the view (spec
+    /// 2026-10-25 S8; typing would otherwise land out of sight), and the
+    /// view stops with the last line on the bottom row (S3).
+    fn clamp_view(&mut self, len: usize, tail: usize) {
+        if let Some(row) = self.editing.as_ref().map(|e| e.row) {
+            self.show_line(Stop::of_row(row, len).line(len));
+        }
+        self.scroll = self.scroll.min(content_lines(len, tail).saturating_sub(self.viewport));
+    }
+
+    /// Settles the view for a frame `viewport` lines tall, over `len` rows
+    /// and a section of `tail` rows. A cursor left past the last stop (the
+    /// rows or the section shrank under it) is drawn on the last stop
+    /// ([`Stop::clamp`]). Then the view keeps the cursor in sight,
+    /// scrolling the least it can (S22): worked out from the cursor and the
+    /// layout alone, so a cursor that moved, rows that moved under it, and
+    /// a pane that shrank all come out the same. The one exception is a
+    /// view the arrows wheel scrolled away (S23), which stays where the
+    /// wheel put it until the cursor moves.
+    pub fn settle_view(&mut self, len: usize, tail: usize, viewport: usize) {
+        self.viewport = viewport;
+        self.clamp_cursor(len, tail);
+        if !self.scrolled_away
+            && let Some(stop) = self.selected
+        {
+            self.show_line(stop.line(len));
+        }
+        self.clamp_view(len, tail);
+    }
+
+    /// A wheel notch or a scrollbar move: the view moves `delta` lines and
+    /// takes its limits ([`Self::clamp_view`]), and the cursor stays (S5).
+    /// Answers whether the view moved; with no view drawn (`viewport` 0)
+    /// nothing does.
+    pub fn scroll_view(&mut self, delta: i16, len: usize, tail: usize) -> bool {
+        if self.viewport == 0 {
+            return false;
+        }
+        let before = self.scroll;
+        let moved = self.scroll as i64 + i64::from(delta);
+        self.scroll = usize::try_from(moved).unwrap_or(0);
+        self.clamp_view(len, tail);
+        self.scroll != before
+    }
+
+    /// A scroll moved the view ([`Self::scroll_view`]): the arrows profile
+    /// marks it scrolled away from the cursor (S23), and the vim profile
+    /// moves the cursor into it instead (S24, [`Self::cursor_into_view`]).
+    /// A scroll that moved nothing comes nowhere near here, so it marks
+    /// nothing.
+    pub fn view_scrolled(&mut self, vim: bool, len: usize, tail: usize) {
+        if vim {
+            self.cursor_into_view(len, tail);
+        } else {
+            self.mark_scrolled_away();
+        }
+    }
+
+    /// Vim's rule for a window the view scrolled (the vim profile's, as the
+    /// response's `cursor_into_view` is; the user's "follow what Vim
+    /// does"): a cursor the wheel or the scrollbar left off screen moves
+    /// onto the nearest stop in view, so a key never acts on a row out of
+    /// sight. `len` rows, and a section of `tail` rows. An open cell
+    /// already holds the view (S8).
+    ///
+    /// On a view too short to hold a stop where the wheel left it (one or
+    /// two lines on the closing edge or the divider), the nearest stop is
+    /// out of view, and the next frame scrolls back to show it. That is
+    /// the cost of the view keeping the cursor in sight (S22, the user's
+    /// "keep it in sight"): no line can rest on screen without a stop.
+    pub fn cursor_into_view(&mut self, len: usize, tail: usize) {
+        let viewport = self.viewport;
+        if self.editing.is_some() || viewport == 0 {
+            return;
+        }
+        let Some(s) = self.selected else { return };
+        let (top, bottom) = (self.scroll, self.scroll + viewport - 1);
+        let line = s.line(len);
+        let last = len + tail;
+        let mut stops = (0..=last).map(|ord| Stop::at(ord, len));
+        // The first stop on or below the view's top, or the last on or
+        // above its bottom.
+        let stop = if line < top {
+            stops.find(|t| t.line(len) >= top).or(Some(Stop::at(last, len)))
+        } else if line > bottom {
+            stops.rfind(|t| t.line(len) <= bottom)
+        } else {
+            return;
+        };
+        // A view showing only the closing edge and the divider holds no
+        // stop: the nearest one sits just past it, and the next frame keeps
+        // it in sight (S22), a line or two back, as Vim's window keeps its
+        // cursor (the cost S24 names).
+        if let Some(stop) = stop {
+            self.set_selected(Some(stop));
+        }
     }
 
     /// The text `row`/`col` currently shows. Empty for the ghost row.
@@ -555,6 +764,15 @@ impl TableEditorState {
         end - start
     }
 
+    /// Turns row `i` on or off: Space on the row, and a click on its
+    /// checkbox. The cursor stays where it is. `false` when there is no
+    /// row `i`.
+    pub fn toggle_row(map: &mut IndexMap<String, Entry>, i: usize) -> bool {
+        let Some((_, e)) = map.get_index_mut(i) else { return false };
+        e.enabled = !e.enabled;
+        true
+    }
+
     /// Whether the ghost row (not any existing row) is the one under edit.
     pub fn editing_ghost(&self, map_len: usize) -> bool {
         self.editing.as_ref().is_some_and(|e| e.row >= map_len)
@@ -677,11 +895,11 @@ impl TableEditorState {
                 let Some(Stop::Row(i)) = self.selected else {
                     return TableOutcome::not_consumed();
                 };
-                let Some((_, e)) = map.get_index_mut(i) else {
-                    return TableOutcome::not_consumed();
-                };
-                e.enabled = !e.enabled;
-                TableOutcome::consumed()
+                if Self::toggle_row(map, i) {
+                    TableOutcome::consumed()
+                } else {
+                    TableOutcome::not_consumed()
+                }
             }
             // The page keys move through the stops, not the view (spec
             // 2026-10-25 S10): the view follows the cursor. Their "page" is
@@ -721,6 +939,18 @@ impl TableEditorState {
         }
     }
 
+    /// Types `ev` into the open cell when it is a key that edits the
+    /// cell's text, answering whether the cell's input took it. `None` when
+    /// no cell is open or `ev` is one that closes or leaves the cell
+    /// (Esc, Enter, ↑↓, Tab, Shift-Tab), which [`Self::handle_key`] runs:
+    /// those commit the cell, the others never change the map.
+    pub fn type_into_cell(&mut self, ev: KeyEvent) -> Option<bool> {
+        if commits_cell(ev) {
+            return None;
+        }
+        Some(self.editing.as_mut()?.input.handle_key(ev))
+    }
+
     fn handle_editing_key(
         &mut self,
         ev: KeyEvent,
@@ -728,6 +958,11 @@ impl TableEditorState {
         mut edit: CellEdit,
     ) -> TableOutcome {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+        if !commits_cell(ev) {
+            let consumed = edit.input.handle_key(ev);
+            self.editing = Some(edit);
+            return if consumed { TableOutcome::consumed() } else { TableOutcome::not_consumed() };
+        }
         match ev.code {
             // The field rule: Esc closes the cell keeping its text, and the
             // cursor stays on the row — Enter does the same (spec
@@ -765,12 +1000,11 @@ impl TableEditorState {
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::BackTab => self.walk_cell(map, &edit, false),
-            KeyCode::Tab if shift => self.walk_cell(map, &edit, false),
-            KeyCode::Tab => self.walk_cell(map, &edit, true),
+            KeyCode::Tab => self.walk_cell(map, &edit, !shift),
+            // `commits_cell` lets no other key through.
             _ => {
-                let consumed = edit.input.handle_key(ev);
                 self.editing = Some(edit);
-                if consumed { TableOutcome::consumed() } else { TableOutcome::not_consumed() }
+                TableOutcome::not_consumed()
             }
         }
     }
@@ -827,6 +1061,10 @@ impl TableEditorState {
     /// line above or below the view is neither painted nor registered, so
     /// a click only ever finds rows that are on screen and the cell rects
     /// it reads back are where the cells were drawn.
+    ///
+    /// `owner` names the rows' hits ([`TableOwner::hit`]), and the hover
+    /// styling reads back only its own; the `{{token}}` spans register as
+    /// they do anywhere.
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
     pub fn draw(
         &self,
@@ -839,6 +1077,7 @@ impl TableEditorState {
         notes: &[Option<RowNote>],
         vars: &VarView,
         skip: usize,
+        owner: TableOwner,
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
@@ -867,7 +1106,7 @@ impl TableEditorState {
         for (i, (k, e)) in map.iter().enumerate().skip(first) {
             let Some(y) = row_y(i + 1) else { break };
             let note = notes.get(i).and_then(Option::as_ref);
-            self.draw_row(buf, hits, area, y, i, k, e, ctx, note, vars, true, None);
+            self.draw_row(buf, hits, area, y, i, k, e, ctx, note, vars, true, None, owner);
         }
 
         // --- the ghost row -------------------------------------------------
@@ -880,7 +1119,9 @@ impl TableEditorState {
             // Its value cell never opens (`open_col`), so it stays blank.
             let entry = Entry { value: String::new(), enabled: true };
             let label = (!ghost_editing).then_some(add_label);
-            self.draw_row(buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label);
+            self.draw_row(
+                buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label, owner,
+            );
         }
 
         // --- closing edge --------------------------------------------------
@@ -921,8 +1162,9 @@ impl TableEditorState {
         bg: ratatui::style::Color,
         hovered: Option<&Hit>,
         theme: &Theme,
+        owner: TableOwner,
     ) {
-        let hit = Hit::TableCheckbox(i);
+        let hit = owner.hit(TableHit::Checkbox(i));
         Self::clear_strike(buf, x, y, TOGGLE_W);
         let (glyph, state_fg) =
             if enabled { (" \u{25CF} ", theme.success) } else { (" \u{25CB} ", theme.text_muted) };
@@ -946,13 +1188,18 @@ impl TableEditorState {
         bg: ratatui::style::Color,
         hovered: Option<&Hit>,
         theme: &Theme,
+        owner: TableOwner,
     ) {
         let pills = [
-            IconPill { pill: crate::glyph::COPY_PILL, destructive: false, hit: Hit::TableCopy(i) },
+            IconPill {
+                pill: crate::glyph::COPY_PILL,
+                destructive: false,
+                hit: owner.hit(TableHit::Copy(i)),
+            },
             IconPill {
                 pill: crate::glyph::DELETE_PILL,
                 destructive: true,
-                hit: Hit::TableDelete(i),
+                hit: owner.hit(TableHit::Delete(i)),
             },
         ];
         let zone = icon_pill_run(buf, hits, row, ACTIONS_MARGIN, pills, hovered, bg, theme);
@@ -971,19 +1218,20 @@ impl TableEditorState {
 
     /// Registers the key/value halves of one drawn row line. Called after
     /// the row's own background hit, so a click resolves to the cell.
-    fn register_cells(hits: &mut HitMap, span: (u16, u16, u16, u16), y: u16, row: usize) {
+    fn register_cells(
+        hits: &mut HitMap,
+        span: (u16, u16, u16, u16),
+        y: u16,
+        row: usize,
+        owner: TableOwner,
+    ) {
         let (name_x, name_w, value_x, value_w) = span;
+        let cell = |col: Col| owner.hit(TableHit::Cell { row, col: col.index() });
         if name_w > 0 {
-            hits.register(
-                Rect::new(name_x, y, name_w, 1),
-                Hit::TableCell { row, col: Col::Key.index() },
-            );
+            hits.register(Rect::new(name_x, y, name_w, 1), cell(Col::Key));
         }
         if value_w > 0 {
-            hits.register(
-                Rect::new(value_x, y, value_w, 1),
-                Hit::TableCell { row, col: Col::Value.index() },
-            );
+            hits.register(Rect::new(value_x, y, value_w, 1), cell(Col::Value));
         }
     }
 
@@ -1011,6 +1259,7 @@ impl TableEditorState {
         vars: &VarView,
         real: bool,
         ghost_label: Option<&str>,
+        owner: TableOwner,
     ) {
         use crate::ui::clip;
         let theme = ctx.theme;
@@ -1021,7 +1270,7 @@ impl TableEditorState {
         // land here. A pointer resting on the row lights it either way.
         let on_cursor = self.selected == Some(if real { Stop::Row(i) } else { Stop::Add });
         let cursor = on_cursor || editing_col.is_some();
-        let lit = hovered_row(ctx) == Some(i) || (cursor && ctx.focused);
+        let lit = hovered_row(ctx, owner) == Some(i) || (cursor && ctx.focused);
         let bg = if lit { theme.control_hover } else { theme.control };
         fill(buf, Rect::new(area.x, y, area.width, 1), bg);
 
@@ -1111,8 +1360,8 @@ impl TableEditorState {
             text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, bg, false);
         }
 
-        hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
-        Self::register_cells(hits, cols_span(&cols, value_right), y, i);
+        hits.register(Rect::new(area.x, y, area.width, 1), owner.hit(TableHit::Row(i)));
+        Self::register_cells(hits, cols_span(&cols, value_right), y, i, owner);
         // Token treatment over whatever each cell drew: the field at rest,
         // or for the cell under edit the live input — the URL bar's rule,
         // so a token stays a token while it is being typed. A left click
@@ -1129,11 +1378,12 @@ impl TableEditorState {
         // are revealed by hover or the cursor. Both paint (and register)
         // last so they win over the cells underneath.
         if real && area.width >= TOGGLE_W {
-            Self::draw_row_toggle(buf, hits, area.x, y, i, entry.enabled, bg, ctx.hovered, theme);
+            let (x, on) = (area.x, entry.enabled);
+            Self::draw_row_toggle(buf, hits, x, y, i, on, bg, ctx.hovered, theme, owner);
         }
         if show_actions {
             let row = Rect::new(area.x, y, area.width, 1);
-            Self::draw_row_actions(buf, hits, row, i, bg, ctx.hovered, theme);
+            Self::draw_row_actions(buf, hits, row, i, bg, ctx.hovered, theme, owner);
         }
     }
 
@@ -1307,6 +1557,48 @@ mod tests {
         let out = t.handle_key_with_tail(key(KeyCode::Delete), &mut map, 3);
         assert_eq!(out.request_delete, Some(1));
         assert_eq!(t.selected, Some(Stop::Row(1)));
+    }
+
+    /// `type_into_cell` takes a key that edits the open cell's text, as
+    /// `handle_key` would, and leaves every key that commits the cell to
+    /// `handle_key`; with no cell open it takes none.
+    #[test]
+    fn type_into_cell_takes_only_the_keys_that_edit_the_text() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState::default();
+        assert_eq!(t.type_into_cell(key(KeyCode::Char('x'))), None, "nothing open");
+        t.click_cell(0, Col::Value, &mut map);
+        assert_eq!(t.type_into_cell(key(KeyCode::Char('2'))), Some(true));
+        assert_eq!(t.editing.as_ref().unwrap().input.text(), "12");
+        for k in [
+            key(KeyCode::Esc),
+            key(KeyCode::Enter),
+            key(KeyCode::Up),
+            key(KeyCode::Down),
+            key(KeyCode::Tab),
+            shift_tab(),
+        ] {
+            assert_eq!(t.type_into_cell(k), None, "{k:?}");
+        }
+        assert_eq!(map["a"].value, "1", "nothing committed");
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert_eq!(map["a"].value, "12");
+    }
+
+    /// A scroll that moves the view answers so; one that moves nothing (at
+    /// a limit, or a table that fits) answers no, and only a moved view is
+    /// marked scrolled away by the arrows profile.
+    #[test]
+    fn scroll_view_answers_whether_the_view_moved() {
+        let mut t = TableEditorState { viewport: 4, ..TableEditorState::default() };
+        assert!(!t.scroll_view(3, 1, 0), "4 lines fit in 4");
+        assert!(t.scroll_view(3, 5, 0));
+        assert_eq!(t.scroll, 3);
+        assert!(t.scroll_view(3, 5, 0));
+        assert_eq!(t.scroll, 4, "8 lines in 4: the last line on the bottom row");
+        assert!(!t.scroll_view(3, 5, 0), "already at the limit");
+        t.view_scrolled(false, 5, 0);
+        assert!(t.scrolled_away());
     }
 
     fn shift_tab() -> KeyEvent {
@@ -2368,7 +2660,9 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
             .draw(|f| {
-                t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &VarView::default(), 0)
+                let vars = VarView::default();
+                let owner = TableOwner::Request;
+                t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &vars, 0, owner)
             })
             .unwrap();
         terminal
@@ -2388,7 +2682,9 @@ mod tests {
         terminal
             .draw(|f| {
                 let ctx = ctx(&theme, None);
-                t.draw(f, area, &map, &ctx, "+ Add param", &mut hits, &[], &VarView::default(), 2)
+                let vars = VarView::default();
+                let owner = TableOwner::Request;
+                t.draw(f, area, &map, &ctx, "+ Add param", &mut hits, &[], &vars, 2, owner)
             })
             .unwrap();
         // Lines 2..5 show: rows 1, 2, 3 (the header and row 0 are above).
@@ -2556,6 +2852,7 @@ mod tests {
                     &[],
                     &VarView::default(),
                     0,
+                    TableOwner::Request,
                 )
             })
             .unwrap();
@@ -2592,6 +2889,7 @@ mod tests {
                     notes,
                     &VarView::default(),
                     0,
+                    TableOwner::Request,
                 )
             })
             .unwrap();

@@ -35913,7 +35913,10 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
             TextSurface::VmCell => Some(Hit::VmEntryCell { row: 0, col: 1 }),
             TextSurface::Settings => Some(Hit::SettingsControl(SettingsField::AiCmd)),
             TextSurface::Project => {
-                Some(Hit::ProjectTable(Box::new(Hit::TableCell { row: 0, col: 1 })))
+                Some(Hit::ProjectTable(crate::components::table_editor::TableHit::Cell {
+                    row: 0,
+                    col: 1,
+                }))
             }
         }
     }
@@ -35982,7 +35985,10 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
                 let toml = "[default_headers]\na = \"1\"\n";
                 let profile = crate::config::KeyProfile::Arrows;
                 let mut app = super::project_tests::project_app(toml, profile);
-                let hit = Hit::ProjectTable(Box::new(Hit::TableCell { row: 0, col: 1 }));
+                let hit = Hit::ProjectTable(crate::components::table_editor::TableHit::Cell {
+                    row: 0,
+                    col: 1,
+                });
                 click_hit(&mut app, hit.clone());
                 assert!(app.project_tab.table.editing.is_some(), "cell is live");
                 (app, hit)
