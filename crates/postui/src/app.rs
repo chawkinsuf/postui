@@ -4762,16 +4762,19 @@ impl App {
             // The Project tab's actions: each acts on the tab, so its cursor
             // is drawn, as for a key the tab claims (a footer chip's click
             // is a click away that dropped it).
-            Action::AddDefaultHeader
-            | Action::DeleteDefaultHeader(_)
-            | Action::CopyDefaultHeader(_) => {
+            Action::AddDefaultHeader => {
                 self.project_tab.focused = true;
-                match action {
-                    Action::AddDefaultHeader => self.add_default_header(),
-                    Action::DeleteDefaultHeader(i) => self.delete_default_header(i),
-                    Action::CopyDefaultHeader(i) => self.copy_default_header(i),
-                    _ => {}
-                }
+                self.add_default_header();
+                true
+            }
+            Action::DeleteDefaultHeader(i) => {
+                self.project_tab.focused = true;
+                self.delete_default_header(i);
+                true
+            }
+            Action::CopyDefaultHeader(i) => {
+                self.project_tab.focused = true;
+                self.copy_default_header(i);
                 true
             }
             Action::DeleteTableRow(i) => {

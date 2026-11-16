@@ -1308,57 +1308,48 @@ impl App {
     /// A click on the Project tab's header table, `hit` being the table's
     /// own hit inside [`Hit::ProjectTable`]: the request table's click
     /// rules, each change written at once (R9). An open name or cell
-    /// commits first; when that commit changed how many headers there are
-    /// (an add, or a rename that merged two), the drawn rows have moved,
-    /// so the click does nothing and the next one acts (spec §3: rows are
-    /// not looked up again after a write). A cell or a row click takes the
-    /// tab's cursor to that row; the checkbox, copy and delete pills leave
-    /// the cursor where it was, as a request table's checkbox does.
+    /// commits first; when that commit took a header away (a rename that
+    /// merged two), the rows under the pointer have moved up, so the click
+    /// does nothing and the next one acts (R18; rows are not looked up
+    /// again after a write). An add puts its header last, at the `+ Add`
+    /// row it was typed in, so the rows above stay put and the click acts:
+    /// a name typed in `+ Add` and a click on its value cell open the new
+    /// header's value. A cell or a row click takes the tab's cursor to that
+    /// row; the checkbox, copy and delete pills leave the cursor where it
+    /// was, as a request table's checkbox does.
     fn click_project_table(
         &mut self,
         hit: crate::components::table_editor::TableHit,
         m: ratatui::crossterm::event::MouseEvent,
         clicks: Clicks,
     ) -> bool {
-        use crate::components::project_tab::ProjectStop;
         use crate::components::table_editor::{Col, TableEditorState, TableHit, TableOutcome};
         let len = self.default_headers_len();
         self.project_tab.focused = true;
-        if let TableHit::Cell { row, col } = hit {
-            let cell_col = Col::from_index(col);
-            let already_editing = self.editing(FieldId::ProjectCell { row, col: usize::from(col) });
-            if !already_editing {
-                // The table's own click commits an open cell; an open name
-                // is the tab's.
-                if !self.commit_project_name() {
-                    self.last_action_failed = true;
-                    return self.update(Action::Render);
-                }
-                // A refused write leaves the old cell open, not this one,
-                // so the press places no caret.
-                if self.run_header_table(|t, map| t.click_cell(row, cell_col, map)).1 {
-                    self.last_action_failed = true;
-                    return self.update(Action::Render);
-                }
-                // The opened cell's row is the table's cursor.
-                self.project_tab.stop = ProjectStop::Table;
-            }
-            self.press_text(
-                FieldId::ProjectCell { row, col: usize::from(col) },
-                m,
-                clicks,
-                already_editing,
-            );
+        // A click on the cell already open only places the caret.
+        if let TableHit::Cell { row, col } = hit
+            && self.editing(FieldId::ProjectCell { row, col: usize::from(col) })
+        {
+            self.press_text(FieldId::ProjectCell { row, col: usize::from(col) }, m, clicks, true);
             return self.update(Action::Render);
         }
+        // A refused write leaves the old field open, so the click does
+        // nothing more.
         if !self.commit_project_tab_input() {
             self.last_action_failed = true;
             return self.update(Action::Render);
         }
-        if self.default_headers_len() != len {
+        if self.default_headers_len() < len {
             return self.update(Action::Render);
         }
         match hit {
+            TableHit::Cell { row, col } => {
+                // Nothing is open now, so this only opens the cell: no write.
+                let cell_col = Col::from_index(col);
+                self.run_header_table(|t, map| t.click_cell(row, cell_col, map));
+                let field = FieldId::ProjectCell { row, col: usize::from(col) };
+                self.press_text(field, m, clicks, false);
+            }
             TableHit::Checkbox(i) => {
                 let refused = self
                     .run_header_table(|_, map| {
@@ -1371,12 +1362,11 @@ impl App {
                 }
             }
             TableHit::Row(i) => {
-                self.project_tab.stop = ProjectStop::Table;
+                let len = self.default_headers_len();
                 self.project_tab.table.set_selected(Some(Stop::of_row(i, len)));
             }
             TableHit::Copy(i) => return self.update(Action::CopyDefaultHeader(i)),
             TableHit::Delete(i) => return self.update(Action::DeleteDefaultHeader(i)),
-            TableHit::Cell { .. } => {}
         }
         self.update(Action::Render)
     }

@@ -5,7 +5,6 @@
 use super::key_matrix_tests::{draw, feed, use_persisted_profile};
 use super::*;
 use crate::components::manage::ManageTab;
-use crate::components::project_tab::ProjectStop;
 use crate::components::table_editor::Stop;
 use crate::config::KeyProfile;
 use crate::keyroute::FieldId;
@@ -227,26 +226,6 @@ fn y_copies_a_header_value() {
     }
 }
 
-/// The half-page keys step over the Name row as ↑↓ do: ctrl+d off it, and
-/// ctrl+u from the table's first stop back onto it.
-#[test]
-fn the_half_page_keys_reach_the_name_row() {
-    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
-        let mut app = project_app(THREE, profile);
-        feed(&mut app, "<C-d>");
-        assert_eq!(app.project_tab.stop, ProjectStop::Table, "{profile:?}");
-        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
-        feed(&mut app, "<C-d>");
-        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(2)), "{profile:?}");
-        feed(&mut app, "<C-u>");
-        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
-        feed(&mut app, "<C-u>");
-        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
-        feed(&mut app, "<C-u>");
-        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}: ctrl+u stays");
-    }
-}
-
 /// R5: a blank `name` in the file is no name: the Name row shows the
 /// folder name, as with none set, and so does the project's name.
 #[test]
@@ -302,22 +281,15 @@ fn a_change_overwrites_a_hand_edit_and_undo_restores_it() {
 #[test]
 fn the_cursor_walks_between_the_name_and_the_table() {
     let mut app = project_app(THREE, KeyProfile::Arrows);
-    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert!(app.project_tab.on_name());
     feed(&mut app, "<Down>");
-    assert_eq!(app.project_tab.stop, ProjectStop::Table);
     assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)));
     feed(&mut app, "<Up>");
-    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert!(app.project_tab.on_name());
     feed(&mut app, "<End>");
     assert_eq!(app.project_tab.table.selected(), Some(Stop::Add));
     feed(&mut app, "<Home>");
-    assert_eq!(app.project_tab.stop, ProjectStop::Name);
-    // PageDown and PageUp go to the last and the first stop, as End and
-    // Home do.
-    feed(&mut app, "<PageDown>");
-    assert_eq!(app.project_tab.table.selected(), Some(Stop::Add));
-    feed(&mut app, "<Up><PageUp>");
-    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert!(app.project_tab.on_name());
     feed(&mut app, "<Esc>");
     assert_eq!(app.screen, Screen::Main);
 }
@@ -328,12 +300,12 @@ fn the_cursor_walks_between_the_name_and_the_table() {
 fn a_on_the_name_row_adds_a_header() {
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
         let mut app = project_app(THREE, profile);
-        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
+        assert!(app.project_tab.on_name(), "{profile:?}");
         let labels: Vec<&str> =
             app.project_tab.footer_chips(3).iter().map(|(_, l, _)| *l).collect();
         assert!(labels.contains(&"add"), "{profile:?}: {labels:?}");
         feed(&mut app, "a");
-        assert_eq!(app.project_tab.stop, ProjectStop::Table, "{profile:?}");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Add), "{profile:?}");
         assert!(app.project_tab.table.editing_ghost(3), "{profile:?}: + Add header opened");
         feed(&mut app, "X-New");
         feed(&mut app, if profile == KeyProfile::Vim { "<Esc><Esc>" } else { "<CR>" });
@@ -373,7 +345,7 @@ fn a_refused_write_keeps_the_typing() {
     assert!(!app.op_in_flight, "the refused write ends its op");
     // The name is refused the same way.
     app.project_tab.table.editing = None;
-    app.project_tab.to_name();
+    app.project_tab.table.set_selected(None);
     feed(&mut app, "<CR>");
     app.project_tab.name_input_mut().unwrap().set_text("New");
     feed(&mut app, "<CR>");
@@ -419,7 +391,7 @@ fn a_key_the_tab_hands_on_leaves_the_cursor_dropped() {
     let mut app = project_app(THREE, KeyProfile::Arrows);
     click(&mut app, Hit::ManageTab(ManageTab::Project.index()));
     assert!(!app.project_tab.focused);
-    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert!(app.project_tab.on_name());
     assert_eq!(app.handle_project_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)), None);
     assert!(!app.project_tab.focused, "the unclaimed key relit the cursor");
 }
@@ -444,23 +416,28 @@ fn a_right_click_away_commits_an_open_cell() {
 }
 
 fn click(app: &mut App, hit: Hit) {
-    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     draw(app);
     let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no {hit:?}"));
-    app.handle_mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: r.x + 1,
-        row: r.y,
-        modifiers: KeyModifiers::NONE,
-    });
-    app.handle_mouse(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: r.x + 1,
-        row: r.y,
-        modifiers: KeyModifiers::NONE,
-    });
+    click_at(app, r.x + 1, r.y);
+}
+
+/// A left click at `(x, y)` on the last frame.
+fn click_at(app: &mut App, x: u16, y: u16) {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+        app.handle_mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
+    }
     app.capture_undo();
     draw(app);
+}
+
+/// A click on header `i`'s row itself: the divider between its cells,
+/// where the row's own hit is the only one.
+fn click_row(app: &mut App, i: usize) {
+    draw(app);
+    let r = app.hits.rect_of(&cell(i, 0)).unwrap_or_else(|| panic!("no row {i}"));
+    assert_eq!(app.hits.hit_at(r.right(), r.y), Some(&pt(Hit::TableRow(i))));
+    click_at(app, r.right(), r.y);
 }
 
 /// The mouse reaches what the keys do: a cell opens in place, the
@@ -502,8 +479,7 @@ fn the_pills_leave_the_cursor_where_it_was() {
         let mut app = project_app(THREE, KeyProfile::Arrows);
         app.hovered = Some(cell(1, 1));
         click(&mut app, hit.clone());
-        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{hit:?}");
-        assert_eq!(app.project_tab.table.selected(), None, "{hit:?}");
+        assert_eq!(app.project_tab.table.selected(), None, "{hit:?}: on the Name row");
         assert!(app.project_tab.focused, "{hit:?}: the Name row is lit");
         feed(&mut app, "<Down>");
         assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{hit:?}");
@@ -516,9 +492,73 @@ fn the_pills_leave_the_cursor_where_it_was() {
         feed(&mut app, "<Down>");
         app.hovered = Some(cell(1, 1));
         click(&mut app, hit.clone());
-        assert_eq!(app.project_tab.stop, ProjectStop::Table, "{hit:?}");
         assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{hit:?}");
     }
+}
+
+/// R18: a click whose own commit took a header away (b renamed onto d,
+/// so the rows under b move up one) does nothing, whatever it lands on:
+/// a cell, a row, the checkbox, the copy pill or the delete pill. The
+/// rename is written, and the next click acts.
+#[test]
+fn every_click_after_a_merging_rename_does_nothing() {
+    let kinds: [(&str, Hit); 5] = [
+        ("cell", cell(2, 1)),
+        ("row", pt(Hit::TableRow(0))),
+        ("checkbox", pt(Hit::TableCheckbox(2))),
+        ("copy", pt(Hit::TableCopy(2))),
+        ("delete", pt(Hit::TableDelete(2))),
+    ];
+    let press = |app: &mut App, kind: &str, hit: &Hit| match kind {
+        "row" => click_row(app, 0),
+        _ => click(app, hit.clone()),
+    };
+    for (kind, hit) in kinds {
+        let mut app = project_app(FOUR, KeyProfile::Arrows);
+        click(&mut app, cell(1, 0));
+        app.project_tab.table.editing.as_mut().expect("b's name is open").input.set_text("d");
+        app.hovered = Some(cell(2, 1));
+        press(&mut app, kind, &hit);
+        assert_eq!(keys(&app), ["a", "c", "d"], "{kind}: merged, nothing deleted");
+        let headers = &app.proj().meta().default_headers;
+        assert!(headers.values().all(|e| e.enabled), "{kind}: nothing toggled");
+        assert_eq!(super::tests::last_copied(&app), None, "{kind}: nothing copied");
+        assert!(app.project_tab.field().is_none(), "{kind}: nothing opened");
+        let at = app.project_tab.table.selected();
+        assert_eq!(at, Some(Stop::Row(2)), "{kind}: the cursor stays on the merged row");
+        // The next click acts.
+        app.hovered = Some(cell(2, 1));
+        press(&mut app, kind, &hit);
+        let acted = match kind {
+            "cell" => app.project_tab.field() == Some(FieldId::ProjectCell { row: 2, col: 1 }),
+            "row" => app.project_tab.table.selected() == Some(Stop::Row(0)),
+            "checkbox" => !app.proj().meta().default_headers["d"].enabled,
+            "copy" => super::tests::last_copied(&app).as_deref() == Some("2"),
+            _ => keys(&app) == ["a", "c"],
+        };
+        assert!(acted, "{kind}: the next click acts");
+    }
+}
+
+/// R18: an add puts its header last, where `+ Add header` was, so the rows
+/// above stay put and a click after it acts: a name typed in `+ Add` and a
+/// click on its value cell open the new header's value in one click, and a
+/// checkbox click toggles the header it lands on.
+#[test]
+fn a_click_after_an_add_acts() {
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    feed(&mut app, "a");
+    app.project_tab.table.editing.as_mut().unwrap().input.set_text("X-New");
+    click(&mut app, cell(3, 1));
+    assert_eq!(keys(&app), ["a", "b", "c", "X-New"]);
+    assert_eq!(app.project_tab.field(), Some(FieldId::ProjectCell { row: 3, col: 1 }));
+
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    feed(&mut app, "a");
+    app.project_tab.table.editing.as_mut().unwrap().input.set_text("X-New");
+    click(&mut app, pt(Hit::TableCheckbox(0)));
+    assert_eq!(keys(&app), ["a", "b", "c", "X-New"]);
+    assert!(!app.proj().meta().default_headers["a"].enabled, "the checkbox toggled");
 }
 
 /// R16: an undo that takes away the row under the cursor leaves it on the
@@ -623,7 +663,7 @@ fn the_wheel_scrolls_the_header_table() {
     }
     assert!(app.hits.rect_of(&cell(0, 1)).is_none(), "the first row scrolled off");
     assert_eq!(app.manage.list.scroll, 0, "the hidden list stays");
-    assert_eq!(app.project_tab.stop, ProjectStop::Name, "the cursor stays");
+    assert!(app.project_tab.on_name(), "the cursor stays");
     click(&mut app, cell(59, 1));
     assert_eq!(
         app.field_caret(),
@@ -875,33 +915,96 @@ fn a_verb_key_after_a_click_away_lights_the_cursor() {
     }
 }
 
-/// The keys to the first and last stop act the same from either stop:
-/// Home, PageUp, ctrl+Home and ctrl+b go to the Name row; End, PageDown,
-/// ctrl+End and ctrl+f to `+ Add header`. ctrl+PageDown is none of them,
-/// on either stop.
+/// ctrl+PageDown is no move key: it is handed on from every stop, and the
+/// cursor stays.
 #[test]
-fn the_first_and_last_keys_act_from_either_stop() {
-    let stops: [(&str, &str); 2] = [("Name", ""), ("a row", "<Down><Down>")];
-    for (from, walk) in stops {
-        for last in ["<End>", "<PageDown>", "<C-End>", "<C-f>"] {
-            let mut app = project_app(THREE, KeyProfile::Arrows);
-            feed(&mut app, walk);
-            feed(&mut app, last);
-            assert_eq!(app.project_tab.table.selected(), Some(Stop::Add), "{from} {last}");
-            assert_eq!(app.project_tab.stop, ProjectStop::Table, "{from} {last}");
-        }
-        for first in ["<Home>", "<PageUp>", "<C-Home>", "<C-b>"] {
-            let mut app = project_app(THREE, KeyProfile::Arrows);
-            feed(&mut app, walk);
-            feed(&mut app, first);
-            assert_eq!(app.project_tab.stop, ProjectStop::Name, "{from} {first}");
-        }
+fn a_chord_that_is_no_move_is_handed_on_from_every_stop() {
+    for p in 0..=4 {
         let mut app = project_app(THREE, KeyProfile::Arrows);
-        feed(&mut app, walk);
-        let (stop, row) = (app.project_tab.stop, app.project_tab.table.selected());
+        app.project_tab.table.set_selected(place_stop(p));
         let ev = KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL);
-        assert_eq!(app.handle_project_key(ev), None, "{from}: handed on");
-        assert_eq!((app.project_tab.stop, app.project_tab.table.selected()), (stop, row));
+        assert_eq!(app.handle_project_key(ev), None, "{p}: handed on");
+        assert_eq!(app.project_tab.table.selected(), place_stop(p), "{p}");
+    }
+}
+
+/// The stop at place `p` of the tab's walk on `THREE`: the Name row (no
+/// table cursor), the three headers, then `+ Add header`.
+fn place_stop(p: usize) -> Option<Stop> {
+    match p {
+        0 => None,
+        1..=3 => Some(Stop::Row(p - 1)),
+        _ => Some(Stop::Add),
+    }
+}
+
+/// R12: every move key, from every stop, in both profiles, at rest and
+/// out of an open name or cell, lands where the table's one walk puts it,
+/// the Name row being the walk's first place: the Name row is place 0,
+/// the headers 1 to 3 and `+ Add header` 4, the last; a half page is 2
+/// places (half of 4, the Name row counted as one).
+#[test]
+fn every_move_key_walks_the_name_row_and_the_table_as_one() {
+    type Rule = fn(usize) -> usize;
+    let up: Rule = |p| p.saturating_sub(1);
+    let down: Rule = |p| (p + 1).min(4);
+    let up2: Rule = |p| p.saturating_sub(2);
+    let down2: Rule = |p| (p + 2).min(4);
+    let first: Rule = |_| 0;
+    let last: Rule = |_| 4;
+    let at_rest: &[(&str, Rule)] = &[
+        ("<Up>", up),
+        ("<Down>", down),
+        ("<Home>", first),
+        ("<PageUp>", first),
+        ("<C-Home>", first),
+        ("<C-b>", first),
+        ("<End>", last),
+        ("<PageDown>", last),
+        ("<C-End>", last),
+        ("<C-f>", last),
+        ("<C-d>", down2),
+        ("<C-u>", up2),
+    ];
+    let vim_at_rest: &[(&str, Rule)] = &[
+        ("k", up),
+        ("j", down),
+        ("2k", up2),
+        ("2j", down2),
+        ("gg", first),
+        ("G", last),
+        ("3G", |_| 2),
+    ];
+    let out_of_open: &[(&str, Rule)] = &[("<Up>", up), ("<Down>", down)];
+    let vim_out_of_open: &[(&str, Rule)] = &[("<Esc>k", up), ("<Esc>j", down)];
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let vim = profile == KeyProfile::Vim;
+        let mut rest = at_rest.to_vec();
+        let mut open = out_of_open.to_vec();
+        if vim {
+            rest.extend_from_slice(vim_at_rest);
+            open.extend_from_slice(vim_out_of_open);
+        }
+        for p in 0..=4 {
+            for &(keys, rule) in &rest {
+                let mut app = project_app(THREE, profile);
+                app.project_tab.table.set_selected(place_stop(p));
+                feed(&mut app, keys);
+                let at = app.project_tab.table.selected();
+                assert_eq!(at, place_stop(rule(p)), "{profile:?} from {p}: {keys}");
+                assert!(app.project_tab.field().is_none(), "{profile:?} from {p}: {keys}");
+            }
+            for &(keys, rule) in &open {
+                let mut app = project_app(THREE, profile);
+                app.project_tab.table.set_selected(place_stop(p));
+                feed(&mut app, if vim { "i" } else { "<CR>" });
+                assert!(app.project_tab.field().is_some(), "{profile:?} from {p}: opened");
+                feed(&mut app, keys);
+                let at = app.project_tab.table.selected();
+                assert_eq!(at, place_stop(rule(p)), "{profile:?} open at {p}: {keys}");
+                assert!(app.project_tab.field().is_none(), "{profile:?} open at {p}: {keys}");
+            }
+        }
     }
 }
 
@@ -918,7 +1021,7 @@ fn the_arrows_walk_on_from_an_open_field() {
         edit.input.set_text("A");
         feed(&mut app, "<Up>");
         assert_eq!(keys(&app), ["A", "b", "c"], "{profile:?}: committed");
-        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
+        assert!(app.project_tab.on_name(), "{profile:?}");
         assert!(app.project_tab.table.editing.is_none(), "{profile:?}");
 
         let mut app = project_app(THREE, profile);
@@ -935,7 +1038,7 @@ fn the_arrows_walk_on_from_an_open_field() {
     app.project_tab.name_input_mut().unwrap().set_text("Up");
     feed(&mut app, "<Up>");
     assert_eq!(app.proj().meta().name.as_deref(), Some("Up"));
-    assert_eq!(app.project_tab.stop, ProjectStop::Name);
+    assert!(app.project_tab.on_name());
     assert!(!app.project_tab.name_open());
 }
 

@@ -5,7 +5,6 @@
 //! Split from `app.rs`; every method here is `impl App`.
 
 use super::*;
-use crate::components::project_tab::ProjectStop;
 use crate::components::table_editor::{Stop, TableEditorState, TableOutcome};
 use indexmap::IndexMap;
 use postui_core::model::Entry;
@@ -32,94 +31,63 @@ impl App {
     }
 
     /// [`Self::handle_project_key`] with a project open.
+    ///
+    /// The Name row is the head of the header table's key walk
+    /// ([`TableEditorState::handle_key_walk`]), so every move key, from
+    /// either part of the tab, goes through the table's one walk (R12).
     fn project_tab_key(&mut self, ev: KeyEvent) -> Option<bool> {
         let plain = ev.modifiers.is_empty();
-        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
-        let len = self.default_headers_len();
-        let up = ev.code == KeyCode::Up && plain;
-        let down = ev.code == KeyCode::Down && plain;
-        // ↑↓ walk the Name row, the headers and `+ Add` whether or not a
-        // field is open (R12): from an open name or cell they commit it
-        // first, and a refusal keeps it open and fails the key.
-        //
-        // An open name owns the keyboard: Enter and Esc commit too (the
-        // field rule, R6).
+        let arrow = matches!(ev.code, KeyCode::Up | KeyCode::Down) && plain;
+        // An open name owns the keyboard: Enter and Esc commit (the field
+        // rule, R6), and ↑↓ commit and walk on from the Name row (R12). A
+        // refusal keeps it open and fails the key.
         if self.project_tab.name_open() {
-            if matches!(ev.code, KeyCode::Esc | KeyCode::Enter) || up || down {
-                if !self.commit_project_name() {
-                    self.last_action_failed = true;
-                } else if down {
-                    self.project_tab.to_table(len);
+            if !matches!(ev.code, KeyCode::Esc | KeyCode::Enter) && !arrow {
+                if let Some(input) = self.project_tab.name_input_mut() {
+                    input.handle_key(ev);
                 }
-            } else if let Some(input) = self.project_tab.name_input_mut() {
-                input.handle_key(ev);
+                return Some(self.update(Action::Render));
+            }
+            if !self.commit_project_name() {
+                self.last_action_failed = true;
+                return Some(self.update(Action::Render));
+            }
+            if !arrow {
+                return Some(self.update(Action::Render));
+            }
+        } else if self.project_tab.table.editing.is_some() {
+            // An open cell owns the keyboard too: the table's own keys
+            // (Enter and Esc commit, Tab walks, ↑↓ leave), each change
+            // written. A key that only edits the cell's text writes nothing,
+            // so it goes straight in. A key neither takes is swallowed, not
+            // handed on, as on the Name row above, the Settings fields and
+            // the Variables grid.
+            if self.project_tab.table.type_into_cell(ev).is_none()
+                && self.run_header_table(|t, map| t.handle_key_walk(ev, map, true, 0)).1
+            {
+                self.last_action_failed = true;
             }
             return Some(self.update(Action::Render));
-        }
-        // An open cell owns the keyboard too: the table's own keys (Enter
-        // and Esc commit, Tab walks, ↑↓ leave), each change written. A key
-        // that only edits the cell's text writes nothing, so it goes
-        // straight in. A key neither takes is swallowed, not handed on, as
-        // on the Name row above, the Settings fields and the Variables grid.
-        if let Some(row) = self.project_tab.table.editing.as_ref().map(|e| e.row) {
-            if self.project_tab.table.type_into_cell(ev).is_none() {
-                if self.run_header_table(|t, map| t.handle_key(ev, map)).1 {
-                    self.last_action_failed = true;
-                } else if up && row == 0 {
-                    // ↑ from the first row goes on to the Name row.
-                    self.project_tab.to_name();
-                }
-            }
-            return Some(self.update(Action::Render));
-        }
-        if ev.code == KeyCode::Esc {
+        } else if ev.code == KeyCode::Esc {
             return Some(self.update(Action::CloseScreen));
-        }
-        // Nothing else acts on a tab the last frame didn't draw (R19).
-        if self.project_tab.hidden {
+        } else if self.project_tab.hidden {
+            // Nothing else acts on a tab the last frame didn't draw (R19).
             return None;
         }
-        // The Name row is the first stop and `+ Add header` the last: the
-        // keys the table takes to its first or last stop go there, from
-        // either stop.
-        let first = ev.code == KeyCode::Home && (plain || ctrl)
-            || ev.code == KeyCode::PageUp && plain
-            || ev.code == KeyCode::Char('b') && ctrl;
-        let last = ev.code == KeyCode::End && (plain || ctrl)
-            || ev.code == KeyCode::PageDown && plain
-            || ev.code == KeyCode::Char('f') && ctrl;
-        // The half-page keys cross onto and off the Name row as ↑↓ do:
-        // ctrl+d off it, and ctrl+u from the table's first stop.
-        let half_down = ev.code == KeyCode::Char('d') && ctrl;
-        let half_up = ev.code == KeyCode::Char('u') && ctrl;
-        let at_top = self.project_tab.table.selected().map(|s| s.clamp(len, 0))
-            == Some(Stop::of_row(0, len));
-        match self.project_tab.stop {
-            _ if first => self.project_tab.to_name(),
-            _ if last => self.project_tab.to_add(),
-            ProjectStop::Name => match ev.code {
-                _ if down || half_down => self.project_tab.to_table(len),
-                KeyCode::Enter if plain => self.open_project_name(),
-                _ if up || half_up => {}
-                _ => return None,
-            },
-            // ↑ off the first row goes to the Name row too, below.
-            ProjectStop::Table if half_up && at_top => self.project_tab.to_name(),
-            ProjectStop::Table => {
-                let (outcome, refused) = self.run_header_table(|t, map| t.handle_key(ev, map));
-                if refused {
-                    self.last_action_failed = true;
-                }
-                if let Some(i) = outcome.request_delete {
-                    return Some(self.update(Action::DeleteDefaultHeader(i)));
-                }
-                if !outcome.consumed {
-                    if !up {
-                        return None;
-                    }
-                    self.project_tab.to_name();
-                }
+        let (outcome, refused) =
+            self.run_header_table(|t, map| t.handle_key_walk(ev, map, true, 0));
+        if refused {
+            self.last_action_failed = true;
+        }
+        if let Some(i) = outcome.request_delete {
+            return Some(self.update(Action::DeleteDefaultHeader(i)));
+        }
+        if !outcome.consumed {
+            // The walk leaves the Name row's own key to the tab.
+            if !(ev.code == KeyCode::Enter && plain && self.project_tab.on_name()) {
+                return None;
             }
+            self.open_project_name();
         }
         Some(self.update(Action::Render))
     }
@@ -153,7 +121,10 @@ impl App {
         let mut map = self.project().map(|p| p.meta().default_headers.clone()).unwrap_or_default();
         let saved = self.project_tab.table.clone();
         let mut outcome = f(&mut self.project_tab.table, &mut map);
-        let unchanged = self.project().is_none_or(|p| p.meta().default_headers == map);
+        // Compared in order, which `IndexMap`'s `==` ignores: a change of
+        // order alone is a change to write (R10).
+        let unchanged =
+            self.project().is_none_or(|p| p.meta().default_headers.iter().eq(map.iter()));
         if !unchanged {
             let next = self.project_tab.table.editing.take();
             if !self.write_default_headers(&map) {
@@ -258,7 +229,6 @@ impl App {
             self.last_action_failed = true;
             return;
         }
-        self.project_tab.stop = ProjectStop::Table;
         self.run_header_table(|t, map| {
             t.begin_add(map);
             TableOutcome::default()

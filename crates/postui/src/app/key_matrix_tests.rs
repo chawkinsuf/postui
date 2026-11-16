@@ -845,7 +845,6 @@ pub(super) fn build(f: Fixture) -> App {
             app.settings.set_cursor(0);
         }
         ManageProject => {
-            app.project_tab.to_table(3);
             app.project_tab.table.set_selected(Some(Stop::Row(1)));
         }
         SettingsFiles => {
@@ -980,11 +979,8 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         DefaultHeaders(names) => {
             app.proj().meta().default_headers.keys().map(String::as_str).eq(names.iter().copied())
         }
-        ProjectRow(n) => {
-            app.project_tab.stop == crate::components::project_tab::ProjectStop::Table
-                && app.project_tab.table.selected() == Some(Stop::Row(n))
-        }
-        ProjectOnName => app.project_tab.stop == crate::components::project_tab::ProjectStop::Name,
+        ProjectRow(n) => app.project_tab.table.selected() == Some(Stop::Row(n)),
+        ProjectOnName => app.project_tab.on_name(),
         OptionCount(n) => {
             app.project()
                 .and_then(|p| {

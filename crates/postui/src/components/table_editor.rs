@@ -374,6 +374,14 @@ fn open_col(row: usize, col: Col, map_len: usize) -> Col {
     if row >= map_len { Col::Key } else { col }
 }
 
+/// The cursor at place `place` of a key walk over `len` rows: with a
+/// `head` (see [`TableEditorState::handle_key_walk`]) place 0 is the head,
+/// where nothing is selected, and the stops follow in [`Stop::ordinal`]'s
+/// order.
+fn walk_stop(place: usize, len: usize, head: bool) -> Option<Stop> {
+    place.checked_sub(usize::from(head)).map(|ord| Stop::at(ord, len))
+}
+
 /// Whether `ev`, typed into an open cell, is one of the keys that close or
 /// leave it (Esc, Enter, ↑↓, Tab, Shift-Tab), committing it, rather than
 /// one that edits its text. `handle_editing_key` gives each its own arm;
@@ -410,7 +418,7 @@ impl TableEditorState {
     /// even when the key lands on the stop the cursor is on (End on the
     /// last stop, ↓ at the end). The key asked for the cursor, so it finds
     /// it (S23).
-    pub(crate) fn set_selected_showing(&mut self, stop: Option<Stop>) {
+    fn set_selected_showing(&mut self, stop: Option<Stop>) {
         self.write_cursor(stop, true);
     }
 
@@ -813,9 +821,29 @@ impl TableEditorState {
         map: &mut IndexMap<String, Entry>,
         tail: usize,
     ) -> TableOutcome {
+        self.handle_key_walk(ev, map, false, tail)
+    }
+
+    /// [`Self::handle_key_with_tail`] with, when `head` is set, one stop
+    /// above the rows that the caller draws and acts on (the Project tab's
+    /// Name row). The table holds no cursor there: with a head, nothing
+    /// selected is the head. The walk puts it first, so every move key
+    /// reaches it by the walk's one rule (↑ from the first row, open or
+    /// not, the first-stop keys, a half page up) and leaves nothing
+    /// selected, and a move from it starts there. ↑ on it stays there,
+    /// consumed, as ↓ on the last stop does: there is nothing above to
+    /// climb out to. No other key acts on it, so Enter there is the
+    /// caller's. A request's tables have no head.
+    pub fn handle_key_walk(
+        &mut self,
+        ev: KeyEvent,
+        map: &mut IndexMap<String, Entry>,
+        head: bool,
+        tail: usize,
+    ) -> TableOutcome {
         match self.editing.take() {
-            Some(edit) => self.handle_editing_key(ev, map, edit),
-            None => self.handle_nav_key(ev, map, tail),
+            Some(edit) => self.handle_editing_key(ev, map, edit, head),
+            None => self.handle_nav_key(ev, map, head, tail),
         }
     }
 
@@ -823,27 +851,32 @@ impl TableEditorState {
         &mut self,
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
+        head: bool,
         tail: usize,
     ) -> TableOutcome {
         // A named key acts bare only: any other chord is unconsumed rather
         // than acting as the bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
         let len = map.len();
-        // The stops, in the order the keys walk them: the data rows, the
-        // ghost row (so the keyboard can reach it the same way the mouse
-        // can, and an empty table still has that one stop to land on), then
-        // the section's rows. Moves step through their places in it.
-        let last = len + tail;
+        // The stops, in the order the keys walk them: the head when there
+        // is one, the data rows, the ghost row (so the keyboard can reach
+        // it the same way the mouse can, and an empty table still has that
+        // one stop to land on), then the section's rows. Moves step through
+        // their places in it.
+        let last = usize::from(head) + len + tail;
         // Every arm below (the moves, Enter, Space, Delete, ←/→) acts on the
         // stop that is drawn lit (spec 2026-10-25 S25).
         self.clamp_cursor(len, tail);
-        let place = self.selected.map(|s| s.ordinal(len));
+        let place = match self.selected {
+            Some(s) => Some(usize::from(head) + s.ordinal(len)),
+            None => head.then_some(0),
+        };
         // A move key asks for the cursor even when it lands on the stop it
         // is on (End on the last stop, ↓ at the end), so it brings a view
         // the wheel scrolled away back as any move does (S23): otherwise
         // the key meant to find the cursor would do nothing.
         let go = |this: &mut Self, ord: usize| {
-            this.set_selected_showing(Some(Stop::at(ord.min(last), len)));
+            this.set_selected_showing(walk_stop(ord.min(last), len, head));
             TableOutcome::consumed()
         };
         // ←/→ move between the name and value cells of a row or `+ Add`.
@@ -858,9 +891,10 @@ impl TableEditorState {
             KeyCode::Up if plain => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
-                // instead of leaving the user stuck with no way back.
+                // instead of leaving the user stuck with no way back. A
+                // head is the top, with nothing to climb to.
                 match place {
-                    Some(p) if p > 0 => go(self, p - 1),
+                    Some(p) if p > 0 || head => go(self, p.saturating_sub(1)),
                     _ => TableOutcome::not_consumed(),
                 }
             }
@@ -908,15 +942,17 @@ impl TableEditorState {
             // ctrl+f/PageDown → the last stop, ctrl+b/PageUp → row 0,
             // ctrl+d/u ± half the stops.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), map, tail)
+                let ev = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+                self.handle_nav_key(ev, map, head, tail)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map, tail)
+                let ev = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+                self.handle_nav_key(ev, map, head, tail)
             }
             // ctrl+Home/End are a second spelling of Home/End, and what
             // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
             KeyCode::Home | KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map, tail)
+                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map, head, tail)
             }
             KeyCode::Home | KeyCode::PageUp if plain => go(self, 0),
             KeyCode::End | KeyCode::PageDown if plain => go(self, last),
@@ -957,6 +993,7 @@ impl TableEditorState {
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
         mut edit: CellEdit,
+        head: bool,
     ) -> TableOutcome {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         match ev.code {
@@ -988,11 +1025,12 @@ impl TableEditorState {
             // closes it onto `+ Add`, and the next ↓ goes on to the section.
             // They step from where the caret was (`here`), so a `+ Add` name
             // that is taken moves from `+ Add`, not from the row it matched
-            // (task #176).
+            // (task #176). A head counts: ↑ from the first row reaches it.
             KeyCode::Up | KeyCode::Down => {
                 let Committed { here, warning, .. } = self.commit_cell(map, &edit);
-                let target = if ev.code == KeyCode::Up { here.saturating_sub(1) } else { here + 1 };
-                self.exit_editing(target, map);
+                let (len, place) = (map.len(), usize::from(head) + here);
+                let to = if ev.code == KeyCode::Up { place.saturating_sub(1) } else { place + 1 };
+                self.set_selected(walk_stop(to.min(usize::from(head) + len), len, head));
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::BackTab => self.walk_cell(map, &edit, false),
@@ -1536,6 +1574,37 @@ mod tests {
         let mut t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
         t.handle_key(key(KeyCode::Down), &mut map);
         assert_eq!(t.selected, Some(Stop::Add));
+    }
+
+    /// A head is the walk's first stop, where nothing is selected: ↑ from
+    /// row 0, open or not, and Home reach it, ↓ leaves it for row 0, and ↑
+    /// on it stays, consumed. Without a head, ↑ on row 0 is unconsumed and
+    /// a closed cell's ↑ stays on row 0, as before.
+    #[test]
+    fn a_head_is_the_walks_first_stop() {
+        let mut map = map_of(&[("a", "1"), ("b", "2")]);
+        let mut t = TableEditorState { selected: Some(Stop::Row(0)), ..Default::default() };
+        let walk = |t: &mut TableEditorState, map: &mut IndexMap<String, Entry>, c, head| {
+            t.handle_key_walk(key(c), map, head, 0)
+        };
+        assert!(!walk(&mut t, &mut map, KeyCode::Up, false).consumed);
+        assert_eq!(t.selected, Some(Stop::Row(0)));
+        assert!(walk(&mut t, &mut map, KeyCode::Up, true).consumed);
+        assert_eq!(t.selected, None, "on the head");
+        assert!(walk(&mut t, &mut map, KeyCode::Up, true).consumed, "the head is the top");
+        assert_eq!(t.selected, None);
+        walk(&mut t, &mut map, KeyCode::Down, true);
+        assert_eq!(t.selected, Some(Stop::Row(0)));
+        walk(&mut t, &mut map, KeyCode::End, true);
+        walk(&mut t, &mut map, KeyCode::Home, true);
+        assert_eq!(t.selected, None, "Home is the head");
+        // Out of an open cell on row 0.
+        t.click_cell(0, Col::Value, &mut map);
+        walk(&mut t, &mut map, KeyCode::Up, false);
+        assert_eq!((t.selected, t.editing.is_none()), (Some(Stop::Row(0)), true));
+        t.click_cell(0, Col::Value, &mut map);
+        walk(&mut t, &mut map, KeyCode::Up, true);
+        assert_eq!((t.selected, t.editing.is_none()), (None, true));
     }
 
     /// A row the map shrank from under (before a frame clamped it) steps

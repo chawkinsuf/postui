@@ -29,27 +29,18 @@ const NAME_LABEL: &str = "Name";
 /// The ghost row's label in the header table.
 pub const ADD_HEADER: &str = "+ Add header";
 
-/// Where the tab's keyboard cursor is: the Name row, or the header table
-/// (whose own stop says which row).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProjectStop {
-    #[default]
-    Name,
-    Table,
-}
-
 #[derive(Debug, Default)]
 pub struct ProjectTab {
-    /// The stop goes to the table only with a row selected there, so the
-    /// table stop always has a lit row.
-    pub stop: ProjectStop,
     /// Whether the keyboard cursor is drawn, as the Settings tab's
     /// `focused`: a click away clears it, and a key or click on the tab,
     /// an added header, or the tab coming up, sets it.
     pub focused: bool,
     /// The Name row's live edit, while it is open.
     name: Option<LineInput>,
-    /// The default headers' table: its cursor, its open cell and its view.
+    /// The default headers' table: its open cell, its view, and the tab's
+    /// cursor. The Name row is the head of the table's walk
+    /// ([`TableEditorState::handle_key_walk`]), so the cursor is on it when
+    /// the table has nothing selected ([`Self::on_name`]).
     pub table: TableEditorState,
     /// The last frame had no room for the tab ([`Self::draw`]) and drew
     /// none of it, so nothing on it acts at rest (R19).
@@ -74,9 +65,14 @@ impl ProjectTab {
             .map(|e| FieldId::ProjectCell { row: e.row, col: usize::from(e.col.index()) })
     }
 
+    /// Whether the cursor is on the Name row: the table has nothing
+    /// selected.
+    pub fn on_name(&self) -> bool {
+        self.table.selected().is_none()
+    }
+
     /// Opens the Name row's edit, seeded with `seed`, the caret at its end.
     pub fn begin_name(&mut self, seed: &str) {
-        self.stop = ProjectStop::Name;
         self.table.set_selected(None);
         self.name = Some(LineInput::new(seed));
     }
@@ -115,41 +111,13 @@ impl ProjectTab {
         }
     }
 
-    /// The cursor onto the Name row.
-    pub fn to_name(&mut self) {
-        self.stop = ProjectStop::Name;
-        self.table.set_selected(None);
-    }
-
-    /// The cursor onto the table's first stop.
-    pub fn to_table(&mut self, len: usize) {
-        self.stop = ProjectStop::Table;
-        self.table.set_selected(Some(Stop::of_row(0, len)));
-    }
-
-    /// The cursor onto `+ Add header`, the tab's last stop, bringing a
-    /// view the wheel scrolled away back to it as the table's End does.
-    pub fn to_add(&mut self) {
-        self.stop = ProjectStop::Table;
-        self.table.set_selected_showing(Some(Stop::Add));
-    }
-
     /// The header row under the table's cursor, when it is on one: the
-    /// stop drawn lit ([`Self::settle`]).
+    /// stop drawn lit ([`TableEditorState::settle_view`]).
     pub fn selected_row(&self, len: usize) -> Option<usize> {
-        match (self.stop, self.table.selected().map(|s| s.clamp(len, 0))) {
-            (ProjectStop::Table, Some(Stop::Row(i))) => Some(i),
+        match self.table.selected().map(|s| s.clamp(len, 0)) {
+            Some(Stop::Row(i)) => Some(i),
             _ => None,
         }
-    }
-
-    /// Settles the table for a frame whose view is `viewport` lines tall,
-    /// by the request table's rules ([`TableEditorState::settle_view`]): a
-    /// cursor the rows went from under (an undo, a reload) goes on the
-    /// last row still there (R16), and the view keeps the cursor and an
-    /// open cell in sight. On the Name row the table has no cursor.
-    fn settle(&mut self, len: usize, viewport: usize) {
-        self.table.settle_view(len, 0, viewport);
     }
 
     /// What a list verb means here (`App::selection_action`): add a header
@@ -199,7 +167,11 @@ impl ProjectTab {
     }
 
     /// Paints the tab: the Name row, then the default headers' table,
-    /// settled first ([`Self::settle`]). `name` is the project's given name
+    /// settled first by the request table's rules
+    /// ([`TableEditorState::settle_view`]): a cursor the rows went from
+    /// under (an undo, a reload) goes on the last row still there (R16),
+    /// and the view keeps the cursor and an open cell in sight. `name` is
+    /// the project's given name
     /// (`Project::given_name`: none when blank), and `folder` the name it
     /// shows without one. `ctx.focused` is ignored: the tab's own
     /// [`Self::focused`] says whether its cursor is drawn.
@@ -224,7 +196,7 @@ impl ProjectTab {
         // Two heading lines, the Name row and the gaps take the first 7.
         self.hidden = body.width < 24 || body.height < 9;
         if self.hidden {
-            self.settle(headers.len(), 0);
+            self.table.settle_view(headers.len(), 0, 0);
             return;
         }
         let x0 = body.x + 2;
@@ -256,7 +228,7 @@ impl ProjectTab {
                     Line::styled(folder.to_string(), Style::default().fg(theme.text_muted))
                 }
             };
-            let state = if self.name.is_some() || self.focused && self.stop == ProjectStop::Name {
+            let state = if self.name.is_some() || self.focused && self.on_name() {
                 ControlState::Focused
             } else if ctx.hovered == Some(&Hit::ProjectName) {
                 ControlState::Hover
@@ -272,10 +244,10 @@ impl ProjectTab {
 
         let height = table_height(headers.len()).min(bottom.saturating_sub(y));
         let area = Rect { x: x0, y, width: row_w, height };
-        self.settle(headers.len(), usize::from(height));
+        self.table.settle_view(headers.len(), 0, usize::from(height));
         let table_ctx = DrawCtx {
             theme,
-            focused: self.focused && self.stop == ProjectStop::Table,
+            focused: self.focused && !self.on_name(),
             hovered: ctx.hovered,
             pointer: ctx.pointer,
             dragging: false,
