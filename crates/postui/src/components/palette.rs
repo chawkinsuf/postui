@@ -61,7 +61,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "table-add-row",
             name: "Table: add row",
-            description: "Add a row to the active Params/Headers/Vars table",
+            description: "Add a row to the active Params/Headers/Vars/Checks table",
             action: Action::TableAddRow,
         },
         Command {

@@ -5366,7 +5366,7 @@ impl App {
                 // The checks as they are at the send: the response is judged
                 // by these, once, in the send's own task (checks tabs spec
                 // 2026-11-16, P5).
-                let checks = self.editor.current_request().checks;
+                let checks = self.editor.checks();
                 let task = tokio::spawn(async move {
                     match crate::http::send_checked(&client, &prepared, checks).await {
                         Ok(data) => {
@@ -14247,6 +14247,8 @@ fn line_buf<'a>(
     }
 }
 
+#[cfg(test)]
+mod checks_tests;
 mod curl_flow;
 #[cfg(test)]
 mod curl_tests;

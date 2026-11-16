@@ -229,6 +229,32 @@ mod tests {
         assert_eq!(failure_lines(&out).count(), 0);
     }
 
+    /// Checks tabs spec 2026-11-16 (P2, P3): what `run -v` lists and passes
+    /// is what the app's Checks tab reads from core, check for check, over
+    /// every kind of outcome and both status rules.
+    #[test]
+    fn run_and_the_app_give_one_verdict_and_one_set_of_lines() {
+        use postui_core::checks::{evaluate, lines, passed as core_passed};
+        let body = r#"{"ok":true,"items":[1,2]}"#;
+        let jq = vec![".ok".to_string(), ".items | length == 4".into(), ".ok ==".into()];
+        let limits =
+            Checks { max_ttfb_ms: Some(1), max_elapsed_ms: Some(50), jq, ..Checks::default() };
+        let named = Checks { status: vec![200, 201], ..limits.clone() };
+        for (checks, status) in [(&limits, 200), (&limits, 500), (&named, 201), (&named, 404)] {
+            let timing = Timing { ttfb_ms: 3, elapsed_ms: 40 };
+            let doc = || postui_core::jq::JqDocument::parse(body);
+            let outcomes = evaluate(checks, status, timing, doc);
+            let run = shown(&outcomes, &Mask::none());
+            assert_eq!(passed(status, &run), core_passed(status, &outcomes), "{status}");
+            // The app adds the below-400 line, which `run` says on stderr.
+            let app = lines(status, &outcomes);
+            let app = &app[app.len() - run.len()..];
+            let listed: Vec<(bool, String)> =
+                run.iter().map(|c| (c.passed(), c.summary())).collect();
+            assert_eq!(app, listed, "{status}");
+        }
+    }
+
     /// Spec §2.7 (T3): a time check's JSON names its key, limit and time,
     /// after the status check and before the jq ones; a breach fails the
     /// response whatever its status; a first-byte breach alone is not

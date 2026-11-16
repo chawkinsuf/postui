@@ -137,13 +137,15 @@ impl App {
             // Every stop: the rows, `+ Add`, and the section's rows under
             // it (task #56). A move out of an open cell never goes past
             // `+ Add`, so the section (a scan of every field on Vars) is
-            // counted only for the closed table, not per typed key.
-            Surface::Table(_) => {
+            // counted only for the closed table, not per typed key. The
+            // Checks tab's fields are stops above the rows.
+            Surface::Table(tab) => {
                 let section = match self.editor.table.editing {
                     Some(_) => 0,
                     None => self.editor.section_len(),
                 };
-                (self.editor.table_len() + 1 + section).max(2)
+                let fields = tab.table_spec().map_or(0, |spec| spec.heads);
+                (fields + self.editor.table_len() + 1 + section).max(2)
             }
             Surface::Response(_) | Surface::ResponseLines(_) => self
                 .session

@@ -4571,7 +4571,7 @@ impl Editor {
         let shown = (self.field_lines() as u16).min(area.height);
         let theme = ctx.theme;
         let open = self.table.editing.as_ref().and_then(|e| Some((e.head()?, &e.input)));
-        for k in 0..usize::from(shown) {
+        for (k, label) in CHECK_FIELDS.into_iter().enumerate().take(usize::from(shown)) {
             let hit = Hit::CheckField(k);
             let hovered = ctx.hovered == Some(&hit);
             // Indented to the table's name column.
@@ -4579,7 +4579,7 @@ impl Editor {
             let row =
                 Rect { x: area.x + pad, y: area.y + k as u16, width: area.width - pad, height: 1 };
             let slot = PropertyRow {
-                label: CHECK_FIELDS[k],
+                label,
                 label_w: crate::paint::label_column(&CHECK_FIELDS),
                 hovered,
                 disabled: false,
@@ -7210,32 +7210,44 @@ mod tests {
     /// in stop order, the boundary at the top then at the bottom.
     #[test]
     fn the_tab_row_fits_beside_the_split_control_at_the_main_minimum() {
-        // The widest everyday tab row: single-digit counts on the three
-        // counted tabs, the Body badge, and the "vars" indicator (S5's
-        // main-column minimum is sized for it).
+        // The widest everyday tab row: single-digit counts on the four
+        // counted tabs, the Body badge, and the "vars" indicator. With the
+        // fifth tab it no longer fits at the main-column minimum, so every
+        // tab drops its count there (checks tabs spec 2026-11-16, W1), and
+        // all five still end before the split chips.
         let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
         for i in 0..9 {
             let entry = || Entry { value: "1".into(), enabled: true };
             e.params.insert(format!("p{i}"), entry());
             e.headers.insert(format!("h{i}"), entry());
             e.variables.insert(format!("v{i}"), entry());
+            e.check_rows.insert(format!(".c{i}"), entry());
         }
         e.set_body_text("{}");
         e.substitute_body = true;
-        let hits = draw_editor_sized(&mut e, crate::layout::MAIN_MIN_COLS, 20);
-        let tabs_end = (0..DRAW_ORDER.len())
-            .filter_map(|i| hits.rect_of(&Hit::EditorTab(i)))
-            .map(|r| r.x + r.width)
-            .max()
-            .expect("tabs drawn");
+        let tab_rects = |e: &mut Editor, width: u16| {
+            let hits = draw_editor_sized(e, width, 20);
+            let tabs: Vec<Rect> =
+                (0..DRAW_ORDER.len()).map(|i| hits.rect_of(&Hit::EditorTab(i)).unwrap()).collect();
+            let [first, ..] = control_rects(&hits);
+            (tabs, first.x)
+        };
+        let (tabs, control_x) = tab_rects(&mut e, crate::layout::MAIN_MIN_COLS);
         // "vars " sits two cells after the last tab.
-        let vars_end = tabs_end + 2 + 5;
-        let [first, ..] = control_rects(&hits);
+        let vars_end = tabs[4].right() + 2 + 5;
         assert!(
-            vars_end < first.x,
-            "tabs and vars end at {vars_end}, the control starts at {}",
-            first.x
+            vars_end < control_x,
+            "the row ends at {vars_end}, the control starts at {control_x}"
         );
+        // A tab is its label and a cell either side: `Checks`, or with
+        // room `Checks · 9`.
+        assert_eq!(tabs[4].width, 8, "no count at the minimum");
+        assert_eq!(tab_rects(&mut e, 120).0[4].width, 12, "the count with room");
+        // W2: the form follows the room, never the selected tab.
+        for tab in DRAW_ORDER {
+            e.active_tab = tab;
+            assert_eq!(tab_rects(&mut e, crate::layout::MAIN_MIN_COLS).0, tabs, "{tab:?}");
+        }
     }
 
     #[test]

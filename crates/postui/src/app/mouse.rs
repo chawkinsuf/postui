@@ -709,6 +709,16 @@ impl App {
                             None => return self.update(Action::Render) || changed,
                         }
                     }
+                    // A Checks field that is not under edit: the cursor
+                    // goes onto it, as onto a row. A field has no menu.
+                    Hit::CheckField(k) => {
+                        changed |= self.update(Action::FocusPane(PaneId::Editor));
+                        self.move_editor_caret(SubFocus::Content);
+                        self.commit_table_edit();
+                        let stop = Stop::Head(*k);
+                        changed |= self.editor.table.selected() != Some(stop);
+                        self.editor.table.set_selected(Some(stop));
+                    }
                     _ => {}
                 }
                 match self.context_menu_for(&menu_hit) {
