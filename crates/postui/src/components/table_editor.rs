@@ -184,6 +184,13 @@ impl TableHit {
 /// Which table a [`TableEditorState::draw`] registers its hits for: a
 /// request's, as the `Hit::Table*` hits its handlers take, or the Project
 /// tab's, as [`Hit::ProjectTable`], which those handlers never see.
+///
+/// The request table keeps its own five `Hit` variants, translated in
+/// [`Self::hit`] and [`Self::of`], rather than one owner-tagged hit: they
+/// are matched in over two hundred places across the app and its tests,
+/// which a tag would rewrite. `hit` matches every [`TableHit`], so a new
+/// kind fails to build there until it has a request hit; `of` needs its
+/// arm added by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableOwner {
     Request,
@@ -352,8 +359,9 @@ pub struct TableEditorState {
     /// the view where the wheel put it: the cost S6 and S23 accept for a
     /// rule that reads only whether the cursor moved, not which key came
     /// in. Delete's toast names the row it took, and undo brings it back.
-    /// The vim profile never sets it: its wheel moves the cursor instead
-    /// (S24).
+    /// The vim profile sets it only with the cursor on a head
+    /// ([`Self::view_scrolled_under_head`]): elsewhere its wheel moves the
+    /// cursor instead (S24).
     scrolled_away: bool,
     /// Lines the tab content had on screen as of the last draw: the
     /// scrollbar's viewport. 0 while no table tab is drawn.
@@ -529,6 +537,29 @@ impl TableEditorState {
             self.cursor_into_view(len, tail);
         } else {
             self.mark_scrolled_away();
+        }
+    }
+
+    /// [`Self::settle_view`] for a walk with a head
+    /// ([`Self::handle_key_walk`]). The head is drawn above the table, so
+    /// with the cursor on it the view shows the table from its top, unless
+    /// a scroll moved it since (S23).
+    pub fn settle_view_under_head(&mut self, len: usize, tail: usize, viewport: usize) {
+        if self.selected.is_none() && !self.scrolled_away {
+            self.scroll = 0;
+        }
+        self.settle_view(len, tail, viewport);
+    }
+
+    /// [`Self::view_scrolled`] for a walk with a head. The head stays in
+    /// sight whatever the table's view, so a scroll with the cursor on it
+    /// moves no cursor, in either profile, and the view stays where the
+    /// scroll put it until the cursor moves (S23).
+    pub fn view_scrolled_under_head(&mut self, vim: bool, len: usize, tail: usize) {
+        if self.selected.is_none() {
+            self.mark_scrolled_away();
+        } else {
+            self.view_scrolled(vim, len, tail);
         }
     }
 

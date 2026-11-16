@@ -45,6 +45,9 @@ pub struct ProjectTab {
     /// The last frame had no room for the tab ([`Self::draw`]) and drew
     /// none of it, so nothing on it acts at rest (R19).
     pub hidden: bool,
+    /// Where the last frame drew the header table, for the wheel, as the
+    /// Variables tab's `grid_area`; empty when it drew none.
+    pub table_area: Rect,
 }
 
 impl ProjectTab {
@@ -168,9 +171,10 @@ impl ProjectTab {
 
     /// Paints the tab: the Name row, then the default headers' table,
     /// settled first by the request table's rules
-    /// ([`TableEditorState::settle_view`]): a cursor the rows went from
-    /// under (an undo, a reload) goes on the last row still there (R16),
-    /// and the view keeps the cursor and an open cell in sight. `name` is
+    /// ([`TableEditorState::settle_view_under_head`]): a cursor the rows
+    /// went from under (an undo, a reload) goes on the last row still there
+    /// (R16), the view keeps the cursor and an open cell in sight, and a
+    /// cursor on the Name row shows the table from its top. `name` is
     /// the project's given name
     /// (`Project::given_name`: none when blank), and `folder` the name it
     /// shows without one. `ctx.focused` is ignored: the tab's own
@@ -195,8 +199,9 @@ impl ProjectTab {
         fill(frame.buffer_mut(), body, theme.page);
         // Two heading lines, the Name row and the gaps take the first 7.
         self.hidden = body.width < 24 || body.height < 9;
+        self.table_area = Rect::default();
         if self.hidden {
-            self.table.settle_view(headers.len(), 0, 0);
+            self.table.settle_view_under_head(headers.len(), 0, 0);
             return;
         }
         let x0 = body.x + 2;
@@ -244,7 +249,8 @@ impl ProjectTab {
 
         let height = table_height(headers.len()).min(bottom.saturating_sub(y));
         let area = Rect { x: x0, y, width: row_w, height };
-        self.table.settle_view(headers.len(), 0, usize::from(height));
+        self.table_area = area;
+        self.table.settle_view_under_head(headers.len(), 0, usize::from(height));
         let table_ctx = DrawCtx {
             theme,
             focused: self.focused && !self.on_name(),

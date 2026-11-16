@@ -243,6 +243,30 @@ fn a_blank_name_shows_the_folder_name() {
     assert!(well.contains(&folder), "{well:?}");
 }
 
+/// A `name` written by hand with spaces round it shows trimmed at rest,
+/// as a commit would write it, and opens trimmed.
+#[test]
+fn a_padded_name_shows_trimmed() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let well = |app: &mut App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let r = app.hits.rect_of(&Hit::ProjectName).unwrap();
+        let buf = terminal.backend().buffer();
+        (r.x..r.right()).map(|x| buf[(x, r.y)].symbol().to_string()).collect::<String>()
+    };
+    let mut app = project_app("name = \"  Orders  \"\n", KeyProfile::Arrows);
+    assert_eq!(app.proj().display_name(), "Orders");
+    let mut plain = project_app("name = \"Orders\"\n", KeyProfile::Arrows);
+    assert_eq!(well(&mut app), well(&mut plain));
+    feed(&mut app, "<CR>");
+    assert_eq!(
+        app.project_tab.name_input_mut().map(|i| i.text().to_string()),
+        Some("Orders".into())
+    );
+}
+
 /// R11: renaming a header onto a name already there merges the two, as
 /// in a request's Headers table: one row stays, in its place, with the
 /// renamed row's value, and a warning says so.
@@ -311,6 +335,19 @@ fn a_on_the_name_row_adds_a_header() {
         feed(&mut app, if profile == KeyProfile::Vim { "<Esc><Esc>" } else { "<CR>" });
         assert_eq!(keys(&app), ["a", "b", "c", "X-New"], "{profile:?}");
     }
+}
+
+/// The tab's cursor is drawn only while the tab is on screen: leaving the
+/// Manage screen clears it, and coming back to the tab hands it back.
+#[test]
+fn leaving_the_screen_clears_the_cursor() {
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    assert!(app.project_tab.focused);
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.screen, Screen::Main);
+    assert!(!app.project_tab.focused);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Project) });
+    assert!(app.project_tab.focused);
 }
 
 /// R14: a tab switch commits an open cell first.
@@ -634,19 +671,26 @@ fn many(n: usize) -> String {
     format!("[default_headers]\n{rows}")
 }
 
-fn wheel(app: &mut App, at: Hit, down: bool) {
+/// A wheel notch at (`col`, `row`), then a frame.
+fn wheel_at(app: &mut App, (col, row): (u16, u16), down: bool) {
     use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
-    let r = app.hits.rect_of(&at).unwrap_or_else(|| panic!("no {at:?}"));
     app.handle_mouse(MouseEvent {
         kind: if down { MouseEventKind::ScrollDown } else { MouseEventKind::ScrollUp },
-        column: r.x + 1,
-        row: r.y,
+        column: col,
+        row,
         modifiers: KeyModifiers::NONE,
     });
     draw(app);
 }
 
-/// The wheel over the Project tab scrolls its header table, so a row
+/// A wheel notch over the header table's first line.
+fn wheel(app: &mut App, down: bool) {
+    let r = app.project_tab.table_area;
+    assert!(!r.is_empty(), "the table is drawn");
+    wheel_at(app, (r.x + 1, r.y), down);
+}
+
+/// The wheel over the Project tab's header table scrolls it, so a row
 /// below the bottom can be reached and clicked; the Environments and
 /// Spaces list waiting behind the tab stays where it was. The cursor
 /// stays, and its next move brings the view back to it.
@@ -659,7 +703,7 @@ fn the_wheel_scrolls_the_header_table() {
     draw(&mut app);
     assert!(app.hits.rect_of(&cell(59, 1)).is_none(), "the last row starts below the view");
     for _ in 0..30 {
-        wheel(&mut app, Hit::ProjectName, true);
+        wheel(&mut app, true);
     }
     assert!(app.hits.rect_of(&cell(0, 1)).is_none(), "the first row scrolled off");
     assert_eq!(app.manage.list.scroll, 0, "the hidden list stays");
@@ -672,9 +716,36 @@ fn the_wheel_scrolls_the_header_table() {
     );
     // The wheel back up never scrolls the open cell out of view.
     for _ in 0..5 {
-        wheel(&mut app, Hit::ProjectName, false);
+        wheel(&mut app, false);
     }
     assert!(app.hits.rect_of(&cell(59, 1)).is_some(), "the open cell stays drawn");
+}
+
+/// The wheel anywhere else on the tab (over the Name row, the headings,
+/// the space below the table) moves nothing, as the Variables tab's wheel
+/// moves only what is under the pointer.
+#[test]
+fn the_wheel_off_the_table_moves_nothing() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = project_app(&many(60), profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "j" } else { "<Down>" });
+        draw(&mut app);
+        let name = app.hits.rect_of(&Hit::ProjectName).unwrap();
+        let table = app.project_tab.table_area;
+        for at in [(name.x + 1, name.y), (table.x, table.y - 2), (table.x, table.y - 1)] {
+            wheel_at(&mut app, at, true);
+        }
+        let t = &app.project_tab.table;
+        assert_eq!(t.scroll, 0, "{profile:?}");
+        assert!(!t.scrolled_away(), "{profile:?}");
+        assert_eq!(t.selected(), Some(Stop::Row(0)), "{profile:?}");
+    }
+    // Below a short table.
+    let mut app = project_app(THREE, KeyProfile::Arrows);
+    draw(&mut app);
+    let table = app.project_tab.table_area;
+    wheel_at(&mut app, (table.x, table.bottom() + 1), true);
+    assert_eq!(app.project_tab.table.scroll, 0);
 }
 
 /// A wheel notch that moves nothing (the headers fit) marks nothing, as
@@ -683,7 +754,8 @@ fn the_wheel_scrolls_the_header_table() {
 fn a_wheel_that_moves_nothing_marks_nothing() {
     let mut app = project_app(THREE, KeyProfile::Arrows);
     feed(&mut app, "<Down>");
-    wheel(&mut app, Hit::ProjectName, true);
+    draw(&mut app);
+    wheel(&mut app, true);
     assert_eq!(app.project_tab.table.scroll, 0);
     assert!(!app.project_tab.table.scrolled_away());
 }
@@ -696,8 +768,9 @@ fn the_vim_wheel_pulls_the_cursor_into_view() {
         let mut app = project_app(&many(60), profile);
         feed(&mut app, if profile == KeyProfile::Vim { "j" } else { "<Down>" });
         assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        draw(&mut app);
         for _ in 0..5 {
-            wheel(&mut app, Hit::ProjectName, true);
+            wheel(&mut app, true);
         }
         let table = &app.project_tab.table;
         assert!(table.scroll > 1, "{profile:?}: the view scrolled");
@@ -931,27 +1004,58 @@ fn a_chord_that_is_no_move_is_handed_on_from_every_stop() {
 /// The stop at place `p` of the tab's walk on `THREE`: the Name row (no
 /// table cursor), the three headers, then `+ Add header`.
 fn place_stop(p: usize) -> Option<Stop> {
+    walk_place(3, p)
+}
+
+/// The stop at place `p` of the tab's walk over `n` headers: the Name row
+/// (no table cursor), the headers, then `+ Add header`.
+fn walk_place(n: usize, p: usize) -> Option<Stop> {
     match p {
         0 => None,
-        1..=3 => Some(Stop::Row(p - 1)),
+        p if p <= n => Some(Stop::Row(p - 1)),
         _ => Some(Stop::Add),
+    }
+}
+
+/// The header table's view shows the cursor: from its top on the Name
+/// row, which is drawn above it, and with the cursor's line in sight on a
+/// stop of the table.
+fn assert_view_shows_cursor(app: &App, n: usize, at: &str) {
+    let t = &app.project_tab.table;
+    match t.selected() {
+        None => assert_eq!(t.scroll, 0, "{at}: the Name row shows the table's top"),
+        Some(stop) => {
+            let line = stop.line(n);
+            assert!(
+                line >= t.scroll && line < t.scroll + t.viewport,
+                "{at}: line {line} out of view {}+{}",
+                t.scroll,
+                t.viewport
+            );
+        }
     }
 }
 
 /// R12: every move key, from every stop, in both profiles, at rest and
 /// out of an open name or cell, lands where the table's one walk puts it,
-/// the Name row being the walk's first place: the Name row is place 0,
-/// the headers 1 to 3 and `+ Add header` 4, the last; a half page is 2
-/// places (half of 4, the Name row counted as one).
+/// the Name row being the walk's first place, and the table's view
+/// follows it there, to the table's top on the Name row. Over `n`
+/// headers the Name row is place 0, the headers 1 to `n` and `+ Add
+/// header` `n + 1`, the last; a half page is half the last place, rounded
+/// up (2 of 4 over three headers, the Name row counted as one). Sixty
+/// headers make a table taller than the view, walked from a sample of its
+/// stops, each settled in view first.
 #[test]
 fn every_move_key_walks_the_name_row_and_the_table_as_one() {
-    type Rule = fn(usize) -> usize;
-    let up: Rule = |p| p.saturating_sub(1);
-    let down: Rule = |p| (p + 1).min(4);
-    let up2: Rule = |p| p.saturating_sub(2);
-    let down2: Rule = |p| (p + 2).min(4);
-    let first: Rule = |_| 0;
-    let last: Rule = |_| 4;
+    type Rule = fn(usize, usize) -> usize;
+    let up: Rule = |p, _| p.saturating_sub(1);
+    let down: Rule = |p, last| (p + 1).min(last);
+    let half_up: Rule = |p, last| p.saturating_sub(last.div_ceil(2));
+    let half_down: Rule = |p, last| (p + last.div_ceil(2)).min(last);
+    let up2: Rule = |p, _| p.saturating_sub(2);
+    let down2: Rule = |p, last| (p + 2).min(last);
+    let first: Rule = |_, _| 0;
+    let last: Rule = |_, last| last;
     let at_rest: &[(&str, Rule)] = &[
         ("<Up>", up),
         ("<Down>", down),
@@ -963,8 +1067,8 @@ fn every_move_key_walks_the_name_row_and_the_table_as_one() {
         ("<PageDown>", last),
         ("<C-End>", last),
         ("<C-f>", last),
-        ("<C-d>", down2),
-        ("<C-u>", up2),
+        ("<C-d>", half_down),
+        ("<C-u>", half_up),
     ];
     let vim_at_rest: &[(&str, Rule)] = &[
         ("k", up),
@@ -973,10 +1077,13 @@ fn every_move_key_walks_the_name_row_and_the_table_as_one() {
         ("2j", down2),
         ("gg", first),
         ("G", last),
-        ("3G", |_| 2),
+        ("3G", |_, _| 2),
     ];
     let out_of_open: &[(&str, Rule)] = &[("<Up>", up), ("<Down>", down)];
     let vim_out_of_open: &[(&str, Rule)] = &[("<Esc>k", up), ("<Esc>j", down)];
+    let tall = many(60);
+    let tables: [(&str, usize, &[usize]); 2] =
+        [(THREE, 3, &[0, 1, 2, 3, 4]), (tall.as_str(), 60, &[0, 1, 2, 31, 60, 61])];
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
         let vim = profile == KeyProfile::Vim;
         let mut rest = at_rest.to_vec();
@@ -985,26 +1092,62 @@ fn every_move_key_walks_the_name_row_and_the_table_as_one() {
             rest.extend_from_slice(vim_at_rest);
             open.extend_from_slice(vim_out_of_open);
         }
-        for p in 0..=4 {
-            for &(keys, rule) in &rest {
-                let mut app = project_app(THREE, profile);
-                app.project_tab.table.set_selected(place_stop(p));
-                feed(&mut app, keys);
-                let at = app.project_tab.table.selected();
-                assert_eq!(at, place_stop(rule(p)), "{profile:?} from {p}: {keys}");
-                assert!(app.project_tab.field().is_none(), "{profile:?} from {p}: {keys}");
-            }
-            for &(keys, rule) in &open {
-                let mut app = project_app(THREE, profile);
-                app.project_tab.table.set_selected(place_stop(p));
-                feed(&mut app, if vim { "i" } else { "<CR>" });
-                assert!(app.project_tab.field().is_some(), "{profile:?} from {p}: opened");
-                feed(&mut app, keys);
-                let at = app.project_tab.table.selected();
-                assert_eq!(at, place_stop(rule(p)), "{profile:?} open at {p}: {keys}");
-                assert!(app.project_tab.field().is_none(), "{profile:?} open at {p}: {keys}");
+        for &(toml, n, places) in &tables {
+            let end = n + 1;
+            let start = |p: usize| {
+                let mut app = project_app(toml, profile);
+                app.project_tab.table.set_selected(walk_place(n, p));
+                draw(&mut app);
+                app
+            };
+            for &p in places {
+                for &(keys, rule) in &rest {
+                    let at = format!("{profile:?} {n} from {p}: {keys}");
+                    let mut app = start(p);
+                    feed(&mut app, keys);
+                    assert_eq!(
+                        app.project_tab.table.selected(),
+                        walk_place(n, rule(p, end)),
+                        "{at}"
+                    );
+                    assert!(app.project_tab.field().is_none(), "{at}");
+                    assert_view_shows_cursor(&app, n, &at);
+                }
+                for &(keys, rule) in &open {
+                    let at = format!("{profile:?} {n} open at {p}: {keys}");
+                    let mut app = start(p);
+                    feed(&mut app, if vim { "i" } else { "<CR>" });
+                    assert!(app.project_tab.field().is_some(), "{at}: opened");
+                    feed(&mut app, keys);
+                    assert_eq!(
+                        app.project_tab.table.selected(),
+                        walk_place(n, rule(p, end)),
+                        "{at}"
+                    );
+                    assert!(app.project_tab.field().is_none(), "{at}");
+                    assert_view_shows_cursor(&app, n, &at);
+                }
             }
         }
+    }
+}
+
+/// A wheel with the cursor on the Name row moves the table's view and
+/// no cursor, in both profiles, since the Name row stays in sight; the
+/// next move to the Name row brings the table back to its top.
+#[test]
+fn the_wheel_on_the_name_row_holds_the_view_until_a_move() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = project_app(&many(60), profile);
+        assert!(app.project_tab.on_name(), "{profile:?}");
+        for _ in 0..5 {
+            wheel(&mut app, true);
+        }
+        assert!(app.project_tab.on_name(), "{profile:?}: the cursor stays");
+        assert!(app.project_tab.table.scroll > 0, "{profile:?}: the view moved");
+        feed(&mut app, if profile == KeyProfile::Vim { "gg" } else { "<Home>" });
+        assert!(app.project_tab.on_name(), "{profile:?}");
+        assert_eq!(app.project_tab.table.scroll, 0, "{profile:?}: back to the top");
     }
 }
 

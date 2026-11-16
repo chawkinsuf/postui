@@ -497,9 +497,7 @@ impl App {
                             || self.varmanager.grid.editing.is_some());
                     let settings_live = self.modals.is_empty()
                         && (self.settings.editing.is_some() || self.settings.focused);
-                    // And the Project tab's, the same way. A `focused` left
-                    // from an earlier visit to either tab makes this click a
-                    // redraw that clears it.
+                    // And the Project tab's, the same way.
                     let project_live = self.modals.is_empty()
                         && (self.project_tab.field().is_some() || self.project_tab.focused);
                     if !manager_live && !settings_live && !project_live {
@@ -784,8 +782,8 @@ impl App {
                 if self.screen == Screen::Manage {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     // Each tab scrolls what it draws: the list tabs their
-                    // list, the Project tab its header table. Settings
-                    // scrolls nothing.
+                    // list, the Project tab its header table when the
+                    // pointer is over it. Settings scrolls nothing.
                     match self.manage.tab {
                         ManageTab::Variables => {
                             self.varmanager.handle_scroll_at(m.column, m.row, d)
@@ -793,7 +791,7 @@ impl App {
                         ManageTab::Environments | ManageTab::Spaces => {
                             self.manage.list.handle_scroll(d);
                         }
-                        ManageTab::Project => self.scroll_project_table(d),
+                        ManageTab::Project => self.scroll_project_table(m.column, m.row, d),
                         ManageTab::Settings => {}
                     }
                     return self.update(Action::Render);

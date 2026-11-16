@@ -18,13 +18,14 @@ impl App {
     /// Keys on the Project tab. `Some` is the redraw answer for a key the
     /// tab claimed; `None` hands it to the router's unclaimed-key step.
     /// A key the tab claims asks for the cursor back, as on the Settings
-    /// tab; one it hands on leaves the cursor as it was.
+    /// tab, unless it left the screen (Esc); one it hands on leaves the
+    /// cursor as it was.
     pub(super) fn handle_project_key(&mut self, ev: KeyEvent) -> Option<bool> {
         if self.project.is_none() {
             return (ev.code == KeyCode::Esc).then(|| self.update(Action::CloseScreen));
         }
         let answer = self.project_tab_key(ev);
-        if answer.is_some() {
+        if answer.is_some() && self.screen == Screen::Manage {
             self.project_tab.focused = true;
         }
         answer
@@ -92,9 +93,11 @@ impl App {
         Some(self.update(Action::Render))
     }
 
-    /// Opens the Name row's edit, seeded with the `name` the file holds.
+    /// Opens the Name row's edit, seeded with the name the row shows: the
+    /// file's `name`, trimmed (`Project::given_name`).
     pub(super) fn open_project_name(&mut self) {
-        let seed = self.project().and_then(|p| p.meta().name.clone()).unwrap_or_default();
+        let seed =
+            self.project().and_then(|p| p.given_name().map(str::to_string)).unwrap_or_default();
         self.project_tab.begin_name(&seed);
     }
 
@@ -111,8 +114,10 @@ impl App {
     /// any op does, finds nothing open: the change `f` made is already in
     /// the copy.
     ///
-    /// Each run copies the default headers and the table's state. Typing
-    /// into an open cell doesn't come here
+    /// Each run copies the default headers and the table's state, both
+    /// before `f` runs: `f` changes the map it is given, and a refused
+    /// write puts back the table as it was before `f`, which a copy taken
+    /// after could not. Typing into an open cell doesn't come here
     /// ([`TableEditorState::type_into_cell`]).
     pub(super) fn run_header_table(
         &mut self,
@@ -210,15 +215,20 @@ impl App {
         name && !refused
     }
 
-    /// The wheel over the tab, `delta` lines: the header table's view
-    /// moves by the request table's rules ([`TableEditorState::scroll_view`],
-    /// [`TableEditorState::view_scrolled`]).
-    pub(super) fn scroll_project_table(&mut self, delta: i16) {
+    /// The wheel over the tab at (`col`, `row`), `delta` lines: over the
+    /// header table, its view moves by the request table's rules
+    /// ([`TableEditorState::scroll_view`],
+    /// [`TableEditorState::view_scrolled_under_head`]); anywhere else on
+    /// the tab it moves nothing.
+    pub(super) fn scroll_project_table(&mut self, col: u16, row: u16, delta: i16) {
+        if !self.project_tab.table_area.contains((col, row).into()) {
+            return;
+        }
         let len = self.default_headers_len();
         let vim = self.profile() == crate::config::KeyProfile::Vim;
         let table = &mut self.project_tab.table;
         if table.scroll_view(delta, len, 0) {
-            table.view_scrolled(vim, len, 0);
+            table.view_scrolled_under_head(vim, len, 0);
         }
     }
 

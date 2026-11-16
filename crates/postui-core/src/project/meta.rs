@@ -298,10 +298,10 @@ pub fn display_name(root: &Path, meta: &ProjectMeta) -> String {
     given_name(meta).map_or_else(|| folder_name(root), str::to_string)
 }
 
-/// The `name` the project shows, when it has one: `None` when the key is
-/// absent or blank, and the project shows its folder name instead.
+/// The `name` the project shows, trimmed, when it has one: `None` when the
+/// key is absent or blank, and the project shows its folder name instead.
 pub fn given_name(meta: &ProjectMeta) -> Option<&str> {
-    meta.name.as_deref().filter(|n| !n.trim().is_empty())
+    meta.name.as_deref().map(str::trim).filter(|n| !n.is_empty())
 }
 
 /// The name a project at `root` shows with no `name` set: its folder's,
@@ -390,6 +390,11 @@ mod tests {
         }
         let meta = ProjectMeta { name: Some("Orders".to_string()), ..ProjectMeta::default() };
         assert_eq!(given_name(&meta), Some("Orders"));
+        // A name written with spaces round it shows trimmed, as a commit
+        // writes it.
+        let meta = ProjectMeta { name: Some("  Orders  ".to_string()), ..ProjectMeta::default() };
+        assert_eq!(given_name(&meta), Some("Orders"));
+        assert_eq!(display_name(root, &meta), "Orders");
     }
 
     #[test]

@@ -7214,6 +7214,9 @@ impl App {
                 self.finish_manage_drag(false);
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
+                // The Project tab's cursor is drawn only while it is on
+                // screen; `OpenManage` hands it back.
+                self.project_tab.focused = false;
                 true
             }
             Action::VarEdit(op) => {

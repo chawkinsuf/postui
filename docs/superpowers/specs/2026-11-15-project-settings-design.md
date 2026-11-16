@@ -49,7 +49,7 @@ journaled, undoable steps (`Project::set_env_tls`, the renames), through
 | R2 | A new Manage tab **Project**, last of the left group: Variables, Environments, Spaces, Project … Settings. Variables stays the tab Manage first opens on | mine (approved), Q2 |
 | R3 | With no project open the tab shows the "no project is open" message the other project tabs show | mine (approved), Q2 |
 | R4 | A palette entry opens the tab ("Manage: project", named as the other tabs' are) | mine (approved), Q2 |
-| R5 | A **Name** row at the top: the `name` value, or the folder name as a muted placeholder when unset or blank (a blank `name` is no name, for the project's shown name too). Enter (vim `i`, a click) opens it seeded with `name` | mine (approved), Q4 |
+| R5 | A **Name** row at the top: the `name` value, trimmed, or the folder name as a muted placeholder when unset or blank (a blank `name` is no name, for the project's shown name too). Enter (vim `i`, a click) opens it seeded with that trimmed `name` | mine (approved), Q4; trimmed at rest mine, 2026-11-16 (round 7) |
 | R6 | The name commits on Enter and on Esc, keeping the typing (the field rule, spec 2026-09-15, which the Settings fields follow); discard is undo | mine, see §5 |
 | R7 | The committed name is trimmed; empty removes `name` (the project shows its folder name again); nothing else is refused; one undo step per commit. One rule says when a commit writes: when what it would write (the trimmed typing, or no name when that is empty) differs from the `name` the file holds. So typing that trims to the file's name writes nothing, and a commit over a name written by hand with spaces round it, or blank, trims or removes it | mine (approved), Q4; the one write rule mine, 2026-11-16 (comment 1381) |
 | R8 | Under it, **Default headers**: the request Headers table reused (`TableEditorState`): a checkbox per row (off writes `{ value, enabled = false }`), name and value cells with `{{variable}}` tinting, a `+ Add header` ghost row, the delete pill and the delete keys on a row. A delete toasts what went with the undo key, as a request table's does | mine (approved), Q3; the toast mine, 2026-11-16 |
@@ -85,15 +85,19 @@ chooser) brings the hand edit into the tab before any change there.
 - `Project::set_default_headers(&mut self, headers: &IndexMap<String, Entry>)`:
   writes `headers` as the whole `[default_headers]` table, in its order
   (R17). Enabled entries are plain strings and disabled ones
-  `{ value, enabled = false }`, as a request file's table rows. As a
-  cheap courtesy, a value the file's table already holds keeps its
-  comments (its item, when `Entry`'s own reading of it is unchanged; its
-  decor, when changed); this is not a merge, since every header not in
-  `headers` goes. Every header is written as a value on its own line,
-  so a hand-written `[default_headers.X]` sub-table or dotted `X.value`,
-  which would print elsewhere, takes the plain form and the file keeps
-  `headers`' order (R10). A hand-written inline
-  `default_headers = { … }` is written back as a table. An empty map
+  `{ value, enabled = false }`, as a request file's table rows. This is
+  not a merge, since every header not in `headers` goes, but what the
+  file already holds keeps its form and comments: the table stays a
+  `[default_headers]` table, an inline `default_headers = { … }` or
+  dotted `default_headers.X` keys; a header whose value `Entry`'s own
+  reading finds unchanged stays as written (plain, inline, dotted
+  `X.value`, or a `[default_headers.X]` sub-table), comments included;
+  a changed one takes the plain form and keeps its comments. A
+  sub-table prints after the table's own values, at its place in the
+  file, so it stays only while every header after it is a kept sub-table
+  further down the file, below the table's own place when the table
+  holds values; otherwise it takes the plain form, its comments moved
+  onto that line, and the file keeps `headers`' order (R10). An empty map
   removes the table. Journaled; no change records nothing.
 
 **App** (`postui`):
@@ -149,8 +153,12 @@ chooser) brings the hand edit into the tab before any change there.
   which a delete above it moves up one), as a request table's checkbox
   does; a delete of the header under the cursor lands it on the row that
   moved up, as the delete keys do. The cursor goes to the table only with
-  a row selected there. The wheel and the table's view follow a request
-  table's rules, shared on `TableEditorState` (spec 2026-10-25 S22–S24):
+  a row selected there. The wheel moves the table only with the pointer
+  over it, and the wheel and the table's view follow a request table's
+  rules, shared on `TableEditorState` (spec 2026-10-25 S22–S24), with
+  the Name row as the walk's head (`settle_view_under_head`,
+  `view_scrolled_under_head`: on the head the view shows the table's top
+  until a wheel moves it):
   the arrows wheel moves the view and leaves the cursor, the vim wheel
   moves the cursor into the view, and a notch that moves nothing marks
   nothing. An open name or cell offers the Copy/Paste menu on a right
@@ -248,9 +256,18 @@ chooser) brings the hand edit into the tab before any change there.
 - Round 5 of the restart (2026-11-16): ↑↓ leave an open name or cell
   and walk on, so the Name row's field takes them where a Settings field
   swallows them; a footer chip's click leaves the tab's cursor drawn,
-  where the Settings tab's drops it; R19's whole-or-nothing draw; and a
-  sub-table or dotted header in `project.toml` is rewritten in the plain
-  form at the next change.
+  where the Settings tab's drops it; and R19's whole-or-nothing draw.
+- Round 7 of the restart (2026-11-16): a header the tab didn't change
+  keeps its form and comments (§3), so a sub-table takes the plain form
+  only when a header written after it would otherwise read back out of
+  order, and an inline `default_headers = { … }` stays inline (its
+  spacing laid out afresh, since an inline table holds no comments); a
+  name written with spaces round it shows trimmed, and opens trimmed;
+  the wheel scrolls the header table only with the pointer over it; and
+  with the cursor on the Name row the table shows from its top, except
+  after a wheel moved it, which holds until the cursor moves, in both
+  profiles (the Name row stays in sight, so vim's wheel moves no cursor
+  there).
 - Tokens in the values are tinted as they resolve for the open request
   (the editor's variable snapshot), the same colours its Headers tab gives
   the auto rows.
