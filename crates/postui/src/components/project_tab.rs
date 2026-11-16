@@ -40,6 +40,8 @@ pub enum ProjectStop {
 
 #[derive(Debug, Default)]
 pub struct ProjectTab {
+    /// The stop goes to the table only with a row selected there, so the
+    /// table stop always has a lit row.
     pub stop: ProjectStop,
     /// Whether the keyboard cursor is drawn, as the Settings tab's
     /// `focused`: a click away clears it, and a key or click on the tab,
@@ -140,12 +142,12 @@ impl ProjectTab {
         self.table.settle_view(len, 0, viewport);
     }
 
-    /// What a list verb means here (`App::selection_action`): on the
-    /// table, add a header and delete the one under the cursor. Nothing
-    /// else applies, and nothing on the Name row.
+    /// What a list verb means here (`App::selection_action`): add a header
+    /// from anywhere on the tab, the Name row included (R12), and delete
+    /// the header under the cursor. Nothing else applies.
     pub fn verb_action(&self, len: usize, verb: Verb) -> Option<Action> {
         match verb {
-            Verb::Add if self.stop == ProjectStop::Table => Some(Action::AddDefaultHeader),
+            Verb::Add => Some(Action::AddDefaultHeader),
             Verb::Delete { .. } => self.selected_row(len).map(Action::DeleteDefaultHeader),
             _ => None,
         }
@@ -162,14 +164,14 @@ impl ProjectTab {
         let chip = |verb: Verb, label: &'static str| {
             (Key::Of(Action::OnSelection(verb)), label, self.verb_action(len, verb))
         };
-        let mut chips =
-            vec![(Key::Nav(Nav::UpDown), "move", None), (Key::Named("enter"), "edit", None)];
-        if self.stop == ProjectStop::Table {
-            chips.push(chip(Verb::Add, "add"));
-            if self.selected_row(len).is_some() {
-                chips.push((Key::Named("space"), "toggle", None));
-                chips.push(chip(Verb::Delete { count: 1 }, "delete"));
-            }
+        let mut chips = vec![
+            (Key::Nav(Nav::UpDown), "move", None),
+            (Key::Named("enter"), "edit", None),
+            chip(Verb::Add, "add"),
+        ];
+        if self.selected_row(len).is_some() {
+            chips.push((Key::Named("space"), "toggle", None));
+            chips.push(chip(Verb::Delete { count: 1 }, "delete"));
         }
         chips.push((Key::Named("esc"), "back", Some(Action::CloseScreen)));
         chips

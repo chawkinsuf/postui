@@ -241,16 +241,22 @@ fn the_cursor_walks_between_the_name_and_the_table() {
     assert_eq!(app.screen, Screen::Main);
 }
 
-/// The add verb is the table's: on the Name row, whose footer offers no
-/// add, `a` adds nothing.
+/// R12 (comment 1382): `a` adds a header from anywhere on the tab, the
+/// Name row included, and the footer offers add there.
 #[test]
-fn a_on_the_name_row_adds_nothing() {
+fn a_on_the_name_row_adds_a_header() {
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
         let mut app = project_app(THREE, profile);
-        feed(&mut app, "a");
         assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
-        assert!(app.project_tab.table.editing.is_none(), "{profile:?}");
-        assert_eq!(keys(&app), ["a", "b", "c"], "{profile:?}");
+        let labels: Vec<&str> =
+            app.project_tab.footer_chips(3).iter().map(|(_, l, _)| *l).collect();
+        assert!(labels.contains(&"add"), "{profile:?}: {labels:?}");
+        feed(&mut app, "a");
+        assert_eq!(app.project_tab.stop, ProjectStop::Table, "{profile:?}");
+        assert!(app.project_tab.table.editing_ghost(3), "{profile:?}: + Add header opened");
+        feed(&mut app, "X-New");
+        feed(&mut app, if profile == KeyProfile::Vim { "<Esc><Esc>" } else { "<CR>" });
+        assert_eq!(keys(&app), ["a", "b", "c", "X-New"], "{profile:?}");
     }
 }
 
@@ -294,15 +300,20 @@ fn a_refused_write_keeps_the_typing() {
     assert!(!app.op_in_flight, "the refused name ends its op");
 }
 
-/// R7: a name the file holds with spaces round it, committed as it was
-/// seeded, writes nothing.
+/// R7's one rule: a commit writes when the trimmed typing (or no name,
+/// when empty) differs from the file's `name`. So a name the file holds
+/// with spaces round it, committed as it was seeded, is trimmed, and a
+/// blank one is removed; each is one undo step.
 #[test]
-fn a_padded_name_committed_unchanged_writes_nothing() {
-    let mut app = project_app("name = \" Orders \"\n", KeyProfile::Arrows);
-    let before = file(&app);
-    feed(&mut app, "<CR><CR>");
-    assert_eq!(file(&app), before);
-    assert!(!app.proj().can_undo());
+fn a_padded_or_blank_name_in_the_file_is_tidied_by_a_commit() {
+    for (toml, after) in [("name = \" Orders \"\n", Some("Orders")), ("name = \"  \"\n", None)] {
+        let mut app = project_app(toml, KeyProfile::Arrows);
+        let before = file(&app);
+        feed(&mut app, "<CR><CR>");
+        assert_eq!(app.proj().meta().name.as_deref(), after, "{toml}");
+        feed(&mut app, "<C-z>");
+        assert_eq!(file(&app), before, "{toml}: one undo step");
+    }
 }
 
 /// R7: a name that differs from the file's only by spaces round it names
@@ -396,6 +407,37 @@ fn clicks_edit_toggle_and_delete() {
     app.project_tab.name_input_mut().unwrap().set_text("Clicked");
     click(&mut app, Hit::ManageTab(ManageTab::Spaces.index()));
     assert_eq!(app.proj().meta().name.as_deref(), Some("Clicked"));
+}
+
+/// The checkbox, copy and delete pills act on their header and leave the
+/// tab's cursor where it was, as a request table's checkbox does: from the
+/// Name row the Name row stays lit and the table gets no cursor, and on
+/// the table the cursor keeps its row. The keys still act after.
+#[test]
+fn the_pills_leave_the_cursor_where_it_was() {
+    let pills: [fn(usize) -> Hit; 3] = [Hit::TableCheckbox, Hit::TableCopy, Hit::TableDelete];
+    for pill in pills {
+        let hit = pt(pill(1));
+        let mut app = project_app(THREE, KeyProfile::Arrows);
+        app.hovered = Some(cell(1, 1));
+        click(&mut app, hit.clone());
+        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{hit:?}");
+        assert_eq!(app.project_tab.table.selected(), None, "{hit:?}");
+        assert!(app.project_tab.focused, "{hit:?}: the Name row is lit");
+        feed(&mut app, "<Down>");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{hit:?}");
+        let labels: Vec<&str> =
+            app.project_tab.footer_chips(keys(&app).len()).iter().map(|(_, l, _)| *l).collect();
+        assert!(labels.contains(&"delete"), "{hit:?}: {labels:?}");
+
+        // On the table, the cursor keeps its row.
+        let mut app = project_app(THREE, KeyProfile::Arrows);
+        feed(&mut app, "<Down>");
+        app.hovered = Some(cell(1, 1));
+        click(&mut app, hit.clone());
+        assert_eq!(app.project_tab.stop, ProjectStop::Table, "{hit:?}");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{hit:?}");
+    }
 }
 
 /// R16: an undo that takes away the row under the cursor leaves it on the
@@ -744,5 +786,5 @@ fn the_footer_names_the_keys() {
     assert_eq!(labels, ["move", "edit", "add", "toggle", "delete", "back"]);
     feed(&mut app, "<Up>");
     let labels: Vec<&str> = app.project_tab.footer_chips(3).iter().map(|(_, l, _)| *l).collect();
-    assert_eq!(labels, ["move", "edit", "back"], "the Name row has no row verbs");
+    assert_eq!(labels, ["move", "edit", "add", "back"], "the Name row adds, and has no row verbs");
 }

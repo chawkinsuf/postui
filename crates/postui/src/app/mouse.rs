@@ -1309,7 +1309,9 @@ impl App {
     /// commits first; when that commit changed how many headers there are
     /// (an add, or a rename that merged two), the drawn rows have moved,
     /// so the click does nothing and the next one acts (spec §3: rows are
-    /// not looked up again after a write).
+    /// not looked up again after a write). A cell or a row click takes the
+    /// tab's cursor to that row; the checkbox, copy and delete pills leave
+    /// the cursor where it was, as a request table's checkbox does.
     fn click_project_table(
         &mut self,
         hit: crate::components::table_editor::TableHit,
@@ -1330,13 +1332,14 @@ impl App {
                     self.last_action_failed = true;
                     return self.update(Action::Render);
                 }
-                self.project_tab.stop = ProjectStop::Table;
                 // A refused write leaves the old cell open, not this one,
                 // so the press places no caret.
                 if self.run_header_table(|t, map| t.click_cell(row, cell_col, map)).1 {
                     self.last_action_failed = true;
                     return self.update(Action::Render);
                 }
+                // The opened cell's row is the table's cursor.
+                self.project_tab.stop = ProjectStop::Table;
             }
             self.press_text(
                 FieldId::ProjectCell { row, col: usize::from(col) },
@@ -1353,7 +1356,6 @@ impl App {
         if self.default_headers_len() != len {
             return self.update(Action::Render);
         }
-        self.project_tab.stop = ProjectStop::Table;
         match hit {
             TableHit::Checkbox(i) => {
                 let refused = self
@@ -1366,7 +1368,10 @@ impl App {
                     self.last_action_failed = true;
                 }
             }
-            TableHit::Row(i) => self.project_tab.table.set_selected(Some(Stop::of_row(i, len))),
+            TableHit::Row(i) => {
+                self.project_tab.stop = ProjectStop::Table;
+                self.project_tab.table.set_selected(Some(Stop::of_row(i, len)));
+            }
             TableHit::Copy(i) => {
                 let row = self.project().and_then(|p| {
                     p.meta().default_headers.get_index(i).map(|(k, e)| (k.clone(), e.value.clone()))

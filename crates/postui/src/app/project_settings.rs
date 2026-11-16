@@ -55,7 +55,8 @@ impl App {
         // An open cell owns the keyboard too: the table's own keys (Enter
         // and Esc commit, Tab walks, ↑↓ leave), each change written. A key
         // that only edits the cell's text writes nothing, so it goes
-        // straight in.
+        // straight in. A key neither takes is swallowed, not handed on, as
+        // on the Name row above, the Settings fields and the Variables grid.
         if self.project_tab.table.editing.is_some() {
             if self.project_tab.table.type_into_cell(ev).is_none()
                 && self.run_header_table(|t, map| t.handle_key(ev, map)).1
@@ -172,24 +173,27 @@ impl App {
         }
     }
 
-    /// Commits the Name row's edit (R7): trimmed (by `set_project_name`),
-    /// empty removes `name`, and text that trims to the name the file
-    /// holds, trimmed, writes nothing and starts no op.
+    /// Commits the Name row's edit (R7). One rule: it writes when what it
+    /// would write, the trimmed typing or no name when that is empty,
+    /// differs from the `name` the file holds; otherwise it writes nothing
+    /// and starts no op. So a name the file holds with spaces round it, or
+    /// blank, is trimmed or removed by a commit, and typing that trims to
+    /// the file's name writes nothing.
     /// `false` when the write was refused: the edit stays open with the
     /// typing (R14), and the caller decides whether that fails the action.
     /// The edit is taken out before the write's `begin_op`, so that close
     /// finds nothing open.
     pub(crate) fn commit_project_name(&mut self) -> bool {
         let Some(input) = self.project_tab.take_name() else { return true };
-        let Some(current) = self.project().map(|p| p.meta().name.clone().unwrap_or_default())
-        else {
+        let Some(held) = self.project().map(|p| p.meta().name.clone()) else {
             return true;
         };
-        if input.text().trim() == current.trim() {
+        let next = Some(input.text().trim()).filter(|n| !n.is_empty());
+        if next == held.as_deref() {
             return true;
         }
         let t = self.begin_op();
-        match self.project.as_mut().map(|p| p.set_project_name(Some(input.text()))) {
+        match self.project.as_mut().map(|p| p.set_project_name(next)) {
             Some(Ok(())) => {
                 self.record_project_step(t, crate::undo::StepLabel::change("project name"));
                 true
@@ -247,18 +251,22 @@ impl App {
     }
 
     /// `Action::DeleteDefaultHeader`: header `i` goes, one undo step. The
-    /// tab takes the cursor, as for an add: a footer chip's click is a
-    /// click away that dropped it.
+    /// tab's cursor is drawn again, as for an add: a footer chip's click
+    /// is a click away that dropped it. The cursor stays where it was, the
+    /// Name row or a table row by its place (clamped onto the rows left,
+    /// R16), so a delete pill's click doesn't move it, and a delete key on
+    /// a row lands on the row that moved up, as the table's own delete does.
     pub(super) fn delete_default_header(&mut self, i: usize) {
         if !self.commit_project_tab_input() {
             self.last_action_failed = true;
             return;
         }
-        self.project_tab.stop = ProjectStop::Table;
         self.project_tab.focused = true;
         let refused = self
             .run_header_table(|t, map| {
+                let kept = t.selected();
                 t.delete_row(map, i);
+                t.set_selected(kept.map(|s| s.clamp(map.len(), 0)));
                 TableOutcome::default()
             })
             .1;

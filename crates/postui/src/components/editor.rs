@@ -4413,24 +4413,6 @@ impl Editor {
         self.computed.rows.get(j).is_some_and(|r| r.overriding_row().is_some())
     }
 
-    /// Vim's rule for a window the view scrolled
-    /// ([`TableEditorState::cursor_into_view`]), on a table tab that is
-    /// drawn. The arrows profile keeps the sidebar's rule instead (spec
-    /// 2026-10-25 S5, S23): the view moves alone, marked scrolled away, and
-    /// the next cursor move brings it back to the cursor.
-    ///
-    /// It runs whether or not the table holds the keyboard, as in Vim: the
-    /// wheel over a window that isn't the current one scrolls it and moves
-    /// that window's cursor into view all the same, so the cursor is never
-    /// off screen when the keyboard comes back to it.
-    pub fn table_cursor_into_view(&mut self) {
-        if self.active_tab == EditorTab::Body || self.table_collapsed {
-            return;
-        }
-        let (len, section_len) = (self.table_len(), self.section_len());
-        self.table.cursor_into_view(len, section_len);
-    }
-
     /// Draws a table tab's content (Params, Headers, Vars) into `area`:
     /// the table, then the read-only section under it, scrolled as one
     /// column of lines (spec 2026-10-25 S1), with a scrollbar in the pane's
@@ -9597,10 +9579,10 @@ url = "https://api.example.com/users""#,
         e.table.set_selected(Some(Stop::Row(0)));
         draw_tab(&mut e);
         e.handle_scroll(5); // lines 5..=10: the edge, the divider, Z0..Z3
-        e.table_cursor_into_view();
+        e.table.cursor_into_view(e.table_len(), e.section_len());
         assert_eq!(e.table.selected(), Some(Stop::Section(0)));
         e.handle_scroll(-5); // lines 0..=5: the header to the edge
-        e.table_cursor_into_view();
+        e.table.cursor_into_view(e.table_len(), e.section_len());
         assert_eq!(e.table.selected(), Some(Stop::Add), "the last stop above the bottom");
     }
 
@@ -9681,7 +9663,7 @@ url = "https://api.example.com/users""#,
         let one_line = Rect { height: 1, ..TAB_AREA };
         draw_tab_at(&mut e, one_line);
         e.handle_scroll(100); // 5 lines in 1: the closing edge, line 4
-        e.table_cursor_into_view();
+        e.table.cursor_into_view(e.table_len(), e.section_len());
         draw_tab_at(&mut e, one_line);
         assert_eq!(e.table.selected(), Some(Stop::Add), "the nearest stop, just above");
         assert_eq!(e.table.scroll, 3, "the view shows it");

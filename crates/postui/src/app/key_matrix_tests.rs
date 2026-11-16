@@ -505,6 +505,9 @@ const CASES: &[Case] = &[
     vim("L.verbs", VarGrid, "a", &[FieldLive(true)]),
     vim("L.verbs", ManageProject, "a", &[FieldLive(true), Mode("INSERT")]),
     arrows("L.verbs", ManageProject, "a", &[FieldLive(true)]),
+    // Spec 2026-11-15 R12: `a` adds a header from the Name row too.
+    vim("L.verbs", ManageProject, "kka", &[FieldLive(true), Mode("INSERT")]),
+    arrows("L.verbs", ManageProject, "<Up><Up>a", &[FieldLive(true)]),
     // Spec 2026-11-03 create folders F12: `A` makes a folder, `r` renames
     // a folder row, in both profiles.
     vim("L.verbs", SidebarThree, "A", &[PromptOpen]),
