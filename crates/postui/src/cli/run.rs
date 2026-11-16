@@ -386,7 +386,7 @@ pub(super) fn millis(d: Duration) -> u64 {
 /// time checks judge these same figures, so a check's line never reads
 /// `total 500 ms, limit 500 ms` and fails (spec §2.7, T2).
 pub(super) fn timing(raw: &RawResponse) -> Timing {
-    Timing { ttfb_ms: millis(raw.ttfb), elapsed_ms: millis(raw.elapsed) }
+    Timing::of(raw.ttfb, raw.elapsed)
 }
 
 /// Runs `filter` over the body as `doc` read it, unmasked (masking first

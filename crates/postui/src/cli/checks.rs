@@ -1,13 +1,13 @@
 //! A request's checks as `run` and `suite` print them (suite checks spec
 //! 2026-11-14 §2.3): each [`Outcome`] masked, for the text and the JSON,
-//! and the one rule both pass a response by ([`passed`]).
+//! and the one rule both pass a response by ([`passed`]). The rule and
+//! each check's wording are core's (`postui_core::checks`), which the app
+//! reads too.
 
 use super::mask::Mask;
-use postui_core::checks::{Measure, Outcome, one_line};
+pub(super) use postui_core::checks::FIRST_FAILING_STATUS;
+use postui_core::checks::{Measure, Outcome};
 use serde::Serialize;
-
-/// A status from here up fails a response that has no status check (R3).
-pub(super) const FIRST_FAILING_STATUS: u16 = 400;
 
 /// The status check's verdict; `None` when the request has none.
 pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
@@ -29,8 +29,8 @@ pub(super) fn total_failed(checks: &[ShownCheck]) -> bool {
 /// passes the status check, or is below 400 when there is none (R3), and
 /// every check passed.
 pub(super) fn passed(status: u16, checks: &[ShownCheck]) -> bool {
-    status_check(checks).unwrap_or(status < FIRST_FAILING_STATUS)
-        && checks.iter().all(ShownCheck::passed)
+    let all = checks.iter().all(ShownCheck::passed);
+    postui_core::checks::passes(status, status_check(checks), all)
 }
 
 /// One check's outcome, every string in it through the run's mask.
@@ -42,6 +42,9 @@ pub(super) struct ShownCheck {
     /// passed. The JSON gives this line, clipped as the text is, rather
     /// than a filter's outputs, which can be as large as the body (§2.3).
     failure: Option<String>,
+    /// What `run -v` lists for it ([`Outcome::summary`]); not in the JSON.
+    #[serde(skip)]
+    summary: String,
 }
 
 /// The JSON's three shapes (§2.3, §2.7): `{"check": "status", "expected",
@@ -87,14 +90,7 @@ impl ShownCheck {
     /// What `run -v` lists for the check: its failure, else what passed
     /// (`status 200`, `first byte 45 ms, limit 500 ms`, or the filter).
     pub(super) fn summary(&self) -> String {
-        if let Some(failure) = &self.failure {
-            return failure.clone();
-        }
-        match &self.kind {
-            Kind::Status { got, .. } => format!("status {got}"),
-            Kind::Time { measure, limit, got, .. } => measure.line(*limit, *got),
-            Kind::Jq { check, .. } => one_line(check),
-        }
+        self.summary.clone()
     }
 }
 
@@ -114,7 +110,7 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 }
                 Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
-            ShownCheck { kind, failure }
+            ShownCheck { kind, failure, summary: outcome.summary(|text| mask.apply(text)) }
         })
         .collect()
 }
