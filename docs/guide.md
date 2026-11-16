@@ -36,7 +36,8 @@ the arrows step it, Enter drops it and Esc puts it back. A request can also be
 moved to another space.
 
 The **Manage** screen (`alt+r`) edits a project's variables, environments and
-spaces, and has a Settings tab for postui itself.
+spaces, its name and default headers (the Project tab), and has a Settings tab
+for postui itself.
 
 ## Editing a request
 
@@ -45,8 +46,8 @@ Params, Vars and Body:
 
 - **Headers and Params** are tables. A row's checkbox switches it off without
   deleting it. The Headers tab also lists the headers postui adds for you,
-  such as `Accept` and the project's default headers (a `[default_headers]`
-  table in `project.toml`, sent with every request); the pencil on one copies
+  such as `Accept` and the project's default headers (sent with every
+  request, and edited on the Manage screen's Project tab); the pencil on one copies
   it into the table so you can change its value. A few, like `Host`, belong to
   the HTTP client and can't be changed.
 - **Vars** sets values for this request alone, and lists every variable the

@@ -22147,8 +22147,8 @@ fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
     assert_eq!(
         app.manage.tab,
-        crate::components::manage::ManageTab::Settings,
-        "Settings joins the cycle right after Spaces"
+        crate::components::manage::ManageTab::Project,
+        "Project joins the cycle right after Spaces (spec 2026-11-15 R2)"
     );
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
@@ -35912,6 +35912,9 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
             TextSurface::VmField => Some(Hit::VmFormField(VmField::Description)),
             TextSurface::VmCell => Some(Hit::VmEntryCell { row: 0, col: 1 }),
             TextSurface::Settings => Some(Hit::SettingsControl(SettingsField::AiCmd)),
+            TextSurface::Project => {
+                Some(Hit::ProjectTable(Box::new(Hit::TableCell { row: 0, col: 1 })))
+            }
         }
     }
 
@@ -35973,6 +35976,18 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
                 (app, Hit::SettingsControl(SettingsField::AiCmd))
             }),
         ),
+        (
+            TextSurface::Project,
+            Box::new(|| {
+                let toml = "[default_headers]\na = \"1\"\n";
+                let profile = crate::config::KeyProfile::Arrows;
+                let mut app = super::project_tests::project_app(toml, profile);
+                let hit = Hit::ProjectTable(Box::new(Hit::TableCell { row: 0, col: 1 }));
+                click_hit(&mut app, hit.clone());
+                assert!(app.project_tab.table.editing.is_some(), "cell is live");
+                (app, hit)
+            }),
+        ),
     ];
 
     let covered: Vec<TextSurface> = cases.iter().map(|(s, _)| *s).collect();
@@ -36024,6 +36039,7 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
         TextSurface::VmCell,
         TextSurface::Jq,
         TextSurface::Settings,
+        TextSurface::Project,
     ] {
         if in_place_hit(surface).is_some() {
             assert!(

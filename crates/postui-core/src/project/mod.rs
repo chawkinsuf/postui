@@ -10,6 +10,7 @@ mod environments;
 mod local;
 mod meta;
 mod migration;
+mod project_toml;
 mod spaces;
 mod undo;
 mod varedit_ops;

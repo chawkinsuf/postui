@@ -110,7 +110,7 @@ impl App {
     /// Which half a Manage screen's window key goes to (plan M4a Deviation
     /// 5): `Some(true)` the detail pane, `Some(false)` the list, `None` no
     /// move: `l` into the detail pane, `h` back to the list, `w` `W` `p` to
-    /// the other half. The Settings tab has one pane, and a detail pane
+    /// the other half. The Settings and Project tabs have one pane, and a detail pane
     /// with nothing to show (no row selected; a selector group that has no
     /// grid to edit) takes no keyboard.
     fn manage_pane_target(&self, dir: PaneDir) -> Option<bool> {
@@ -118,7 +118,7 @@ impl App {
         use crate::components::manage_list::ListFocus;
         use crate::components::varmanager::VmFocus;
         let in_detail = match self.manage.tab {
-            ManageTab::Settings => return None,
+            ManageTab::Settings | ManageTab::Project => return None,
             ManageTab::Variables => self.varmanager.focus != VmFocus::List,
             _ => self.manage.list.focus == ListFocus::Detail,
         };

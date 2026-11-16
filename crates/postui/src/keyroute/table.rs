@@ -180,6 +180,9 @@ impl Surfaces {
     /// F31): no navigation surface, so no other row and no `keys.toml`
     /// letter reaches it.
     pub const SIDEBAR_MOVE: Self = Self(1 << 25);
+    /// The Manage screen's Project tab (spec 2026-11-15 project settings):
+    /// its Name row and its default headers' table.
+    pub const PROJECT: Self = Self(1 << 26);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -196,7 +199,8 @@ impl Surfaces {
         .or(Self::VAR_FORM)
         .or(Self::MANAGE_LIST)
         .or(Self::MANAGE_DETAIL)
-        .or(Self::SETTINGS);
+        .or(Self::SETTINGS)
+        .or(Self::PROJECT);
     /// Where vim builds counts and swallows a bare char no row names (spec
     /// §3.4): the navigation surfaces and the response's V.
     pub const KEYED: Self = Self::NAV.or(Self::RESPONSE_LINES);
@@ -215,6 +219,7 @@ impl Surfaces {
         .or(Self::VAR_GRID)
         .or(Self::VAR_FORM)
         .or(Self::SETTINGS)
+        .or(Self::PROJECT)
         .or(Self::URL_LINE)
         .or(Self::MANAGE_DETAIL);
     /// The lists vim's `/` has no search on yet (key list §6, parked).
@@ -261,6 +266,7 @@ impl Surfaces {
             Surface::ManageList(_) => Self::MANAGE_LIST,
             Surface::ManageDetail(_) => Self::MANAGE_DETAIL,
             Surface::Settings => Self::SETTINGS,
+            Surface::Project => Self::PROJECT,
             Surface::Prompt => Self::PROMPT,
             Surface::Form => Self::FORM,
             Surface::Dialog => Self::DIALOG,
@@ -851,7 +857,7 @@ pub static TABLE: &[Binding] = &[
     // letters are one row for both profiles; vim doubles delete and yank
     // and takes counts, arrows uses one letter. Vim's other verbs on the
     // Manage and Variables screens are M4's ex rows (plan M2 Deviation 1).
-    both("a", Surfaces::ROWS, Intent::Verb(Verb::Add)),
+    both("a", Surfaces::ROWS.or(Surfaces::PROJECT), Intent::Verb(Verb::Add)),
     arrows("a", Surfaces::MANAGE_DETAIL, Intent::Verb(Verb::Add)),
     both("A", Surfaces::VAR_LIST.or(Surfaces::SIDEBAR), Intent::Verb(Verb::AddAlt)),
     both("r", Surfaces::SIDEBAR.or(Surfaces::MANAGE_LIST).or(Surfaces::VAR_LIST), Intent::Verb(Verb::Rename)),
@@ -866,11 +872,11 @@ pub static TABLE: &[Binding] = &[
     row("dd", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Delete { count: 1 }), CountRule::Pass),
     row(
         "dd",
-        Surfaces::MANAGE_LIST.or(Surfaces::VAR_LIST).or(Surfaces::VAR_GRID),
+        Surfaces::MANAGE_LIST.or(Surfaces::VAR_LIST).or(Surfaces::VAR_GRID).or(Surfaces::PROJECT),
         Intent::Verb(Verb::Delete { count: 1 }),
         CountRule::Refuse(NO_COUNTED_DELETE),
     ),
-    arrows("d", Surfaces::ROWS.or(Surfaces::MANAGE_DETAIL), Intent::Verb(Verb::Delete { count: 1 })),
+    arrows("d", Surfaces::ROWS.or(Surfaces::MANAGE_DETAIL).or(Surfaces::PROJECT), Intent::Verb(Verb::Delete { count: 1 })),
     row(
         "yy",
         Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID),

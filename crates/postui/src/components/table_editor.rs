@@ -233,8 +233,9 @@ impl Stop {
 
 /// Shared cursor/edit state for a key/value table (Params, Headers or Vars).
 /// One instance is reused across the tabs; the caller passes in whichever
-/// `IndexMap` is currently active.
-#[derive(Debug, Default)]
+/// `IndexMap` is currently active. The Project tab clones it to put its
+/// state back when a write is refused.
+#[derive(Debug, Default, Clone)]
 pub struct TableEditorState {
     /// The stop under the keyboard cursor. `None` means nothing is
     /// selected — every row draws compact and the row-level keys

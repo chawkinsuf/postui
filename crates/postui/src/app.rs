@@ -256,6 +256,9 @@ pub struct App {
     /// The Settings tab's own state — the row cursor, the live field
     /// edit and which of a Files row's two buttons is aimed at.
     pub settings: crate::components::settings::SettingsTab,
+    /// The Project tab's own state: its cursor, the name's live edit and
+    /// the default headers' table (spec 2026-11-15 project settings).
+    pub project_tab: crate::components::project_tab::ProjectTab,
     /// The request session: the open request's on-screen response, the
     /// per-request response cache, and the in-flight send.
     pub session: crate::session::Session,
@@ -1443,6 +1446,15 @@ impl App {
         let on = match hit {
             Hit::SendButton => self.editor.sending,
             Hit::HeaderManage => self.screen == Screen::Manage,
+            // The Project tab's checkbox is a default header's; its copy
+            // pill copies the value alone (R13), so it is never `on`.
+            Hit::ProjectTable(inner) => match **inner {
+                Hit::TableCheckbox(i) => self
+                    .project()
+                    .and_then(|p| p.meta().default_headers.get_index(i))
+                    .is_some_and(|(_, e)| e.enabled),
+                _ => false,
+            },
             Hit::TableCheckbox(i) | Hit::FooterChip(Action::ToggleTableRow(i)) => {
                 self.editor.table_row_enabled(*i)
             }
@@ -1947,6 +1959,8 @@ impl App {
         // hold the old project's slugs (task #83), which must not land on a
         // same-named item in the next.
         self.manage.reset_lists();
+        // And the Project tab's, whose rows are the old project's headers.
+        self.project_tab.reset();
         self.open_error = None;
         self.sidebar.notice = None;
         // A different tree has a different set of loose files.
@@ -2030,6 +2044,7 @@ impl App {
             varmanager: VarManager::default(),
             yank: crate::yank::Register::default(),
             settings: crate::components::settings::SettingsTab::default(),
+            project_tab: crate::components::project_tab::ProjectTab::default(),
             session: crate::session::Session::default(),
             toasts,
             modals: ModalStack::default(),
@@ -3470,6 +3485,7 @@ impl App {
                 &mut self.editor.table,
                 &mut self.varmanager,
                 &mut self.settings,
+                &mut self.project_tab,
             ),
         }
     }
@@ -4733,6 +4749,14 @@ impl App {
                 if let Some((_, e)) = map.get_index_mut(i) {
                     e.enabled = !e.enabled;
                 }
+                true
+            }
+            Action::AddDefaultHeader => {
+                self.add_default_header();
+                true
+            }
+            Action::DeleteDefaultHeader(i) => {
+                self.delete_default_header(i);
                 true
             }
             Action::DeleteTableRow(i) => {
@@ -6577,8 +6601,9 @@ impl App {
                         self.apply_modal_result(ModalResult { close: true, ..Default::default() });
                     }
                     // The re-read can renumber the option rows a Variable
-                    // Manager grid cell finds its option by, so the
-                    // Manager's input closes first (task #78, the rule
+                    // Manager grid cell finds its option by, and the header
+                    // rows a Project tab cell finds its header by, so both
+                    // inputs close first (task #78, the rule
                     // `close_open_inputs` states). One that refuses to
                     // close is cancelled, its typing dropped (the user's
                     // ruling), and a toast says so, since the refusal's own
@@ -6597,8 +6622,9 @@ impl App {
                     // outcomes are typing saved into whichever option took
                     // its row (this task's bug) or typing dropped that
                     // could have been saved.
-                    if !self.close_manager_input() {
+                    if !self.close_project_inputs() {
                         self.varmanager.end_edits();
+                        self.project_tab.end_edits();
                         self.toasts.push(EDIT_DISCARDED, ToastKind::Warning);
                     }
                     // Forced: the close's write, or the read of one that was
@@ -6650,13 +6676,14 @@ impl App {
                 // edits are the user's, and a reload is not a discard. A
                 // live Settings field is kept open across it too (Settings
                 // spec, "Reload while the Settings tab is open"). The
-                // Variable Manager's input closes first (task #75): its
-                // commit finds its option by row, and the reload can
-                // renumber the rows. Closed here, before the reload's own
-                // close, because this command changes state: a refusal
-                // stops it with the typing kept, where a reload alone
-                // cancels it (task #78, `ReloadProjectFiles`).
-                if !self.close_manager_input() {
+                // Variable Manager's and the Project tab's inputs close
+                // first (task #75): their commits find their option or
+                // header by row, and the reload can renumber the rows.
+                // Closed here, before the reload's own close, because this
+                // command changes state: a refusal stops it with the typing
+                // kept, where a reload alone cancels it (task #78,
+                // `ReloadProjectFiles`).
+                if !self.close_project_inputs() {
                     self.last_action_failed = true;
                     return true;
                 }
@@ -7086,6 +7113,7 @@ impl App {
                 // is), and leaving takes it back, so a control is never
                 // left lifted on a tab nobody is looking at.
                 self.settings.focused = target == crate::components::manage::ManageTab::Settings;
+                self.project_tab.focused = target == crate::components::manage::ManageTab::Project;
                 if self.screen != Screen::Manage {
                     // The list tab coming up settles its cursor on its
                     // first item when it is on nothing (spec 2026-10-27
@@ -7160,6 +7188,7 @@ impl App {
                     // As in `OpenManage`: the cursor belongs to the
                     // Settings tab only while it is the one on screen.
                     self.settings.focused = tab == crate::components::manage::ManageTab::Settings;
+                    self.project_tab.focused = tab == crate::components::manage::ManageTab::Project;
                 }
                 true
             }
@@ -8916,7 +8945,8 @@ impl App {
             TextSurface::VmField
             | TextSurface::VmCell
             | TextSurface::Jq
-            | TextSurface::Settings => {}
+            | TextSurface::Settings
+            | TextSurface::Project => {}
         }
     }
 
@@ -9131,8 +9161,9 @@ impl App {
     /// the screen, a curl import and Replace with curl (both declare
     /// secrets, #227), quitting, and the dirty gate's check
     /// (`leaving_unsaved`).
-    /// Three close only the Variable Manager's input (`close_manager_input`):
-    /// a journaled op (`begin_op`), which writes the project and nothing a
+    /// Three close only the inputs that hold project state, the Variable
+    /// Manager's and the Project tab's (`close_project_inputs`): a
+    /// journaled op (`begin_op`), which writes the project and nothing a
     /// Settings field holds; Reload from disk, which keeps a live Settings
     /// field open (Settings spec, "Reload while the Settings tab is open");
     /// and a reload of project files changed on disk (`ReloadProjectFiles`,
@@ -9169,12 +9200,22 @@ impl App {
         // Each input closes whether or not another refused: a caller that
         // goes on past a refusal (the dirty gate's check, the quit) must
         // not leave a closable input open, a table cell least of all.
-        let manager = self.close_manager_input();
+        let project = self.close_project_inputs();
         let settings = self.commit_settings_edit_for_click();
         if editor {
             self.flush_field_session();
         }
-        manager && settings
+        project && settings
+    }
+
+    /// Closes the open inputs that hold project state, saved: the Variable
+    /// Manager's and the Project tab's. Each closes whether or not the
+    /// other refused. `false` when one refused (it toasted and keeps the
+    /// typing).
+    fn close_project_inputs(&mut self) -> bool {
+        let manager = self.close_manager_input();
+        let project = self.commit_project_tab_input();
+        manager && project
     }
 
     /// [`Self::close_open_inputs`] for a change that stops when an input
@@ -11016,6 +11057,12 @@ impl App {
                 // take, and the edit already owns the keyboard.
                 (TextSurface::Settings, true)
             }
+            // The Project tab's open name or cell, the same way.
+            Hit::ProjectName | Hit::ProjectTable(_)
+                if self.project_tab.field().and_then(mouse::field_hit).as_ref() == Some(hit) =>
+            {
+                (TextSurface::Project, true)
+            }
             _ => return None,
         };
         let has_selection = self.selection_text_of(surface).is_some();
@@ -11038,7 +11085,11 @@ impl App {
         // project open, so there would be nowhere to put the variable.
         if !matches!(
             surface,
-            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq | TextSurface::Settings
+            TextSurface::VmField
+                | TextSurface::VmCell
+                | TextSurface::Jq
+                | TextSurface::Settings
+                | TextSurface::Project
         ) {
             items.push(if has_selection {
                 MenuItem::new("Extract to variable\u{2026}", Action::ExtractSelection(surface))
@@ -11166,6 +11217,7 @@ impl App {
             TextSurface::VmCell => self.varmanager.grid.editing.as_ref()?.input.selected_text(),
             TextSurface::Jq => self.session.response.jq_bar().input.selected_text(),
             TextSurface::Settings => self.settings.selected_text(),
+            TextSurface::Project => self.project_tab.selected_text(),
         }
     }
 
@@ -11914,6 +11966,11 @@ impl App {
         if self.screen == Screen::Manage {
             if self.manage.tab == crate::components::manage::ManageTab::Settings
                 && let Some(text) = self.settings.selected_text()
+            {
+                return Some(text);
+            }
+            if self.manage.tab == crate::components::manage::ManageTab::Project
+                && let Some(text) = self.project_tab.selected_text()
             {
                 return Some(text);
             }
@@ -12864,6 +12921,16 @@ impl App {
                 && self.manage.tab == crate::components::manage::ManageTab::Settings
             {
                 return match self.handle_settings_key(ev) {
+                    Some(handled) => handled,
+                    None => self.unclaimed_screen_key(global),
+                };
+            }
+            // The Project tab: its Name row and header table
+            // (`project_settings.rs`).
+            if self.screen == Screen::Manage
+                && self.manage.tab == crate::components::manage::ManageTab::Project
+            {
+                return match self.handle_project_key(ev) {
                     Some(handled) => handled,
                     None => self.unclaimed_screen_key(global),
                 };
@@ -14072,6 +14139,7 @@ fn line_buf<'a>(
     table: &'a mut crate::components::table_editor::TableEditorState,
     varmanager: &'a mut VarManager,
     settings: &'a mut crate::components::settings::SettingsTab,
+    project: &'a mut crate::components::project_tab::ProjectTab,
 ) -> Option<&'a mut LineInput> {
     use crate::keyroute::FieldId;
     match id {
@@ -14080,6 +14148,8 @@ fn line_buf<'a>(
         FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| &mut e.input),
         FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| &mut e.input),
         FieldId::Settings(_) => settings.editing.is_some().then(|| settings.input_mut()),
+        FieldId::ProjectName => project.name_input_mut(),
+        FieldId::ProjectCell { .. } => project.table.editing.as_mut().map(|e| &mut e.input),
         _ => None,
     }
 }
@@ -14109,6 +14179,9 @@ mod mouse;
 #[cfg(test)]
 mod pane_tests;
 mod panes;
+mod project_settings;
+#[cfg(test)]
+mod project_tests;
 #[cfg(test)]
 mod resize_tests;
 #[cfg(test)]

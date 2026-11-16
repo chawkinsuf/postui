@@ -210,6 +210,39 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         app.hovered.as_ref(),
                     );
                 }
+                crate::components::manage::ManageTab::Project => {
+                    let App {
+                        theme, project, project_tab, editor, hovered, pointer, anims, ..
+                    } = app;
+                    match project.as_ref() {
+                        Some(p) => {
+                            let ctx = DrawCtx {
+                                theme,
+                                focused: project_tab.focused,
+                                hovered: hovered.as_ref(),
+                                pointer: *pointer,
+                                dragging: false,
+                                anims,
+                                now,
+                            };
+                            let folder = p
+                                .root()
+                                .file_name()
+                                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                            project_tab.draw(
+                                frame,
+                                body,
+                                &ctx,
+                                p.meta().name.as_deref(),
+                                &folder,
+                                &p.meta().default_headers,
+                                &editor.vars,
+                                &mut hits,
+                            );
+                        }
+                        None => draw_manage_without_a_project(frame, body, theme),
+                    }
+                }
                 tab => {
                     let requests = app.sidebar.space_requests();
                     let App { theme, manage, project, hovered, .. } = app;
@@ -275,6 +308,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     }
                     crate::components::manage::ManageTab::Settings => {
                         app.settings.editing.is_none()
+                    }
+                    crate::components::manage::ManageTab::Project => {
+                        app.project_tab.field().is_none()
                     }
                     _ => true,
                 });
@@ -1149,6 +1185,16 @@ pub(crate) fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
             .into_iter()
             .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
+    }
+    if app.manage.tab == crate::components::manage::ManageTab::Project {
+        return match app.project() {
+            Some(p) => app.project_tab.footer_chips(p.meta().default_headers.len()),
+            // As on the other project tabs with none open: nothing to act on.
+            None => Vec::new(),
+        }
+        .into_iter()
+        .map(|(k, l, a)| (k, l.to_string(), a))
+        .collect();
     }
     if app.manage.tab != crate::components::manage::ManageTab::Variables {
         return app

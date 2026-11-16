@@ -151,6 +151,8 @@ impl App {
                 .view()
                 .map_or(0, |v| v.visible_len().max(v.measured_width().unwrap_or(MAX_COUNT))),
             Surface::Settings => crate::components::settings::SettingsTab::rows().len(),
+            // The Name row, the headers and `+ Add`.
+            Surface::Project => self.default_headers_len() + 2,
             Surface::ManageList(tab) => self.manage_items(tab).len(),
             Surface::ManageDetail(tab) => {
                 crate::components::manage_list::ManageList::detail_span(tab)
@@ -299,6 +301,7 @@ impl App {
             Screen::Testbed => Surface::Other,
             Screen::Manage => match self.manage.tab {
                 ManageTab::Settings => Surface::Settings,
+                ManageTab::Project => Surface::Project,
                 ManageTab::Variables => match self.varmanager.focus {
                     VmFocus::List => Surface::VarList,
                     VmFocus::Grid => Surface::VarGrid,
@@ -368,6 +371,7 @@ impl App {
             Screen::Manage if self.manage.tab == ManageTab::Settings => {
                 self.settings.editing.map(FieldId::Settings)
             }
+            Screen::Manage if self.manage.tab == ManageTab::Project => self.project_tab.field(),
             // A Variables edit left live by a failed click-away commit
             // stays behind a tab switch; key routing only reaches it on
             // its own tab, and so does the caret.
