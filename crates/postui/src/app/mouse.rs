@@ -1698,6 +1698,7 @@ impl App {
             Action::EditorTabSelect(1),       // (converted through
             Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
+            Action::EditorTabSelect(4),
             // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew);
             // the rest of that face's hits either dispatch per-item actions
             // built from the live project (rename/delete/move/move-all) or

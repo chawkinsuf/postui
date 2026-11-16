@@ -347,15 +347,6 @@ impl Checks {
             && self.jq.is_empty()
     }
 
-    /// How many checks these are: the status check, each limit, each
-    /// filter. [`crate::checks::evaluate`] gives one outcome for each.
-    pub fn len(&self) -> usize {
-        usize::from(!self.status.is_empty())
-            + usize::from(self.max_ttfb_ms.is_some())
-            + usize::from(self.max_elapsed_ms.is_some())
-            + self.jq.len()
-    }
-
     /// The status codes typed as `200, 201` (commas or spaces between),
     /// by the read's own rule for a code; empty text is no status check.
     /// A code typed twice counts once, as in the file.
@@ -1059,7 +1050,6 @@ mod tests {
         .unwrap();
         assert_eq!(read.checks.status, [200, 201]);
         assert_eq!(read.checks.jq, [".a", ".b"]);
-        assert_eq!(read.checks.len(), 3);
     }
 
     /// A field's text reads by the file's own limits (Q5).

@@ -516,7 +516,7 @@ fn the_results_are_the_responses_and_survive_edits_and_a_switch() {
     feed(&mut app, "d");
     feed(&mut app, "<Up><Up><Up><CR>");
     retype(&mut app, "");
-    assert_eq!(checks(&app).len(), 2);
+    assert_eq!((checks(&app).status.len(), checks(&app).jq.len()), (0, 1));
     assert_eq!(shown(&app), lines, "the results are that response's");
     // Away to another request and back.
     app.update(Action::SaveRequest);

@@ -234,3 +234,5 @@ chip (`EditorTab::add_row_label`), the pills' and chips' hints
     is refused with "a check takes no variables".
 11. The read drops a repeated status code as well as a repeated jq
     filter, and a status typed twice in the field counts once.
+12. The tab can be bound as `editor_tab_5`, unbound by default like the
+    other four.
