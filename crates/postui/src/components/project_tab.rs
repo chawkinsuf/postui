@@ -73,10 +73,8 @@ impl ProjectTab {
         if self.name.is_some() {
             return Some(FieldId::ProjectName);
         }
-        self.table
-            .editing
-            .as_ref()
-            .map(|e| FieldId::ProjectCell { row: e.row, col: usize::from(e.col.index()) })
+        let (row, col) = self.table.editing.as_ref()?.cell()?;
+        Some(FieldId::ProjectCell { row, col: usize::from(col.index()) })
     }
 
     /// Whether the cursor is on the Name row, the table's head.

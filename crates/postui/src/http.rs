@@ -40,42 +40,53 @@ pub struct ResponseData {
 
 /// [`send`], then `checks` run over the response
 /// (`postui_core::checks::evaluate`, as `postui run` judges it): the
-/// response comes back with its results. A jq check reads the body, so
-/// they run on the blocking pool. The response's own times are measured
-/// inside the send and don't include them.
+/// response comes back with its results. The response's own times are
+/// measured inside the send and don't include them.
 ///
-/// The response is held until its checks are done, and the body's read
-/// for them is not shared with the jq bar (checks tabs spec 2026-11-16,
-/// section 3, "The send"). A check's filter has no time limit, here as in
-/// the jq bar (#308).
+/// The response is held until its checks are done (checks tabs spec
+/// 2026-11-16, section 3, "The send"). A check's filter has no time
+/// limit, as a saved jq view's has none (#308). The body's read is not
+/// kept for the jq bar: kept, it would hold the body a second time for as
+/// long as the response is, whether or not the bar is opened.
 pub async fn send_checked(
     client: &reqwest::Client,
     req: &PreparedRequest,
     checks: postui_core::model::Checks,
 ) -> Result<ResponseData, String> {
-    let mut data = send(client, req).await?;
-    // Nothing to judge: no hop to the blocking pool.
-    if checks.is_empty() {
-        return Ok(data);
+    // Shared with the run, not handed to it: checks that panic lose only
+    // their own lines, and the response still arrives.
+    let data = std::sync::Arc::new(send(client, req).await?);
+    let read = data.clone();
+    let lines = run_checks(checks, move |checks| read.check_lines(checks)).await;
+    let mut data = std::sync::Arc::unwrap_or_clone(data);
+    data.checks = lines.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))]);
+    Ok(data)
+}
+
+/// Runs `run` over `checks`, off the async loop when a jq filter has to
+/// read the body: over a large one it would otherwise stall the loop.
+/// `Err` when the run panicked.
+pub async fn run_checks<T: Send + 'static>(
+    checks: postui_core::model::Checks,
+    run: impl FnOnce(&postui_core::model::Checks) -> T + Send + 'static,
+) -> Result<T, tokio::task::JoinError> {
+    if checks.jq.is_empty() {
+        return Ok(run(&checks));
     }
-    let judge = move || {
-        data.judge(&checks);
-        data
-    };
-    tokio::task::spawn_blocking(judge).await.map_err(|e| format!("the checks did not run: {e}"))
+    tokio::task::spawn_blocking(move || run(&checks)).await
 }
 
 impl ResponseData {
-    /// Judges the response by `checks` and keeps the lines; a request with
-    /// no checks keeps none (spec P1).
-    pub fn judge(&mut self, checks: &postui_core::model::Checks) {
+    /// The response judged by `checks`, as lines; a request with no checks
+    /// has none (spec P1).
+    pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
         use postui_core::checks::{Timing, evaluate, lines};
         if checks.is_empty() {
-            return;
+            return Vec::new();
         }
         let timing = Timing::of(self.ttfb, self.elapsed);
         let doc = || postui_core::jq::JqDocument::parse(&self.body);
-        self.checks = lines(self.status, &evaluate(checks, self.status, timing, doc));
+        lines(self.status, &evaluate(checks, self.status, timing, doc))
     }
 }
 
@@ -463,6 +474,9 @@ mod tests {
         let data = send_checked(&client(), &req, named).await.unwrap();
         server.await.unwrap();
         assert!(passed(&data.checks), "{:?}", data.checks);
+        // A jq run that panics comes back as an `Err`.
+        let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
+        assert!(run_checks(jq, |_| panic!("a check panicked")).await.is_err());
     }
 
     #[tokio::test]

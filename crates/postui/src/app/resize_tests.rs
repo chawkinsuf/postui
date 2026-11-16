@@ -602,8 +602,7 @@ fn editing_a_cell() -> App {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.set_selected(Some(Stop::Row(0)));
-    app.editor.table.editing =
-        Some(CellEdit { row: 0, col: Col::Value, input: LineInput::new("19") });
+    app.editor.table.editing = Some(CellEdit::new(0, Col::Value, LineInput::new("19")));
     render(&mut app);
     app
 }

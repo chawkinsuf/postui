@@ -472,7 +472,7 @@ fn arrive(app: &mut App, status: u16, body: &str, checks: &Checks) {
         content_type: None,
         checks: Vec::new(),
     };
-    data.judge(checks);
+    data.checks = data.check_lines(checks);
     let generation = app.session.send_generation;
     app.session.response.set_state(ResponseState::Ready(Box::new(data)), generation);
     draw(app);

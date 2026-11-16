@@ -11074,24 +11074,9 @@ impl App {
                 }
                 (TextSurface::Jq, true)
             }
-            Hit::TableCell { row, col } => {
-                let cell_col = crate::components::table_editor::Col::from_index(*col);
-                let editing_this = self
-                    .editor
-                    .table
-                    .editing
-                    .as_ref()
-                    .is_some_and(|e| e.map_row() == Some(*row) && e.col == cell_col);
-                if !editing_this {
-                    return None;
-                }
-                self.update(Action::FocusPane(PaneId::Editor));
-                self.move_editor_caret(SubFocus::Content);
-                (TextSurface::TableCell, true)
-            }
-            // A Checks field under edit is the table's open input too.
-            Hit::CheckField(k) => {
-                if self.editor.table.editing.as_ref().and_then(|e| e.head()) != Some(*k) {
+            // The table's open input: a cell, or a Checks field, under edit.
+            Hit::TableCell { .. } | Hit::CheckField(_) => {
+                if self.editor.table_field().and_then(mouse::field_hit).as_ref() != Some(hit) {
                     return None;
                 }
                 self.update(Action::FocusPane(PaneId::Editor));

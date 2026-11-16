@@ -2009,7 +2009,7 @@ fn add_row_chip_hides_only_while_a_new_row_is_being_added() {
 
     app.update(Action::TableAddRow);
     let edit = app.editor.table.editing.as_ref().expect("ghost-row edit");
-    assert_eq!(edit.row, app.editor.params.len(), "on the ghost row");
+    assert_eq!(edit.cell().unwrap().0, app.editor.params.len(), "on the ghost row");
     render_once(&mut app);
     assert!(
         app.hits.rect_of(&Hit::FooterChip(Action::TableAddRow)).is_none(),
@@ -2066,7 +2066,7 @@ fn alt_a_starts_a_new_row_on_the_active_table_tab() {
     assert_eq!(app.focus, PaneId::Editor);
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
     let edit = app.editor.table.editing.as_ref().expect("a new-row edit began on the Headers tab");
-    assert_eq!((edit.row, edit.col), (0, Col::Key));
+    assert_eq!(edit.cell().unwrap(), (0, Col::Key));
     type_chars(&mut app, "X-Trace");
     app.handle_key(enter_key());
     assert!(app.editor.headers.contains_key("X-Trace"));
@@ -10819,7 +10819,7 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
     app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     let mut input = crate::components::line_input::LineInput::new("page");
     input.select_all();
-    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
+    app.editor.table.editing = Some(CellEdit::new(0, Col::Key, input));
 
     app.handle_key(ctrl('c'));
 
@@ -16301,7 +16301,8 @@ fn extracting_a_header_name_keeps_the_tables_warning() {
                 type_chars(&mut app, "abc");
             }
             let edit = app.editor.table.editing.as_mut().expect("the name cell is open");
-            assert_eq!((edit.row, edit.input.text()), (1, "abc"), "{warning} {selection}");
+            let (row, _) = edit.cell().unwrap();
+            assert_eq!((row, edit.input.text()), (1, "abc"), "{warning} {selection}");
             if selection {
                 edit.input.set_cursor(0);
                 edit.input.begin_mouse_selection();
@@ -17195,7 +17196,7 @@ fn the_auto_header_pencil_adds_it_to_the_request_with_its_value_open() {
     assert_eq!(app.focus, PaneId::Editor);
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
     let edit = app.editor.table.editing.as_ref().expect("the value is open for editing");
-    assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
+    assert_eq!(edit.cell().unwrap(), (1, crate::components::table_editor::Col::Value));
     assert_eq!(edit.input.cursor(), "Bearer {{api_key}}".chars().count(), "caret at the end");
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     assert!(!app.editor.computed.rows[i].sent(), "the default is overridden now");
@@ -17258,7 +17259,7 @@ fn the_keyboard_reaches_the_auto_rows_and_their_pills() {
         Some("application/json")
     );
     let edit = app.editor.table.editing.as_ref().expect("the new row's value is open");
-    assert_eq!((edit.row, edit.col), (0, crate::components::table_editor::Col::Value));
+    assert_eq!(edit.cell().unwrap(), (0, crate::components::table_editor::Col::Value));
 }
 
 /// A click on the copy pill or the reveal toggle of the auto section is a
@@ -25427,7 +25428,7 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     app.editor.table.set_selected(Some(Stop::Row(0)));
     let mut input = crate::components::line_input::LineInput::new("page");
     input.select_all();
-    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
+    app.editor.table.editing = Some(CellEdit::new(0, Col::Key, input));
     render_once(&mut app);
     let cell = app
         .hits
@@ -25464,11 +25465,8 @@ fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.set_selected(Some(Stop::Row(0)));
-    app.editor.table.editing = Some(CellEdit {
-        row: 0,
-        col: Col::Key,
-        input: crate::components::line_input::LineInput::new("pages"),
-    });
+    let input = crate::components::line_input::LineInput::new("pages");
+    app.editor.table.editing = Some(CellEdit::new(0, Col::Key, input));
     render_once(&mut app);
     // The value cell of the same row is not the cell under edit.
     let value = app
@@ -25714,7 +25712,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     input.begin_mouse_selection();
     input.extend_mouse_selection_to(10);
     assert_eq!(input.selected_text().as_deref(), Some("abc"));
-    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Value, input });
+    app.editor.table.editing = Some(CellEdit::new(0, Col::Value, input));
 
     app.update(Action::ConfirmExtractSelection {
         name: "token".into(),
@@ -25860,7 +25858,7 @@ fn extracting_the_vars_add_name_to_the_request_keeps_the_new_variable() {
         click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
         type_chars(&mut app, "abc");
         let edit = app.editor.table.editing.as_mut().expect("the + Add name cell is open");
-        assert_eq!(edit.row, 1, "+ Add is one past the rows");
+        assert_eq!(edit.cell().unwrap().0, 1, "+ Add is one past the rows");
         if selection {
             edit.input.set_cursor(0);
             edit.input.begin_mouse_selection();
@@ -25922,7 +25920,8 @@ fn extracting_a_response_selection_to_the_request_keeps_an_open_vars_cell_apart(
     app.capture_undo();
     click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
     type_chars(&mut app, "abc");
-    assert_eq!(app.editor.table.editing.as_ref().map(|e| e.row), Some(1), "+ Add is open");
+    let open = app.editor.table.editing.as_ref().and_then(|e| e.cell());
+    assert_eq!(open.map(|c| c.0), Some(1), "+ Add is open");
     render_once(&mut app);
     app.handle_mouse(right_down(area.x + 9, area.y));
     let open = menu_action(&app, "Extract to variable\u{2026}").unwrap();
@@ -29182,7 +29181,7 @@ fn typing_after_a_click_on_the_add_rows_value_is_asked_about_at_quit() {
         assert!(!app.editor.is_dirty(), "{how}: alpha starts clean");
         click_hit(&mut app, Hit::TableCell { row: 1, col: 1 }); // the + Add row's value
         let edit = app.editor.table.editing.as_ref().expect("a cell is open");
-        assert_eq!((edit.row, edit.col), (1, Col::Key), "{how}: the click opened the name");
+        assert_eq!(edit.cell().unwrap(), (1, Col::Key), "{how}: the click opened the name");
         type_chars(&mut app, "v");
         app.update(action);
         assert!(unsaved_prompt_up(&app), "{how}: asks instead of losing the typing");
@@ -29599,7 +29598,7 @@ fn a_release_on_the_dirty_open_row_that_commits_a_cell_redraws() {
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     let input = crate::components::line_input::LineInput::new("page");
-    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
+    app.editor.table.editing = Some(CellEdit::new(0, Col::Key, input));
     assert!(app.handle_mouse(left_up(r0.x + 2, r0.y)), "the closed cell is a change to draw");
     assert!(app.editor.table.editing.is_none(), "the release closed the cell");
     assert!(app.modals.is_empty(), "nothing asks");
@@ -32425,7 +32424,7 @@ fn open_value_cell(app: &mut App, tab: EditorTab, value: &str, caret: usize) {
     };
     app.editor.table.handle_key(tab_key(), map);
     let edit = app.editor.table.editing.as_mut().expect("the value cell is open");
-    assert_eq!(edit.col, crate::components::table_editor::Col::Value);
+    assert_eq!(edit.cell().unwrap().1, crate::components::table_editor::Col::Value);
     edit.input.set_cursor(caret);
 }
 
@@ -32451,7 +32450,7 @@ fn open_b_value_cell_typed(app: &mut App) {
     app.editor.table.begin_edit_selected(&map);
     app.editor.table.handle_key(tab_key(), &mut app.editor.variables);
     let edit = app.editor.table.editing.as_mut().expect("b's value cell is open");
-    assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
+    assert_eq!(edit.cell().unwrap(), (1, crate::components::table_editor::Col::Value));
     edit.input.set_text("typed");
 }
 
@@ -38747,8 +38746,7 @@ fn the_field_with_the_caret_is_named_once() {
     let mut cell = App::new_for_test();
     cell.focus = PaneId::Editor;
     cell.editor.sub_focus = SubFocus::Content;
-    cell.editor.table.editing =
-        Some(CellEdit { row: 1, col: Col::Value, input: LineInput::new("x") });
+    cell.editor.table.editing = Some(CellEdit::new(1, Col::Value, LineInput::new("x")));
     assert_eq!(
         (cell.field_caret(), cell.field_open()),
         (FieldCaret::Live(FieldId::TableCell { row: 1, col: 1 }), true)

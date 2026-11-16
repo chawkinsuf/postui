@@ -183,14 +183,11 @@ pub(super) fn apply(app: &mut App, input: &Input) {
 /// could strand. The body is left out: it is a pane's content, always
 /// there, not an edit that opens and closes.
 pub(super) fn live_edits(app: &App) -> Vec<FieldId> {
-    use crate::components::table_editor::Col;
     let mut out = Vec::new();
     if app.editor.url_open() {
         out.push(FieldId::Url);
     }
-    if let Some(e) = &app.editor.table.editing {
-        out.push(FieldId::TableCell { row: e.row, col: usize::from(e.col == Col::Value) });
-    }
+    out.extend(app.editor.table_field());
     if let Some(e) = &app.varmanager.form.editing {
         out.push(FieldId::VmForm(e.field));
     }

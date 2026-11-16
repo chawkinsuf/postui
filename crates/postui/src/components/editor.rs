@@ -1,6 +1,6 @@
 use super::line_input::LineInput;
 use super::table_editor::{
-    Col, RowNote, Stop, TOGGLE_W, TableEditorState, TableOutcome, TableOwner, TableSpec,
+    Col, EditAt, RowNote, Stop, TOGGLE_W, TableEditorState, TableOutcome, TableOwner, TableSpec,
     content_lines, table_height,
 };
 use super::toast::ToastKind;
@@ -599,6 +599,16 @@ impl Editor {
             self.table.begin_head(k, &self.check_field_text(k));
         }
         outcome
+    }
+
+    /// The table's open input, named as its field: a cell, or a field of
+    /// the Checks tab.
+    pub fn table_field(&self) -> Option<crate::keyroute::FieldId> {
+        use crate::keyroute::FieldId;
+        Some(match self.table.editing.as_ref()?.at {
+            EditAt::Head(k) => FieldId::CheckField(k),
+            EditAt::Cell(row, col) => FieldId::TableCell { row, col: usize::from(col.index()) },
+        })
     }
 
     /// Whether the caret's input takes `{{variables}}`: the one question
@@ -4552,8 +4562,10 @@ impl Editor {
 
     /// Draws the Checks tab's fields at the top of `area`, a line each,
     /// label then well, and answers what is left of `area` under them for
-    /// the table. They don't scroll with the table; in a pane too short
-    /// for all of them, the ones that fit are drawn. On any other tab
+    /// the table. They don't scroll with the table: the split's floor
+    /// ([`CONTENT_MIN_HEIGHT`]) leaves it two lines under them. A window
+    /// too short for the floor draws the fields that fit and may leave the
+    /// table none, as it leaves the body no text (#129). On any other tab
     /// there are none, and `area` comes back whole. `focused`: the tab's
     /// content holds the keyboard, so the field under the cursor is lit.
     ///
@@ -4572,7 +4584,7 @@ impl Editor {
         use crate::paint::{ControlState, PropertyRow, WELL_PAD, Well};
         let shown = (self.field_lines() as u16).min(area.height);
         let theme = ctx.theme;
-        let open = self.table.editing.as_ref().and_then(|e| Some((e.head()?, &e.input)));
+        let open = self.table.editing.as_ref();
         for (k, label) in CHECK_FIELDS.into_iter().enumerate().take(usize::from(shown)) {
             let hit = Hit::CheckField(k);
             let hovered = ctx.hovered == Some(&hit);
@@ -4593,7 +4605,7 @@ impl Editor {
                 continue;
             }
             let inner = well.width - WELL_PAD * 2;
-            let live = open.filter(|(head, _)| *head == k).map(|(_, input)| input);
+            let live = open.filter(|e| e.at == EditAt::Head(k)).map(|e| &e.input);
             let content: Line<'static> = match live {
                 Some(input) => input.draw_line_windowed(true, theme, inner),
                 None => LineInput::new(&self.check_field_text(k))
@@ -6766,7 +6778,7 @@ mod tests {
         assert_eq!(e.active_tab, tab, "the tab strip did not cycle");
         e.handle_key(key(KeyCode::Enter));
         let edit = e.table.editing.as_ref().expect("the value cell opened");
-        assert_eq!(edit.col, super::super::table_editor::Col::Value);
+        assert_eq!(edit.cell().unwrap().1, super::super::table_editor::Col::Value);
     }
 
     /// Up at the table's top clamp climbs out to the URL line rather than

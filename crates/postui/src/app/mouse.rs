@@ -1293,14 +1293,8 @@ impl App {
     /// form field named, not another one (the URL is always its own).
     fn editing(&self, field: FieldId) -> bool {
         match field {
-            FieldId::TableCell { row, col } => self
-                .editor
-                .table
-                .editing
-                .as_ref()
-                .is_some_and(|e| e.map_row() == Some(row) && usize::from(e.col.index()) == col),
-            FieldId::CheckField(k) => {
-                self.editor.table.editing.as_ref().and_then(|e| e.head()) == Some(k)
+            FieldId::TableCell { .. } | FieldId::CheckField(_) => {
+                self.editor.table_field() == Some(field)
             }
             FieldId::VmForm(f) => {
                 self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == f)
@@ -1309,13 +1303,9 @@ impl App {
                 self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col)
             }
             FieldId::Settings(f) => self.settings.editing == Some(f),
-            FieldId::ProjectName => self.project_tab.name_open(),
-            FieldId::ProjectCell { row, col } => self
-                .project_tab
-                .table
-                .editing
-                .as_ref()
-                .is_some_and(|e| e.row == row && usize::from(e.col.index()) == col),
+            FieldId::ProjectName | FieldId::ProjectCell { .. } => {
+                self.project_tab.field() == Some(field)
+            }
             _ => true,
         }
     }
@@ -1572,7 +1562,7 @@ impl App {
     /// clicked no longer exists (it was the one collapsed away).
     fn resolve_table_row_across_commit(&mut self, i: usize) -> Option<usize> {
         // An open field of the Checks tab is no row: its commit moves none.
-        let edited_row = self.editor.table.editing.as_ref().and_then(|e| e.map_row());
+        let edited_row = self.editor.table.editing.as_ref().and_then(|e| Some(e.cell()?.0));
         let key = self.editor.table_key_at(i);
         self.commit_table_edit();
         match edited_row {
@@ -2262,7 +2252,8 @@ impl App {
                 // chrome (the pad lines its expansion added): clicking it
                 // is inert, so the second click of a double click can't
                 // cancel the edit the first one started.
-                if self.editor.table.editing.as_ref().is_some_and(|e| e.map_row() == Some(i)) {
+                let open = self.editor.table.editing.as_ref().and_then(|e| e.cell());
+                if open.is_some_and(|(row, _)| row == i) {
                     return self.update(Action::Render);
                 }
                 let Some(i) = self.resolve_table_row_across_commit(i) else {

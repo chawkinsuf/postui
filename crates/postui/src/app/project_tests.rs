@@ -677,7 +677,8 @@ fn a_refused_click_on_a_cell_leaves_the_open_one() {
         modifiers: KeyModifiers::NONE,
     });
     let edit = app.project_tab.table.editing.as_ref().expect("the old cell stays open");
-    assert_eq!((edit.row, edit.input.text(), edit.input.cursor()), (0, "b", 1));
+    let (row, _) = edit.cell().unwrap();
+    assert_eq!((row, edit.input.text(), edit.input.cursor()), (0, "b", 1));
     assert!(app.text_drag.is_none());
     assert!(app.last_action_failed);
     let messages = app.toasts.messages();
@@ -877,7 +878,7 @@ fn open_b_value(typed: &str) -> App {
     let mut app = project_app(THREE, KeyProfile::Arrows);
     feed(&mut app, "<Down><Down><Right><CR>");
     let edit = app.project_tab.table.editing.as_mut().expect("b's value is open");
-    assert_eq!(edit.row, 1);
+    assert_eq!(edit.cell().unwrap().0, 1);
     edit.input.set_text(typed);
     app
 }
@@ -960,7 +961,7 @@ fn tab_commits_a_cell_and_opens_the_next() {
     feed(&mut app, "<Tab>");
     assert_eq!(keys(&app), ["A2", "b", "c"]);
     let edit = app.project_tab.table.editing.as_ref().expect("the value opened");
-    assert_eq!((edit.row, edit.col), (0, crate::components::table_editor::Col::Value));
+    assert_eq!(edit.cell().unwrap(), (0, crate::components::table_editor::Col::Value));
 }
 
 /// The footer's delete chip keeps the tab's cursor, which the chip's
@@ -1179,7 +1180,7 @@ fn the_arrows_walk_on_from_an_open_field() {
         let mut app = project_app(THREE, profile);
         feed(&mut app, if profile == KeyProfile::Vim { "ji" } else { "<Down><CR>" });
         let edit = app.project_tab.table.editing.as_mut().expect("a's name is open");
-        assert_eq!(edit.row, 0, "{profile:?}");
+        assert_eq!(edit.cell().unwrap().0, 0, "{profile:?}");
         edit.input.set_text("A");
         feed(&mut app, "<Up>");
         assert_eq!(keys(&app), ["A", "b", "c"], "{profile:?}: committed");

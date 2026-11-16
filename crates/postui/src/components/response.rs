@@ -7025,7 +7025,7 @@ mod tests {
     fn judged(status: u16, body: &str, checks: &postui_core::model::Checks) -> Pane {
         let mut d = data(body);
         d.status = status;
-        d.judge(checks);
+        d.checks = d.check_lines(checks);
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         r

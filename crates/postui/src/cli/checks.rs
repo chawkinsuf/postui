@@ -99,8 +99,10 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
     outcomes
         .iter()
         .map(|outcome| {
-            let failure = outcome.failure(|text| mask.apply(text));
             let passed = outcome.passed();
+            // A failed check's line is its failure.
+            let summary = outcome.summary(|text| mask.apply(text));
+            let failure = (!passed).then(|| summary.clone());
             let kind = match outcome {
                 Outcome::Status { expected, got } => {
                     Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
@@ -110,7 +112,7 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 }
                 Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
-            ShownCheck { kind, failure, summary: outcome.summary(|text| mask.apply(text)) }
+            ShownCheck { kind, failure, summary }
         })
         .collect()
 }

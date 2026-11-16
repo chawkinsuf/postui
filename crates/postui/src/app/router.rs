@@ -368,7 +368,6 @@ impl App {
     /// `App::open_text_field_mut` read it rather than repeat the rules.
     pub(super) fn screen_field(&self) -> Option<FieldId> {
         use crate::components::manage::ManageTab;
-        use crate::components::table_editor::Col;
         match self.screen {
             Screen::Manage if self.manage.tab == ManageTab::Settings => {
                 self.settings.editing.map(FieldId::Settings)
@@ -390,14 +389,8 @@ impl App {
             }
             Screen::Main => match self.focus {
                 PaneId::Editor => {
-                    if let Some(e) = &self.editor.table.editing {
-                        return Some(match e.head() {
-                            Some(k) => FieldId::CheckField(k),
-                            None => FieldId::TableCell {
-                                row: e.row,
-                                col: usize::from(e.col == Col::Value),
-                            },
-                        });
+                    if let Some(field) = self.editor.table_field() {
+                        return Some(field);
                     }
                     if self.editor.url_open() {
                         return Some(FieldId::Url);

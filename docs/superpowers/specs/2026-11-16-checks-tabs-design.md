@@ -79,14 +79,15 @@ read's own limits, so the app's refusal and the file's are one rule.
 
 **The send.** `http::ResponseData` gains `checks`, the response's lines
 (`checks::lines`). The send's task takes the editor's checks at the
-send; after `http::send` it runs `checks::evaluate` on the blocking
-pool (when there are any) and the response arrives with its lines.
-Nothing is pending, nothing is matched back, a cancel drops the task as
-before. The response keeps the lines and not the outcomes, which hold
-every output of a jq check whole (#309 review round 1). The costs, from
-the ticket's "How to build it" 1: the response shows later by the time
-its checks take, with no limit on a filter that never ends (#308, as in
-the jq bar), and the body is read again when the jq bar is used on it.
+send; after `http::send` it runs `checks::evaluate` (on the blocking
+pool when a jq check reads the body, by `http::run_checks`, the suite's
+hop too) and the response arrives with its lines. Nothing is pending,
+nothing is matched back, a cancel drops the task as before. The
+response keeps the lines and not the outcomes, which hold every output
+of a jq check whole (#309 review round 1). The costs, from the ticket's
+"How to build it" 1: the response shows later by the time its checks
+take, with no limit on a filter that never ends (#308, as a saved jq
+view), and the body is read again when the jq bar is used on it.
 
 **The response tab.** `ViewMode::Checks`, offered when the response's
 `checks` is not empty. Its lines are built once in `ReadyView::new`
@@ -107,8 +108,8 @@ editor.
   not content lines: with the cursor on one the view shows the table
   from its top (`settle_view_under_head` and `view_scrolled_under_head`
   fold into `settle_view` and `view_scrolled`).
-- A head can be open in the table's one edit slot (`CellEdit` with
-  `Col::Head`, its `row` the head's index). The table never writes a
+- A head can be open in the table's one edit slot (`CellEdit`, whose
+  `EditAt` is a row's cell or a head). The table never writes a
   head: closing one hands its text back (`TableOutcome::head_commit`),
   and a Tab walk that reaches a head asks the caller to open it
   (`TableOutcome::open_head`). The Project tab keeps its own Name edit
@@ -174,11 +175,10 @@ head needs nothing: `Editor::plain_keys_type`, `load`,
 `apply_snapshot`, `table_cursor_live`; `App::commit_table_edit`, the
 dirty mark (`ui.rs`), `capture_undo`, `pane_field_open`,
 `OverrideAutoHeader`, `landing.rs`, `repeat_cap`, `line_buf`, the
-selection's copy, the paste. By row, each told a head from a row
-(`CellEdit::map_row`): `screen_field` (the field's id), `App::editing`,
-`text_surface_menu`, `resolve_table_row_across_commit`, the row-hit
-click, `Editor::adding_row`, the table's `editing_ghost`, `clamp_view`,
-`draw_row`, `commit_cell`, the editing keys.
+selection's copy, the paste. By what is open, which `EditAt` tells
+apart (a row's cell or a head; #309 review round 2): the field's id
+(`Editor::table_field`, asked by `screen_field`, `App::editing` and
+`text_surface_menu`), and a cell's row (`CellEdit::cell`).
 
 **Variables in a text input**, each asking `caret_takes_vars` (or, for
 drawing, the table's spec): the `{{` picker (`Editor::handle_key`, vim's
@@ -228,8 +228,9 @@ chips (`TableCursor::Checks`), the pills' and chips' hints
    they do on `+ Add`. Enter opens the field.
 3. Tab in an open field goes to the next field, then the first check;
    Shift-Tab goes back the same way.
-4. The fields stay put above the list while the list scrolls. In a
-   pane too short for all three, the ones that fit are drawn.
+4. The fields stay put above the list while the list scrolls. The
+   split's floor (#129) leaves the list two lines; a window under 21
+   rows has no floor and may leave it none, as the Body tab no text.
 5. A scratch request that holds only checks counts as unsaved work.
 6. The response tab's copy toast says "Copied check results", and its
    toolbar's hints name the check results.
@@ -247,3 +248,6 @@ chips (`TableCursor::Checks`), the pills' and chips' hints
     filter, and a status typed twice in the field counts once.
 12. The tab can be bound as `editor_tab_5`, unbound by default like the
     other four.
+13. Tab or Shift-Tab out of a check that drew a warning (a repeat, a
+    blank) ends on the check the warning names, as Enter does (round 2).
+14. Checks that panic leave the response, with one failed line (round 2).

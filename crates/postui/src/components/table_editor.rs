@@ -17,10 +17,6 @@ pub enum Col {
     #[default]
     Key,
     Value,
-    /// Not a row's cell: a head, a field the caller draws above the rows
-    /// ([`Stop::Head`]), open in the table's edit slot ([`CellEdit`]).
-    /// Never the cursor's column.
-    Head,
 }
 
 /// What a table lists, handed to its keys, its commit, its click and its
@@ -86,13 +82,11 @@ impl TableSpec {
 }
 
 impl Col {
-    /// The `Hit::TableCell` column index this cell registers under. A
-    /// head is no cell and registers no such hit; its index matches none.
+    /// The `Hit::TableCell` column index this cell registers under.
     pub fn index(self) -> u8 {
         match self {
             Col::Key => 0,
             Col::Value => 1,
-            Col::Head => 2,
         }
     }
 
@@ -108,31 +102,37 @@ impl Col {
 ///
 /// Esc commits like Enter; the cell's history is the input's own.
 ///
-/// A head (`col` is [`Col::Head`]) opens in this same slot, so whatever
-/// asks "is a cell open" (the commit on a click away, a save, a send, the
-/// undo bracket, a paste) meets it as it meets a cell. The table writes
-/// no head: closing one hands its text to the caller
+/// A head ([`EditAt::Head`]) opens in this same slot, so whatever asks "is
+/// a cell open" (the commit on a click away, a save, a send, the undo
+/// bracket, a paste) meets it as it meets a cell. The table writes no
+/// head: closing one hands its text to the caller
 /// ([`TableOutcome::head_commit`]).
 #[derive(Debug, Clone)]
 pub struct CellEdit {
-    /// Index into the map — or `map.len()`, the always-present ghost row
-    /// that becomes a real entry the moment its key cell commits non-empty.
-    /// For a head, the head's index instead: read a row through
-    /// [`Self::map_row`].
-    pub row: usize,
-    pub col: Col,
+    pub at: EditAt,
     pub input: LineInput,
 }
 
+/// What a [`CellEdit`] has open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditAt {
+    /// A row's cell: the row's index into the map — or `map.len()`, the
+    /// always-present ghost row that becomes a real entry the moment its
+    /// key cell commits non-empty — and the column.
+    Cell(usize, Col),
+    /// A head, by its index ([`Stop::Head`]).
+    Head(usize),
+}
+
 impl CellEdit {
-    /// The row whose cell is open; `None` for an open head.
-    pub fn map_row(&self) -> Option<usize> {
-        (self.col != Col::Head).then_some(self.row)
+    /// Row `row`'s cell `col`, open holding `input`.
+    pub fn new(row: usize, col: Col, input: LineInput) -> Self {
+        Self { at: EditAt::Cell(row, col), input }
     }
 
-    /// The head that is open; `None` for a row's cell.
-    pub fn head(&self) -> Option<usize> {
-        (self.col == Col::Head).then_some(self.row)
+    /// The row and column of the open cell; `None` for an open head.
+    pub fn cell(&self) -> Option<(usize, Col)> {
+        if let EditAt::Cell(row, col) = self.at { Some((row, col)) } else { None }
     }
 }
 
@@ -188,9 +188,9 @@ impl TableOutcome {
         Self { consumed: true, ..Self::default() }
     }
 
-    /// Head `edit` closed: consumed, its text handed back.
-    fn head_closed(edit: &CellEdit) -> Self {
-        Self { head_commit: Some((edit.row, edit.input.text().to_string())), ..Self::consumed() }
+    /// Head `k` closed holding `input`: consumed, its text handed back.
+    fn head_closed(k: usize, input: &LineInput) -> Self {
+        Self { head_commit: Some((k, input.text().to_string())), ..Self::consumed() }
     }
 
     fn not_consumed() -> Self {
@@ -591,8 +591,8 @@ impl TableEditorState {
     /// 2026-10-25 S8; typing would otherwise land out of sight), and the
     /// view stops with the last line on the bottom row (S3).
     fn clamp_view(&mut self, len: usize, tail: usize) {
-        let open = self.editing.as_ref().and_then(CellEdit::map_row);
-        if let Some(line) = open.and_then(|row| Stop::of_row(row, len).line(len)) {
+        let open = self.editing.as_ref().and_then(CellEdit::cell);
+        if let Some(line) = open.and_then(|(row, _)| Stop::of_row(row, len).line(len)) {
             self.show_line(line);
         }
         self.scroll = self.scroll.min(content_lines(len, tail).saturating_sub(self.viewport));
@@ -699,8 +699,7 @@ impl TableEditorState {
         match map.get_index(row) {
             Some((k, e)) => match col {
                 Col::Value => e.value.clone(),
-                // A head is never asked for here: `begin_head` seeds it.
-                Col::Key | Col::Head => k.clone(),
+                Col::Key => k.clone(),
             },
             None => String::new(),
         }
@@ -711,7 +710,7 @@ impl TableEditorState {
     /// cursor on it. Any previous edit must already have been committed.
     pub fn begin_head(&mut self, k: usize, seed: &str) {
         self.set_selected(Some(Stop::Head(k)));
-        self.editing = Some(CellEdit { row: k, col: Col::Head, input: LineInput::new(seed) });
+        self.editing = Some(CellEdit { at: EditAt::Head(k), input: LineInput::new(seed) });
     }
 
     /// Puts `row`/`col` under edit, seeded with its current text and the
@@ -730,7 +729,7 @@ impl TableEditorState {
         let col = open_col(row, col, map.len());
         let text = Self::cell_text(map, row, col);
         self.set_selected(Some(Stop::of_row(row, map.len())));
-        self.editing = Some(CellEdit { row, col, input: LineInput::new(&text) });
+        self.editing = Some(CellEdit::new(row, col, LineInput::new(&text)));
     }
 
     /// Leaves editing with the cursor parked on `row` (`+ Add` past the
@@ -772,7 +771,7 @@ impl TableEditorState {
         spec: &TableSpec,
     ) -> TableOutcome {
         let row = row.min(map.len());
-        if self.editing.as_ref().is_some_and(|e| e.map_row() == Some(row) && e.col == col) {
+        if self.editing.as_ref().is_some_and(|e| e.cell() == Some((row, col))) {
             return TableOutcome::consumed();
         }
         let closed = self.commit_as(map, spec);
@@ -799,38 +798,40 @@ impl TableEditorState {
         let Some(edit) = self.editing.take() else {
             return TableOutcome::not_consumed();
         };
-        if edit.col == Col::Head {
-            return TableOutcome::head_closed(&edit);
-        }
-        let Committed { row, here, warning } = self.commit_cell(map, &edit, spec);
+        let at = match edit.at {
+            EditAt::Head(k) => return TableOutcome::head_closed(k, &edit.input),
+            EditAt::Cell(row, col) => (row, col),
+        };
+        let Committed { row, here, warning } = self.commit_cell(map, at, &edit.input, spec);
         self.set_selected(Some(Stop::of_row(row.unwrap_or(here), map.len())));
         TableOutcome::maybe_warn(warning)
     }
 
-    /// Writes one cell into the map, and says which row that names and
-    /// where the caret's row is now ([`Committed`]), plus any warning to
-    /// surface. Never called for a head, which the table doesn't write.
+    /// Writes the cell `col` of row `at`, holding `input`, into the map,
+    /// and says which row that names and where the caret's row is now
+    /// ([`Committed`]), plus any warning to surface.
     fn commit_cell(
         &mut self,
         map: &mut IndexMap<String, Entry>,
-        edit: &CellEdit,
+        (at, col): (usize, Col),
+        input: &LineInput,
         spec: &TableSpec,
     ) -> Committed {
-        let typed = edit.input.text().to_string();
-        if let Some((key, e)) = map.get_index_mut(edit.row) {
-            let (row, warning) = match edit.col {
+        let typed = input.text().to_string();
+        if let Some((key, e)) = map.get_index_mut(at) {
+            let (row, warning) = match col {
                 Col::Value => {
                     e.value = typed;
-                    (edit.row, None)
+                    (at, None)
                 }
-                Col::Key | Col::Head => {
+                Col::Key => {
                     let (orig, entry) = (key.clone(), e.clone());
-                    Self::commit_key(map, edit.row, orig, entry, typed, spec)
+                    Self::commit_key(map, at, orig, entry, typed, spec)
                 }
             };
             return Committed { row: Some(row), here: row, warning };
         }
-        // Past the rows is `+ Add`, at `map.len()`: `edit.row` itself can be
+        // Past the rows is `+ Add`, at `map.len()`: `at` itself can be
         // further on when the map shrank under the open cell.
         let here = map.len();
         // The ghost row: only a non-empty key can make it a real row (its
@@ -841,7 +842,7 @@ impl TableEditorState {
         // edit can only land here if the map shrank under an open value
         // cell, leaving its row index one past the end; it names no row,
         // so it writes nothing, as it never made a row before either.
-        if edit.col != Col::Key || typed.trim().is_empty() {
+        if col != Col::Key || typed.trim().is_empty() {
             return Committed { row: None, here, warning: None };
         }
         if let Some(other) = map.get_index_of(&typed) {
@@ -944,7 +945,7 @@ impl TableEditorState {
 
     /// Whether the ghost row (not any existing row) is the one under edit.
     pub fn editing_ghost(&self, map_len: usize) -> bool {
-        self.editing.as_ref().and_then(CellEdit::map_row).is_some_and(|row| row >= map_len)
+        self.editing.as_ref().and_then(CellEdit::cell).is_some_and(|(row, _)| row >= map_len)
     }
 
     /// Clamps a stop the rows went from under (the map or the section
@@ -1003,10 +1004,12 @@ impl TableEditorState {
         spec: &TableSpec,
         tail: usize,
     ) -> TableOutcome {
-        match self.editing.take() {
-            Some(edit) if edit.col == Col::Head => self.handle_head_key(ev, map, edit, spec),
-            Some(edit) => self.handle_editing_key(ev, map, edit, spec),
-            None => self.handle_nav_key(ev, map, spec, tail),
+        let Some(edit) = self.editing.take() else {
+            return self.handle_nav_key(ev, map, spec, tail);
+        };
+        match edit.at {
+            EditAt::Head(k) => self.handle_head_key(ev, map, k, edit, spec),
+            EditAt::Cell(row, col) => self.handle_editing_key(ev, map, (row, col), edit, spec),
         }
     }
 
@@ -1154,6 +1157,7 @@ impl TableEditorState {
         &mut self,
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
+        at: (usize, Col),
         mut edit: CellEdit,
         spec: &TableSpec,
     ) -> TableOutcome {
@@ -1164,7 +1168,7 @@ impl TableEditorState {
             // cursor stays on the row — Enter does the same (spec
             // 2026-09-16), it just also commits. Discard is undo.
             KeyCode::Esc => {
-                let Committed { row, here, warning } = self.commit_cell(map, &edit, spec);
+                let Committed { row, here, warning } = self.commit_cell(map, at, &edit.input, spec);
                 self.exit_editing(row.unwrap_or(here), map);
                 TableOutcome::maybe_warn(warning)
             }
@@ -1191,15 +1195,15 @@ impl TableEditorState {
             // (task #176). The heads count: ↑ from the first row reaches
             // the last of them.
             KeyCode::Up | KeyCode::Down => {
-                let Committed { here, warning, .. } = self.commit_cell(map, &edit, spec);
+                let Committed { here, warning, .. } = self.commit_cell(map, at, &edit.input, spec);
                 let (len, place) = (map.len(), heads + here);
                 let to = if ev.code == KeyCode::Up { place.saturating_sub(1) } else { place + 1 };
                 self.set_selected(Some(Stop::at(to.min(heads + len), heads, len)));
                 TableOutcome::maybe_warn(warning)
             }
-            KeyCode::BackTab => self.walk_cell(map, &edit, false, spec),
-            KeyCode::Tab if shift => self.walk_cell(map, &edit, false, spec),
-            KeyCode::Tab => self.walk_cell(map, &edit, true, spec),
+            KeyCode::BackTab => self.walk_cell(map, at, &edit.input, false, spec),
+            KeyCode::Tab if shift => self.walk_cell(map, at, &edit.input, false, spec),
+            KeyCode::Tab => self.walk_cell(map, at, &edit.input, true, spec),
             _ => {
                 let consumed = edit.input.handle_key(ev);
                 self.editing = Some(edit);
@@ -1208,7 +1212,7 @@ impl TableEditorState {
         }
     }
 
-    /// A key with head `edit` open: the keys an open cell takes
+    /// A key with head `k` open, as `edit`: the keys an open cell takes
     /// ([`Self::handle_editing_key`]), over the heads. Esc and Enter close
     /// it where it is; ↑↓ close it and move one stop; Tab and Shift-Tab
     /// close it and go on into the next or the previous field (a head,
@@ -1220,10 +1224,11 @@ impl TableEditorState {
         &mut self,
         ev: KeyEvent,
         map: &mut IndexMap<String, Entry>,
+        k: usize,
         mut edit: CellEdit,
         spec: &TableSpec,
     ) -> TableOutcome {
-        let (k, heads, len) = (edit.row, spec.heads, map.len());
+        let (heads, len) = (spec.heads, map.len());
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         // Where the key leaves the cursor, and whether a field opens there.
         let (to, opens) = match ev.code {
@@ -1243,7 +1248,7 @@ impl TableEditorState {
                 };
             }
         };
-        let mut outcome = TableOutcome::head_closed(&edit);
+        let mut outcome = TableOutcome::head_closed(k, &edit.input);
         let stop = Stop::at(to.min(heads + len), heads, len);
         self.set_selected(Some(stop));
         match stop {
@@ -1260,26 +1265,26 @@ impl TableEditorState {
     /// commits and leaves editing. Back off the first cell of a table with
     /// heads, the walk asks the caller to open the last head
     /// ([`TableOutcome::open_head`]). A one-column row's only cell is its
-    /// name, so the walk goes from name to name.
+    /// name, so the walk goes from name to name; there, a commit that
+    /// warned (a blanked name, one merged into another row, a taken
+    /// `+ Add` name) ends the walk on the row it names, as Enter does.
     fn walk_cell(
         &mut self,
         map: &mut IndexMap<String, Entry>,
-        edit: &CellEdit,
+        at: (usize, Col),
+        input: &LineInput,
         forward: bool,
         spec: &TableSpec,
     ) -> TableOutcome {
-        let Committed { row, here, warning } = self.commit_cell(map, edit, spec);
+        let Committed { row, here, warning } = self.commit_cell(map, at, input, spec);
         let mut outcome = TableOutcome::maybe_warn(warning);
-        if forward {
-            match (row, edit.col) {
-                // The name after the row the caret was on. A `+ Add` name
-                // that is taken made no row, so `+ Add` opens again.
-                (Some(r), _) if spec.one_column => {
-                    self.start_edit(if r == here { here + 1 } else { here }, Col::Key, map)
-                }
-                (Some(r), Col::Key) => self.start_edit(r, Col::Value, map),
-                // A value cell is always a real row's (`open_col`), so the
-                // next row is at most the ghost, whose name opens.
+        if spec.one_column && outcome.warning.is_some() {
+            self.exit_editing(row.unwrap_or(here), map);
+        } else if forward {
+            match (row, at.1) {
+                (Some(r), Col::Key) if !spec.one_column => self.start_edit(r, Col::Value, map),
+                // Out of a row's last cell. `r` is a real row, so the next
+                // row is at most the ghost, whose name opens.
                 (Some(r), _) => self.start_edit(r + 1, Col::Key, map),
                 // Past the ghost row, its name left empty: done.
                 (None, _) => self.exit_editing(here, map),
@@ -1289,7 +1294,7 @@ impl TableEditorState {
             // existing row a taken `+ Add` name matched, which forward Tab
             // opens (task #111).
             let back = if spec.one_column { Col::Key } else { Col::Value };
-            match edit.col {
+            match at.1 {
                 Col::Value => self.start_edit(here, Col::Key, map),
                 _ if here > 0 => self.start_edit(here - 1, back, map),
                 _ => {
@@ -1532,7 +1537,8 @@ impl TableEditorState {
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let one = spec.one_column;
-        let editing_col = self.editing.as_ref().filter(|e| e.map_row() == Some(i)).map(|e| e.col);
+        let open = self.editing.as_ref().and_then(CellEdit::cell);
+        let editing_col = open.filter(|(row, _)| *row == i).map(|(_, col)| col);
         // The keyboard cursor lights its row only while the pane actually
         // holds the keyboard — a lift on an unfocused pane would claim keys
         // land here. A pointer resting on the row lights it either way.
@@ -1578,7 +1584,7 @@ impl TableEditorState {
         match cursor_cell {
             Some(Col::Key) => fill(buf, Rect::new(cols.name_x, y, name_w, 1), name_bg),
             Some(Col::Value) => fill(buf, Rect::new(cols.value_x, y, value_w, 1), value_bg),
-            Some(Col::Head) | None => {}
+            None => {}
         }
 
         // Each cell at rest is drawn by a field holding its text, as that
@@ -1909,7 +1915,7 @@ mod tests {
         t.begin_head(2, "");
         let out = press(&mut t, &mut map, KeyCode::Tab);
         assert_eq!(out.open_head, None);
-        assert_eq!(t.editing.as_ref().map(|e| (e.map_row(), e.col)), Some((Some(0), Col::Key)));
+        assert_eq!(t.editing.as_ref().and_then(CellEdit::cell), Some((0, Col::Key)));
         let out = t.handle_key_walk(shift_tab(), &mut map, &spec, 0);
         assert_eq!((out.open_head, t.editing.is_none()), (Some(2), true));
         t.begin_head(0, "200");
@@ -1918,7 +1924,7 @@ mod tests {
         // Tab walks the rows name to name, into `+ Add`, and out.
         t.click_cell_as(0, Col::Key, &mut map, &spec);
         press(&mut t, &mut map, KeyCode::Tab);
-        assert_eq!(t.editing.as_ref().map(|e| (e.row, e.col)), Some((1, Col::Key)));
+        assert_eq!(t.editing.as_ref().and_then(CellEdit::cell), Some((1, Col::Key)));
         press(&mut t, &mut map, KeyCode::Tab);
         assert!(t.editing_ghost(map.len()));
         press(&mut t, &mut map, KeyCode::Tab);
@@ -1931,20 +1937,27 @@ mod tests {
     }
 
     /// The Checks table's words: its three warnings say "check", and
-    /// quote one on a single short line.
+    /// quote one on a single short line. A Tab or Shift-Tab that drew one
+    /// ends on the row it names, as Enter does, and opens nothing.
     #[test]
     fn a_one_column_tables_warnings_are_worded_for_its_noun() {
         let spec = TableSpec::CHECKS;
-        let mut map = map_of(&[(".a", ""), (".b\n  | not", "")]);
+        let mut map = map_of(&[(".a", ""), (".b\n  | not", ""), (".c", "")]);
         let mut t = TableEditorState::default();
-        let mut retype = |t: &mut TableEditorState, row: usize, text: &str| {
+        let mut retype = |row: usize, text: &str, close: KeyEvent| {
             t.click_cell_as(row, Col::Key, &mut map, &spec);
             t.editing.as_mut().unwrap().input.set_text(text);
-            t.commit_as(&mut map, &spec).warning.unwrap()
+            let out = t.handle_key_walk(close, &mut map, &spec, 0);
+            assert!(t.editing.is_none() && out.open_head.is_none(), "{text:?}: the walk ends");
+            (out.warning.unwrap(), t.selected)
         };
-        assert_eq!(retype(&mut t, 2, ".a"), "'.a' already exists \u{2014} no check added");
-        assert_eq!(retype(&mut t, 1, " "), "a check can't be empty — kept '.b | not'");
-        assert_eq!(retype(&mut t, 1, ".a"), "'.a' already exists — the two checks are now one");
+        let on = |warning: &str, row| (warning.to_string(), Some(Stop::Row(row)));
+        let (tab, back) = (key(KeyCode::Tab), shift_tab());
+        assert_eq!(retype(3, ".a", tab), on("'.a' already exists \u{2014} no check added", 0));
+        assert_eq!(retype(1, " ", back), on("a check can't be empty — kept '.b | not'", 1));
+        // The last check retyped as the first: the two merge on the first.
+        assert_eq!(retype(2, ".a", tab), on("'.a' already exists — the two checks are now one", 0));
+        assert_eq!(retype(0, ".b\n  | not", back).1, Some(Stop::Row(0)));
         assert_eq!(map.len(), 1);
     }
 
@@ -2143,7 +2156,7 @@ mod tests {
         };
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().expect("a cell is open");
-        assert_eq!((edit.row, edit.col), (0, Col::Value));
+        assert_eq!(edit.cell().unwrap(), (0, Col::Value));
         assert_eq!(edit.input.text(), "1");
     }
 
@@ -2159,12 +2172,12 @@ mod tests {
         t.handle_key(key(KeyCode::Right), &mut map);
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().expect("the ghost's name cell is open");
-        assert_eq!((edit.row, edit.col), (1, Col::Key));
+        assert_eq!(edit.cell().unwrap(), (1, Col::Key));
         assert_eq!(edit.input.text(), "");
         type_str(&mut t, &mut map, "k");
         t.handle_key(key(KeyCode::Tab), &mut map);
         let edit = t.editing.as_ref().expect("the new row's value is open");
-        assert_eq!((edit.row, edit.col), (1, Col::Value));
+        assert_eq!(edit.cell().unwrap(), (1, Col::Value));
         type_str(&mut t, &mut map, "v");
         t.handle_key(key(KeyCode::Enter), &mut map);
         assert_eq!(map.get("k").map(|e| e.value.as_str()), Some("v"));
@@ -2184,7 +2197,7 @@ mod tests {
         assert_eq!((t.selected, t.col), (Some(Stop::Row(0)), Col::Value));
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().expect("reopened");
-        assert_eq!(edit.col, Col::Value, "Esc then Enter reopens the same cell");
+        assert_eq!(edit.cell().unwrap().1, Col::Value, "Esc then Enter reopens the same cell");
 
         // Enter commits and parks on the column.
         t.handle_key(key(KeyCode::Enter), &mut map);
@@ -2298,7 +2311,7 @@ mod tests {
         t.handle_key(key(KeyCode::Enter), &mut map);
         assert!(t.editing_ghost(map.len()), "Enter opens the add edit");
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!(edit.col, Col::Key);
+        assert_eq!(edit.cell().unwrap().1, Col::Key);
         assert_eq!(edit.input.text(), "");
     }
 
@@ -2380,8 +2393,7 @@ mod tests {
         assert!(out.consumed);
         assert!(out.warning.is_none());
         let edit = t.editing.as_ref().expect("the click began an edit");
-        assert_eq!(edit.row, 0);
-        assert_eq!(edit.col, Col::Value);
+        assert_eq!(edit.cell(), Some((0, Col::Value)));
         assert_eq!(edit.input.text(), "2", "seeded with the cell's own text");
         assert_eq!(edit.input.cursor(), 1, "caret at the end");
         assert_eq!(t.selected, Some(Stop::Row(0)), "the clicked row is the selected row");
@@ -2411,7 +2423,7 @@ mod tests {
         t.click_cell(1, Col::Key, &mut map);
         assert_eq!(map["a"].value, "19", "the previous cell committed");
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Key));
+        assert_eq!(edit.cell().unwrap(), (1, Col::Key));
         assert_eq!(edit.input.text(), "b");
     }
 
@@ -2446,7 +2458,7 @@ mod tests {
         let mut map = IndexMap::new();
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Key, &mut map); // row 0 == map.len(): the ghost
-        assert_eq!(t.editing.as_ref().unwrap().row, 0);
+        assert_eq!(t.editing.as_ref().unwrap().cell().unwrap().0, 0);
         assert_eq!(t.editing.as_ref().unwrap().input.text(), "");
         type_str(&mut t, &mut map, "page");
         assert!(map.is_empty(), "nothing inserted until the commit");
@@ -2481,7 +2493,7 @@ mod tests {
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
         let edit = t.editing.as_ref().expect("a cell is open");
-        assert_eq!((edit.row, edit.col), (0, Col::Key), "the name, not the value");
+        assert_eq!(edit.cell().unwrap(), (0, Col::Key), "the name, not the value");
         assert_eq!(edit.input.text(), "");
         assert_eq!(t.col, Col::Value, "the cursor column is the clicked one");
         type_str(&mut t, &mut map, "id");
@@ -2498,11 +2510,11 @@ mod tests {
         t.click_cell(0, Col::Value, &mut map);
         t.handle_key(key(KeyCode::Tab), &mut map);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Key), "onto the ghost's name");
+        assert_eq!(edit.cell().unwrap(), (1, Col::Key), "onto the ghost's name");
         type_str(&mut t, &mut map, "id");
         t.handle_key(key(KeyCode::Tab), &mut map);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Value), "the new row's own value");
+        assert_eq!(edit.cell().unwrap(), (1, Col::Value), "the new row's own value");
         assert!(map.contains_key("id"), "the name made the row");
         type_str(&mut t, &mut map, "42");
         t.handle_key(key(KeyCode::Enter), &mut map);
@@ -2521,7 +2533,7 @@ mod tests {
         t.click_cell(0, Col::Value, &mut map);
         assert!(map.contains_key("id"), "the name committed");
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (0, Col::Value), "the new row's value is open");
+        assert_eq!(edit.cell().unwrap(), (0, Col::Value), "the new row's value is open");
         type_str(&mut t, &mut map, "42");
         t.commit(&mut map);
         assert_eq!(map["id"].value, "42");
@@ -2542,7 +2554,7 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert_eq!(map["a"].value, "1", "the existing row is untouched");
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col, edit.input.text()), (1, Col::Key, ""));
+        assert_eq!((edit.cell(), edit.input.text()), (Some((1, Col::Key)), ""));
     }
 
     /// Esc on the ghost's name, opened from its value cell, leaves
@@ -2558,7 +2570,7 @@ mod tests {
         assert_eq!(t.selected, Some(Stop::Add));
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col, edit.input.text()), (0, Col::Key, ""));
+        assert_eq!((edit.cell(), edit.input.text()), (Some((0, Col::Key)), ""));
     }
 
     /// The cursor column persists across row moves, through the ghost row
@@ -2572,12 +2584,13 @@ mod tests {
         t.handle_key(key(KeyCode::Right), &mut map);
         t.handle_key(key(KeyCode::Down), &mut map); // the ghost
         t.handle_key(key(KeyCode::Enter), &mut map);
-        assert_eq!(t.editing.as_ref().unwrap().col, Col::Key, "the ghost opens its name");
+        let open = t.editing.as_ref().unwrap().cell().unwrap();
+        assert_eq!(open.1, Col::Key, "the ghost opens its name");
         t.handle_key(key(KeyCode::Esc), &mut map);
         t.handle_key(key(KeyCode::Up), &mut map);
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (0, Col::Value), "row 0 opens its value again");
+        assert_eq!(edit.cell().unwrap(), (0, Col::Value), "row 0 opens its value again");
     }
 
     // --- keyboard: navigation --------------------------------------------
@@ -2622,14 +2635,14 @@ mod tests {
         t.selected = Some(Stop::Row(0));
         assert!(t.handle_key(key(KeyCode::Enter), &mut map).consumed);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (0, Col::Key));
+        assert_eq!(edit.cell().unwrap(), (0, Col::Key));
         assert_eq!(edit.input.text(), "a");
 
         t.editing = None;
         t.selected = Some(Stop::Add);
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Key));
+        assert_eq!(edit.cell().unwrap(), (1, Col::Key));
         assert_eq!(edit.input.text(), "");
     }
 
@@ -2708,20 +2721,20 @@ mod tests {
         assert!(t.handle_key(key(KeyCode::Tab), &mut map).consumed);
         assert_eq!(map.get_index(0).unwrap().0, "ax", "the key cell committed");
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (0, Col::Value));
+        assert_eq!(edit.cell().unwrap(), (0, Col::Value));
         assert_eq!(edit.input.text(), "1", "seeded with the value cell");
 
         t.handle_key(key(KeyCode::Tab), &mut map);
         let edit = t.editing.as_ref().unwrap();
         assert_eq!(
-            (edit.row, edit.col),
+            edit.cell().unwrap(),
             (1, Col::Key),
             "Tab past a value wraps onto the next row's key"
         );
         t.handle_key(key(KeyCode::Tab), &mut map); // b's value
         t.handle_key(key(KeyCode::Tab), &mut map); // wraps onto the ghost key
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (2, Col::Key));
+        assert_eq!(edit.cell().unwrap(), (2, Col::Key));
         assert!(
             t.handle_key(key(KeyCode::Tab), &mut map).consumed,
             "Tab past the empty ghost commits and exits"
@@ -2739,12 +2752,12 @@ mod tests {
         t.handle_key(shift_tab(), &mut map);
         assert_eq!(map["b"].value, "29", "the value cell committed");
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (1, Col::Key));
+        assert_eq!(edit.cell().unwrap(), (1, Col::Key));
 
         t.handle_key(shift_tab(), &mut map);
         let edit = t.editing.as_ref().unwrap();
         assert_eq!(
-            (edit.row, edit.col),
+            edit.cell().unwrap(),
             (0, Col::Value),
             "Shift-Tab off a key wraps onto the previous row's value"
         );
@@ -2763,7 +2776,7 @@ mod tests {
         t.click_cell(1, Col::Key, &mut map); // the ghost, left empty
         t.handle_key(shift_tab(), &mut map);
         let edit = t.editing.as_ref().unwrap();
-        assert_eq!((edit.row, edit.col), (0, Col::Value));
+        assert_eq!(edit.cell().unwrap(), (0, Col::Value));
         assert_eq!(map.len(), 1, "the empty ghost added nothing");
     }
 
@@ -2782,7 +2795,7 @@ mod tests {
             assert!(out.warning.is_some(), "{name}: a duplicate key warns");
             assert_eq!(map.len(), 3, "{name}: no row was added");
             let edit = t.editing.as_ref().unwrap_or_else(|| panic!("{name}: still editing"));
-            assert_eq!((edit.row, edit.col), (2, Col::Value), "{name}: c's value opens");
+            assert_eq!(edit.cell().unwrap(), (2, Col::Value), "{name}: c's value opens");
         }
     }
 
@@ -2805,7 +2818,7 @@ mod tests {
                 if name == "x" { "x" } else { "b" }
             );
             let edit = t.editing.as_ref().unwrap();
-            assert_eq!((edit.row, edit.col), (before, Col::Value), "{name} less {removed}");
+            assert_eq!(edit.cell().unwrap(), (before, Col::Value), "{name} less {removed}");
         }
     }
 
@@ -3001,7 +3014,7 @@ mod tests {
         assert_eq!(map["a"].value, "1", "the existing value is untouched");
         let edit = t.editing.as_ref().unwrap();
         assert_eq!(
-            (edit.row, edit.col),
+            edit.cell().unwrap(),
             (0, Col::Value),
             "the caret lands in the existing row's value cell"
         );
