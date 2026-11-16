@@ -75,7 +75,7 @@ pub enum ViewMode {
     Headers,
     /// How the request's checks came out, one line each (checks tabs spec
     /// 2026-11-16): plain lines, as Headers', with none of its pills.
-    /// Offered only for a response that carries outcomes.
+    /// Offered only for a response that carries check lines.
     Checks,
 }
 
@@ -753,11 +753,11 @@ pub struct ReadyView {
     header_lines: Vec<String>,
     header_rows: Vec<HeaderRow>,
     /// The Checks tab's lines, `✓` or `✗` then what `postui run -v` lists
-    /// for the check (`postui_core::checks::lines`), from the outcomes the
-    /// response carries; empty when it carries none (spec P1, P2).
+    /// for the check, from the lines the response carries
+    /// (`ResponseData::checks`); empty when it carries none (spec P1, P2).
     check_lines: Vec<String>,
     /// Whether the response passed, for the Checks tab's badge (P3):
-    /// `None` when it carries no outcomes, and so has no such tab.
+    /// `None` when it carries no lines, and so has no such tab.
     checks_passed: Option<bool>,
     pub cursor: usize,
     pub scroll: usize,
@@ -1042,12 +1042,13 @@ impl ReadyView {
             data.sent_headers.iter().map(|h| (h.display_name.as_str(), h.display.as_str())),
         ));
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
-        let check_lines = postui_core::checks::lines(data.status, &data.checks)
-            .into_iter()
-            .map(|(passed, line)| format!("{} {line}", if passed { PASS_MARK } else { FAIL_MARK }))
+        let check_lines = data
+            .checks
+            .iter()
+            .map(|(passed, line)| format!("{} {line}", if *passed { PASS_MARK } else { FAIL_MARK }))
             .collect();
-        let checks_passed = (!data.checks.is_empty())
-            .then(|| postui_core::checks::passed(data.status, &data.checks));
+        let checks_passed =
+            (!data.checks.is_empty()).then(|| postui_core::checks::passed(&data.checks));
         let mut view = Self {
             mode,
             body_mode: mode,
@@ -1111,7 +1112,7 @@ impl ReadyView {
 
     /// The views on the tab strip, in on-screen order: Pretty (when there
     /// is a tree to show), Raw, Headers, Checks (when the response carries
-    /// outcomes, spec P1). `response_tab_defs` draws them.
+    /// check lines, spec P1). `response_tab_defs` draws them.
     fn tab_modes(&self) -> Vec<ViewMode> {
         [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers, ViewMode::Checks]
             .into_iter()
@@ -3903,7 +3904,7 @@ impl Response {
             return;
         };
         // A tab the strip doesn't offer: `Pretty` with no tree, or `Checks`
-        // on a response that carries no outcomes.
+        // on a response that carries no check lines.
         if !view.tab_modes().contains(&mode) {
             return;
         }
@@ -7019,13 +7020,12 @@ mod tests {
         assert!(!out.contains("s3cret"), "the secret never renders: {out}");
     }
 
-    /// A ready response to `body` with `status`, carrying `checks`'
-    /// outcomes over it, as the send's task hands it over.
+    /// A ready response to `body` with `status`, judged by `checks`, as
+    /// the send's task hands it over.
     fn judged(status: u16, body: &str, checks: &postui_core::model::Checks) -> Pane {
         let mut d = data(body);
         d.status = status;
-        let doc = || postui_core::jq::JqDocument::parse(body);
-        d.checks = postui_core::checks::evaluate(checks, status, Default::default(), doc);
+        d.judge(checks);
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         r

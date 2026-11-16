@@ -68,23 +68,29 @@ the code. How each lands:
 
 **Core (`postui-core`).** `checks.rs` gains what the CLI's
 `cli/checks.rs` holds today and both sides need: the below-400 rule
-(`FIRST_FAILING_STATUS`, `passes`, `passed`), a check's line
+(`FIRST_FAILING_STATUS`, `passes`), a check's line
 (`Outcome::summary`), and the app's lines (`lines`: the outcomes'
 summaries, led by `status N, expected below 400` when the 400 rule
-failed the response). The CLI's `ShownCheck` calls them. `model.rs`:
+failed the response; `passed`: every line passed). The CLI's
+`ShownCheck` calls them. `model.rs`:
 the read drops a repeated status code or jq filter, keeping the first;
 `Checks::parse_status` and `parse_limit` read a field's text by the
 read's own limits, so the app's refusal and the file's are one rule.
 
-**The send.** `http::ResponseData` gains `checks: Vec<Outcome>`. The
-send's task takes the editor's checks at the send; after `http::send`
-it runs `checks::evaluate` on the blocking pool (when there are any)
-and the response arrives with its outcomes. Nothing is pending, nothing
-is matched back, a cancel drops the task as before.
+**The send.** `http::ResponseData` gains `checks`, the response's lines
+(`checks::lines`). The send's task takes the editor's checks at the
+send; after `http::send` it runs `checks::evaluate` on the blocking
+pool (when there are any) and the response arrives with its lines.
+Nothing is pending, nothing is matched back, a cancel drops the task as
+before. The response keeps the lines and not the outcomes, which hold
+every output of a jq check whole (#309 review round 1). The costs, from
+the ticket's "How to build it" 1: the response shows later by the time
+its checks take, with no limit on a filter that never ends (#308, as in
+the jq bar), and the body is read again when the jq bar is used on it.
 
 **The response tab.** `ViewMode::Checks`, offered when the response's
 `checks` is not empty. Its lines are built once in `ReadyView::new`
-from `checks::lines`, and join every place `ViewMode::Headers` supplies
+from them, and join every place `ViewMode::Headers` supplies
 plain lines (line count, search corpus, copy, save, `$EDITOR`, width).
 It has none of the Headers tab's header copy pills or keys. The tab's
 badge is `checks::passed`. The response side reads nothing from the
@@ -95,7 +101,9 @@ editor.
 - `Stop::Head(k)`: a stop above the rows that the caller draws. The
   walk's `head: bool` becomes a head count. The Project tab's Name row
   is `Stop::Head(0)` (before: nothing selected), so the walk has one
-  rule and "nothing selected" means the same on every table. Heads are
+  rule and "nothing selected" means the same on every table. ←/→ on a
+  head are left to the caller, as they are with nothing selected, so
+  the Name row hands them on as before (#309 review round 1). Heads are
   not content lines: with the cursor on one the view shows the table
   from its top (`settle_view_under_head` and `view_scrolled_under_head`
   fold into `settle_view` and `view_scrolled`).
@@ -111,7 +119,8 @@ editor.
   click and the draw: its row noun for messages, its head count,
   whether a row is one column (no value cell, no toggle), and whether
   its inputs take variables. `EditorTab::table_spec` is the one spot the
-  Checks tab's words and shape come from.
+  Checks table's shape and the table's own messages come from; the
+  words the app sets by the tab are listed in section 4.
 
 **The editor.** `EditorTab::Checks`. The status codes and the limits
 are `Editor::check_status` and `check_limits`; the jq checks live in
@@ -182,8 +191,10 @@ text menu don't offer it), token colour and hover tips
 (`Editor::caret_token`), the footer's `vars` chip.
 
 **Words** (`TableSpec`): the table's three warnings, the delete toasts,
-the row menu. Beside it, by the tab: the copy toast, the footer's add
-chip (`EditorTab::add_row_label`), the pills' and chips' hints
+the put's warning. Beside it, by the tab, where the other tabs' own
+words already are: the row menu's noun and items, `+ Add check`, the
+copy toast, the footer's add chip (`EditorTab::add_row_label`) and row
+chips (`TableCursor::Checks`), the pills' and chips' hints
 (`HintCtx::checks`).
 
 ## 5. Tests

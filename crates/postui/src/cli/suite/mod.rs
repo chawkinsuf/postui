@@ -16,11 +16,11 @@ use super::checks::{self, ShownCheck, failure_lines, shown};
 use super::mask::Mask;
 use super::out::{count, table_under};
 use super::read::{displayed, spaces_of, warnings_text};
-use super::run::{FAILED, RunOpts, millis, prepare_one, refused, session, shown_url, timing};
+use super::run::{FAILED, RunOpts, prepare_one, refused, session, shown_url};
 use super::{CliError, Global};
 use crate::http::send_raw;
 use outline::{Listed, SpaceRequests, outline};
-use postui_core::checks::{Outcome, Timing};
+use postui_core::checks::{Outcome, Timing, millis};
 use postui_core::jq::JqDocument;
 use postui_core::model::{Checks, Method};
 use postui_core::project::Project;
@@ -337,8 +337,8 @@ pub async fn suite(
                     flight.spawn(async move {
                         let sent = match send_raw(&client, &request).await {
                             Ok(raw) => {
-                                let (status, size, timing) =
-                                    (raw.status, raw.bytes.len(), timing(&raw));
+                                let (status, size) = (raw.status, raw.bytes.len());
+                                let timing = Timing::of(raw.ttfb, raw.elapsed);
                                 let outcomes = evaluate(checks, status, timing, raw.bytes).await;
                                 Ok((status, timing, size, outcomes))
                             }

@@ -1042,8 +1042,8 @@ impl TableEditorState {
         // ←/→ move between the name and value cells of a row or `+ Add`.
         // A section row has no cells, so there they do nothing (S21) but
         // stay consumed, as everywhere in the table, so nothing leaks to
-        // the pane. With no row selected there is no cell to move between,
-        // so both stay unconsumed like Up does.
+        // the pane. With no row selected, or on a head, there is no cell to
+        // move between, so both stay unconsumed like Up does.
         let has_cells = matches!(self.selected, Some(Stop::Row(_) | Stop::Add));
         match ev.code {
             // Nothing selected: Down selects the first row.
@@ -1059,7 +1059,7 @@ impl TableEditorState {
                 }
             }
             KeyCode::Left | KeyCode::Right if plain => {
-                if self.selected.is_none() {
+                if matches!(self.selected, None | Some(Stop::Head(_))) {
                     return TableOutcome::not_consumed();
                 }
                 // A one-column row has the one cell to be on.

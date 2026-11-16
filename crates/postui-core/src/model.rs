@@ -391,7 +391,9 @@ fn limit_of<V: TryInto<u32>>(v: V) -> Option<u32> {
 }
 
 /// `jq = [...]` with a filter listed twice read once, the first kept: the
-/// app's list holds each check once (checks tabs spec 2026-11-16).
+/// app's list holds each check once (checks tabs spec 2026-11-16). The
+/// read is the one `run` and `suite` use, so they list the check once
+/// too.
 fn filters<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let mut filters = Vec::<String>::deserialize(d)?;
     let mut seen = std::collections::HashSet::new();

@@ -245,9 +245,9 @@ mod tests {
             let doc = || postui_core::jq::JqDocument::parse(body);
             let outcomes = evaluate(checks, status, timing, doc);
             let run = shown(&outcomes, &Mask::none());
-            assert_eq!(passed(status, &run), core_passed(status, &outcomes), "{status}");
-            // The app adds the below-400 line, which `run` says on stderr.
             let app = lines(status, &outcomes);
+            assert_eq!(passed(status, &run), core_passed(&app), "{status}");
+            // The app adds the below-400 line, which `run` says on stderr.
             let app = &app[app.len() - run.len()..];
             let listed: Vec<(bool, String)> =
                 run.iter().map(|c| (c.passed(), c.summary())).collect();

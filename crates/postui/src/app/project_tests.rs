@@ -439,15 +439,18 @@ fn a_name_differing_only_by_spaces_starts_no_write() {
 }
 
 /// A key the tab hands on leaves its cursor as it was: after a click away
-/// dropped it, Tab on the Name row does nothing here and lights nothing.
+/// dropped it, Tab, ← or → on the Name row does nothing here and lights
+/// nothing.
 #[test]
 fn a_key_the_tab_hands_on_leaves_the_cursor_dropped() {
     let mut app = project_app(THREE, KeyProfile::Arrows);
     click(&mut app, Hit::ManageTab(ManageTab::Project.index()));
     assert!(!app.project_tab.focused);
     assert!(app.project_tab.on_name());
-    assert_eq!(app.handle_project_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)), None);
-    assert!(!app.project_tab.focused, "the unclaimed key relit the cursor");
+    for code in [KeyCode::Tab, KeyCode::Left, KeyCode::Right] {
+        assert_eq!(app.handle_project_key(KeyEvent::new(code, KeyModifiers::NONE)), None);
+        assert!(!app.project_tab.focused, "{code:?}: the unclaimed key relit the cursor");
+    }
 }
 
 /// R14: a right click away from an open header cell commits it first, as

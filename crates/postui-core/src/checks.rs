@@ -23,10 +23,10 @@ pub fn status_check(outcomes: &[Outcome]) -> Option<bool> {
     outcomes.iter().find(|o| matches!(o, Outcome::Status { .. })).map(Outcome::passed)
 }
 
-/// [`passes`] for a response with `status` whose checks came out as
-/// `outcomes`.
-pub fn passed(status: u16, outcomes: &[Outcome]) -> bool {
-    passes(status, status_check(outcomes), outcomes.iter().all(Outcome::passed))
+/// [`passes`] for a response whose checks read as `lines` ([`lines`]):
+/// every line passed, the below-400 rule's among them.
+pub fn passed(lines: &[(bool, String)]) -> bool {
+    lines.iter().all(|(passed, _)| *passed)
 }
 
 /// A response's checks as lines, each with whether it passed: what
@@ -172,9 +172,13 @@ impl Timing {
     /// The time checks judge these same figures, so a check's line never
     /// reads `total 500 ms, limit 500 ms` and fails (spec §2.7, T2).
     pub fn of(ttfb: std::time::Duration, elapsed: std::time::Duration) -> Self {
-        let millis = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
         Self { ttfb_ms: millis(ttfb), elapsed_ms: millis(elapsed) }
     }
+}
+
+/// Whole milliseconds.
+pub fn millis(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// `text` with its lines joined by a space, each trimmed: a filter written
@@ -315,6 +319,7 @@ mod tests {
         let body = r#"{"ok":true,"items":[1,2]}"#;
         let jq_only = checks(&[], &[".ok", ".items | length == 4"]);
         let out = over(&jq_only, 500, body);
+        let passed = |status, out: &[Outcome]| passed(&lines(status, out));
         assert!(!passed(500, &out));
         assert_eq!(
             lines(500, &out),

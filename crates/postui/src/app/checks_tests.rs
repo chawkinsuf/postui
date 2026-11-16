@@ -457,11 +457,10 @@ fn a_multi_line_check_from_a_file_is_written_back_as_read() {
     assert_eq!(checks(&app).jq, [".a\n  | . == 2"]);
 }
 
-/// A response to the open request carrying `checks`' outcomes over
-/// `body`, as the send's task hands it over.
+/// A response to the open request with `body`, judged by `checks`, as the
+/// send's task hands it over.
 fn arrive(app: &mut App, status: u16, body: &str, checks: &Checks) {
-    let doc = || postui_core::jq::JqDocument::parse(body);
-    let data = crate::http::ResponseData {
+    let mut data = crate::http::ResponseData {
         status,
         url: "http://x.test/".into(),
         headers: vec![],
@@ -471,8 +470,9 @@ fn arrive(app: &mut App, status: u16, body: &str, checks: &Checks) {
         elapsed: std::time::Duration::from_millis(9),
         size: body.len(),
         content_type: None,
-        checks: postui_core::checks::evaluate(checks, status, Default::default(), doc),
+        checks: Vec::new(),
     };
+    data.judge(checks);
     let generation = app.session.send_generation;
     app.session.response.set_state(ResponseState::Ready(Box::new(data)), generation);
     draw(app);
@@ -496,7 +496,7 @@ fn the_results_are_the_responses_and_survive_edits_and_a_switch() {
     assert_ne!(app.session.response.view().unwrap().mode, ViewMode::Checks, "no tab switched");
     assert!(app.toasts.last_message().is_none(), "a failed check shows no toast");
     app.session.response.set_view_mode(ViewMode::Checks);
-    let lines = "✗ status 500, expected 200\n✓ total 0 ms, limit 2000 ms\n✓ .a\n✗ .b gave 1";
+    let lines = "✗ status 500, expected 200\n✓ total 9 ms, limit 2000 ms\n✓ .a\n✗ .b gave 1";
     let shown = |app: &App| app.session.response.view().unwrap().view_text();
     assert_eq!(shown(&app), lines);
     // Editing the checks afterwards re-judges nothing.

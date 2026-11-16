@@ -514,6 +514,10 @@ impl Default for Editor {
     }
 }
 
+/// The table's state, a tab's map and its spec ([`Editor::table_parts`]).
+pub type TableParts<'a> =
+    (&'a mut TableEditorState, &'a mut IndexMap<String, Entry>, &'static TableSpec);
+
 impl Editor {
     /// The table behind `tab`; `None` for Body, which has none.
     pub fn table_map(&self, tab: EditorTab) -> Option<&IndexMap<String, Entry>> {
@@ -526,16 +530,10 @@ impl Editor {
         }
     }
 
-    /// `table_map`, mutably. It borrows the whole editor, so a caller that
-    /// also needs `self.table` at once keeps its own field-wise match.
+    /// `table_map`, mutably. A caller that also needs `self.table` at once
+    /// takes [`Self::table_parts`].
     pub fn table_map_mut(&mut self, tab: EditorTab) -> Option<&mut IndexMap<String, Entry>> {
-        match tab {
-            EditorTab::Params => Some(&mut self.params),
-            EditorTab::Headers => Some(&mut self.headers),
-            EditorTab::Vars => Some(&mut self.variables),
-            EditorTab::Checks => Some(&mut self.check_rows),
-            EditorTab::Body => None,
-        }
+        self.parts_of(tab).map(|(_, map, _)| map)
     }
 
     /// The request's checks as the file holds them, from the Checks tab's
@@ -3962,11 +3960,14 @@ impl Editor {
 
     /// The table's state, the active tab's map and its spec, borrowed
     /// apart for a call into the table; `None` on Body, which has none.
-    pub fn table_parts(
-        &mut self,
-    ) -> Option<(&mut TableEditorState, &mut IndexMap<String, Entry>, &'static TableSpec)> {
-        let spec = self.active_tab.table_spec()?;
-        let map = match self.active_tab {
+    pub fn table_parts(&mut self) -> Option<TableParts<'_>> {
+        self.parts_of(self.active_tab)
+    }
+
+    /// [`Self::table_parts`] for `tab`'s table.
+    fn parts_of(&mut self, tab: EditorTab) -> Option<TableParts<'_>> {
+        let spec = tab.table_spec()?;
+        let map = match tab {
             EditorTab::Params => &mut self.params,
             EditorTab::Headers => &mut self.headers,
             EditorTab::Vars => &mut self.variables,
@@ -4532,10 +4533,11 @@ impl Editor {
         }
         let (rows, known) = (&self.check_rows, &mut self.check_compiles);
         known.retain(|text, _| rows.contains_key(text));
-        let compiles = |text: &String| postui_core::jq::check(text).is_ok();
         rows.keys()
             .map(|text| {
-                let ok = *known.entry(text.clone()).or_insert_with(|| compiles(text));
+                let ok = known.get(text).copied().unwrap_or_else(|| {
+                    *known.entry(text.clone()).or_insert(postui_core::jq::check(text).is_ok())
+                });
                 (!ok).then_some(RowNote::Error)
             })
             .collect()
