@@ -51,7 +51,7 @@ journaled, undoable steps (`Project::set_env_tls`, the renames), through
 | R4 | A palette entry opens the tab ("Manage: project", named as the other tabs' are) | mine (approved), Q2 |
 | R5 | A **Name** row at the top: the `name` value, trimmed, or the folder name as a muted placeholder when unset or blank (a blank `name` is no name, for the project's shown name too). Enter (vim `i`, a click) opens it seeded with that trimmed `name` | mine (approved), Q4; trimmed at rest mine, 2026-11-16 (round 7) |
 | R6 | The name commits on Enter and on Esc, keeping the typing (the field rule, spec 2026-09-15, which the Settings fields follow); discard is undo | mine, see §5 |
-| R7 | The committed name is trimmed; empty removes `name` (the project shows its folder name again); nothing else is refused; one undo step per commit. One rule says when a commit writes: when what it would write (the trimmed typing, or no name when that is empty) differs from the `name` the file holds. So typing that trims to the file's name writes nothing, and a commit over a name written by hand with spaces round it, or blank, trims or removes it | mine (approved), Q4; the one write rule mine, 2026-11-16 (comment 1381) |
+| R7 | The committed name is trimmed; empty removes `name` (the project shows its folder name again); nothing else is refused; one undo step per commit. One rule says when a commit writes: when the trimmed typing, or no name when that is empty, differs from the name the row opened with (the file's `name` trimmed, none when blank). So a commit of what the row showed writes nothing and records no step, even over a `name` written by hand with spaces round it, or blank, which stays as written until the name is changed | mine (approved), Q4; the one write rule mine, 2026-11-16 (round 8 of the restart, replacing comment 1381's compare with the file's raw `name`) |
 | R8 | Under it, **Default headers**: the request Headers table reused (`TableEditorState`): a checkbox per row (off writes `{ value, enabled = false }`), name and value cells with `{{variable}}` tinting, a `+ Add header` ghost row, the delete pill and the delete keys on a row. A delete toasts what went with the undo key, as a request table's does | mine (approved), Q3; the toast mine, 2026-11-16 |
 | R9 | Every change the table makes to the headers (a committed cell, a toggle, a delete) writes `project.toml` at once as one undo step; no save step | mine (approved), Q3 |
 | R10 | Rows keep file order; a new row goes last; no reordering | mine (approved), Q3 |
@@ -86,19 +86,35 @@ chooser) brings the hand edit into the tab before any change there.
   writes `headers` as the whole `[default_headers]` table, in its order
   (R17). Enabled entries are plain strings and disabled ones
   `{ value, enabled = false }`, as a request file's table rows. This is
-  not a merge, since every header not in `headers` goes, but what the
-  file already holds keeps its form and comments: the table stays a
-  `[default_headers]` table, an inline `default_headers = { … }` or
-  dotted `default_headers.X` keys; a header whose value `Entry`'s own
-  reading finds unchanged stays as written (plain, inline, dotted
-  `X.value`, or a `[default_headers.X]` sub-table), comments included;
-  a changed one takes the plain form and keeps its comments. A
-  sub-table prints after the table's own values, at its place in the
-  file, so it stays only while every header after it is a kept sub-table
-  further down the file, below the table's own place when the table
-  holds values; otherwise it takes the plain form, its comments moved
-  onto that line, and the file keeps `headers`' order (R10). An empty map
-  removes the table. Journaled; no change records nothing.
+  not a merge, since every header not in `headers` goes. The table keeps
+  its form: a `[default_headers]` table, an inline `default_headers = {
+  … }` or dotted `default_headers.X` keys. An empty map removes the
+  table. Journaled; no change records nothing.
+- **One write rule for the header forms the app never writes** (`mine`,
+  2026-11-16, round 8 of the restart). A header whose value `Entry`'s own
+  reading finds unchanged stays exactly as written (plain, inline, or
+  dotted `X.value`), comments included. A changed or new header, and
+  every `[default_headers.X]` sub-table, changed or not, is written as a
+  plain `name = value` line in the table's body. A plain or inline one
+  keeps the comments above and after its line; a dotted one or a
+  sub-table puts each of its comments on a line of its own above the
+  plain line. So every header is a line of the table's body, which
+  prints in order, and the file always reads the headers back in
+  `headers`' order (R10): the tab's rows, found by index, never point at
+  another header after a write. Cost, accepted: a hand-written
+  `[default_headers.X]` block becomes a plain line at the first change
+  on the tab, and a comment written after a sub-table's or a dotted
+  header's line moves above it. Nothing is lost, and no code reasons
+  about where a sub-table prints. (Rounds 5 and 7 kept untouched
+  sub-tables where they could stay; each round found that logic's next
+  edge, and round 8 found its order could break after a re-read.)
+- **Removing a key keeps the comments above it** (`mine`, 2026-11-16).
+  Clearing the name and emptying the headers remove a top-level key; the
+  comment lines above it may be the file's own (a header comment above
+  `name`, the first key) or describe what follows, so they move above
+  what prints next: the next top-level value, else the next table, else
+  the end of the file. Comments inside or after the removed item go with
+  it, as a deleted header's own comments do.
 
 **App** (`postui`):
 
@@ -139,7 +155,10 @@ chooser) brings the hand edit into the tab before any change there.
   the cell nor the table takes is swallowed, as on the Name row, the
   Settings fields and the Variables grid. The name commit follows R7's
   one rule (`commit_project_name`): it starts a write only when the
-  trimmed typing, or no name, differs from the file's `name`.
+  trimmed typing, or no name, differs from the name the row opened with
+  (`Project::given_name`). Both writes go through one helper
+  (`write_project_step`): the op, the write, the undo step, and on a
+  refusal the toast.
 - Mouse: the table's draw takes the owner its hits register for
   (`TableOwner`): a request's table registers `Hit::TableCell`,
   `TableCheckbox` and the rest, and the Project tab's registers each as
@@ -186,7 +205,8 @@ chooser) brings the hand edit into the tab before any change there.
 - Tab: the strip order and anchoring; the palette entry; the hits.
 - App, both profiles (`app/project_tests.rs`): open the name, type,
   commit with Enter and Esc (written, trimmed, cleared removes; a padded
-  or blank name in the file tidied by a commit); add a header through
+  or blank name in the file left as written, with no step, by a commit
+  of what the row showed); add a header through
   `+ Add`, from the table and from the Name row; toggle; delete; each one
   undo step that
   restores the file; a rename onto a taken name merges with the warning
@@ -203,7 +223,12 @@ chooser) brings the hand edit into the tab before any change there.
   an add acting (R18); a blank name drawn as the
   folder name; the wheel; the footer chips, each keeping the cursor, and
   the pills' tips; a tab too small to draw acting on nothing (R19). Core:
-  sub-tables and dotted headers written in order.
+  sub-tables and dotted headers written in order, and read back in it
+  from every form (sub-tables under no `[default_headers]` line, or
+  under dotted keys); a sub-table and a changed dotted header written
+  plain with every comment on its own line, unchanged by a later write;
+  comments above a removed `name` or emptied table kept above what
+  follows, or at the end of the file.
 - Key matrix: a `ManageProject` fixture in the sweeps (verb chips,
   keycaps, the way back) and cases for move, open, add and delete in both
   profiles.
@@ -229,9 +254,14 @@ chooser) brings the hand edit into the tab before any change there.
   same check for every kind of click (2026-11-16, comment 1390). So a
   checkbox, copy or delete click right after an add acts where it was
   dropped before.
-- R7's one write rule (2026-11-16, comment 1381): the commit compares
-  what it would write with the file's `name`, so Enter on a name written
-  by hand with spaces round it trims it, as one undo step.
+- R7's one write rule (2026-11-16, round 8 of the restart): the commit
+  compares the trimmed typing with the name the row opened with, so a
+  name written by hand with spaces round it, or blank, stays as written
+  until the user changes it; opening the row and leaving it writes
+  nothing. (Comment 1381 compared with the file's raw `name`, which made
+  that open-and-leave a write and an undo step.)
+- The header write rule and the removal rule in §3 (2026-11-16, round 8
+  of the restart).
 - The pills leave the cursor where it was (2026-11-16, comment 1381),
   the delete pill included: on a table row the cursor stays on its
   header (round 4 of the restart: keeping its place put it on another
@@ -258,9 +288,8 @@ chooser) brings the hand edit into the tab before any change there.
   swallows them; a footer chip's click leaves the tab's cursor drawn,
   where the Settings tab's drops it; and R19's whole-or-nothing draw.
 - Round 7 of the restart (2026-11-16): a header the tab didn't change
-  keeps its form and comments (§3), so a sub-table takes the plain form
-  only when a header written after it would otherwise read back out of
-  order, and an inline `default_headers = { … }` stays inline (its
+  keeps its form and comments (§3; a sub-table excepted since round 8),
+  and an inline `default_headers = { … }` stays inline (its
   spacing laid out afresh, since an inline table holds no comments); a
   name written with spaces round it shows trimmed, and opens trimmed;
   the wheel scrolls the header table only with the pointer over it; and

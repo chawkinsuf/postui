@@ -15,7 +15,8 @@ impl Project {
     /// Sets the project's display name: trimmed, and `None` or blank
     /// removes `name`, so the project shows its folder name again. A name
     /// the file already holds writes nothing. A new name keeps the old
-    /// one's comments.
+    /// one's comments; a removed one leaves the comments above it
+    /// (`remove_keeping_comments`).
     pub fn set_project_name(&mut self, name: Option<&str>) -> Result<(), Error> {
         let name = name.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
         self.transaction("set project name", EntryMeta::default(), |p| {
@@ -23,9 +24,7 @@ impl Project {
                 Some(n) => {
                     doc["name"] = with_decor_of(doc.get("name"), toml_edit::value(n.as_str()));
                 }
-                None => {
-                    doc.remove("name");
-                }
+                None => remove_keeping_comments(doc, "name"),
             })
         })
     }
@@ -35,13 +34,15 @@ impl Project {
     /// added by hand since the last read (spec 2026-11-15 R17, the user's
     /// ruling; undo puts it back). An empty map removes the table.
     ///
-    /// The table keeps its form (a `[default_headers]` table, an inline
-    /// `default_headers = { … }`, dotted `default_headers.X` keys) and its
-    /// comments. A header whose value `headers` doesn't change stays as
-    /// written, in its form and with its comments, except a
-    /// `[default_headers.X]` sub-table that can't stay where it is (see
-    /// `kept_sub_tables`). A changed header, and such a sub-table, is
-    /// written in the plain form and keeps its comments.
+    /// One rule for the forms the app never writes (`mine`, spec §3): a
+    /// header `headers` doesn't change stays as written, in its form and
+    /// with its comments, except a `[default_headers.X]` sub-table. A
+    /// changed or new header, and every sub-table, is written as a plain
+    /// line in the table's body; a held header's comments stay above
+    /// that line. So every header is a line of the table's body, and the
+    /// file reads them back in `headers`' order (R10). The table keeps its
+    /// form: a `[default_headers]` table, an inline `default_headers = {
+    /// … }`, or dotted `default_headers.X` keys.
     pub fn set_default_headers(&mut self, headers: &IndexMap<String, Entry>) -> Result<(), Error> {
         self.transaction("set default headers", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| write_default_headers(doc, headers))
@@ -53,17 +54,16 @@ impl Project {
 fn write_default_headers(doc: &mut toml_edit::DocumentMut, headers: &IndexMap<String, Entry>) {
     use toml_edit::{Item, Value};
     if headers.is_empty() {
-        doc.remove(DEFAULT_HEADERS);
+        remove_keeping_comments(doc, DEFAULT_HEADERS);
         return;
     }
     match doc.get_mut(DEFAULT_HEADERS) {
         // Cleared in place, so its decor, place and form stay.
         Some(Item::Table(table)) => {
             let old = table.clone();
-            let kept = kept_sub_tables(&old, headers);
             table.clear();
-            for (i, (name, entry)) in headers.iter().enumerate() {
-                let (key, item) = header_item(&old, name, entry, i >= kept);
+            for (name, entry) in headers {
+                let (key, item) = header_item(&old, name, entry);
                 table.insert_formatted(&key, item);
             }
         }
@@ -71,7 +71,7 @@ fn write_default_headers(doc: &mut toml_edit::DocumentMut, headers: &IndexMap<St
             let old = inline.clone();
             inline.clear();
             for (name, entry) in headers {
-                let (key, item) = header_item(&old, name, entry, true);
+                let (key, item) = header_item(&old, name, entry);
                 if let Ok(value) = item.into_value() {
                     inline.insert_formatted(&key, value);
                 }
@@ -90,94 +90,185 @@ fn write_default_headers(doc: &mut toml_edit::DocumentMut, headers: &IndexMap<St
     }
 }
 
-/// Where the run of `[default_headers.X]` sub-tables kept as they are
-/// starts in `headers`. A sub-table prints after the table's own values,
-/// at its place in the file, so it stays only when it is unchanged, every
-/// header after it stays such a sub-table further down the file, and,
-/// when the table holds values, it lies below the table's own place;
-/// otherwise the file would read the headers in another order (R10).
-fn kept_sub_tables(old: &toml_edit::Table, headers: &IndexMap<String, Entry>) -> usize {
-    let mut run: Vec<isize> = Vec::new();
-    for (name, entry) in headers.iter().rev() {
-        let pos = old
-            .get(name)
-            .and_then(toml_edit::Item::as_table)
-            .filter(|t| !t.is_dotted())
-            .and_then(toml_edit::Table::position)
-            .filter(|_| old.get(name).and_then(entry_of).as_ref() == Some(entry));
-        match pos {
-            Some(pos) if run.last().is_none_or(|&next| pos < next) => run.push(pos),
-            _ => break,
-        }
-    }
-    if run.len() < headers.len() {
-        run.retain(|&pos| old.position().is_some_and(|top| top < pos));
-    }
-    headers.len() - run.len()
-}
-
 /// The key and item `entry` is written as under `name`, given what `old`
-/// holds there: the held one as it is when its value is unchanged (a
-/// sub-table only when `sub_table_stays`); otherwise `entry`'s plain form,
-/// with the held one's comments.
+/// holds there: the held item as it is when its value is unchanged and it
+/// is not a sub-table; otherwise `entry`'s plain form. A held plain or
+/// inline value lends the new line its key's and value's decor; a held
+/// sub-table or dotted header puts each of its comments on a line of its
+/// own above the new line.
 fn header_item(
     old: &dyn toml_edit::TableLike,
     name: &str,
     entry: &Entry,
-    sub_table_stays: bool,
 ) -> (toml_edit::Key, toml_edit::Item) {
     use toml_edit::Item;
     let Some((key, held)) = old.get_key_value(name) else {
         return (toml_edit::Key::new(name), entry.to_item());
     };
-    let stays = match held {
-        Item::Table(table) if !table.is_dotted() => sub_table_stays,
-        _ => true,
-    };
-    if stays && entry_of(held).as_ref() == Some(entry) {
+    let sub_table = matches!(held, Item::Table(t) if !t.is_dotted());
+    if !sub_table && entry_of(held).as_ref() == Some(entry) {
         return (key.clone(), held.clone());
     }
-    let mut new = entry.to_item();
     match held {
-        Item::Table(table) => {
-            // A sub-table or dotted keys: the comments above and after
-            // its lines go above and after the plain line.
-            let (above, after) = comments_of(table);
-            let mut key = toml_edit::Key::new(name);
-            key.leaf_decor_mut().set_prefix(above);
-            if let (false, Some(value)) = (after.is_empty(), new.as_value_mut()) {
-                value.decor_mut().set_suffix(format!(" {after}"));
-            }
-            (key, new)
+        Item::Value(_) => (key.clone(), with_decor_of(Some(held), entry.to_item())),
+        _ => {
+            let mut new_key = toml_edit::Key::new(name);
+            new_key.leaf_decor_mut().set_prefix(comment_lines(key, held));
+            (new_key, entry.to_item())
         }
-        _ => (key.clone(), with_decor_of(Some(held), new)),
     }
 }
 
-/// The comment lines above a sub-table's or dotted header's lines, and
-/// the comments after them, joined.
-fn comments_of(table: &toml_edit::Table) -> (String, String) {
-    fn text(raw: Option<&toml_edit::RawString>) -> &str {
-        raw.and_then(toml_edit::RawString::as_str).unwrap_or("")
-    }
-    let mut above = String::new();
-    let mut after: Vec<String> = Vec::new();
-    let mut take = |prefix: &str, suffix: &str| {
-        for line in prefix.lines().map(str::trim).filter(|l| l.starts_with('#')) {
-            above.push_str(line);
-            above.push('\n');
+/// Every comment on `key` and in `item`, each on a line of its own, in
+/// the order they are written.
+fn comment_lines(key: &toml_edit::Key, item: &toml_edit::Item) -> String {
+    fn push(out: &mut String, decor: &toml_edit::Decor) {
+        for raw in [decor.prefix(), decor.suffix()] {
+            let text = raw.and_then(toml_edit::RawString::as_str).unwrap_or("");
+            for line in text.lines().map(str::trim).filter(|l| l.starts_with('#')) {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
-        let suffix = suffix.trim();
-        if suffix.starts_with('#') {
-            after.push(suffix.to_string());
+    }
+    let mut out = String::new();
+    push(&mut out, key.leaf_decor());
+    if let toml_edit::Item::Table(table) = item {
+        push(&mut out, table.decor());
+        for (path, value) in table.get_values() {
+            for k in path {
+                push(&mut out, k.leaf_decor());
+            }
+            push(&mut out, value.decor());
+        }
+    }
+    out
+}
+
+/// Removes `name` from the top level of `doc`. The comment lines above it
+/// may be the file's own or describe what follows, so they stay: they
+/// move above what prints next, the next top-level value, else the next
+/// table, else the end of the file. Its own comments inside or after it
+/// go with it.
+fn remove_keeping_comments(doc: &mut toml_edit::DocumentMut, name: &str) {
+    use toml_edit::Item;
+    let Some(at) = doc.iter().position(|(k, _)| k == name) else { return };
+    let Some((key, item)) = doc.remove_entry(name) else { return };
+    let above = text_above(&key, &item);
+    if !above.contains('#') {
+        return;
+    }
+    // A value or dotted keys print in the top-level body, before every
+    // table; a table prints at its place.
+    let from = match &item {
+        Item::Table(t) if !t.is_dotted() => t.position(),
+        Item::ArrayOfTables(a) => a.get(0).and_then(toml_edit::Table::position),
+        _ => {
+            let next = doc.iter().skip(at).find(|(_, i)| in_body(i)).map(|(k, _)| k.to_string());
+            if let Some(next) = next {
+                prepend_above(doc.as_table_mut(), &next, &above);
+                return;
+            }
+            None
         }
     };
-    take(text(table.decor().prefix()), text(table.decor().suffix()));
-    for (path, value) in table.get_values() {
-        let key = path.last().map(|k| text(k.leaf_decor().prefix())).unwrap_or("");
-        take(key, text(value.decor().suffix()));
+    let mut next = None;
+    next_table(doc.as_table(), from, &mut next);
+    match next {
+        Some(pos) => {
+            table_at(doc.as_table_mut(), pos, &mut |t: &mut toml_edit::Table| {
+                let old = t.decor().prefix().and_then(toml_edit::RawString::as_str).unwrap_or("");
+                let new = format!("{above}{old}");
+                t.decor_mut().set_prefix(new);
+            });
+        }
+        None => {
+            let old = doc.trailing().as_str().unwrap_or("").to_string();
+            doc.set_trailing(format!("{above}{old}"));
+        }
     }
-    (above, after.join(" "))
+}
+
+/// Whether `item` prints in its table's body: a value, or dotted keys.
+fn in_body(item: &toml_edit::Item) -> bool {
+    match item {
+        toml_edit::Item::Value(_) => true,
+        toml_edit::Item::Table(t) => t.is_dotted(),
+        _ => false,
+    }
+}
+
+/// The text printed above `item`'s first line under `key`.
+fn text_above(key: &toml_edit::Key, item: &toml_edit::Item) -> String {
+    use toml_edit::Item;
+    let raw = |d: &toml_edit::Decor| {
+        d.prefix().and_then(toml_edit::RawString::as_str).unwrap_or("").to_string()
+    };
+    match item {
+        // Dotted keys print their first line's key last, with its decor.
+        Item::Table(t) if t.is_dotted() => {
+            t.iter().next().and_then(|(k, i)| Some(text_above(t.key(k)?, i))).unwrap_or_default()
+        }
+        Item::Table(t) => raw(t.decor()),
+        Item::ArrayOfTables(a) => a.get(0).map(|t| raw(t.decor())).unwrap_or_default(),
+        _ => raw(key.leaf_decor()),
+    }
+}
+
+/// Puts `text` before what prints above the body item `name` of `table`.
+fn prepend_above(table: &mut toml_edit::Table, name: &str, text: &str) {
+    use toml_edit::Item;
+    let Some((mut key, item)) = table.get_key_value_mut(name) else { return };
+    let decor = match item {
+        Item::Table(t) => {
+            let Some(first) = t.iter().next().map(|(k, _)| k.to_string()) else { return };
+            return prepend_above(t, &first, text);
+        }
+        _ => key.leaf_decor_mut(),
+    };
+    let old = decor.prefix().and_then(toml_edit::RawString::as_str).unwrap_or("");
+    let new = format!("{text}{old}");
+    decor.set_prefix(new);
+}
+
+/// The place of the first table with a header line printed after place
+/// `from` (after none: the first of all), into `best`.
+fn next_table(table: &toml_edit::Table, from: Option<isize>, best: &mut Option<isize>) {
+    for (_, item) in table.iter() {
+        let tables: Vec<&toml_edit::Table> = match item {
+            toml_edit::Item::Table(t) => vec![t],
+            toml_edit::Item::ArrayOfTables(a) => a.iter().collect(),
+            _ => continue,
+        };
+        for t in tables {
+            let printed = !t.is_dotted() && !(t.is_implicit() && t.get_values().is_empty());
+            if let Some(pos) = t.position().filter(|_| printed)
+                && from.is_none_or(|f| pos > f)
+                && best.is_none_or(|b| pos < b)
+            {
+                *best = Some(pos);
+            }
+            next_table(t, from, best);
+        }
+    }
+}
+
+/// Runs `f` on the table with a header line at place `pos`.
+fn table_at(table: &mut toml_edit::Table, pos: isize, f: &mut dyn FnMut(&mut toml_edit::Table)) {
+    for (_, item) in table.iter_mut() {
+        let tables: Vec<&mut toml_edit::Table> = match item {
+            toml_edit::Item::Table(t) => vec![t],
+            toml_edit::Item::ArrayOfTables(a) => a.iter_mut().collect(),
+            _ => continue,
+        };
+        for t in tables {
+            if t.position() == Some(pos) && !t.is_dotted() {
+                f(t);
+                return;
+            }
+            table_at(t, pos, f);
+        }
+    }
 }
 
 /// The entry a header of `[default_headers]` holds, in any form, read by
@@ -388,11 +479,11 @@ mod tests {
         assert_eq!(reopen(&dir).meta().default_headers, h);
     }
 
-    /// A change to one header leaves an untouched `[default_headers.X]`
-    /// sub-table and an untouched dotted `X.value` as written, comments
-    /// included.
+    /// A change to one header leaves an untouched dotted `X.value` as
+    /// written, comments included; a `[default_headers.X]` sub-table is
+    /// written as a plain line, its comments each on a line above it.
     #[test]
-    fn untouched_sub_tables_and_dotted_headers_stay_as_written() {
+    fn untouched_dotted_headers_stay_and_sub_tables_go_plain() {
         let (dir, _p) = fixture();
         let text = read(&dir, "project.toml").unwrap();
         let tail = "[default_headers]\nX-Client = \"postui\"\n# per call\nX-Id.value = \"7\"  # id\n\n\
@@ -404,18 +495,18 @@ mod tests {
         p.set_default_headers(&h).unwrap();
         let text = read(&dir, "project.toml").unwrap();
         assert!(
-            text.contains(
+            text.ends_with(
                 "[default_headers]\nX-Client = { value = \"postui\", enabled = false }\n\
-                 # per call\nX-Id.value = \"7\"  # id\n\n\
-                 # staging only\n[default_headers.X-Trace]  # trace\nvalue = \"1\"\n"
+                 # per call\nX-Id.value = \"7\"  # id\n\
+                 # staging only\n# trace\nX-Trace = \"1\"\n"
             ),
             "{text}"
         );
         assert_eq!(reopen(&dir).meta().default_headers, h);
     }
 
-    /// A sub-table that a header is now written after takes the plain
-    /// form, so the file keeps the order, and keeps its comments.
+    /// A sub-table written plain keeps every comment, each on its own
+    /// line above it, and a later write leaves them as they are.
     #[test]
     fn a_sub_table_written_plain_keeps_its_comments() {
         let (dir, _p) = fixture();
@@ -427,17 +518,125 @@ mod tests {
         let mut h = p.meta().default_headers.clone();
         h.insert("b".to_string(), on("2"));
         p.set_default_headers(&h).unwrap();
+        let written = "[default_headers]\na = \"1\"\n# staging only\n# trace\n# the id\n# one\n\
+                       X-Trace = \"1\"\nb = \"2\"\n";
         let text = read(&dir, "project.toml").unwrap();
-        assert!(
-            text.contains(
-                "[default_headers]\na = \"1\"\n# staging only\n# the id\n\
-                 X-Trace = \"1\" # trace # one\nb = \"2\"\n"
-            ),
-            "{text}"
-        );
-        assert!(!text.contains("[default_headers.X-Trace]"), "{text}");
+        assert!(text.ends_with(written), "{text}");
+        h.get_mut("b").unwrap().enabled = false;
+        p.set_default_headers(&h).unwrap();
+        let text = read(&dir, "project.toml").unwrap();
+        let again = written.replace("b = \"2\"", "b = { value = \"2\", enabled = false }");
+        assert!(text.ends_with(&again), "{text}");
         let keys: Vec<String> = reopen(&dir).meta().default_headers.keys().cloned().collect();
         assert_eq!(keys, ["a", "X-Trace", "b"]);
+    }
+
+    /// A changed dotted header is written plain under the comments that
+    /// were above it and after it.
+    #[test]
+    fn a_changed_dotted_header_keeps_its_comments() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        let tail = "[default_headers]\n# per call\nX-Id.value = \"7\"  # id\n";
+        std::fs::write(dir.path().join("project.toml"), format!("{text}\n{tail}")).unwrap();
+        let mut p = reopen(&dir);
+        let mut h = p.meta().default_headers.clone();
+        h.get_mut("X-Id").unwrap().value = "8".to_string();
+        p.set_default_headers(&h).unwrap();
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.ends_with("[default_headers]\n# per call\n# id\nX-Id = \"8\"\n"), "{text}");
+        assert_eq!(reopen(&dir).meta().default_headers, h);
+    }
+
+    /// Whatever forms the file holds the headers in, a write reads back
+    /// in the order written: sub-tables under no `[default_headers]` line,
+    /// with other tables between them, and a sub-table under dotted keys.
+    #[test]
+    fn the_file_reads_back_in_the_order_written() {
+        let implicit = "name = \"Demo\"\nspaces = [\"main\", \"auth\"]\n\n\
+                        [default_headers.b]\nvalue = \"2\"\n\n[space.auth]\nname = \"Auth\"\n\n\
+                        [default_headers.a]\nvalue = \"1\"\nenabled = false\n\n\
+                        [environment.dev]\nname = \"Dev\"\n";
+        let dotted = "default_headers.b = \"2\"\nname = \"Demo\"\nspaces = [\"main\", \"auth\"]\n\n\
+                      [space.auth]\nname = \"Auth\"\n\n\
+                      [default_headers.a]\nvalue = \"1\"\nenabled = false\n";
+        for file in [implicit, dotted] {
+            let (dir, _p) = fixture();
+            std::fs::write(dir.path().join("project.toml"), file).unwrap();
+            let mut p = reopen(&dir);
+            let read_order: Vec<String> = p.meta().default_headers.keys().cloned().collect();
+            assert_eq!(read_order, ["b", "a"], "{file}");
+            let mut h = p.meta().default_headers.clone();
+            h.get_mut("b").unwrap().enabled = false;
+            p.set_default_headers(&h).unwrap();
+            h.insert("c".to_string(), on("3"));
+            p.set_default_headers(&h).unwrap();
+            for p in [&p, &reopen(&dir)] {
+                let keys: Vec<&str> = p.meta().default_headers.keys().map(String::as_str).collect();
+                assert_eq!(keys, ["b", "a", "c"], "{}", read(&dir, "project.toml").unwrap());
+                assert_eq!(p.meta().default_headers, h);
+            }
+            assert_eq!(reopen(&dir).display_name(), "Demo");
+        }
+    }
+
+    /// Removing the name keeps the comment lines above it: they belong
+    /// to the file or to what follows.
+    #[test]
+    fn a_removed_name_leaves_the_comments_above_it() {
+        let (dir, _p) = fixture();
+        let text = read(&dir, "project.toml").unwrap();
+        // First in the file: they go above the next value.
+        std::fs::write(dir.path().join("project.toml"), format!("# Orders kit\n{text}")).unwrap();
+        let mut p = reopen(&dir);
+        p.set_project_name(None).unwrap();
+        let after = read(&dir, "project.toml").unwrap();
+        assert!(after.starts_with("# Orders kit\nspaces = "), "{after}");
+        // Last of the values: they go above the first table.
+        let last = "spaces = [\"main\", \"auth\"]\n# see README\nname = \"Demo\"\n\n\
+                    [space.auth]\nname = \"Auth\"\n";
+        std::fs::write(dir.path().join("project.toml"), last).unwrap();
+        let mut p = reopen(&dir);
+        p.set_project_name(None).unwrap();
+        let after = read(&dir, "project.toml").unwrap();
+        assert_eq!(
+            after,
+            "spaces = [\"main\", \"auth\"]\n# see README\n\n[space.auth]\nname = \"Auth\"\n"
+        );
+        p.undo().unwrap();
+        assert_eq!(read(&dir, "project.toml").unwrap(), last);
+    }
+
+    /// Emptying the headers keeps the comment lines above the table: they
+    /// go above what follows, or stay at the end of the file.
+    #[test]
+    fn emptied_headers_leave_the_comments_above_the_table() {
+        let middle = "name = \"Demo\"\n\n# sent with every request\n[default_headers]\na = \"1\"\n\n\
+                      [space.auth]\nname = \"Auth\"\n";
+        let last = "name = \"Demo\"\n\n[space.auth]\nname = \"Auth\"\n\n\
+                    # sent with every request\n[default_headers]\na = \"1\"\n# end\n";
+        let inline =
+            "# sent with every request\ndefault_headers = { a = \"1\" }\nname = \"Demo\"\n";
+        let dotted = "# sent with every request\ndefault_headers.a = \"1\"\nname = \"Demo\"\n";
+        for (file, want) in [
+            (
+                middle,
+                "name = \"Demo\"\n\n# sent with every request\n\n[space.auth]\nname = \"Auth\"\n",
+            ),
+            (
+                last,
+                "name = \"Demo\"\n\n[space.auth]\nname = \"Auth\"\n\n# sent with every request\n# end\n",
+            ),
+            (inline, "# sent with every request\nname = \"Demo\"\n"),
+            (dotted, "# sent with every request\nname = \"Demo\"\n"),
+        ] {
+            let (dir, _p) = fixture();
+            std::fs::write(dir.path().join("project.toml"), file).unwrap();
+            let mut p = reopen(&dir);
+            p.set_default_headers(&IndexMap::new()).unwrap();
+            assert_eq!(read(&dir, "project.toml").unwrap(), want, "{file}");
+            assert!(p.meta().default_headers.is_empty());
+        }
     }
 
     #[test]

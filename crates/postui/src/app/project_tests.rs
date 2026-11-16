@@ -390,17 +390,34 @@ fn a_refused_write_keeps_the_typing() {
     assert!(!app.op_in_flight, "the refused name ends its op");
 }
 
-/// R7's one rule: a commit writes when the trimmed typing (or no name,
-/// when empty) differs from the file's `name`. So a name the file holds
-/// with spaces round it, committed as it was seeded, is trimmed, and a
-/// blank one is removed; each is one undo step.
+/// R7's one rule: a commit writes only when the trimmed typing (or no
+/// name, when empty) differs from the name the row opened with, the
+/// file's `name` trimmed. So a padded or blank `name` opened and left
+/// unchanged stays as written, with no undo step, whether Enter, Esc or a
+/// click away closes it; a changed one is written trimmed, one undo step.
 #[test]
-fn a_padded_or_blank_name_in_the_file_is_tidied_by_a_commit() {
-    for (toml, after) in [("name = \" Orders \"\n", Some("Orders")), ("name = \"  \"\n", None)] {
+fn an_unchanged_padded_or_blank_name_writes_nothing() {
+    for toml in ["name = \" Orders \"\n", "name = \"\"\n", "name = \"  \"\n"] {
+        for close in ["<CR>", "<Esc>", "click"] {
+            let mut app = project_app(toml, KeyProfile::Arrows);
+            let before = file(&app);
+            feed(&mut app, "<CR>");
+            assert!(app.project_tab.name_open(), "{toml} {close}");
+            if close == "click" {
+                click(&mut app, Hit::ManageTab(ManageTab::Project.index()));
+            } else {
+                feed(&mut app, close);
+            }
+            assert!(!app.project_tab.name_open(), "{toml} {close}");
+            assert_eq!(file(&app), before, "{toml} {close}");
+            assert!(!app.proj().can_undo(), "{toml} {close}: no step");
+        }
         let mut app = project_app(toml, KeyProfile::Arrows);
         let before = file(&app);
-        feed(&mut app, "<CR><CR>");
-        assert_eq!(app.proj().meta().name.as_deref(), after, "{toml}");
+        feed(&mut app, "<CR>");
+        app.project_tab.name_input_mut().unwrap().set_text(" Billing ");
+        feed(&mut app, "<CR>");
+        assert_eq!(app.proj().meta().name.as_deref(), Some("Billing"), "{toml}");
         feed(&mut app, "<C-z>");
         assert_eq!(file(&app), before, "{toml}: one undo step");
     }

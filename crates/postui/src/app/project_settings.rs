@@ -147,15 +147,27 @@ impl App {
     /// Writes `map` as the default headers, one undo step. `false` when
     /// the write was refused (toasted).
     fn write_default_headers(&mut self, map: &IndexMap<String, Entry>) -> bool {
+        self.write_project_step("default headers", |p| p.set_default_headers(map))
+    }
+
+    /// Runs `write` on the open project as one undo step, "change
+    /// `what`". `false` when the write was refused, toasted as "cannot
+    /// save `what`", or when no project is open.
+    fn write_project_step(
+        &mut self,
+        what: &str,
+        write: impl FnOnce(&mut Project) -> Result<(), postui_core::project::Error>,
+    ) -> bool {
         let t = self.begin_op();
-        match self.project.as_mut().map(|p| p.set_default_headers(map)) {
+        let result = self.project.as_mut().map(write);
+        match result {
             Some(Ok(())) => {
-                self.record_project_step(t, crate::undo::StepLabel::change("default headers"));
+                self.record_project_step(t, crate::undo::StepLabel::change(what));
                 true
             }
             Some(Err(e)) => {
                 self.op_in_flight = false;
-                self.toasts.push(format!("cannot save default headers: {e}"), ToastKind::Error);
+                self.toasts.push(format!("cannot save {what}: {e}"), ToastKind::Error);
                 false
             }
             None => {
@@ -165,42 +177,30 @@ impl App {
         }
     }
 
-    /// Commits the Name row's edit (R7). One rule: it writes when what it
-    /// would write, the trimmed typing or no name when that is empty,
-    /// differs from the `name` the file holds; otherwise it writes nothing
-    /// and starts no op. So a name the file holds with spaces round it, or
-    /// blank, is trimmed or removed by a commit, and typing that trims to
-    /// the file's name writes nothing.
+    /// Commits the Name row's edit (R7). One rule: it writes only when the
+    /// trimmed typing, or no name when that is empty, differs from the
+    /// name the row was opened with (`Project::given_name`, the file's
+    /// `name` trimmed, none when blank). So a commit of what the row
+    /// showed writes nothing, even over a `name` the file holds padded or
+    /// blank, which stays as written until the name is changed.
     /// `false` when the write was refused: the edit stays open with the
     /// typing (R14), and the caller decides whether that fails the action.
     /// The edit is taken out before the write's `begin_op`, so that close
     /// finds nothing open.
     pub(crate) fn commit_project_name(&mut self) -> bool {
         let Some(input) = self.project_tab.take_name() else { return true };
-        let Some(held) = self.project().map(|p| p.meta().name.clone()) else {
+        let Some(given) = self.project().map(|p| p.given_name().map(str::to_string)) else {
             return true;
         };
         let next = Some(input.text().trim()).filter(|n| !n.is_empty());
-        if next == held.as_deref() {
+        if next == given.as_deref() {
             return true;
         }
-        let t = self.begin_op();
-        match self.project.as_mut().map(|p| p.set_project_name(next)) {
-            Some(Ok(())) => {
-                self.record_project_step(t, crate::undo::StepLabel::change("project name"));
-                true
-            }
-            Some(Err(e)) => {
-                self.op_in_flight = false;
-                self.project_tab.restore_name(input);
-                self.toasts.push(format!("cannot save the project name: {e}"), ToastKind::Error);
-                false
-            }
-            None => {
-                self.op_in_flight = false;
-                true
-            }
+        if self.write_project_step("project name", |p| p.set_project_name(next)) {
+            return true;
         }
+        self.project_tab.restore_name(input);
+        false
     }
 
     /// Closes whatever is open on the Project tab, saved: the name or a
