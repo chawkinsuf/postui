@@ -13,9 +13,11 @@ const DEFAULT_HEADERS: &str = "default_headers";
 
 impl Project {
     /// Sets the project's display name: trimmed, and `None` or blank
-    /// removes `name`, so the project shows its folder name again. A name
-    /// the file already holds writes nothing. A new name keeps the old
-    /// one's comments; a removed one leaves the comments above it
+    /// removes `name`, so the project shows its folder name again. The
+    /// name is written as a basic string, so the file changes only when
+    /// it printed otherwise: a name it holds in another form, such as
+    /// `'Demo'`, is rewritten as `"Demo"`. A new name keeps the old one's
+    /// comments; a removed one leaves the comments above it
     /// (`remove_keeping_comments`).
     pub fn set_project_name(&mut self, name: Option<&str>) -> Result<(), Error> {
         let name = name.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
@@ -161,6 +163,9 @@ fn remove_keeping_comments(doc: &mut toml_edit::DocumentMut, name: &str) {
     // A value or dotted keys print in the top-level body, before every
     // table; a table prints at its place.
     let from = match &item {
+        Item::Table(t) if !t.is_dotted() && t.is_implicit() => {
+            first_sub_table(t).and_then(toml_edit::Table::position)
+        }
         Item::Table(t) if !t.is_dotted() => t.position(),
         Item::ArrayOfTables(a) => a.get(0).and_then(toml_edit::Table::position),
         _ => {
@@ -209,10 +214,26 @@ fn text_above(key: &toml_edit::Key, item: &toml_edit::Item) -> String {
         Item::Table(t) if t.is_dotted() => {
             t.iter().next().and_then(|(k, i)| Some(text_above(t.key(k)?, i))).unwrap_or_default()
         }
+        // No header line of its own: it starts at its first sub-table.
+        Item::Table(t) if t.is_implicit() => {
+            first_sub_table(t).map(|s| raw(s.decor())).unwrap_or_default()
+        }
         Item::Table(t) => raw(t.decor()),
         Item::ArrayOfTables(a) => a.get(0).map(|t| raw(t.decor())).unwrap_or_default(),
         _ => raw(key.leaf_decor()),
     }
+}
+
+/// The `[parent.X]` sub-table printed first: where a table with no header
+/// line of its own starts.
+fn first_sub_table(parent: &toml_edit::Table) -> Option<&toml_edit::Table> {
+    parent
+        .iter()
+        .filter_map(|(_, item)| item.as_table())
+        .filter(|t| !t.is_dotted())
+        .filter_map(|t| Some((t.position()?, t)))
+        .min_by_key(|(pos, _)| *pos)
+        .map(|(_, t)| t)
 }
 
 /// Puts `text` before what prints above the body item `name` of `table`.
@@ -618,6 +639,11 @@ mod tests {
         let inline =
             "# sent with every request\ndefault_headers = { a = \"1\" }\nname = \"Demo\"\n";
         let dotted = "# sent with every request\ndefault_headers.a = \"1\"\nname = \"Demo\"\n";
+        // Only sub-tables, no `[default_headers]` line: the table starts at
+        // its first sub-table. A later sub-table's own comment goes with it.
+        let sub_tables = "name = \"Demo\"\n\n# sent with every request\n[default_headers.a]\n\
+                          value = \"1\"\n\n[space.auth]\nname = \"Auth\"\n\n\
+                          # b's own\n[default_headers.b]\nvalue = \"2\"\n";
         for (file, want) in [
             (
                 middle,
@@ -629,6 +655,10 @@ mod tests {
             ),
             (inline, "# sent with every request\nname = \"Demo\"\n"),
             (dotted, "# sent with every request\nname = \"Demo\"\n"),
+            (
+                sub_tables,
+                "name = \"Demo\"\n\n# sent with every request\n\n[space.auth]\nname = \"Auth\"\n",
+            ),
         ] {
             let (dir, _p) = fixture();
             std::fs::write(dir.path().join("project.toml"), file).unwrap();
