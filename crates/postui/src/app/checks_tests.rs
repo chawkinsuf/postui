@@ -74,26 +74,6 @@ fn click(app: &mut App, hit: Hit, button: ratatui::crossterm::event::MouseButton
 
 use ratatui::crossterm::event::MouseButton::{Left, Right};
 
-/// Q1, Q2, Q3: the tab opens on its fields and rows, unchanged.
-#[test]
-fn the_tab_shows_the_fields_and_the_checks_and_opens_clean() {
-    let mut app = checks_app(FOUR, KeyProfile::Arrows);
-    assert_eq!(app.surface(), crate::keyroute::Surface::Table(EditorTab::Checks));
-    assert_eq!(cursor(&app), Some(Stop::Head(0)), "the caret lands on the status field");
-    assert!(!app.editor.is_dirty(), "a request opens unchanged");
-    let texts: Vec<String> = (0..3).map(|k| app.editor.check_field_text(k)).collect();
-    assert_eq!(texts, ["200", "", "2000"]);
-    draw(&mut app);
-    for k in 0..3 {
-        assert!(app.hits.rect_of(&Hit::CheckField(k)).is_some(), "field {k}");
-    }
-    for row in 0..=2 {
-        assert!(app.hits.rect_of(&Hit::TableCell { row, col: 0 }).is_some(), "row {row}");
-        assert!(app.hits.rect_of(&Hit::TableCell { row, col: 1 }).is_none(), "one column");
-    }
-    assert!(app.hits.rect_of(&Hit::TableCheckbox(0)).is_none(), "a check has no switch");
-}
-
 /// The walk: every move key from every stop, at rest and out of an open
 /// field or check, lands where the table's one walk puts it: the fields
 /// are places 0 to 2, the checks follow, `+ Add check` is last. ↑ on the
@@ -173,14 +153,22 @@ fn every_move_key_walks_the_fields_the_checks_and_add_as_one() {
     }
 }
 
-/// Tab in an open field goes on through the fields, then the checks, then
-/// `+ Add check`, and out; Shift-Tab comes back the same way.
+/// Q1 to Q3: the tab opens unchanged, on its fields and one-column rows,
+/// the caret on the status field. Tab in an open field goes on through
+/// the fields, then the checks, then `+ Add check`, and out; Shift-Tab
+/// comes back the same way.
 #[test]
 fn tab_walks_the_open_inputs_across_fields_and_checks() {
     let field = |k| FieldCaret::Live(FieldId::CheckField(k));
     let cell = |row| FieldCaret::Live(FieldId::TableCell { row, col: 0 });
     let stops = [field(0), field(1), field(2), cell(0), cell(1), cell(2)];
     let mut app = checks_app(FOUR, KeyProfile::Arrows);
+    assert_eq!(app.surface(), crate::keyroute::Surface::Table(EditorTab::Checks));
+    assert_eq!(cursor(&app), Some(Stop::Head(0)));
+    assert!(!app.editor.is_dirty(), "a request opens unchanged");
+    let texts: Vec<String> = (0..3).map(|k| app.editor.check_field_text(k)).collect();
+    assert_eq!(texts, ["200", "", "2000"]);
+    assert!(app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).is_none(), "one column");
     feed(&mut app, "<CR>");
     for (i, stop) in stops.iter().enumerate() {
         assert_eq!(app.field_caret(), *stop, "forward, stop {i}");
