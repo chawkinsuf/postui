@@ -10,6 +10,7 @@ pub mod manage;
 pub mod manage_list;
 pub mod modal;
 pub mod palette;
+pub mod project_tab;
 pub mod response;
 pub mod settings;
 pub mod sidebar;

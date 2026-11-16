@@ -85,7 +85,7 @@ fn alt_click(m: &ratatui::crossterm::event::MouseEvent) -> bool {
 }
 
 /// The hit a text field is drawn under: the one map between the two.
-fn field_hit(field: FieldId) -> Option<Hit> {
+pub(super) fn field_hit(field: FieldId) -> Option<Hit> {
     Some(match field {
         FieldId::Url => Hit::UrlBar,
         FieldId::Body => Hit::BodyEditor,
@@ -94,6 +94,13 @@ fn field_hit(field: FieldId) -> Option<Hit> {
         FieldId::VmForm(field) => Hit::VmFormField(field),
         FieldId::VmGrid { row, col } => Hit::VmEntryCell { row, col },
         FieldId::Settings(field) => Hit::SettingsControl(field),
+        FieldId::ProjectName => Hit::ProjectName,
+        FieldId::ProjectCell { row, col } => {
+            Hit::ProjectTable(crate::components::table_editor::TableHit::Cell {
+                row,
+                col: u8::try_from(col).ok()?,
+            })
+        }
         FieldId::ModalInput(i) => Hit::ModalInput(i),
         _ => return None,
     })
@@ -490,7 +497,10 @@ impl App {
                             || self.varmanager.grid.editing.is_some());
                     let settings_live = self.modals.is_empty()
                         && (self.settings.editing.is_some() || self.settings.focused);
-                    if !manager_live && !settings_live {
+                    // And the Project tab's, the same way.
+                    let project_live = self.modals.is_empty()
+                        && (self.project_tab.field().is_some() || self.project_tab.focused);
+                    if !manager_live && !settings_live && !project_live {
                         return jq_blurred;
                     }
                     if manager_live && !self.close_manager_input() {
@@ -501,6 +511,9 @@ impl App {
                             || self.commit_settings_edit_for_click())
                     {
                         self.settings.focused = false;
+                    }
+                    if project_live && self.commit_project_tab_input() {
+                        self.project_tab.focused = false;
                     }
                     return self.update(Action::Render);
                 };
@@ -623,7 +636,7 @@ impl App {
                 // typed text survives) swallows the press: no menu is
                 // offered over the typing. A right press in a dialog is the
                 // dialog's, as a left one is (`on_hit`'s dialog rule).
-                if self.modals.is_empty() && !self.close_manager_input() {
+                if self.modals.is_empty() && !self.close_project_inputs() {
                     return self.update(Action::Render);
                 }
                 // A table hit is normalized to `TableRow(resolved)` for the
@@ -768,10 +781,18 @@ impl App {
                 }
                 if self.screen == Screen::Manage {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-                    if self.manage.tab == ManageTab::Variables {
-                        self.varmanager.handle_scroll_at(m.column, m.row, d);
-                    } else {
-                        self.manage.list.handle_scroll(d);
+                    // Each tab scrolls what it draws: the list tabs their
+                    // list, the Project tab its header table when the
+                    // pointer is over it. Settings scrolls nothing.
+                    match self.manage.tab {
+                        ManageTab::Variables => {
+                            self.varmanager.handle_scroll_at(m.column, m.row, d)
+                        }
+                        ManageTab::Environments | ManageTab::Spaces => {
+                            self.manage.list.handle_scroll(d);
+                        }
+                        ManageTab::Project => self.scroll_project_table(m.column, m.row, d),
+                        ManageTab::Settings => {}
                     }
                     return self.update(Action::Render);
                 }
@@ -1224,7 +1245,7 @@ impl App {
         // label (`response::draw_jq_bar`), so it takes the area as it is.
         Some(match field {
             FieldId::ModalInput(_) => (area.x + 2, area.width.saturating_sub(2)),
-            FieldId::VmForm(_) | FieldId::Settings(_) => {
+            FieldId::VmForm(_) | FieldId::Settings(_) | FieldId::ProjectName => {
                 (area.x + WELL_PAD, area.width.saturating_sub(WELL_PAD * 2))
             }
             _ => (area.x, area.width),
@@ -1248,6 +1269,7 @@ impl App {
                 &mut self.editor.table,
                 &mut self.varmanager,
                 &mut self.settings,
+                &mut self.project_tab,
             ),
             _ => None,
         }
@@ -1270,8 +1292,81 @@ impl App {
                 self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col)
             }
             FieldId::Settings(f) => self.settings.editing == Some(f),
+            FieldId::ProjectName => self.project_tab.name_open(),
+            FieldId::ProjectCell { row, col } => self
+                .project_tab
+                .table
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.row == row && usize::from(e.col.index()) == col),
             _ => true,
         }
+    }
+
+    /// A click on the Project tab's header table, `hit` being the table's
+    /// own hit inside [`Hit::ProjectTable`]: the request table's click
+    /// rules, each change written at once (R9). An open name or cell
+    /// commits first; when that commit took a header away (a rename that
+    /// merged two), the rows under the pointer have moved up, so the click
+    /// does nothing and the next one acts (R18; rows are not looked up
+    /// again after a write). An add puts its header last, at the `+ Add`
+    /// row it was typed in, so the rows above stay put and the click acts:
+    /// a name typed in `+ Add` and a click on its value cell open the new
+    /// header's value. A cell or a row click takes the tab's cursor to that
+    /// row; the checkbox, copy and delete pills leave the cursor where it
+    /// was, as a request table's checkbox does.
+    fn click_project_table(
+        &mut self,
+        hit: crate::components::table_editor::TableHit,
+        m: ratatui::crossterm::event::MouseEvent,
+        clicks: Clicks,
+    ) -> bool {
+        use crate::components::table_editor::{Col, TableEditorState, TableHit, TableOutcome};
+        let len = self.default_headers_len();
+        self.project_tab.focused = true;
+        // A click on the cell already open only places the caret.
+        if let TableHit::Cell { row, col } = hit
+            && self.editing(FieldId::ProjectCell { row, col: usize::from(col) })
+        {
+            self.press_text(FieldId::ProjectCell { row, col: usize::from(col) }, m, clicks, true);
+            return self.update(Action::Render);
+        }
+        // A refused write leaves the old field open, so the click does
+        // nothing more.
+        if !self.commit_project_tab_input() {
+            self.last_action_failed = true;
+            return self.update(Action::Render);
+        }
+        if self.default_headers_len() < len {
+            return self.update(Action::Render);
+        }
+        match hit {
+            TableHit::Cell { row, col } => {
+                // Nothing is open now, so this only opens the cell: no write.
+                let cell_col = Col::from_index(col);
+                self.run_header_table(|t, map| t.click_cell(row, cell_col, map));
+                let field = FieldId::ProjectCell { row, col: usize::from(col) };
+                self.press_text(field, m, clicks, false);
+            }
+            TableHit::Checkbox(i) => {
+                let refused = self
+                    .run_header_table(|_, map| {
+                        TableEditorState::toggle_row(map, i);
+                        TableOutcome::default()
+                    })
+                    .1;
+                if refused {
+                    self.last_action_failed = true;
+                }
+            }
+            TableHit::Row(i) => {
+                let len = self.default_headers_len();
+                self.project_tab.table.set_selected(Some(Stop::of_row(i, len)));
+            }
+            TableHit::Copy(i) => return self.update(Action::CopyDefaultHeader(i)),
+            TableHit::Delete(i) => return self.update(Action::DeleteDefaultHeader(i)),
+        }
+        self.update(Action::Render)
     }
 
     /// The char at screen cell `(x, y)` in `field`'s text, as `(row, col)`.
@@ -1836,6 +1931,20 @@ impl App {
             }
             self.settings.focused = false;
         }
+        // …and the Project tab's open name or cell (spec 2026-11-15 R14),
+        // as the Settings tab's: a click off the tab's own controls commits
+        // it and drops the tab's cursor, and a commit the write refuses
+        // swallows the click. The tab's own hits commit in their arms
+        // below. A footer chip commits it too, but leaves the cursor drawn:
+        // the footer is the tab's, its chips naming the tab's keys.
+        if !(keeps_table_selection || matches!(hit, Hit::ProjectName | Hit::ProjectTable(_))) {
+            if !self.commit_project_tab_input() {
+                return self.update(Action::Render);
+            }
+            if !matches!(hit, Hit::FooterChip(_)) {
+                self.project_tab.focused = false;
+            }
+        }
         // Likewise, clicking away blurs whichever editor input is active
         // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
@@ -1870,6 +1979,21 @@ impl App {
             Hit::ManageTab(i) => self.update(Action::SelectManageTab(
                 crate::components::manage::ManageTab::from_index(i),
             )),
+            // -- Project tab --
+            Hit::ProjectName => {
+                self.project_tab.focused = true;
+                let already_editing = self.project_tab.name_open();
+                if !already_editing {
+                    if !self.commit_project_tab_input() {
+                        self.last_action_failed = true;
+                        return self.update(Action::Render);
+                    }
+                    self.open_project_name();
+                }
+                self.press_text(FieldId::ProjectName, m, clicks, already_editing);
+                self.update(Action::Render)
+            }
+            Hit::ProjectTable(inner) => self.click_project_table(inner, m, clicks),
             Hit::ManageRow(i) => {
                 let Self { project, manage, .. } = self;
                 if let Some(p) = project {
@@ -2111,9 +2235,7 @@ impl App {
                         unreachable!("TableCheckbox only fires on Params/Headers/Vars")
                     }
                 };
-                if let Some((_, e)) = map.get_index_mut(i) {
-                    e.enabled = !e.enabled;
-                }
+                crate::components::table_editor::TableEditorState::toggle_row(map, i);
                 self.update(Action::Render)
             }
             // The row background is only reachable at the slivers its cells

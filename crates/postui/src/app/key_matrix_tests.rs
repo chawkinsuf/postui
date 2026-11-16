@@ -73,6 +73,9 @@ pub(super) enum Fixture {
     /// A never-saved request with a URL typed, the URL line selected (not
     /// open): `ZZ` and `:wq` must ask for a name.
     DirtyScratch,
+    /// The Project tab with default headers a, b and c, the cursor on
+    /// header row 1 (spec 2026-11-15 project settings).
+    ManageProject,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,6 +125,12 @@ enum Expect {
     Headers(&'static [&'static str]),
     /// The Environments list, in order.
     EnvNames(&'static [&'static str]),
+    /// The project's default headers, in order.
+    DefaultHeaders(&'static [&'static str]),
+    /// The Project tab's cursor is on header row `n`.
+    ProjectRow(usize),
+    /// The Project tab's cursor is on its Name row.
+    ProjectOnName,
     /// How many options the selector `user` has in the active environment.
     OptionCount(usize),
     /// A chooser is the top modal.
@@ -217,6 +226,12 @@ const CASES: &[Case] = &[
     vim("L.move", ManageEnvs, "j", &[ManageCursor(1)]),
     vim("L.move", ManageEnvDetail, "j", &[DetailAim(DetailRow::Tls, 0)]),
     vim("L.move", Settings, "j", &[SettingsRow(1)]),
+    // Spec 2026-11-15 R12: the Project tab walks its Name row and rows.
+    vim("L.move", ManageProject, "j", &[ProjectRow(2)]),
+    vim("L.move", ManageProject, "kk", &[ProjectOnName]),
+    vim("L.move", ManageProject, "gg", &[ProjectOnName]),
+    arrows("L.move", ManageProject, "<Down>", &[ProjectRow(2)]),
+    arrows("L.move", ManageProject, "<Up><Up>", &[ProjectOnName]),
     vim("L.move", VarList, "j", &[VarSel("beta")]),
     vim("L.move", VarList, "jk", &[VarSel("alpha")]),
     vim("L.move", VarGrid, "j", &[GridCell(1, 0)]),
@@ -245,6 +260,9 @@ const CASES: &[Case] = &[
     vim("L.open", VarGrid, "i", &[FieldLive(true), VmFocusIs(VmFocus::Grid)]),
     vim("L.open", VarForm, "i", &[FieldLive(true), VmFocusIs(VmFocus::Form)]),
     vim("L.open", VarList, "i", &[FieldLive(false), VmFocusIs(VmFocus::List), NoModal]),
+    vim("L.open", ManageProject, "i", &[FieldLive(true), Mode("INSERT")]),
+    vim("L.open", ManageProject, "kki", &[FieldLive(true), ProjectOnName]),
+    arrows("L.open", ManageProject, "<CR>", &[FieldLive(true)]),
     // Plan M1 Deviation 24: the aimed button's own Enter (Rename).
     vim("L.open", ManageEnvDetail, "i", &[PromptOpen, FieldLive(true)]),
     vim("L.open", UrlLine, "i", &[FieldLive(true), Sub(SubFocus::Url)]),
@@ -485,6 +503,11 @@ const CASES: &[Case] = &[
     vim("L.verbs", VarList, "A", &[PromptOpen]),
     vim("L.verbs", VarList, "r", &[PromptOpen]),
     vim("L.verbs", VarGrid, "a", &[FieldLive(true)]),
+    vim("L.verbs", ManageProject, "a", &[FieldLive(true), Mode("INSERT")]),
+    arrows("L.verbs", ManageProject, "a", &[FieldLive(true)]),
+    // Spec 2026-11-15 R12: `a` adds a header from the Name row too.
+    vim("L.verbs", ManageProject, "kka", &[FieldLive(true), Mode("INSERT")]),
+    arrows("L.verbs", ManageProject, "<Up><Up>a", &[FieldLive(true)]),
     // Spec 2026-11-03 create folders F12: `A` makes a folder, `r` renames
     // a folder row, in both profiles.
     vim("L.verbs", SidebarThree, "A", &[PromptOpen]),
@@ -512,6 +535,8 @@ const CASES: &[Case] = &[
     arrows_u("L.dd", TableThreeHeaders, "d", &[Headers(&["a", "c"])]),
     vim_u("L.dd", ManageEnvs, "dd", &[EnvNames(&["qa", "dev"]), NoModal]),
     arrows_u("L.dd", ManageEnvs, "d", &[EnvNames(&["qa", "dev"]), NoModal]),
+    vim_u("L.dd", ManageProject, "dd", &[DefaultHeaders(&["a", "c"]), ProjectRow(1), NoModal]),
+    arrows_u("L.dd", ManageProject, "d", &[DefaultHeaders(&["a", "c"]), ProjectRow(1), NoModal]),
     // A `d` that is not completed is vim's beep: nothing is deleted.
     vim("L.dd", SidebarThree, "dj", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), SidebarSel("main/beta"), Echo("")]),
     // Review Focus 1: counted deletes, clamped, one undo step.
@@ -636,6 +661,10 @@ fn manage_cursor_on_first(app: &mut App) {
 pub(super) fn build(f: Fixture) -> App {
     let mut app = match f {
         VarList | VarGrid | VarForm | VarListGroup => var_app(),
+        ManageProject => super::project_tests::project_app(
+            "[default_headers]\na = \"1\"\nb = \"2\"\nc = \"3\"\n",
+            KeyProfile::Arrows,
+        ),
         _ => App::new_for_test(),
     };
     match f {
@@ -815,6 +844,9 @@ pub(super) fn build(f: Fixture) -> App {
             app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
             app.settings.set_cursor(0);
         }
+        ManageProject => {
+            app.project_tab.table.set_selected(Some(Stop::Row(1)));
+        }
         SettingsFiles => {
             use crate::components::settings::{SettingsRow, SettingsTab};
             app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
@@ -944,6 +976,11 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
             .iter()
             .map(String::as_str)
             .eq(names.iter().copied()),
+        DefaultHeaders(names) => {
+            app.proj().meta().default_headers.keys().map(String::as_str).eq(names.iter().copied())
+        }
+        ProjectRow(n) => app.project_tab.table.selected() == Some(Stop::Row(n)),
+        ProjectOnName => app.project_tab.on_name(),
         OptionCount(n) => {
             app.project()
                 .and_then(|p| {
@@ -1214,7 +1251,7 @@ fn the_yanked_request_follows_its_slug() {
 #[test]
 fn every_manage_list_advertises_its_way_back() {
     for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
-        for f in [ManageEnvs, ManageSpaces, VarList, Settings] {
+        for f in [ManageEnvs, ManageSpaces, VarList, Settings, ManageProject] {
             let mut app = build(f);
             app.use_profile(profile);
             draw(&mut app);
@@ -1328,7 +1365,7 @@ fn every_shipped_key_list_row_has_a_case() {
 use crate::action::Verb;
 use crate::keyroute::table::{self, Intent};
 
-const SWEEP: [Fixture; 9] = [
+const SWEEP: [Fixture; 10] = [
     SidebarThree,
     TableThreeHeaders,
     ManageEnvs,
@@ -1338,6 +1375,7 @@ const SWEEP: [Fixture; 9] = [
     VarListGroup,
     VarGrid,
     VarForm,
+    ManageProject,
 ];
 
 fn verb_row(profile: KeyProfile, surface: crate::keyroute::Surface, verb: Verb) -> bool {
@@ -1506,6 +1544,7 @@ fn every_painted_keycap_resolves_to_its_chip() {
         VarForm,
         Settings,
         RowMenu,
+        ManageProject,
     ];
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
         let mut checked = 0;

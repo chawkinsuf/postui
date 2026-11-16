@@ -16,6 +16,9 @@ pub enum ManageTab {
     Variables,
     Environments,
     Spaces,
+    /// The project's own settings in `project.toml`: its name and default
+    /// headers (spec 2026-11-15 project settings).
+    Project,
     /// Global app settings. The one tab that is not about the open
     /// project, which is why it sits apart at the strip's right edge and
     /// why it still works with no project open.
@@ -25,8 +28,13 @@ pub enum ManageTab {
 impl ManageTab {
     /// Every tab, in on-screen order — the order `index`/`from_index`/
     /// `cycle` and the tab strip all read from.
-    pub const ALL: [ManageTab; 4] =
-        [ManageTab::Variables, ManageTab::Environments, ManageTab::Spaces, ManageTab::Settings];
+    pub const ALL: [ManageTab; 5] = [
+        ManageTab::Variables,
+        ManageTab::Environments,
+        ManageTab::Spaces,
+        ManageTab::Project,
+        ManageTab::Settings,
+    ];
 
     /// How many trailing tabs sit at the strip's right edge.
     pub const RIGHT_ANCHORED: usize = 1;
@@ -36,6 +44,7 @@ impl ManageTab {
             ManageTab::Variables => "Variables",
             ManageTab::Environments => "Environments",
             ManageTab::Spaces => "Spaces",
+            ManageTab::Project => "Project",
             ManageTab::Settings => "Settings",
         }
     }
@@ -237,8 +246,10 @@ mod tests {
     /// whole label.
     #[test]
     fn the_strip_gets_the_full_bar_width() {
-        let (content, hits) = render_at(ManageTab::Variables, 44);
-        for t in [ManageTab::Variables, ManageTab::Environments, ManageTab::Spaces] {
+        let (content, hits) = render_at(ManageTab::Variables, 54);
+        for t in
+            [ManageTab::Variables, ManageTab::Environments, ManageTab::Spaces, ManageTab::Project]
+        {
             assert!(content.contains(t.label()), "{} missing: {content}", t.label());
         }
         assert!(
@@ -275,11 +286,11 @@ mod tests {
                 strip.x + strip.width,
                 "Settings is flush with the strip's right edge at bar width {width}"
             );
-            let spaces = hits
-                .rect_of(&Hit::ManageTab(ManageTab::Spaces.index()))
-                .expect("Spaces registers a hit");
+            let project = hits
+                .rect_of(&Hit::ManageTab(ManageTab::Project.index()))
+                .expect("Project registers a hit");
             assert!(
-                settings.x > spaces.x + spaces.width,
+                settings.x > project.x + project.width,
                 "and it is pushed clear of the contiguous left group at width {width}"
             );
         }
@@ -327,8 +338,17 @@ mod tests {
     /// (`App::tab_target`; `pane_tests`).
     #[test]
     fn settings_is_the_right_anchored_tab() {
-        assert_eq!(ManageTab::ALL.len(), 4);
-        assert_eq!(ManageTab::ALL[3], ManageTab::Settings);
+        assert_eq!(ManageTab::ALL.len(), 5);
+        assert_eq!(ManageTab::ALL[4], ManageTab::Settings);
+    }
+
+    /// Spec 2026-11-15 R2: Project closes the left group, after Spaces,
+    /// and Variables stays first.
+    #[test]
+    fn project_closes_the_left_group() {
+        assert_eq!(ManageTab::ALL[0], ManageTab::Variables);
+        assert_eq!(ManageTab::ALL[3], ManageTab::Project);
+        assert_eq!(ManageTab::default(), ManageTab::Variables);
     }
 
     #[test]

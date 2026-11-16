@@ -10,6 +10,7 @@ mod environments;
 mod local;
 mod meta;
 mod migration;
+mod project_toml;
 mod spaces;
 mod undo;
 mod varedit_ops;
@@ -395,6 +396,16 @@ impl Project {
 
     pub fn display_name(&self) -> String {
         meta::display_name(self.root(), &self.meta)
+    }
+
+    /// The `name` the project shows, when it has one ([`meta::given_name`]).
+    pub fn given_name(&self) -> Option<&str> {
+        meta::given_name(&self.meta)
+    }
+
+    /// The name the project shows with no `name` set ([`meta::folder_name`]).
+    pub fn folder_name(&self) -> String {
+        meta::folder_name(self.root())
     }
 
     pub fn meta(&self) -> &ProjectMeta {

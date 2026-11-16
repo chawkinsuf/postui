@@ -295,11 +295,21 @@ pub enum ProjectError {
 }
 
 pub fn display_name(root: &Path, meta: &ProjectMeta) -> String {
-    meta.name.clone().unwrap_or_else(|| {
-        root.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "project".to_string())
-    })
+    given_name(meta).map_or_else(|| folder_name(root), str::to_string)
+}
+
+/// The `name` the project shows, trimmed, when it has one: `None` when the
+/// key is absent or blank, and the project shows its folder name instead.
+pub fn given_name(meta: &ProjectMeta) -> Option<&str> {
+    meta.name.as_deref().map(str::trim).filter(|n| !n.is_empty())
+}
+
+/// The name a project at `root` shows with no `name` set: its folder's,
+/// or `project` for a root with no last component (`/`).
+pub fn folder_name(root: &Path) -> String {
+    root.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "project".to_string())
 }
 
 pub(crate) fn valid_space_name(name: &str) -> bool {
@@ -358,6 +368,34 @@ pub const DEFAULT_ENVIRONMENT: &str = "default";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A root with no last component shows as `project`, in the name the
+    /// project shows and in its folder name alike.
+    #[test]
+    fn a_root_with_no_folder_name_shows_as_project() {
+        let root = Path::new("/");
+        assert_eq!(folder_name(root), "project");
+        assert_eq!(display_name(root, &ProjectMeta::default()), folder_name(root));
+        assert_eq!(folder_name(Path::new("/srv/orders")), "orders");
+    }
+
+    /// A blank `name` is no name: the project shows its folder name.
+    #[test]
+    fn a_blank_name_shows_the_folder_name() {
+        let root = Path::new("/srv/orders");
+        for blank in ["", "  "] {
+            let meta = ProjectMeta { name: Some(blank.to_string()), ..ProjectMeta::default() };
+            assert_eq!(given_name(&meta), None, "{blank:?}");
+            assert_eq!(display_name(root, &meta), "orders", "{blank:?}");
+        }
+        let meta = ProjectMeta { name: Some("Orders".to_string()), ..ProjectMeta::default() };
+        assert_eq!(given_name(&meta), Some("Orders"));
+        // A name written with spaces round it shows trimmed, as a commit
+        // writes it.
+        let meta = ProjectMeta { name: Some("  Orders  ".to_string()), ..ProjectMeta::default() };
+        assert_eq!(given_name(&meta), Some("Orders"));
+        assert_eq!(display_name(root, &meta), "Orders");
+    }
 
     #[test]
     fn local_state_rename_space_rekeys_every_field_that_names_it() {

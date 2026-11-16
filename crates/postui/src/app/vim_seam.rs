@@ -152,6 +152,7 @@ impl App {
                     &mut self.editor.table,
                     &mut self.varmanager,
                     &mut self.settings,
+                    &mut self.project_tab,
                 )
                 .map(FieldBuf::Line),
             ),
@@ -168,6 +169,7 @@ impl App {
             &mut self.editor.table,
             &mut self.varmanager,
             &mut self.settings,
+            &mut self.project_tab,
         )
         .map(FieldBuf::Line);
         (&mut self.vim.glue, body, to)
@@ -1450,6 +1452,7 @@ impl App {
                     // since `CloseScreen` would save them.
                     self.varmanager.end_edits();
                     self.settings.end_edit();
+                    self.project_tab.end_edits();
                 } else {
                     // A field open on the screen closes first, as the line's
                     // `:q` and `ZZ` close it; one that refuses keeps the

@@ -67,6 +67,12 @@ pub enum Hit {
         file: crate::action::ConfigFile,
         reset: bool,
     },
+    /// The Project tab's Name well: click opens the name's edit.
+    ProjectName,
+    /// A hit in the Project tab's default-headers table, which its draw
+    /// registers under this owner (`TableOwner::Project`) so the request
+    /// table's handlers never take it.
+    ProjectTable(crate::components::table_editor::TableHit),
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,

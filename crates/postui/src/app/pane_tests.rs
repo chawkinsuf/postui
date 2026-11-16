@@ -382,8 +382,10 @@ fn a_count_gt_selects_on_the_response_and_manage_strips() {
     let mut app = app_in(Fixture::ManageEnvs, KeyProfile::Vim);
     feed(&mut app, "3gt");
     assert_eq!(app.manage.tab, ManageTab::Spaces);
-    feed(&mut app, "5gt");
-    assert_eq!(app.manage.tab, ManageTab::Spaces, "four tabs");
+    feed(&mut app, "6gt");
+    assert_eq!(app.manage.tab, ManageTab::Spaces, "five tabs");
+    feed(&mut app, "4gt");
+    assert_eq!(app.manage.tab, ManageTab::Project, "Project after Spaces (spec 2026-11-15 R2)");
 }
 
 /// The tab chord on the response walks Pretty, Raw, Headers and wraps both
@@ -424,13 +426,15 @@ fn the_tab_chord_walks_the_response_strip_both_ways() {
     assert!(!app.update(Action::CycleTabs(1)), "no ready view: nothing to cycle");
 }
 
-/// The tab chord on the Manage screen walks its strip, Settings included,
-/// and wraps both ways.
+/// The tab chord on the Manage screen walks its strip, Project and
+/// Settings included, and wraps both ways.
 #[test]
 fn the_tab_chord_walks_the_manage_strip_both_ways() {
     use crate::components::manage::ManageTab;
     let mut app = app_in(Fixture::ManageSpaces, KeyProfile::Arrows);
     assert_eq!(app.manage.tab, ManageTab::Spaces);
+    assert!(app.update(Action::CycleTabs(1)));
+    assert_eq!(app.manage.tab, ManageTab::Project, "spec 2026-11-15 R2");
     assert!(app.update(Action::CycleTabs(1)));
     assert_eq!(app.manage.tab, ManageTab::Settings);
     assert!(app.update(Action::CycleTabs(1)));

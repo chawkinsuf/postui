@@ -53,10 +53,13 @@ impl App {
     /// The dirty gate's Discard reaches here with the edit still in the
     /// editor, so `before` carries it (OQ1).
     ///
-    /// The Variable Manager's open input closes first, saved, since the op
-    /// changes the project it was typed against (task #75,
-    /// `close_open_inputs`); a close it refuses leaves it open and the op
-    /// still runs. A Settings field holds config, not project state, and
+    /// The open inputs that hold project state, the Variable Manager's and
+    /// the Project tab's, close first, saved, since the op changes the
+    /// project they were typed against (task #75, `close_project_inputs`);
+    /// a close one refuses leaves it open and the op still runs. The
+    /// Project tab's own writes take their cell out before they call this
+    /// (`run_header_table`), as the Manager's commits do. A Settings field
+    /// holds config, not project state, and
     /// stays as it is. An open table cell stays open: the ops run over one
     /// (the var picker's new variable, a selector pick, extract) act on
     /// it. A delete that replaces what the editor holds commits it first
@@ -77,7 +80,7 @@ impl App {
     fn begin_op_on(&mut self, list: Option<ManageTab>) -> OpToken {
         // A close the input refuses is not the op's failure: the op still
         // runs, and a sequence it is part of goes on.
-        self.close_manager_input();
+        self.close_project_inputs();
         self.flush_text_session();
         self.op_in_flight = true;
         OpToken { before: self.view_on(list), list }
@@ -378,7 +381,7 @@ impl App {
             ManageTab::Variables => {
                 self.varmanager.detail.name().map(|n| ListRow::Var(n.to_string()))
             }
-            ManageTab::Settings => None,
+            ManageTab::Project | ManageTab::Settings => None,
         }
     }
 

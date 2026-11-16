@@ -403,6 +403,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) },
         },
         Command {
+            id: "manage-project",
+            name: "Manage: project",
+            description: "Open the Manage screen's Project tab: the project's name and default headers",
+            action: Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Project) },
+        },
+        Command {
             id: "vars-new-variable",
             name: "Variables: new variable…",
             description: "Declare a new project variable",

@@ -84,6 +84,9 @@ pub enum Surface {
     ManageList(ManageTab),
     ManageDetail(ManageTab),
     Settings,
+    /// The Manage screen's Project tab: its Name row and its default
+    /// headers' table (spec 2026-11-15 project settings).
+    Project,
     /// A one-field prompt (`Modal::Prompt`).
     Prompt,
     /// A multi-field form (`NewProject`, `MultiPrompt`, `FieldsEditor`).
@@ -116,6 +119,13 @@ pub enum FieldId {
         col: usize,
     },
     Settings(SettingsField),
+    /// The Project tab's Name row.
+    ProjectName,
+    /// A cell of the Project tab's default headers; `col` as `TableCell`'s.
+    ProjectCell {
+        row: usize,
+        col: usize,
+    },
     /// A form modal's field, by `ModalStack::caret_field`'s index.
     ModalInput(usize),
     FilePicker,
@@ -202,7 +212,7 @@ pub struct EngineView {
 impl Surface {
     /// One surface of every kind, for tests that walk the table.
     #[cfg(test)]
-    pub(crate) const SAMPLES: [Surface; 20] = [
+    pub(crate) const SAMPLES: [Surface; 21] = [
         Surface::Sidebar,
         Surface::SidebarMove,
         Surface::UrlLine,
@@ -217,6 +227,7 @@ impl Surface {
         Surface::ManageList(ManageTab::Environments),
         Surface::ManageDetail(ManageTab::Environments),
         Surface::Settings,
+        Surface::Project,
         Surface::Prompt,
         Surface::Form,
         Surface::Dialog,

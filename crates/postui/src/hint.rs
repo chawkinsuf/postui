@@ -109,7 +109,7 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
         Some(ManageTab::Spaces) => "space",
         Some(ManageTab::Environments) => "environment",
         Some(ManageTab::Variables) => "variable",
-        Some(ManageTab::Settings) => "item",
+        Some(ManageTab::Project | ManageTab::Settings) => "item",
         None => "item",
     }
 }
@@ -257,6 +257,9 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
+        Action::AddDefaultHeader => "Add a default header".to_string(),
+        Action::DeleteDefaultHeader(_) => "Delete this default header".to_string(),
+        Action::CopyDefaultHeader(_) => "Copy this default header's value".to_string(),
         // An auto row's pill (task #56).
         Action::CopyToClipboard(CopyTarget::ComputedHeader(_)) => {
             "Copy this header's value".to_string()
@@ -360,6 +363,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
                 ManageTab::Variables => "Manage your variables",
                 ManageTab::Environments => "Manage your environments",
                 ManageTab::Spaces => "Manage your spaces",
+                ManageTab::Project => "Manage this project's settings",
                 ManageTab::Settings => "Manage app settings",
             })
         }
@@ -401,6 +405,21 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             Some(Source::Text(format!("Delete this {}", manage_noun(ctx.manage_tab))))
         }
         Hit::ManageMoveAll => text("Move all requests to another space"),
+        Hit::ProjectName => text("Edit the project's name"),
+        // Each pill described by the action its click runs, as the footer's
+        // chip for it is; the checkbox's `on` is the default header's
+        // (`App::hint_ctx`). A row and its cells are surfaces, with no hint.
+        Hit::ProjectTable(inner) => {
+            use crate::components::table_editor::TableHit;
+            match inner {
+                TableHit::Checkbox(_) => {
+                    text(if ctx.on { "Disable this row" } else { "Enable this row" })
+                }
+                TableHit::Copy(i) => of(Action::CopyDefaultHeader(*i)),
+                TableHit::Delete(i) => of(Action::DeleteDefaultHeader(*i)),
+                TableHit::Row(_) | TableHit::Cell { .. } => None,
+            }
+        }
 
         // -- Settings tab --
         // Each control names the single action a click performs, in the
