@@ -49,15 +49,15 @@ journaled, undoable steps (`Project::set_env_tls`, the renames), through
 | R2 | A new Manage tab **Project**, last of the left group: Variables, Environments, Spaces, Project … Settings. Variables stays the tab Manage first opens on | mine (approved), Q2 |
 | R3 | With no project open the tab shows the "no project is open" message the other project tabs show | mine (approved), Q2 |
 | R4 | A palette entry opens the tab ("Manage: project", named as the other tabs' are) | mine (approved), Q2 |
-| R5 | A **Name** row at the top: the `name` value, or the folder name as a muted placeholder when unset. Enter (vim `i`, a click) opens it seeded with `name` | mine (approved), Q4 |
+| R5 | A **Name** row at the top: the `name` value, or the folder name as a muted placeholder when unset or blank (a blank `name` is no name, for the project's shown name too). Enter (vim `i`, a click) opens it seeded with `name` | mine (approved), Q4 |
 | R6 | The name commits on Enter and on Esc, keeping the typing (the field rule, spec 2026-09-15, which the Settings fields follow); discard is undo | mine, see §5 |
 | R7 | The committed name is trimmed; empty removes `name` (the project shows its folder name again); nothing else is refused; one undo step per commit. One rule says when a commit writes: when what it would write (the trimmed typing, or no name when that is empty) differs from the `name` the file holds. So typing that trims to the file's name writes nothing, and a commit over a name written by hand with spaces round it, or blank, trims or removes it | mine (approved), Q4; the one write rule mine, 2026-11-16 (comment 1381) |
-| R8 | Under it, **Default headers**: the request Headers table reused (`TableEditorState`): a checkbox per row (off writes `{ value, enabled = false }`), name and value cells with `{{variable}}` tinting, a `+ Add header` ghost row, the delete pill and the delete keys on a row | mine (approved), Q3 |
+| R8 | Under it, **Default headers**: the request Headers table reused (`TableEditorState`): a checkbox per row (off writes `{ value, enabled = false }`), name and value cells with `{{variable}}` tinting, a `+ Add header` ghost row, the delete pill and the delete keys on a row. A delete toasts what went with the undo key, as a request table's does | mine (approved), Q3; the toast mine, 2026-11-16 |
 | R9 | Every change the table makes to the headers (a committed cell, a toggle, a delete) writes `project.toml` at once as one undo step; no save step | mine (approved), Q3 |
 | R10 | Rows keep file order; a new row goes last; no reordering | mine (approved), Q3 |
 | R11 | Renaming onto a name already there, blanking a name, and a `+ Add` name already there do what a request's Headers table does on `main` (merge with a warning; refused with a warning; no row added) | mine (approved), restart |
-| R12 | Keys: ↑↓ (vim `j k`, `gg G`) walk the Name row, the header rows and `+ Add`; ←→ (`h l`) pick the name or value cell; Enter (`i`) opens; Space toggles; Delete or `d` (vim `dd`) deletes; Tab and Shift-Tab walk the cells while one is open; Esc with nothing open leaves the screen. `a` adds a header from anywhere on the tab, the Name row included, in both profiles, and the footer shows the add chip on both rows | mine; `a` from anywhere mine (approved), comment 1382 |
-| R13 | A row's copy pill copies its value | mine |
+| R12 | Keys: ↑↓ (vim `j k`, `gg G`) walk the Name row, the header rows and `+ Add`; the page keys go to the first or last stop, and ctrl+d/ctrl+u step half the table, crossing to and from the Name row as ↓↑ do; ←→ (`h l`) pick the name or value cell; Enter (`i`) opens; Space toggles; Delete or `d` (vim `dd`) deletes; Tab and Shift-Tab walk the cells while one is open; Esc with nothing open leaves the screen. `a` adds a header from anywhere on the tab, the Name row included, in both profiles, and the footer shows the add chip on both rows | mine; `a` from anywhere mine (approved), comment 1382 |
+| R13 | A row's copy pill copies its value to the clipboard; `y` (vim `yy`) on the row does the same, in both profiles, since the tab has no put (as a request table's auto row), and the footer shows the copy chip on a row | mine |
 | R14 | A tab switch, closing the screen, an undo, an environment switch, a reload, a journaled op, or a click away commits an open name or cell first (close-input-first, task #75). A write `project.toml` refuses (it no longer parses) toasts and keeps the field open with the typing; a reload of changed files cancels it instead, as it does the Variable Manager's | mine; the journaled op and the reload's cancel mine (approved), comment 1367 |
 | R15 | No link from a request's default row to this tab in this task; filed as its own task (#305) | mine (approved), Q5 |
 | R16 | Undo of a project step redraws the tab from the restored file; the tab's cursor is clamped, not restored | mine |
@@ -130,8 +130,10 @@ chooser) brings the hand edit into the tab before any change there.
   is open; if that commit changed the header count, the click does
   nothing (R18). A cell or row click takes the tab's cursor to that row;
   the checkbox, copy and delete pills act on their header and leave the
-  cursor where it was (the Name row, or a table row by its place), as a
-  request table's checkbox does. The cursor goes to the table only with
+  cursor on what it was on (the Name row, `+ Add`, or the same header,
+  which a delete above it moves up one), as a request table's checkbox
+  does; a delete of the header under the cursor lands it on the row that
+  moved up, as the delete keys do. The cursor goes to the table only with
   a row selected there. The wheel and the table's view follow a request
   table's rules, shared on `TableEditorState` (spec 2026-10-25 S22–S24):
   the arrows wheel moves the view and leaves the cursor, the vim wheel
@@ -169,7 +171,10 @@ chooser) brings the hand edit into the tab before any change there.
   journaled op commit an open cell first; `ZQ`/`:q!` abandon an open
   name; clicks on a cell, the checkbox, the delete pill and the name; the
   checkbox, copy and delete pills leaving the cursor where it was, from
-  the Name row and from a table row; the wheel; the footer chips.
+  the Name row and from a table row; a delete pill above, below and on
+  the cursor's header; the delete toast; `y`/`yy` copying a value; the
+  half-page keys to and from the Name row; a blank name drawn as the
+  folder name; the wheel; the footer chips.
 - Key matrix: a `ManageProject` fixture in the sweeps (verb chips,
   keycaps, the way back) and cases for move, open, add and delete in both
   profiles.
@@ -200,9 +205,18 @@ chooser) brings the hand edit into the tab before any change there.
   what it would write with the file's `name`, so Enter on a name written
   by hand with spaces round it trims it, as one undo step.
 - The pills leave the cursor where it was (2026-11-16, comment 1381),
-  the delete pill included: on a table row the cursor keeps its place,
-  where a request table's delete pill moves it to the deleted row's
-  place. The delete keys land on the row that moved up either way.
+  the delete pill included: on a table row the cursor stays on its
+  header (round 4 of the restart: keeping its place put it on another
+  header after a delete above it), where a request table's delete pill
+  moves it to the deleted row's place. A delete of the header under the
+  cursor lands on the row that moved up either way.
+- R13: `y` and vim's `yy` copy the value to the clipboard, where on a
+  request table's rows vim's `yy` fills the register for `p`: the tab has
+  no put, so a register-only yank would do nothing visible. A request
+  table's auto rows do the same (spec 2026-10-25 S14).
+- The ctrl+d/ctrl+u half-page keys cross onto and off the Name row as
+  ↓↑ do: ctrl+d off the Name row lands on the first header, and ctrl+u
+  goes to the Name row only from the table's first stop.
 - A right click opens no menu on the tab, except the Copy/Paste menu on
   an open name or cell. Only the Name row's well is clickable, not its
   label.

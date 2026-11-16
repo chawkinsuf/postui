@@ -3224,6 +3224,16 @@ impl App {
         key.map(|key| format!(" — {key} undoes")).unwrap_or_default()
     }
 
+    /// The toast for a deleted table row `i` named `key`, with the undo
+    /// hint: a request table's row and a default header alike. A row whose
+    /// key was never filled in has no name to quote; its 1-based position
+    /// is what the user was looking at, so that is what it says.
+    pub(super) fn toast_deleted_row(&mut self, key: &str, i: usize) {
+        let what =
+            if key.trim().is_empty() { format!("row {}", i + 1) } else { format!("row \"{key}\"") };
+        self.toasts.push(format!("Deleted {what}{}", self.undo_hint()), ToastKind::Info);
+    }
+
     /// `action`'s key at `at`, spelled as the footer spells it (spec
     /// §4.6); `None` when it has none.
     fn key_spelled(&self, at: crate::keyroute::SpellCtx, action: &Action) -> Option<String> {
@@ -4768,17 +4778,12 @@ impl App {
                 let key = map.get_index(i).map(|(k, _)| k.clone());
                 self.editor.table.delete_row(map, i);
                 if let Some(key) = key {
-                    // A row whose key was never filled in has no name to
-                    // quote; its 1-based position is what the user was
-                    // looking at, so that is what it says.
-                    let what = if key.trim().is_empty() {
-                        format!("row {}", i + 1)
-                    } else {
-                        format!("row \"{key}\"")
-                    };
-                    self.toasts
-                        .push(format!("Deleted {what}{}", self.undo_hint()), ToastKind::Info);
+                    self.toast_deleted_row(&key, i);
                 }
+                true
+            }
+            Action::CopyDefaultHeader(i) => {
+                self.copy_default_header(i);
                 true
             }
             Action::DeleteTableRows { start, count } => {

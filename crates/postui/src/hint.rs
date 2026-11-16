@@ -259,6 +259,7 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
         Action::AddDefaultHeader => "Add a default header".to_string(),
         Action::DeleteDefaultHeader(_) => "Delete this default header".to_string(),
+        Action::CopyDefaultHeader(_) => "Copy this default header's value".to_string(),
         // An auto row's pill (task #56).
         Action::CopyToClipboard(CopyTarget::ComputedHeader(_)) => {
             "Copy this header's value".to_string()

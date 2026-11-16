@@ -178,9 +178,90 @@ fn a_header_is_deleted_in_one_step() {
         feed(&mut app, del);
         assert_eq!(keys(&app), ["a", "c"], "{profile:?} {del}");
         assert!(app.modals.is_empty(), "no confirm");
+        // The request table's toast: what went, and the key that undoes.
+        let hint = app.undo_hint();
+        assert!(hint.contains("undoes"), "{profile:?}: {hint:?}");
+        assert_eq!(
+            app.toasts.last_message(),
+            Some(format!("Deleted row \"b\"{hint}")).as_deref(),
+            "{profile:?} {del}"
+        );
         feed(&mut app, undo_key(profile));
         assert_eq!(file(&app), before, "{profile:?} {del}");
     }
+}
+
+const FOUR: &str = "[default_headers]\na = \"1\"\nb = \"2\"\nc = \"3\"\nd = \"4\"\n";
+
+/// A delete pill keeps the cursor on the header it was on: a delete above
+/// it moves it up with its header, one below leaves it, and its own row's
+/// pill lands it on the row that moved up, as the delete keys do.
+#[test]
+fn a_delete_pill_keeps_the_cursor_on_its_header() {
+    // (the cursor's row, the pill's row, the header the cursor ends on)
+    for (at, pill, on) in [(2, 1, "c"), (3, 1, "d"), (1, 3, "b"), (1, 1, "c")] {
+        let mut app = project_app(FOUR, KeyProfile::Arrows);
+        feed(&mut app, &"<Down>".repeat(at + 1));
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(at)));
+        app.hovered = Some(cell(pill, 1));
+        click(&mut app, pt(Hit::TableDelete(pill)));
+        assert_eq!(keys(&app).len(), 3, "{at} {pill}");
+        let row = app.project_tab.selected_row(3).unwrap_or_else(|| panic!("{at} {pill}: no row"));
+        assert_eq!(keys(&app)[row], on, "{at} {pill}");
+    }
+}
+
+/// R13: `y` (vim `yy`) copies the value of the header under the cursor,
+/// as its copy pill does, and the footer offers it on a row.
+#[test]
+fn y_copies_a_header_value() {
+    for (profile, yank) in [(KeyProfile::Arrows, "y"), (KeyProfile::Vim, "yy")] {
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, if profile == KeyProfile::Vim { "jj" } else { "<Down><Down>" });
+        let labels: Vec<&str> =
+            app.project_tab.footer_chips(3).iter().map(|(_, l, _)| *l).collect();
+        assert!(labels.contains(&"copy"), "{profile:?}: {labels:?}");
+        feed(&mut app, yank);
+        assert_eq!(super::tests::last_copied(&app).as_deref(), Some("2"), "{profile:?}");
+        assert_eq!(app.toasts.last_message(), Some("Copied b"), "{profile:?}");
+    }
+}
+
+/// The half-page keys step over the Name row as ↑↓ do: ctrl+d off it, and
+/// ctrl+u from the table's first stop back onto it.
+#[test]
+fn the_half_page_keys_reach_the_name_row() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = project_app(THREE, profile);
+        feed(&mut app, "<C-d>");
+        assert_eq!(app.project_tab.stop, ProjectStop::Table, "{profile:?}");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        feed(&mut app, "<C-d>");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(2)), "{profile:?}");
+        feed(&mut app, "<C-u>");
+        assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        feed(&mut app, "<C-u>");
+        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}");
+        feed(&mut app, "<C-u>");
+        assert_eq!(app.project_tab.stop, ProjectStop::Name, "{profile:?}: ctrl+u stays");
+    }
+}
+
+/// R5: a blank `name` in the file is no name: the Name row shows the
+/// folder name, as with none set, and so does the project's name.
+#[test]
+fn a_blank_name_shows_the_folder_name() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut app = project_app("name = \"  \"\n", KeyProfile::Arrows);
+    let folder = app.proj().folder_name();
+    assert_eq!(app.proj().display_name(), folder);
+    let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let r = app.hits.rect_of(&Hit::ProjectName).unwrap();
+    let buf = terminal.backend().buffer();
+    let well: String = (r.x..r.right()).map(|x| buf[(x, r.y)].symbol().to_string()).collect();
+    assert!(well.contains(&folder), "{well:?}");
 }
 
 /// R11: renaming a header onto a name already there merges the two, as
@@ -783,7 +864,7 @@ fn the_footer_names_the_keys() {
     feed(&mut app, "<Down>");
     let chips = app.project_tab.footer_chips(3);
     let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
-    assert_eq!(labels, ["move", "edit", "add", "toggle", "delete", "back"]);
+    assert_eq!(labels, ["move", "edit", "add", "copy", "toggle", "delete", "back"]);
     feed(&mut app, "<Up>");
     let labels: Vec<&str> = app.project_tab.footer_chips(3).iter().map(|(_, l, _)| *l).collect();
     assert_eq!(labels, ["move", "edit", "add", "back"], "the Name row adds, and has no row verbs");

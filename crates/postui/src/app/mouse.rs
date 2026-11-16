@@ -497,7 +497,9 @@ impl App {
                             || self.varmanager.grid.editing.is_some());
                     let settings_live = self.modals.is_empty()
                         && (self.settings.editing.is_some() || self.settings.focused);
-                    // And the Project tab's, the same way.
+                    // And the Project tab's, the same way. A `focused` left
+                    // from an earlier visit to either tab makes this click a
+                    // redraw that clears it.
                     let project_live = self.modals.is_empty()
                         && (self.project_tab.field().is_some() || self.project_tab.focused);
                     if !manager_live && !settings_live && !project_live {
@@ -1372,14 +1374,7 @@ impl App {
                 self.project_tab.stop = ProjectStop::Table;
                 self.project_tab.table.set_selected(Some(Stop::of_row(i, len)));
             }
-            TableHit::Copy(i) => {
-                let row = self.project().and_then(|p| {
-                    p.meta().default_headers.get_index(i).map(|(k, e)| (k.clone(), e.value.clone()))
-                });
-                if let Some((name, value)) = row {
-                    self.copy_text_with_toast(&value, format!("Copied {name}"));
-                }
-            }
+            TableHit::Copy(i) => return self.update(Action::CopyDefaultHeader(i)),
             TableHit::Delete(i) => return self.update(Action::DeleteDefaultHeader(i)),
             TableHit::Cell { .. } => {}
         }

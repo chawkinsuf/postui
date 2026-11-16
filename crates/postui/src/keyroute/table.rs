@@ -879,16 +879,17 @@ pub static TABLE: &[Binding] = &[
     arrows("d", Surfaces::ROWS.or(Surfaces::MANAGE_DETAIL).or(Surfaces::PROJECT), Intent::Verb(Verb::Delete { count: 1 })),
     row(
         "yy",
-        Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID),
+        Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID).or(Surfaces::PROJECT),
         Intent::Verb(Verb::Yank),
         CountRule::Refuse(NO_COUNTED_YANK),
     ),
     // One copy and one paste letter on every list that copies rows: the
-    // sidebar, the tables and the Variables grid (#145). Arrows gives the
+    // sidebar, the tables and the Variables grid (#145); the Project tab's
+    // headers copy and have no put. Arrows gives the
     // grid no `P`: a pasted option has no position, so it would only be a
     // second `p`. Vim's `P` row keeps the grid, where `P` is Vim's paste
     // (`grid_verb` ignores `above`).
-    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Yank)),
+    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID).or(Surfaces::PROJECT), Intent::Verb(Verb::Yank)),
     // Spec 2026-10-26 H2, H8: a header row's `Name: value`.
     arrows("Y", Surfaces::TABLE, Intent::Act(copy_header_whole)),
     row("\"+yy", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),

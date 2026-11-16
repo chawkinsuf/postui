@@ -18078,7 +18078,7 @@ fn a_vim_count_reaches_the_last_auto_row() {
 }
 
 /// The text of the last clipboard write a test clipboard collected.
-fn last_copied(app: &App) -> Option<String> {
+pub(super) fn last_copied(app: &App) -> Option<String> {
     use base64::Engine;
     let sent = String::from_utf8(app.clipboard.osc52_sent().to_vec()).unwrap();
     let b64 = sent.rsplit("\x1b]52;c;").next().filter(|s| !s.is_empty())?.trim_end_matches('\x07');

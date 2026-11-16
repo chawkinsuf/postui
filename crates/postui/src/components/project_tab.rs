@@ -143,12 +143,13 @@ impl ProjectTab {
     }
 
     /// What a list verb means here (`App::selection_action`): add a header
-    /// from anywhere on the tab, the Name row included (R12), and delete
-    /// the header under the cursor. Nothing else applies.
+    /// from anywhere on the tab, the Name row included (R12), and delete or
+    /// copy the header under the cursor (R13). Nothing else applies.
     pub fn verb_action(&self, len: usize, verb: Verb) -> Option<Action> {
         match verb {
             Verb::Add => Some(Action::AddDefaultHeader),
             Verb::Delete { .. } => self.selected_row(len).map(Action::DeleteDefaultHeader),
+            Verb::Yank => self.selected_row(len).map(Action::CopyDefaultHeader),
             _ => None,
         }
     }
@@ -170,6 +171,7 @@ impl ProjectTab {
             chip(Verb::Add, "add"),
         ];
         if self.selected_row(len).is_some() {
+            chips.push(chip(Verb::Yank, "copy"));
             chips.push((Key::Named("space"), "toggle", None));
             chips.push(chip(Verb::Delete { count: 1 }, "delete"));
         }
@@ -178,8 +180,9 @@ impl ProjectTab {
     }
 
     /// Paints the tab: the Name row, then the default headers' table,
-    /// settled first ([`Self::settle`]). `folder` is the name the project
-    /// shows with no `name` set. `ctx.focused` is ignored: the tab's own
+    /// settled first ([`Self::settle`]). `name` is the project's given name
+    /// (`Project::given_name`: none when blank), and `folder` the name it
+    /// shows without one. `ctx.focused` is ignored: the tab's own
     /// [`Self::focused`] says whether its cursor is drawn.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(

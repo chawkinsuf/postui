@@ -75,20 +75,27 @@ impl App {
             || ev.code == KeyCode::Char('b') && ctrl;
         let last = matches!(ev.code, KeyCode::End | KeyCode::PageDown) && (plain || ctrl)
             || ev.code == KeyCode::Char('f') && ctrl;
+        // The half-page keys cross onto and off the Name row as ↑↓ do:
+        // ctrl+d off it, and ctrl+u from the table's first stop.
+        let half_down = ev.code == KeyCode::Char('d') && ctrl;
+        let half_up = ev.code == KeyCode::Char('u') && ctrl;
+        let at_top = self.project_tab.table.selected().map(|s| s.clamp(len, 0))
+            == Some(Stop::of_row(0, len));
         match self.project_tab.stop {
             ProjectStop::Name => match ev.code {
                 KeyCode::Down if plain => self.project_tab.to_table(len),
+                _ if half_down => self.project_tab.to_table(len),
                 _ if last => {
                     self.project_tab.to_table(len);
                     self.project_tab.table.set_selected(Some(Stop::Add));
                 }
                 KeyCode::Enter if plain => self.open_project_name(),
                 KeyCode::Up if plain => {}
-                _ if first => {}
+                _ if first || half_up => {}
                 _ => return None,
             },
             // ↑ off the first row goes to the Name row too, below.
-            ProjectStop::Table if first => self.project_tab.to_name(),
+            ProjectStop::Table if first || half_up && at_top => self.project_tab.to_name(),
             ProjectStop::Table => {
                 let (outcome, refused) = self.run_header_table(|t, map| t.handle_key(ev, map));
                 if refused {
@@ -250,28 +257,55 @@ impl App {
         });
     }
 
-    /// `Action::DeleteDefaultHeader`: header `i` goes, one undo step. The
-    /// tab's cursor is drawn again, as for an add: a footer chip's click
-    /// is a click away that dropped it. The cursor stays where it was, the
-    /// Name row or a table row by its place (clamped onto the rows left,
-    /// R16), so a delete pill's click doesn't move it, and a delete key on
-    /// a row lands on the row that moved up, as the table's own delete does.
+    /// `Action::DeleteDefaultHeader`: header `i` goes, one undo step, with
+    /// the request table's "Deleted row" toast. The tab's cursor is drawn
+    /// again, as for an add: a footer chip's click is a click away that
+    /// dropped it. The cursor stays on what it was on: the Name row, `+ Add`,
+    /// or the same header, which a delete above it moves up one. When the
+    /// header under it is the one deleted (a delete key, or that row's
+    /// pill), it lands on the row that moved up, as the table's own delete
+    /// does.
     pub(super) fn delete_default_header(&mut self, i: usize) {
         if !self.commit_project_tab_input() {
             self.last_action_failed = true;
             return;
         }
         self.project_tab.focused = true;
+        let key = self
+            .project()
+            .and_then(|p| p.meta().default_headers.get_index(i).map(|(k, _)| k.clone()));
         let refused = self
             .run_header_table(|t, map| {
                 let kept = t.selected();
                 t.delete_row(map, i);
-                t.set_selected(kept.map(|s| s.clamp(map.len(), 0)));
+                match kept {
+                    Some(Stop::Row(k)) if k == i => {}
+                    Some(Stop::Row(k)) => {
+                        let k = if k > i { k - 1 } else { k };
+                        t.set_selected(Some(Stop::Row(k).clamp(map.len(), 0)));
+                    }
+                    other => t.set_selected(other),
+                }
                 TableOutcome::default()
             })
             .1;
         if refused {
             self.last_action_failed = true;
+        } else if let Some(key) = key {
+            self.toast_deleted_row(&key, i);
+        }
+    }
+
+    /// `Action::CopyDefaultHeader`: header `i`'s value to the clipboard, as
+    /// a request row's copy pill copies (R13). The pill, `y` and vim's `yy`
+    /// all come here: the tab has no put, so a yank is this copy, as on a
+    /// request table's auto row.
+    pub(super) fn copy_default_header(&mut self, i: usize) {
+        let row = self.project().and_then(|p| {
+            p.meta().default_headers.get_index(i).map(|(k, e)| (k.clone(), e.value.clone()))
+        });
+        if let Some((name, value)) = row {
+            self.copy_text_with_toast(&value, format!("Copied {name}"));
         }
     }
 }

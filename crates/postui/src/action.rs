@@ -351,6 +351,9 @@ pub enum Action {
     /// The Project tab: delete default header `i`, written at once as one
     /// undo step (R9). No confirm, as every delete.
     DeleteDefaultHeader(usize),
+    /// The Project tab: copy default header `i`'s value to the clipboard,
+    /// its row's copy pill and its yank keys (R13).
+    CopyDefaultHeader(usize),
     /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row
     /// `i` of the active params/headers/vars table to `<key>-copy` (then
     /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)

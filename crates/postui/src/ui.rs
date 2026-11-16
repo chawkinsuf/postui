@@ -230,7 +230,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                                 frame,
                                 body,
                                 &ctx,
-                                p.meta().name.as_deref(),
+                                p.given_name(),
                                 &folder,
                                 &p.meta().default_headers,
                                 &editor.vars,
