@@ -55,6 +55,10 @@ change the project file format.
   selection, cursor, scroll and search matches. A body that turns out not
   to be JSON no longer moves the view from Headers or Checks to Raw: only
   the Tree tab goes.
+- On the Tree tab, while it shows the response's own tree (no filter's
+  result is up), a jq filter whose result is `null` or no output, or
+  switching the filter off, keeps the selection and sideways scroll, which
+  it used to clear.
 
 ## [0.4.1] - 2026-11-13
 

@@ -1246,41 +1246,39 @@ impl ReadyView {
         self.jq_tree.as_ref().or(self.tree.as_ref())
     }
 
-    /// Swaps the body tree in (or out). With [`ReadyView::set_jq_tree`]
-    /// and [`ReadyView::active_tree_mut`], the only writers of the trees,
-    /// so `tree_epoch` and `tree_edits` see every change (what the bracket
-    /// memo, `BracketInputs`, relies on).
+    /// Swaps the body tree in (or out). With [`ReadyView::set_jq_tree`],
+    /// [`ReadyView::drop_trees`] and [`ReadyView::active_tree_mut`], the
+    /// only writers of the trees, so `tree_epoch` and `tree_edits` see
+    /// every change (what the bracket memo, `BracketInputs`, relies on).
+    ///
+    /// Only the Tree tab shows the trees, so another tab's place is on
+    /// lines this didn't change and is left alone (#313). On the Tree tab
+    /// the view starts over: its folds are the new tree's.
     fn set_body_tree(&mut self, tree: Option<JsonTree>) {
         self.tree = tree;
         self.tree_epoch += 1;
-        self.tree_swapped(true);
+        if self.mode == ViewMode::Pretty {
+            self.lines_replaced();
+        }
     }
 
-    /// Swaps the filtered tree in (or out), bumping the epoch and
-    /// resetting the Tree tab only when the tree on screen actually
-    /// changes — clearing an already-absent filter tree leaves the body
-    /// tree, its width measure and the user's place on it as they were.
+    /// Swaps the filtered tree in (or out), bumping the epoch only when
+    /// the tree on screen actually changes — clearing an already-absent
+    /// filter tree leaves the body tree, its width measure and the user's
+    /// place on it as they were.
+    ///
+    /// When it changes, only the Tree tab's place moves, as for
+    /// [`ReadyView::set_body_tree`]: the cursor keeps its line, clamped
+    /// into the lines now shown, and its wanted column; the selection,
+    /// sideways scroll and match positions go.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
         let changed = tree.is_some() || self.jq_tree.is_some();
         self.jq_tree = tree;
-        if changed {
-            self.tree_epoch += 1;
-            self.tree_swapped(false);
-        }
-    }
-
-    /// A tree setter ran. Only the Tree tab shows the trees, so another
-    /// tab's place is on lines this didn't change and is left alone
-    /// (#313). On the Tree tab, a new body tree starts the view over (its
-    /// folds are the new tree's). A filter's output going in or out keeps
-    /// the cursor's line, clamped into the lines now shown, and its wanted
-    /// column; the selection, sideways scroll and match positions go.
-    fn tree_swapped(&mut self, body: bool) {
-        if self.mode != ViewMode::Pretty {
+        if !changed {
             return;
         }
-        if body {
-            self.lines_replaced();
+        self.tree_epoch += 1;
+        if self.mode != ViewMode::Pretty {
             return;
         }
         self.cursor_moved();
@@ -1289,6 +1287,14 @@ impl ReadyView {
         self.follow_cursor();
         self.h_scroll = 0;
         self.recompute_matches();
+    }
+
+    /// Drops both trees (a shed). The filtered tree goes first, without
+    /// a swap of its own, so the Tree tab starts over once, on no lines,
+    /// rather than first searching the filtered tree it is about to drop.
+    fn drop_trees(&mut self) {
+        self.jq_tree = None;
+        self.set_body_tree(None);
     }
 
     /// The one mutable way to the tree on screen, so every fold it makes
@@ -2977,8 +2983,8 @@ struct LineMatches {
 /// megabyte-long minified Raw line (about 10 ms a frame, measured), and
 /// the draw runs on every event. The lines walked are the mode's: Raw's
 /// and Headers' never change for the view's life, and the tree's change
-/// only through its writers: a swap (`set_body_tree`, `set_jq_tree`, which
-/// bump `tree_epoch`) or a fold (`active_tree_mut`, which bumps
+/// only through its writers: a swap (`set_body_tree`, `set_jq_tree`,
+/// `drop_trees`, which bump `tree_epoch`) or a fold (`active_tree_mut`, which bumps
 /// `tree_edits`). A new input to `bracket_pair` belongs here too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BracketInputs {
@@ -3448,7 +3454,7 @@ impl Response {
     /// column index — everything derived from the body — while keeping the
     /// body, headers, tab and filter, and on a tab other than Tree the
     /// cursor and scroll. The Tree tab, whose lines go, starts over
-    /// (`set_body_tree`). The response reads as "parsing" again, so the
+    /// (`drop_trees`). The response reads as "parsing" again, so the
     /// Tree tab stays and shows its spinner once the response is back on
     /// screen and `take_reparse` has restarted the parse; `attach_tree`
     /// then clears `jq_applied` so the filter re-runs against the fresh
@@ -3457,8 +3463,7 @@ impl Response {
         let Some(view) = self.view.as_mut() else {
             return;
         };
-        view.set_body_tree(None);
-        view.set_jq_tree(None);
+        view.drop_trees();
         view.jq_doc = None;
         view.jq_tree_code = None;
         view.jq_applied = None;
@@ -8274,14 +8279,30 @@ mod tests {
     #[test]
     fn a_shed_on_the_tree_tab_starts_it_over() {
         let body = format!("[{}]", vec![format!("\"{}\"", "x".repeat(8000)); 40].join(","));
-        let mut r = ready_gen(&body, 2);
-        assert!(r.attach_tree(2, JsonTree::parse(&body)));
-        let v = r.view.as_mut().unwrap();
-        assert_eq!(v.mode, ViewMode::Pretty);
-        (v.cursor, v.scroll, v.h_scroll) = (20, 10, 3);
-        r.shed_derived();
-        let v = r.view().unwrap();
-        assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None));
+        // With a filter's tree up and a search open too, both trees go.
+        for filtered in [false, true] {
+            let mut r = ready_gen(&body, 2);
+            assert!(r.attach_tree(2, JsonTree::parse(&body)));
+            if filtered {
+                let req = r.apply_jq(".", 0, LIMIT).expect("a background run");
+                let output = format!("[{}]", vec!["\"xx\""; 40].join(","));
+                let out = JqRunOutput::from_outputs(vec![output]);
+                assert!(r.attach_jq_result(2, req.run, None, Ok(out)));
+                assert!(r.view().unwrap().jq_tree.is_some(), "the filter's tree is up");
+                search_for(&mut r, SearchSyntax::Literal, "xx");
+                let v = r.view().unwrap();
+                assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
+            }
+            let v = r.view.as_mut().unwrap();
+            assert_eq!(v.mode, ViewMode::Pretty);
+            (v.cursor, v.scroll, v.h_scroll) = (20, 10, 3);
+            r.shed_derived();
+            let v = r.view().unwrap();
+            assert!(v.tree.is_none() && v.jq_tree.is_none(), "{filtered}");
+            let place = (v.cursor, v.scroll, v.h_scroll, v.sel);
+            assert_eq!(place, (0, 0, 0, None), "{filtered}");
+            assert!(v.search.as_ref().is_none_or(|s| s.matches.is_empty()), "{filtered}");
+        }
     }
 
     /// #313: on the Tree tab, a filter that puts no tree of its own up (a
