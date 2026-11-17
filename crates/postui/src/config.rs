@@ -305,9 +305,11 @@ pub struct UiSettings {
     /// Per-transition durations, tunable via the optional `[animation_ms]`
     /// table; see [`AnimDurations`].
     pub anim_ms: AnimDurations,
-    /// The shell command "Describe a filter…" runs, with the prompt piped
-    /// in on stdin: `claude -p` by default. Only its first word (the
-    /// program name) is looked up on PATH to gate the menu item.
+    /// The command "Describe a filter…" runs as `sh -c "exec env <ai_cmd>"`
+    /// (`ai::run_command`), with the prompt piped in on stdin: `claude -p`
+    /// by default. Its program (`ai::program_name`, the first word past
+    /// any leading `NAME=value` settings) is looked up on PATH to gate the
+    /// menu item.
     pub ai_cmd: String,
     /// Whether the user has already confirmed sending the response's shape
     /// to `ai_cmd` — set once via the "Always send" choice and persisted,

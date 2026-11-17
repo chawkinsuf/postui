@@ -152,6 +152,8 @@ impl CommandRun {
 /// pipeline only the first command gets `exec env` (the #314 paragraph of
 /// the jq-response-filter spec). `Err` when the command could
 /// not be started or waited on, or `run` was killed before it finished.
+/// A kill doesn't end the reads: while a process the command forked holds
+/// its stdout or stderr open, this waits for it.
 pub async fn run_command(
     cmd: String,
     stdin: String,
@@ -191,11 +193,11 @@ pub async fn run_command(
             // by its exit status below, not here.
             let _ = pipe.write_all(stdin.as_bytes()).await;
         }
-        Ok::<_, std::io::Error>(())
     };
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-    let read = tokio::try_join!(write, out.read_to_end(&mut stdout), err.read_to_end(&mut stderr))
-        .map(|_| ());
+    let ((), read) = tokio::join!(write, async {
+        tokio::try_join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr))
+    });
     // Waited on only once out of the run, so `kill` never signals a pid
     // that has been reaped and may belong to another process by then.
     // From here, only dropping this future ends the command
