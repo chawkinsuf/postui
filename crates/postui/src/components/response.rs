@@ -749,8 +749,6 @@ pub const JQ_SPINNER_AFTER: Duration = Duration::from_millis(100);
 /// scratch whenever a new response lands, so no state leaks between requests.
 pub struct ReadyView {
     pub mode: ViewMode,
-    /// The body view (`Pretty` or `Raw`) to come back to from `Headers`.
-    body_mode: ViewMode,
     pub tree: Option<JsonTree>,
     /// The send generation this response belongs to, so a background parse
     /// can be matched to the view it was started for (and only that one).
@@ -1140,7 +1138,6 @@ impl ReadyView {
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
         let mut view = Self {
             mode,
-            body_mode: mode,
             tree,
             generation,
             parsing,
@@ -2244,9 +2241,6 @@ impl ReadyView {
             return;
         }
         self.mode = mode;
-        if mode.is_body() {
-            self.body_mode = mode;
-        }
         self.lines_replaced();
     }
 
@@ -3093,7 +3087,9 @@ impl Response {
                 // the app's reconcile step re-runs the pending filter.
                 view.jq_applied = None;
                 // Already on the Tree tab (watching the spinner): the tree
-                // it was waiting for is now the view's content.
+                // it was waiting for is now the view's content. A tree
+                // parsed again after a shed starts over too: its folds
+                // are the new tree's, not the ones the old place was on.
                 if on_tree {
                     view.lines_replaced();
                 }
@@ -3423,7 +3419,8 @@ impl Response {
     /// response reads as "parsing" again, so the Tree tab stays and shows
     /// its spinner once the response is back on screen and
     /// `take_reparse` has restarted the parse; `attach_tree` then clears
-    /// `jq_applied` so the filter re-runs against the fresh tree.
+    /// `jq_applied` so the filter re-runs against the fresh tree, and with
+    /// the Tree tab up starts the view over on it.
     pub fn shed_derived(&mut self) {
         let Some(view) = self.view.as_mut() else {
             return;
@@ -8117,13 +8114,14 @@ mod tests {
     }
 
     /// What a tab the user is reading holds of theirs: the cursor, its
-    /// column and the column it wants, both scrolls, the selection and the
-    /// search's matches.
+    /// column and the column it wants, both scrolls, the selection and its
+    /// anchors, the clicked char and the search's matches.
     fn where_the_user_is(r: &Pane) -> impl PartialEq + std::fmt::Debug + use<> {
         let v = r.view().unwrap();
         let matches = v.search.as_ref().map(|s| (s.matches.clone(), s.current));
-        let place = (v.cursor, v.scroll, v.h_scroll, v.at_col, v.want);
-        (v.mode, place, v.sel, r.selected_text(), matches)
+        let place = (v.cursor, v.scroll, v.h_scroll, v.at_col, v.want, v.show_col, v.fold_line);
+        let sel = (v.sel, v.sel_anchor, v.line_anchor, v.anchor_col, r.selected_text());
+        (v.mode, place, sel, v.clicked, matches)
     }
 
     /// The tabs other than Tree, which a big body's parse can land behind.
@@ -8132,8 +8130,8 @@ mod tests {
     /// A big body with a judged check, switched to `mode` while its parse
     /// runs, with the user's place on it: searched for "Bearer" on Headers
     /// ("aaa" elsewhere), which puts the cursor on a line and column with
-    /// matches, or with a few cells selected on the first line; and
-    /// scrolled sideways.
+    /// matches, or with a few cells selected on the first line; scrolled
+    /// sideways; and with a clicked char and a V anchor's column set.
     fn reading_mid_parse(body: &str, generation: u64, mode: ViewMode, select: bool) -> Pane {
         let mut r = ready_gen(body, generation);
         r.set_checks(CheckState::Judged(vec![(true, r#".a | startswith("aaa")"#.into())]));
@@ -8151,7 +8149,10 @@ mod tests {
             assert!(v.at_col.is_some_and(|(_, c)| c > 0), "{mode:?}: off column 0");
             assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
         }
-        r.view.as_mut().unwrap().h_scroll = 2;
+        let v = r.view.as_mut().unwrap();
+        v.h_scroll = 2;
+        v.clicked = Some(Clicked { tree: None, line: 0, col: 1 });
+        v.anchor_col = 1;
         r
     }
 
@@ -8203,16 +8204,28 @@ mod tests {
     }
 
     /// #313: on the Tree tab the landed tree is new lines, so the place
-    /// starts over on it, sideways scroll included.
+    /// starts over on it, sideways scroll included: on a first landing,
+    /// and on a tree parsed again after a shed.
     #[test]
     fn a_tree_landing_on_the_tree_tab_starts_it_over() {
-        let body = big_json();
-        let mut r = ready_gen(&body, 2);
-        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
-        r.view.as_mut().unwrap().h_scroll = 3;
-        assert!(r.attach_tree(2, JsonTree::parse(&body)));
-        let v = r.view().unwrap();
-        assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None));
+        // Many lines, so a place kept inside them would show.
+        let body = format!("[{}]", vec![format!("\"{}\"", "x".repeat(8000)); 40].join(","));
+        assert!(body.len() > SYNC_PRETTY_BYTES);
+        for reparse in [false, true] {
+            let mut r = ready_gen(&body, 2);
+            if reparse {
+                assert!(r.attach_tree(2, JsonTree::parse(&body)));
+                r.shed_derived();
+                assert!(r.take_reparse().is_some());
+            }
+            let v = r.view.as_mut().unwrap();
+            assert_eq!(v.mode, ViewMode::Pretty);
+            (v.cursor, v.scroll, v.h_scroll) = (20, 10, 3);
+            v.sel = Some(((20, 1), (20, 4)));
+            assert!(r.attach_tree(2, JsonTree::parse(&body)));
+            let v = r.view().unwrap();
+            assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None), "{reparse}");
+        }
     }
 
     /// #313: a parse that says "not JSON" while another tab is up takes the
