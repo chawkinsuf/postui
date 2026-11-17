@@ -69,7 +69,7 @@ pub enum TableCursor {
     ResponseHeader,
     /// The caret is in the request's Checks tab: on check `row` (its copy
     /// and delete; a check has no switch), or with `None` on a field, on
-    /// `+ Add check`, or in an open input. Its inputs take no variables,
+    /// `+ Add jq check`, or in an open input. Its inputs take no variables,
     /// so the row has no `vars` chip.
     Checks {
         row: Option<usize>,

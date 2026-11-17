@@ -573,3 +573,132 @@ lines find it by its generation as above.
    for a check job, a jq run or other background work at all: the TUI's
    runtime is shut down without waiting, as the CLI's is
    (`2026-11-17-jq-check-limit-design.md`, section 7, B7).
+
+## 8. Saying what goes in the boxes (#319, 2026-11-17)
+
+Status: **approved** 2026-11-17 (ticket comment 1465). The user's
+answers: 1: A (every text input that has hover text shows it when
+selected; mine (approved)); 2: A (status ranges become their own task;
+mine (approved)); 3: "how about 'first byte (ms)' and 'last byte (ms)'"
+(you), replacing both proposed options. The rows below carry them.
+
+Scope: board task #319, the user's notes after using the request's
+Checks tab. In their words:
+
+1. "its a little unclear what im actually supposed to put in the boxes";
+   "for a keyboard user, they cant even see the hover hints"; "this
+   might be a more general fix but we should probably show the hover
+   text for an input when it is selected".
+2. "i have to list each stats exactly, i cant say something like < 400";
+   "maybe this isnt necessary for this version, but i sort of expect it".
+3. "'first byte' and 'total' dont make a lot of sense as the labels
+   there".
+4. "when i 'add check' there is [no] indication at all that you are even
+   supposed to put jq in that box. how will a user know what to type in
+   there?"
+
+### What the user sees today (tmux, 140 columns)
+
+```
+ Headers    Params    Vars    Body    Checks
+   status          [                                        ]
+   first byte      [                                        ]
+   total           [                                        ]
+   CHECK
+   + Add check
+  a add check   alt+←→ tabs   ^R send      Edit the checks the response must pass
+```
+
+- An empty field draws an empty well. Nothing says that an empty status
+  means "any code below 400" (the rule `run` and `suite` apply, R3), or
+  that an empty limit means no limit, or that a limit is in
+  milliseconds.
+- The field's text (`CHECK_FIELDS`, "Edit the status codes that pass")
+  shows only while the pointer is on its well. A key never shows it, and
+  the pointer left on the tab row keeps that tab's text in the footer
+  while the keyboard walks the fields (seen above: the cursor is on
+  `status`).
+- `+ Add check` opens an empty one-line input under the header `CHECK`.
+  Nothing on screen says it takes a jq filter, or that the filter must
+  give `true`.
+- The status field takes exact codes only (`Checks::parse_status`, and
+  `status = 200` or `[200, 201]` in the file).
+
+Which text inputs have hover text today (`hint::hint_source`): the
+Checks tab's three fields, the Project tab's Name, and the Settings
+tab's four text rows (AI command, Clipboard command, OSC 52 limit,
+Indent width). Every other input (URL, table cells, dialog fields, the
+Variable Manager's fields, the jq bar, the body) is a surface with none.
+
+### Rules
+
+| # | Rule | Source |
+|---|---|---|
+| H1 | An empty field draws, in the muted colour inside its well, what empty means: `no limit` for a time limit; for status, `any code below 400` while another check is set, and `run and suite: any code below 400` while none is. With no check at all a send judges nothing in the app (no response Checks tab, P1), while `run` and `suite` still apply the below-400 rule (R3), so the well names them; once a check is set both apply it. The checks counted are the committed ones, as the tab's count is: an input still open counts once it closes. Open and empty, the same words show with the caret on their first character, as a dialog's `(not set)` does. | mine; the status well's two forms: mine (review rounds 1 and 2, 2026-11-17; round 1's `no status check` was untrue for `run` and `suite`) |
+| H2 | The two time-limit fields are labelled `first byte (ms)` and `last byte (ms)`. "Last byte" is the total time: from the send until the response has fully arrived (`Response::elapsed`), the limit the file calls `max_elapsed_ms`. The response's Checks tab and `run`/`suite` keep their words (`first byte 812 ms, limit 500 ms`, `total 900 ms, …`). | you: "how about 'first byte (ms)' and 'last byte (ms)'" (Q3) |
+| H3 | The list of jq checks says it is jq: its header reads `JQ CHECK`, its add row `+ Add jq check`, the footer's add chip `add jq check`. A new check's empty input shows, muted, `a jq filter that must give true`. | mine |
+| H4 | The footer's centre line shows the text of the input under the keyboard cursor, closed or open, on every text input that has hover text (the list above, with a jq check row and `+ Add jq check` added; those two show it on hover too). | you: "show the hover text for an input when it is selected"; which inputs: mine (approved) (Q1: A); the jq rows: mine |
+| H5 | Which of the two shows: the latest one used. A key or a paste hands the footer's line to the keyboard cursor's input; any mouse event (a move, a click, the wheel) hands it back to what is under the pointer. An input on the edit flag's waiting screen counts as anywhere. The line's client-owned header error follows the same rule. | mine; the paste, the click and the error: mine (review round 1, 2026-11-17); the waiting screen: mine (review round 2) |
+| H6 | The keyboard's text follows the `hover_hints` setting, as the pointer's does: one switch for the footer's explanations. | mine |
+| H7 | The Checks texts say what goes in, so they serve both: status `Codes that pass, e.g. 200, 201` (what empty means is H1's placeholder, which depends on the other checks; review round 1); first byte `Most ms until the response starts to arrive; empty: no limit`; last byte `Most ms until the response has fully arrived; empty: no limit`; a jq check `A jq filter on the body that must give true`. The two limit texts were reworded on 2026-11-17 to match H2's labels. | mine |
+| H8 | Status ranges (`< 400`, `200-299`) are not in this task: they are their own task, with the file format question. H1's `any code below 400` covers the user's example, which is already what an empty field does once another check is set. | mine (approved) (Q2: A) |
+
+### Not in this task
+
+Hover text for inputs that have none today (URL, table cells, dialog
+fields and so on); the keyboard cursor's text for buttons and toggles
+(dialog buttons, Settings check boxes); status ranges (H8); renaming "first byte" in the response's lines or in
+`run`/`suite`; any change to the response's Checks tab.
+
+### The design
+
+- **Placeholders (H1, H3).** `LineInput` gains a muted placeholder drawn
+  when its text is empty, at rest and open (the caret on its first
+  character), used by `Editor::draw_check_fields` and by the table's
+  open name cell when `TableSpec` names one (`TableSpec::placeholder`,
+  `None` on the other tabs). The words live with the labels in
+  `CHECK_FIELDS`, which becomes label, placeholder and text.
+- **Labels and words (H2, H3).** `CHECK_FIELDS`' labels;
+  `TableSpec::CHECKS.name_header` and `add_hint`; the add row's label and
+  `EditorTab::add_row_label`.
+- **The keyboard's text (H4, H5, H6).** `App::footer_hint` takes the
+  hover hint as now, or, when the last input was a key, the hint of
+  `App::cursor_hit()`: the `Hit` the keyboard cursor's input would
+  register (`Hit::CheckField(k)` for a field, the Project tab's
+  `Hit::ProjectName`, `Hit::SettingsControl(field)` for a Settings text
+  row, and the Checks list's row and add row), or `None` where the
+  cursor is on no such input. One flag on `App` says which input came
+  last: set by a key, cleared by the mouse. `hint_for` stays the one
+  table of words; a check row's text is a new arm there.
+- **As built (2026-11-17, mine).** The placeholder is
+  `LineInput::placeholder_line` (the value popup's `(not set)` draws through
+  it too); `CHECK_FIELDS` holds a `CheckField { label, placeholder, alone,
+  hint }` each, `alone` being what the well shows instead while no other
+  check is set (`None` for the limits, whose words don't change). The
+  open name cell's line is made by the table's row painter and handed to
+  `paint_cell_edit`. A jq row's text comes from
+  `TableSpec::cell_hint` (`None` on the other tables), read by `hint_for`'s
+  `TableRow`/`TableCell` arm, so `+ Add jq check` and every check row say it
+  under the pointer and the keyboard alike. The flag is `App::hint_from_keys`:
+  `handle_key` and `handle_paste` set it, and every mouse event clears it,
+  each before the waiting screen's check (a
+  press records where the pointer is, and the frame after it hovers what is
+  there). The editor's half is
+  `Editor::cursor_hit` (an auto row on Headers included); the app's
+  (`App::cursor_hit`) adds the Project tab's
+  Name and the Settings rows whose `text_value` is `Some`, and answers
+  `None` under a dialog. `App::footer_hint` gives the pointer's hit to
+  neither line while the flag is set, so the hint and the client-owned
+  error (`Editor::client_owned_message`, which takes the pointer's hit and
+  the cursor's) both speak for the keyboard.
+
+### Tests
+
+- Each field's placeholder at rest and open; a value hides it; the
+  table's new-check placeholder; no placeholder on the other tabs.
+- The labels, header, add row and chip words.
+- The footer: the keyboard's text for each input in H4's list, closed
+  and open; a key after a hover shows the keyboard's, a mouse move after
+  a key shows the pointer's; nothing for a cursor on a non-input; none
+  with `hover_hints` off; both profiles.
+

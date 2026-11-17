@@ -252,7 +252,8 @@ jq = [
   connect, TLS, upload and redirects included; for a streamed reply that is
   usually before the first token), `max_elapsed_ms` the time until the body
   is fully read: the `ttfb_ms` and `elapsed_ms` that `run` and `suite`
-  report. A time is measured as the request went: `suite` sends on one
+  report, and the TUI Checks tab's `first byte (ms)` and `last byte (ms)`.
+  A time is measured as the request went: `suite` sends on one
   client per TLS mode (`insecure` or not), so the first request to a host
   in each pays for the connection and later ones reuse it, and `--jobs N`
   runs requests side by side, which can slow each one. A limit never cuts a

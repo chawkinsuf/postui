@@ -57,13 +57,45 @@ const DRAW_ORDER: [EditorTab; 5] =
 /// W3).
 const BODY_VARS: &str = " · vars";
 
+/// One of the Checks tab's fields: its label, what its well shows while
+/// empty, and its footer text, shown under the pointer and under the
+/// keyboard cursor alike (checks tabs spec section 8, H1, H2, H7).
+pub struct CheckField {
+    pub label: &'static str,
+    /// What the empty well shows while another check is set.
+    pub placeholder: &'static str,
+    /// What it shows instead while no other check is set, where that
+    /// differs: the app judges a request only when it has a check (P1),
+    /// while `run` and `suite` apply the below-400 rule to every request.
+    pub alone: Option<&'static str>,
+    pub hint: &'static str,
+}
+
 /// The Checks tab's fields, in walk order (one for each of the table's
-/// heads), each with its label and its hover hint: the status codes, then
-/// the two time limits in `Measure::ALL`'s order.
-pub const CHECK_FIELDS: [(&str, &str); TableSpec::CHECKS.heads] = [
-    ("status", "Edit the status codes that pass"),
-    ("first byte", "Edit the first-byte limit, in milliseconds"),
-    ("total", "Edit the total-time limit, in milliseconds"),
+/// heads): the status codes, then the two time limits in `Measure::ALL`'s
+/// order. "Last byte" is the total time, until the response has fully
+/// arrived (`max_elapsed_ms`).
+pub const CHECK_FIELDS: [CheckField; TableSpec::CHECKS.heads] = [
+    CheckField {
+        label: "status",
+        placeholder: "any code below 400",
+        alone: Some("run and suite: any code below 400"),
+        // What empty means is the placeholder's to say: it depends on the
+        // other checks.
+        hint: "Codes that pass, e.g. 200, 201",
+    },
+    CheckField {
+        label: "first byte (ms)",
+        placeholder: "no limit",
+        alone: None,
+        hint: "Most ms until the response starts to arrive; empty: no limit",
+    },
+    CheckField {
+        label: "last byte (ms)",
+        placeholder: "no limit",
+        alone: None,
+        hint: "Most ms until the response has fully arrived; empty: no limit",
+    },
 ];
 
 /// The most columns a Checks field's well takes.
@@ -111,7 +143,7 @@ impl EditorTab {
             EditorTab::Params => Some("add param"),
             EditorTab::Headers => Some("add header"),
             EditorTab::Vars => Some("add variable"),
-            EditorTab::Checks => Some("add check"),
+            EditorTab::Checks => Some("add jq check"),
             EditorTab::Body => None,
         }
     }
@@ -570,6 +602,20 @@ impl Editor {
                 .copied()
                 .flatten()
                 .map_or_else(String::new, |ms| ms.to_string()),
+        }
+    }
+
+    /// What the Checks tab's field `k` shows while empty: its
+    /// [`CheckField::alone`], when it has one, while the request has no
+    /// other check, else its [`CheckField::placeholder`] (section 8, H1).
+    /// The checks counted are the committed ones ([`Self::check_count`],
+    /// the tab's count): an input still open counts once it closes.
+    fn check_field_placeholder(&self, k: usize) -> &'static str {
+        let field = &CHECK_FIELDS[k];
+        let own = || usize::from(!self.check_field_text(k).is_empty());
+        match field.alone {
+            Some(alone) if self.check_count() == own() => alone,
+            _ => field.placeholder,
         }
     }
 
@@ -1045,10 +1091,10 @@ impl Editor {
     /// What the footer says about a header row the client owns (spec
     /// 2026-10-18 R3b, task #59). Such a row draws struck in red and says
     /// nothing on its own line, so the footer explains it, the way it
-    /// explains any hovered control: for the row `hovered` (a table row's
-    /// surface or cell, or an auto row), else, for the keyboard, the table
-    /// row under the cursor while the table holds it (`focused`: the
-    /// editor pane has it). The fallback holds even with the pointer on
+    /// explains any hovered control: for the row `pointer` is on (a table
+    /// row's surface or cell, or an auto row), else for the row `cursor`
+    /// is on, the keyboard's ([`Self::cursor_hit`], `None` while the
+    /// keyboard is elsewhere). The fallback holds even with the pointer on
     /// another, ordinary row: the footer is the keyboard's context — its
     /// chips name the cursor row's keys wherever the pointer is — and a
     /// hover that has nothing to say leaves it so.
@@ -1062,10 +1108,12 @@ impl Editor {
     /// space so we dont have to hide the chips"). Empty: nothing to say.
     pub fn client_owned_message(
         &self,
-        hovered: Option<&crate::hit::Hit>,
-        focused: bool,
+        pointer: Option<&crate::hit::Hit>,
+        cursor: Option<&crate::hit::Hit>,
     ) -> Vec<String> {
-        self.client_owned_row(hovered, focused)
+        let row = |hit| self.client_owned_row(hit);
+        row(pointer)
+            .or_else(|| row(cursor))
             .map(|header| {
                 vec![
                     format!("{header} cannot be set manually"),
@@ -1076,35 +1124,23 @@ impl Editor {
             .unwrap_or_default()
     }
 
-    /// The client-owned header [`Editor::client_owned_message`] speaks
-    /// for, by its rules.
-    fn client_owned_row(
-        &self,
-        hovered: Option<&crate::hit::Hit>,
-        focused: bool,
-    ) -> Option<&'static str> {
+    /// The client-owned header the Headers row `hit` is on, if it is one:
+    /// a table row's surface or cell, or an auto row (spec 2026-10-25 S17).
+    fn client_owned_row(&self, hit: Option<&crate::hit::Hit>) -> Option<&'static str> {
         use crate::hit::Hit;
         if self.active_tab != EditorTab::Headers || self.table_collapsed {
             return None;
         }
-        let table_row = |i: usize| match self.computed.notes.get(i)? {
-            Some(RowNote::Unsent(header)) => Some(*header),
+        match hit? {
+            Hit::TableRow(i) | Hit::TableCell { row: i, .. } => {
+                match self.computed.notes.get(*i)? {
+                    Some(RowNote::Unsent(header)) => Some(*header),
+                    _ => None,
+                }
+            }
+            Hit::AutoHeaderRow(i) => client_owned_header(self.computed.rows.get(*i)?.unsent),
             _ => None,
-        };
-        let hovered = match hovered {
-            Some(Hit::TableRow(i) | Hit::TableCell { row: i, .. }) => table_row(*i),
-            Some(Hit::AutoHeaderRow(i)) => client_owned_header(self.computed.rows.get(*i)?.unsent),
-            _ => None,
-        };
-        let cursor = (focused && self.sub_focus == SubFocus::Content)
-            .then_some(self.table.selected())
-            .flatten();
-        // The cursor may sit on an auto row too (spec 2026-10-25 S17).
-        hovered.or_else(|| match cursor? {
-            Stop::Row(i) => table_row(i),
-            Stop::Section(j) => client_owned_header(self.computed.rows.get(j)?.unsent),
-            Stop::Add | Stop::Head(_) => None,
-        })
+        }
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -4589,7 +4625,7 @@ impl Editor {
         let shown = (self.field_lines() as u16).min(area.height);
         let theme = ctx.theme;
         let open = self.table.editing.as_ref();
-        let labels = CHECK_FIELDS.map(|(label, _)| label);
+        let labels = CHECK_FIELDS.map(|f| f.label);
         for (k, label) in labels.into_iter().enumerate().take(usize::from(shown)) {
             let hit = Hit::CheckField(k);
             let hovered = ctx.hovered == Some(&hit);
@@ -4611,10 +4647,16 @@ impl Editor {
             }
             let inner = well.width - WELL_PAD * 2;
             let live = open.filter(|e| e.at == EditAt::Head(k)).map(|e| &e.input);
+            let empty_says = self.check_field_placeholder(k);
             let content: Line<'static> = match live {
-                Some(input) => input.draw_line_windowed(true, theme, inner),
-                None => LineInput::new(&self.check_field_text(k))
-                    .draw_line_at_rest(theme, theme.text, inner),
+                Some(input) => input
+                    .placeholder_line(empty_says, true, theme, inner)
+                    .unwrap_or_else(|| input.draw_line_windowed(true, theme, inner)),
+                None => {
+                    let rest = LineInput::new(&self.check_field_text(k));
+                    rest.placeholder_line(empty_says, false, theme, inner)
+                        .unwrap_or_else(|| rest.draw_line_at_rest(theme, theme.text, inner))
+                }
             };
             let on_cursor = focused && self.table.selected() == Some(Stop::Head(k));
             let state = if live.is_some() || on_cursor {
@@ -4657,6 +4699,34 @@ impl Editor {
         match self.table.selected()? {
             Stop::Section(j) if j < self.section_len() => Some(j),
             _ => None,
+        }
+    }
+
+    /// The hit the table's keyboard cursor is on, open or closed: a Checks
+    /// field, a row's cell or `+ Add`'s name, or a Headers auto row. The
+    /// footer's hint and its client-owned error read it for the keyboard
+    /// (checks tabs spec section 8, H4; [`Self::client_owned_message`]).
+    /// `None` while the tab's content doesn't hold the keyboard, off a
+    /// table tab, and on the Vars tab's referenced rows.
+    pub fn cursor_hit(&self) -> Option<crate::hit::Hit> {
+        use crate::hit::Hit;
+        let table_tab = self.active_tab.table_spec().is_some() && !self.table_collapsed;
+        if self.sub_focus != SubFocus::Content || !table_tab {
+            return None;
+        }
+        let cell = |row, col: Col| Some(Hit::TableCell { row, col: col.index() });
+        match self.table.editing.as_ref().map(|e| e.at) {
+            Some(EditAt::Head(k)) => return Some(Hit::CheckField(k)),
+            Some(EditAt::Cell(row, col)) => return cell(row, col),
+            None => {}
+        }
+        match self.table.selected()? {
+            Stop::Head(k) => Some(Hit::CheckField(k)),
+            Stop::Row(i) => cell(i, self.table.col),
+            Stop::Add => cell(self.table_len(), Col::Key),
+            Stop::Section(j) => {
+                (self.active_tab == EditorTab::Headers).then_some(Hit::AutoHeaderRow(j))
+            }
         }
     }
 
@@ -4705,7 +4775,7 @@ impl Editor {
         let check_notes = self.check_notes();
         let var_notes: Vec<Option<RowNote>>;
         let (map, add_label, notes): (_, _, &[Option<RowNote>]) = match self.active_tab {
-            EditorTab::Checks => (&self.check_rows, "+ Add check", &check_notes),
+            EditorTab::Checks => (&self.check_rows, "+ Add jq check", &check_notes),
             EditorTab::Headers => {
                 // A row naming a header the client sets itself is kept but
                 // never sent (spec 2026-10-18 R3a), so it is struck in red.
@@ -8763,7 +8833,7 @@ url = "https://api.example.com/users""#,
         let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
         let accept = Hit::AutoHeaderRow(accept.expect("the auto Accept row"));
         assert!(app.hits.rect_of(&accept).is_some(), "an ordinary row is a row too");
-        assert!(app.editor.client_owned_message(Some(&accept), false).is_empty());
+        assert!(app.editor.client_owned_message(Some(&accept), None).is_empty());
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
         let (mx, my) = find_text(terminal.backend().buffer(), "Host cannot be set manually")
@@ -10038,14 +10108,13 @@ url = "https://api.example.com/users""#,
             unsent: Some(Unsent::ClientOwned { header: "Host" }),
             ..auto_header("Host", "x")
         };
+        let said = |e: &Editor| e.client_owned_message(None, e.cursor_hit().as_ref());
         e.table.set_selected(Some(Stop::Section(0)));
-        assert!(e.client_owned_message(None, true).is_empty(), "Z0 is an ordinary row");
+        assert!(said(&e).is_empty(), "Z0 is an ordinary row");
         e.table.set_selected(Some(Stop::Section(1)));
-        assert_eq!(
-            e.client_owned_message(None, true).first().map(String::as_str),
-            Some("Host cannot be set manually")
-        );
-        assert!(e.client_owned_message(None, false).is_empty(), "only for the focused table");
+        assert_eq!(said(&e).first().map(String::as_str), Some("Host cannot be set manually"));
+        e.sub_focus = SubFocus::Url;
+        assert!(said(&e).is_empty(), "only while the table holds the keyboard");
     }
 
     /// S25: Enter on a section row the section shrank from under acts on

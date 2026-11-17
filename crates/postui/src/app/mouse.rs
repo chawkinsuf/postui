@@ -130,8 +130,14 @@ impl App {
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::MouseEventKind;
         self.reports_held_drags |= matches!(m.kind, MouseEventKind::Drag(_));
+        // Any mouse event hands the footer's line back to what is under the
+        // pointer (`handle_key` and `handle_paste` hand it to the keyboard),
+        // one on the edit flag's waiting screen included. A press counts as
+        // a move does: it records where the pointer is, and the frame after
+        // it hovers what is there (`resync_hover`).
+        let handed = std::mem::replace(&mut self.hint_from_keys, false);
         if self.edit_block.is_some() && self.modals.is_empty() {
-            return self.blocked_mouse(m);
+            return self.blocked_mouse(m) || handed;
         }
         // Where the keyboard is before this event, as `handle_key` learns
         // it: a click's focus change counts for `<C-w>l` and `p` (plan M4a
@@ -171,7 +177,7 @@ impl App {
         // The pointer may have left its token, or come back to it: the
         // tooltip's wait restarts here, not at the next tick (#233).
         let tipped = self.track_tip_dwells(std::time::Instant::now());
-        changed || ended || noted || regated || asked || disarmed || tipped || unselected
+        changed || ended || noted || regated || asked || disarmed || tipped || unselected || handed
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
