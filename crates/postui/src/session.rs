@@ -92,6 +92,8 @@ impl Session {
             let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
             if big {
+                // A rename onto a slug still in `warm` (#322) can leave the
+                // outgoing slug listed already; this keeps it listed once.
                 self.warm.retain(|s| s != &self.open_slug);
                 self.warm.push_back(self.open_slug.clone());
                 while self.warm.len() > KEEP_WARM {
@@ -357,20 +359,30 @@ mod tests {
         }
     }
 
+    /// A JSON body over `SYNC_PRETTY_BYTES`, told apart by `n`.
+    fn big(n: usize) -> String {
+        let pad = "x".repeat(crate::components::response::SYNC_PRETTY_BYTES);
+        format!(r#"{{"pad": "{pad}", "n": {n}}}"#)
+    }
+
+    /// Opens `big{n}` and gives it a big response with its tree, on screen.
+    fn open_parsed_big(s: &mut Session, n: usize) {
+        use crate::components::json_tree::JsonTree;
+        open(s, &format!("big{n}"));
+        let body = big(n);
+        s.response.set_state(ResponseState::Ready(data(&body)), n as u64);
+        assert!(s.response.attach_tree(n as u64, JsonTree::parse(&body)));
+    }
+
     #[test]
     fn big_responses_beyond_the_last_few_shed_their_trees_and_reparse_on_return() {
         use crate::components::json_tree::JsonTree;
-        use crate::components::response::SYNC_PRETTY_BYTES;
-        let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut s = Session::default();
         // A small response and KEEP_WARM + 1 big ones, each parsed.
         open(&mut s, "small");
         s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 0);
         for i in 1..=KEEP_WARM + 1 {
-            open(&mut s, &format!("big{i}"));
-            let body = big(i);
-            s.response.set_state(ResponseState::Ready(data(&body)), i as u64);
-            assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
+            open_parsed_big(&mut s, i);
         }
         open(&mut s, "elsewhere");
         let has_tree = |s: &Session, slug: &str| {
@@ -404,32 +416,27 @@ mod tests {
     /// #321: the response being opened is never the one shed on its way in.
     #[test]
     fn going_straight_back_to_the_oldest_warm_response_keeps_its_tree() {
-        use crate::components::json_tree::JsonTree;
-        use crate::components::response::SYNC_PRETTY_BYTES;
-        let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut s = Session::default();
         for i in 1..=KEEP_WARM + 1 {
-            open(&mut s, &format!("big{i}"));
-            let body = big(i);
-            s.response.set_state(ResponseState::Ready(data(&body)), i as u64);
-            assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
+            open_parsed_big(&mut s, i);
         }
         let slugs = |names: &[&str]| -> Vec<Option<String>> {
             names.iter().map(|n| Some(n.to_string())).collect()
         };
-        // The cached big responses still holding a tree: exactly `warm`.
+        // `warm` is `names`. Every big response here got its tree while on
+        // screen, so the cached ones still holding a tree are `names` too.
         let warm_ok = |s: &Session, names: &[&str]| {
-            let mut big: Vec<_> = s
+            let mut holding: Vec<_> = s
                 .cache
                 .iter()
                 .filter(|(_, r)| r.holds_big_derived())
                 .map(|(k, _)| k.clone())
                 .collect();
-            big.sort();
+            holding.sort();
             let mut want = slugs(names);
             want.sort();
             assert_eq!(s.warm.iter().cloned().collect::<Vec<_>>(), slugs(names));
-            assert_eq!(big, want, "only the warm ones keep their tree");
+            assert_eq!(holding, want, "the cached ones holding a tree");
         };
         warm_ok(&s, &["big1", "big2", "big3"]);
         // Straight from the newest back to the oldest of the last few.
