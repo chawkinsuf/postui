@@ -50,7 +50,9 @@ struct Stop {
     stopped: std::sync::atomic::AtomicBool,
     /// The limit that sets the flag, for the message.
     limit: std::time::Duration,
-    /// The caller's switch, when it gave one.
+    /// The caller's switch, when it gave one. Apart from `stopped`, which
+    /// only this run's timer sets: the switch is the caller's and outlives
+    /// the run.
     cancel: Option<Cancel>,
 }
 

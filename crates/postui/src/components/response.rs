@@ -294,7 +294,10 @@ pub struct JqCompletion {
     index: usize,
     /// A key fetch outstanding on the blocking pool: its sequence number
     /// and the expression it is for. Only the newest fetch's result is
-    /// kept.
+    /// kept. The caret moving off its context, or the bar blurring, leaves
+    /// it running, since its keys are cached when it lands; the cost is a
+    /// core busy beside the bar's run until it ends or reaches the limit
+    /// (#315 spec C2).
     pending: Option<(JqWait, String)>,
     seq: u64,
 }
@@ -11848,6 +11851,10 @@ mod tests {
             gone(&|r| r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9)),
             "a new response"
         );
+        assert!(
+            gone(&|r| r.set_state(ResponseState::InFlight { started: Instant::now() }, 9)),
+            "a re-send"
+        );
         assert!(gone(&|r| *r = Pane::default()), "the response dropped");
         // The same filter written back, or only the limit changed: still
         // awaited, so still running.
@@ -11859,8 +11866,9 @@ mod tests {
     }
 
     /// #315: completion's pool lookup is cancelled once the bar lets go of
-    /// it (another lookup, a new response, a request switch); the caret
-    /// moving off it doesn't, since its keys are still cached on arrival.
+    /// it (another lookup, a new response, a request switch, a shed, the
+    /// response dropped); the caret moving off it, or the bar blurring,
+    /// doesn't, since its keys are still cached on arrival.
     #[test]
     fn a_lookup_the_bar_lets_go_of_is_cancelled() {
         let gone = |release: &dyn Fn(&mut Pane)| {
@@ -11881,6 +11889,13 @@ mod tests {
             "a new response"
         );
         assert!(gone(&|r| r.drop_pending_jq()), "a request switch");
+        assert!(gone(&|r| r.shed_derived()), "a shed");
+        assert!(gone(&|r| *r = Pane::default()), "the response dropped");
+        let off_the_end = |r: &mut Pane| {
+            r.jq_bar_mut().input.set_cursor(0);
+            assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        };
+        assert!(!gone(&off_the_end), "the caret off the end");
         let blur = |r: &mut Pane| {
             r.set_jq_focus(false);
             assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());

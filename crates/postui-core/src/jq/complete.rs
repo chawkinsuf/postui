@@ -25,7 +25,9 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 /// never an error: a half-typed filter is normal here. In a stream, a
 /// runtime error ends only that value's run and the next value goes on.
 /// The run stops at `limit` like any jq run (#308), with the keys it had,
-/// and ends the same way once `cancel`, when given, is set (#315).
+/// and ends the same way once `cancel`, when given, is set (#315). A
+/// cancelled lookup's keys carry no mark: cancel only a lookup whose result
+/// you no longer want.
 pub fn keys_at(
     input_expr: &str,
     doc: &JqDocument,
