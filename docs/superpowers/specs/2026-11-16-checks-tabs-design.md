@@ -104,7 +104,9 @@ judged lines when no jq check has to read the body
 then starts the one job (`ResponseData::check_run`, through
 `http::judge` and `http::run_checks`, the suite's hop too): it runs the
 checks once on the blocking pool and sends the lines as
-`Action::ChecksJudged` with the send's generation.
+`Action::ChecksJudged` with the send's generation. For a body past the
+sync-pretty limit it starts after the Tree's background parse has sent
+its result, in the same job (section 7, detail 3).
 `Session::checks_judged` gives them to the
 response that send made, on screen or in the session's cache, found by
 its view's generation as a background parse finds it (`tree_arrived`);
@@ -368,7 +370,7 @@ Sources are copied from the ticket: `you` is the user's own words,
 | A5 | The result belongs to its response. It lands there when another request is on screen and is there on the way back. A new send replaces the response, and the earlier send's result is dropped. | mine |
 | A6 | Still judged once, with the checks as they were at the send. Editing a check re-judges nothing. | P5, Q8 |
 | A7 | While the tab says `checking…`, search, copy, save and open in the editor act on that one line, as they act on whatever lines the tab shows (P7). | mine |
-| A8 | A check that never finishes leaves the Checks tab on `checking…` and the rest of the response usable. #310 gives each check a time limit. | mine |
+| A8 | A check that never finishes leaves the Checks tab on `checking…` and the rest of the response usable. #310 gives each check a time limit. For a large body the Tree is parsed before the checks start, so a check never holds it back (2026-11-17, detail 3). | mine; the Tree part: you, "I'd rather the tree not wait" |
 | A9 | Checks that crash give the one failed line they gave: `✗ the checks did not run: …`. | choice 14 |
 
 The ticket's "Not in this task" is binding: no time limit or cancel for
@@ -392,7 +394,10 @@ to them. What changes:
   (`ResponseData::check_run`; before review round 1 the send's task
   ran it over its own copy of the response, made before the response
   was handed over, and before round 2 the job rebuilt the body from
-  the view's lines). Nothing tracks the job, so nothing cancels it: a
+  the view's lines). For a body past the sync-pretty limit the job is
+  the Tree's background parse (`App::spawn_pretty_parse`): it sends
+  `PrettyParsed` first and then runs the checks, whatever the parse
+  gave (detail 3). Nothing tracks the job, so nothing cancels it: a
   new send of the request leaves the earlier job running, and its
   lines are dropped (detail 4 below). A send cancelled or replaced
   before its response is delivered starts none.
@@ -476,6 +481,12 @@ lines find it by its generation as above.
   navigated away from and for a send since replaced (in flight,
   arrived, failed); a deleted request's are there when the delete is
   undone.
+- App, with the background jobs running (detail 3): a large body's
+  Tree lands before its lines, whether it is JSON or not, and a small
+  body has only its lines to wait for; a check run held open holds up
+  no Tree; a large body's Tree and lines land on nothing once a new
+  send has replaced its response, and where it is cached once another
+  request is open.
 
 ### `mine` details, for veto
 
@@ -483,15 +494,47 @@ lines find it by its generation as above.
 2. When the lines arrive with the Checks tab up, the cursor goes to the
    first line and a selection made on `checking…` is dropped, as on a
    tab switch.
-3. The check job reads the response's own body. `ResponseData::body`
-   is an `Arc` for that, and the background Tree parse of a large body
-   shares it too, where on `main` it had a copy. So while a large
-   response's Tree parse and checks run, its body is held twice (the
-   response's and the view's lines), where `main` held it three times
-   during the parse and round 1's job a fourth. The job lets go of the
-   body once jq has
-   read it and keeps jq's document until its last check ends (review
-   round 2).
+3. **A large body: the Tree first, then the checks** (2026-11-17, #312
+   question 1, after review round 3). For a body past the sync-pretty
+   limit with a jq check, the Tree's background parse runs first and
+   the checks after it, in one job: the Tree lands when it would with
+   no checks, and the Checks tab says `checking…` until the lines land.
+   A small body's Tree is built as it arrives and its checks start at
+   once. That the Tree never waits for the checks is `you`: "I'd rather
+   the tree not wait. That is the main way I interact with the
+   response". This order, the Tree then the checks, is `mine
+   (approved)` (option C). Until round 3 the two reads ran side by side.
+
+   What is in memory, counted from the code. The check job and the
+   Tree parse share the response's body (`ResponseData::body`, an
+   `Arc`), where on `main` the parse had a copy. The parse holds
+   serde's document of the body while it builds the Tree (its lines'
+   text, about the body's size, and a 24-byte record a line), and drops
+   it once the Tree is built. The check job then builds jaq's document,
+   lets go of the body once jaq has read it, and keeps the document
+   until its last check ends. So:
+
+   | Phase | `main` | now |
+   |---|---|---|
+   | checks | body, jaq's document (before the response shows) | body, Tree, jaq's document |
+   | Tree parse | body twice, serde's document, Tree | body, serde's document, Tree |
+
+   The peak is the Tree parse's, one body text below `main`'s, with or
+   without checks. Side by side (until round 3) it was body, serde's
+   document, Tree and jaq's document at once. Two cases are still above
+   `main`, both while the checks run. The jq bar used on the response
+   builds its own jaq document from its own copy of the body, next to
+   the checks' document; on `main` the bar could not be opened until
+   the checks were done. And a shed Tree's re-parse (`KEEP_WARM`) runs
+   beside the checks if three other large responses are opened before
+   they end.
+
+   Measured on the debug build: the max RSS for one send of a 20.1 MB
+   JSON body (300,000 small objects) with one jq check
+   (`.items | length > 0`), then a quit. `main` (`ae17779`) 626 MB, the
+   two reads side by side (`c96d3fc`) 998 MB, now 596 MB. The same
+   request with no checks: `main` 616 MB, now 596 MB. Each run with a
+   check was done twice, and the two came within 1 MB.
 4. Nothing ends a running check job. A new send of a request whose
    checks still run starts another job and leaves the earlier one
    running; its lines are dropped. With checks that end, the leftover

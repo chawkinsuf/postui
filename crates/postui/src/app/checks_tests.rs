@@ -678,3 +678,151 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     app.update(Action::ResponseViewMode(ViewMode::Checks));
     assert_eq!(shown(&app), judged, "its response is back with its lines");
 }
+
+/// A background job's result, as [`next_job`] answers it.
+#[derive(Debug, PartialEq, Eq)]
+enum Job {
+    Tree(u64),
+    Lines(u64),
+}
+
+/// Applies what the app's background jobs send it, in order, up to and
+/// including the next Tree parse or check lines; answers which it was and
+/// what applying it answered.
+async fn next_job(app: &mut App) -> (Job, bool) {
+    loop {
+        let rx = app._test_rx.as_mut().expect("the test's receiver");
+        let action = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("timed out waiting for a background job")
+            .expect("channel closed");
+        let job = match &action {
+            Action::PrettyParsed { generation, .. } => Some(Job::Tree(*generation)),
+            Action::ChecksJudged { generation, .. } => Some(Job::Lines(*generation)),
+            _ => None,
+        };
+        let drew = app.update(action);
+        if let Some(job) = job {
+            return (job, drew);
+        }
+    }
+}
+
+/// The Checks tab's text, the tab put up for it.
+fn checks_tab(app: &mut App) -> String {
+    app.session.response.set_view_mode(crate::components::response::ViewMode::Checks);
+    shown(app)
+}
+
+fn as_shown(lines: &Lines) -> String {
+    let line =
+        |(passed, text): &(bool, String)| format!("{} {text}", crate::paint::verdict_mark(*passed));
+    lines.iter().map(line).collect::<Vec<_>>().join("\n")
+}
+
+/// Section 7, detail 3 (#312 question 1): a body past the sync-pretty
+/// limit has its Tree parsed first and its checks judged after, so the
+/// Tree lands while the tab still says `checking…`, whether the body is
+/// JSON or not. A small body's Tree is built as it arrives, and only the
+/// lines follow.
+#[tokio::test]
+async fn a_large_bodys_tree_lands_before_its_checks_run() {
+    use crate::components::response::SYNC_PRETTY_BYTES;
+    let mut app = checks_app(FOUR, KeyProfile::Arrows);
+    let sent = checks(&app);
+    let pad = "x".repeat(SYNC_PRETTY_BYTES + 1);
+    let json = format!(r#"{{"a":true,"b":1,"pad":"{pad}"}}"#);
+    for (body, parses) in [(json, true), (pad, false)] {
+        let (generation, lines) = send_arrives(&mut app, 200, &body, &sent);
+        assert!(app.session.response.view().unwrap().parsing, "parsed in the background");
+        assert_eq!(next_job(&mut app).await, (Job::Tree(generation), true), "the Tree first");
+        assert_eq!(app.session.response.view().unwrap().tree.is_some(), parses);
+        assert_eq!(checks_tab(&mut app), "checking\u{2026}", "the lines still to land");
+        assert_eq!(next_job(&mut app).await, (Job::Lines(generation), true));
+        assert_eq!(checks_tab(&mut app), as_shown(&lines));
+    }
+    let (generation, lines) = send_arrives(&mut app, 200, r#"{"a":true,"b":1}"#, &sent);
+    assert!(app.session.response.view().unwrap().tree.is_some(), "built as it arrived");
+    assert_eq!(next_job(&mut app).await, (Job::Lines(generation), true));
+    assert_eq!(checks_tab(&mut app), as_shown(&lines));
+}
+
+/// Section 7, A8: a check that has not ended holds up no Tree. The job's
+/// run here waits until the test lets it go, after the Tree has landed.
+#[tokio::test]
+async fn a_check_still_running_holds_up_no_tree() {
+    use crate::components::response::{CheckState, SYNC_PRETTY_BYTES};
+    let mut app = checks_app(FOUR, KeyProfile::Arrows);
+    let body = format!(r#"{{"pad":"{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+    let slug = app.editor.slug.clone();
+    let generation = app.session.begin_send(&slug);
+    let (started, task) = (Instant::now(), tokio::spawn(async {}));
+    app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
+    let data = crate::http::ResponseData {
+        status: 200,
+        url: "http://x.test/".into(),
+        headers: vec![],
+        sent_headers: vec![],
+        body: body.into(),
+        ttfb: std::time::Duration::from_millis(5),
+        elapsed: std::time::Duration::from_millis(9),
+        size: 0,
+        content_type: None,
+    };
+    let shared = data.body.clone();
+    assert!(app.session.arrived(generation, Box::new(data), CheckState::Judging));
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let run = move |_: &Checks| {
+        wait.recv().unwrap();
+        vec![(true, ".pad".to_string())]
+    };
+    app.spawn_pretty_parse(generation, shared, Some((checks(&app), Box::new(run))));
+    assert_eq!(next_job(&mut app).await, (Job::Tree(generation), true));
+    assert!(app.session.response.view().unwrap().tree.is_some(), "the Tree is there");
+    assert_eq!(checks_tab(&mut app), "checking\u{2026}");
+    go.send(()).unwrap();
+    assert_eq!(next_job(&mut app).await, (Job::Lines(generation), true));
+    assert_eq!(checks_tab(&mut app), "\u{2713} .pad");
+}
+
+/// Section 7, A5 with a large body: a response replaced while its Tree
+/// parse and checks run takes neither, and the one that replaced it is
+/// untouched; one moved off screen takes both where it is cached and has
+/// them on the way back.
+#[tokio::test]
+async fn a_large_bodys_jobs_land_on_their_own_response_or_nowhere() {
+    use crate::components::response::SYNC_PRETTY_BYTES;
+    let mut app = checks_app(FOUR, KeyProfile::Arrows);
+    let sent = checks(&app);
+    let other = HttpRequest::from_toml_str("url = \"http://y.test/\"\n").unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/other", &other).unwrap();
+    app.update(Action::RefreshSidebar);
+    let big = format!(r#"{{"a":true,"b":true,"pad":"{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+    // Replaced: a new send arrives before the first send's jobs end.
+    let (replaced, _) = send_arrives(&mut app, 200, &big, &sent);
+    let (current, lines) = send_arrives(&mut app, 200, r#"{"a":1}"#, &sent);
+    // The two sends' jobs end in either order; each send's lines come last.
+    let mut ended = Vec::new();
+    while ended.len() < 2 {
+        let (job, drew) = next_job(&mut app).await;
+        assert_eq!(drew, job == Job::Lines(current), "only the current lines draw: {job:?}");
+        match job {
+            Job::Tree(g) => assert_eq!(g, replaced),
+            Job::Lines(g) => ended.push(g),
+        }
+    }
+    ended.sort();
+    assert_eq!(ended, [replaced, current]);
+    let view = app.session.response.view().unwrap();
+    assert!(view.tree.is_some() && !view.parsing, "the small response's own Tree");
+    assert_eq!(checks_tab(&mut app), as_shown(&lines), "and its own lines");
+    // Moved off screen: both land where it is cached.
+    let (away, lines) = send_arrives(&mut app, 200, &big, &sent);
+    app.update(Action::ForceOpenRequest("main/other".into()));
+    assert_eq!(next_job(&mut app).await.0, Job::Tree(away));
+    assert_eq!(next_job(&mut app).await, (Job::Lines(away), false), "nothing to draw");
+    assert!(app.session.response.view().is_none(), "the other request's response untouched");
+    app.update(Action::ForceOpenRequest("main/probe".into()));
+    assert!(app.session.response.view().unwrap().tree.is_some(), "its Tree");
+    assert_eq!(checks_tab(&mut app), as_shown(&lines), "and its lines");
+}
