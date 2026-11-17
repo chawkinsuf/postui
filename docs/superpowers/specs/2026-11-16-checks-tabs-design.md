@@ -670,6 +670,18 @@ fields and so on); the keyboard cursor's text for buttons and toggles
   cursor is on no such input. One flag on `App` says which input came
   last: set by a key, cleared by a mouse move. `hint_for` stays the one
   table of words; a check row's text is a new arm there.
+- **As built (2026-11-17, mine).** The placeholder is
+  `LineInput::draw_line_or_placeholder`; `CHECK_FIELDS` holds a
+  `CheckField { label, placeholder, hint }` each. A jq row's text comes from
+  `TableSpec::cell_hint` (`None` on the other tables), read by `hint_for`'s
+  `TableRow`/`TableCell` arm, so `+ Add jq check` and every check row say it
+  under the pointer and the keyboard alike. The flag is `App::hint_from_keys`;
+  only pointer motion (`Moved`, `Drag`) clears it, not a press or the wheel,
+  so in a terminal that reports no motion a click leaves the footer on the
+  keyboard cursor's input, which the click just moved. The editor's half is
+  `Editor::cursor_hit`; the app's (`App::cursor_hit`) adds the Project tab's
+  Name and the Settings rows whose `text_value` is `Some`, and answers
+  `None` under a dialog.
 
 ### Tests
 

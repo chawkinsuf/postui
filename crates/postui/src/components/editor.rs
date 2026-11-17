@@ -57,13 +57,35 @@ const DRAW_ORDER: [EditorTab; 5] =
 /// W3).
 const BODY_VARS: &str = " · vars";
 
+/// One of the Checks tab's fields: its label, what its well shows while
+/// empty, and its footer text, shown under the pointer and under the
+/// keyboard cursor alike (checks tabs spec section 8, H1, H2, H7).
+pub struct CheckField {
+    pub label: &'static str,
+    pub placeholder: &'static str,
+    pub hint: &'static str,
+}
+
 /// The Checks tab's fields, in walk order (one for each of the table's
-/// heads), each with its label and its hover hint: the status codes, then
-/// the two time limits in `Measure::ALL`'s order.
-pub const CHECK_FIELDS: [(&str, &str); TableSpec::CHECKS.heads] = [
-    ("status", "Edit the status codes that pass"),
-    ("first byte", "Edit the first-byte limit, in milliseconds"),
-    ("total", "Edit the total-time limit, in milliseconds"),
+/// heads): the status codes, then the two time limits in `Measure::ALL`'s
+/// order. "Last byte" is the total time, until the response has fully
+/// arrived (`max_elapsed_ms`).
+pub const CHECK_FIELDS: [CheckField; TableSpec::CHECKS.heads] = [
+    CheckField {
+        label: "status",
+        placeholder: "any code below 400",
+        hint: "Codes that pass, e.g. 200, 201; empty: below 400",
+    },
+    CheckField {
+        label: "first byte (ms)",
+        placeholder: "no limit",
+        hint: "Most ms until the response starts to arrive; empty: no limit",
+    },
+    CheckField {
+        label: "last byte (ms)",
+        placeholder: "no limit",
+        hint: "Most ms until the response has fully arrived; empty: no limit",
+    },
 ];
 
 /// The most columns a Checks field's well takes.
@@ -111,7 +133,7 @@ impl EditorTab {
             EditorTab::Params => Some("add param"),
             EditorTab::Headers => Some("add header"),
             EditorTab::Vars => Some("add variable"),
-            EditorTab::Checks => Some("add check"),
+            EditorTab::Checks => Some("add jq check"),
             EditorTab::Body => None,
         }
     }
@@ -4589,7 +4611,7 @@ impl Editor {
         let shown = (self.field_lines() as u16).min(area.height);
         let theme = ctx.theme;
         let open = self.table.editing.as_ref();
-        let labels = CHECK_FIELDS.map(|(label, _)| label);
+        let labels = CHECK_FIELDS.map(|f| f.label);
         for (k, label) in labels.into_iter().enumerate().take(usize::from(shown)) {
             let hit = Hit::CheckField(k);
             let hovered = ctx.hovered == Some(&hit);
@@ -4611,10 +4633,17 @@ impl Editor {
             }
             let inner = well.width - WELL_PAD * 2;
             let live = open.filter(|e| e.at == EditAt::Head(k)).map(|e| &e.input);
+            let empty_says = CHECK_FIELDS[k].placeholder;
             let content: Line<'static> = match live {
-                Some(input) => input.draw_line_windowed(true, theme, inner),
-                None => LineInput::new(&self.check_field_text(k))
-                    .draw_line_at_rest(theme, theme.text, inner),
+                Some(input) => input.draw_line_or_placeholder(empty_says, true, theme, inner),
+                None => {
+                    let rest = LineInput::new(&self.check_field_text(k));
+                    if rest.text().is_empty() {
+                        rest.draw_line_or_placeholder(empty_says, false, theme, inner)
+                    } else {
+                        rest.draw_line_at_rest(theme, theme.text, inner)
+                    }
+                }
             };
             let on_cursor = focused && self.table.selected() == Some(Stop::Head(k));
             let state = if live.is_some() || on_cursor {
@@ -4657,6 +4686,31 @@ impl Editor {
         match self.table.selected()? {
             Stop::Section(j) if j < self.section_len() => Some(j),
             _ => None,
+        }
+    }
+
+    /// The hit the input under the table's keyboard cursor registers, open
+    /// or closed: a Checks field, or a row's cell or `+ Add`'s name. What
+    /// the footer explains after a key (checks tabs spec section 8, H4).
+    /// `None` while the tab's content doesn't hold the keyboard, off a
+    /// table tab, and on a section row.
+    pub fn cursor_hit(&self) -> Option<crate::hit::Hit> {
+        use crate::hit::Hit;
+        let table_tab = self.active_tab.table_spec().is_some() && !self.table_collapsed;
+        if self.sub_focus != SubFocus::Content || !table_tab {
+            return None;
+        }
+        let cell = |row, col: Col| Some(Hit::TableCell { row, col: col.index() });
+        match self.table.editing.as_ref().map(|e| e.at) {
+            Some(EditAt::Head(k)) => return Some(Hit::CheckField(k)),
+            Some(EditAt::Cell(row, col)) => return cell(row, col),
+            None => {}
+        }
+        match self.table.selected()? {
+            Stop::Head(k) => Some(Hit::CheckField(k)),
+            Stop::Row(i) => cell(i, self.table.col),
+            Stop::Add => cell(self.table_len(), Col::Key),
+            Stop::Section(_) => None,
         }
     }
 
@@ -4705,7 +4759,7 @@ impl Editor {
         let check_notes = self.check_notes();
         let var_notes: Vec<Option<RowNote>>;
         let (map, add_label, notes): (_, _, &[Option<RowNote>]) = match self.active_tab {
-            EditorTab::Checks => (&self.check_rows, "+ Add check", &check_notes),
+            EditorTab::Checks => (&self.check_rows, "+ Add jq check", &check_notes),
             EditorTab::Headers => {
                 // A row naming a header the client sets itself is kept but
                 // never sent (spec 2026-10-18 R3a), so it is struck in red.

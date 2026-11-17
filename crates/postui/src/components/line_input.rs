@@ -930,6 +930,36 @@ impl LineInput {
         buf.set_line(area.x, area.y, &line, area.width).0 - area.x
     }
 
+    /// [`Self::draw_line_windowed`] with `focused`, or, while the text is
+    /// empty, `placeholder` in the muted colour, cut to `width`. Focused,
+    /// the caret is the placeholder's first char drawn REVERSED, where
+    /// typing lands, as a dialog's `(not set)` shows it (checks tabs spec
+    /// section 8, H1).
+    pub fn draw_line_or_placeholder(
+        &self,
+        placeholder: &str,
+        focused: bool,
+        theme: &Theme,
+        width: u16,
+    ) -> Line<'static> {
+        if !self.text.is_empty() {
+            return self.draw_line_windowed(focused, theme, width);
+        }
+        let muted = Style::default().fg(theme.text_muted);
+        let shown = crate::ui::clip(placeholder, width);
+        let mut graphemes = crate::ui::char_graphemes(shown);
+        match graphemes.next().filter(|_| focused) {
+            Some(first) => Line::from(vec![
+                Span::styled(first.text.to_string(), muted.add_modifier(Modifier::REVERSED)),
+                Span::styled(shown[first.text.len()..].to_string(), muted),
+            ]),
+            None if focused => {
+                Line::from(Span::styled(" ", muted.add_modifier(Modifier::REVERSED)))
+            }
+            None => Line::styled(shown.to_string(), muted),
+        }
+    }
+
     fn render_windowed(
         &self,
         focused: bool,

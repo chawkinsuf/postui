@@ -50,6 +50,13 @@ pub struct TableSpec {
     /// Whether the table's inputs take `{{variables}}`: their tokens are
     /// tinted and hover-tipped, and the app offers its pickers there.
     pub vars: bool,
+    /// What an open name cell shows, muted, while it is empty: what to
+    /// type there. `None` shows nothing.
+    pub placeholder: Option<&'static str>,
+    /// The footer text of a row's name and of `+ Add`, under the pointer
+    /// and under the keyboard cursor. `None`: the rows are surfaces with
+    /// no text.
+    pub cell_hint: Option<&'static str>,
 }
 
 impl TableSpec {
@@ -65,20 +72,26 @@ impl TableSpec {
         heads: 0,
         name_only: false,
         vars: true,
+        placeholder: None,
+        cell_hint: None,
     };
     /// The Project tab's default headers, under its Name row.
     pub const PROJECT: TableSpec = TableSpec { heads: 1, ..Self::ROWS };
-    /// A request's jq checks, under the status and time-limit fields.
+    /// A request's jq checks, under the status and time-limit fields. The
+    /// header, the add hint, the placeholder and the cell text say jq
+    /// (checks tabs spec section 8, H3, H4).
     pub const CHECKS: TableSpec = TableSpec {
         noun: "check",
-        name_header: "CHECK",
+        name_header: "JQ CHECK",
         yanked: "a check",
         blank: "a check can't be empty — kept '{}'",
         merged: "'{}' already exists — the two checks are now one",
-        add_hint: "Add a check",
+        add_hint: "Add a jq check",
         heads: 3,
         name_only: true,
         vars: false,
+        placeholder: Some("a jq filter that must give true"),
+        cell_hint: Some("A jq filter on the body that must give true"),
     };
 
     /// `key` as a message quotes it: a name-only row's on one line, cut
@@ -1616,7 +1629,8 @@ impl TableEditorState {
         let mut key_drew = 0;
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
-            Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
+            let input = &edit.input;
+            Self::paint_cell_edit(buf, cols.name_x, y, name_w, input, spec.placeholder, bg, theme);
         } else {
             let cell = Rect::new(cols.name_x, y, name_w, 1);
             key_drew = key_rest.paint_at_rest(buf, cell, theme, fg, name_bg);
@@ -1625,7 +1639,7 @@ impl TableEditorState {
         let mut value_drew = 0;
         if editing_col == Some(Col::Value) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
-            Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
+            Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, None, bg, theme);
         } else {
             let cell = Rect::new(cols.value_x, y, value_w, 1);
             value_drew = value_rest.paint_at_rest(buf, cell, theme, fg, value_bg);
@@ -1688,13 +1702,16 @@ impl TableEditorState {
     /// Paints a live cell edit in place: the cell lifts one step above its
     /// row — so the exact cell the keyboard sits in reads at a glance, the
     /// Variable Manager grid's rule for its own in-place edits — and the
-    /// input draws into it, windowed to the cell's own width.
+    /// input draws into it, windowed to the cell's own width, or, empty,
+    /// `placeholder` when there is one.
+    #[allow(clippy::too_many_arguments)]
     fn paint_cell_edit(
         buf: &mut ratatui::buffer::Buffer,
         x: u16,
         y: u16,
         w: u16,
         input: &LineInput,
+        placeholder: Option<&str>,
         row_bg: ratatui::style::Color,
         theme: &Theme,
     ) {
@@ -1703,7 +1720,10 @@ impl TableEditorState {
         }
         let bg = crate::theme::lift_color(row_bg, 0.06);
         fill(buf, Rect::new(x, y, w, 1), bg);
-        let mut line = input.draw_line_windowed(true, theme, w);
+        let mut line = match placeholder {
+            Some(p) => input.draw_line_or_placeholder(p, true, theme, w),
+            None => input.draw_line_windowed(true, theme, w),
+        };
         line.style = Style::default().bg(bg).patch(line.style);
         buf.set_line(x, y, &line, w);
     }
@@ -3367,7 +3387,7 @@ mod tests {
         let term = draw_narrow_as(&map, 40, &notes, &mut hits, &TableSpec::CHECKS);
         let buf = term.backend().buffer();
         let line = |y: u16| (0..40).map(|x| buf.cell((x, y)).unwrap().symbol()).collect::<String>();
-        assert_eq!(line(0).trim(), "CHECK", "one header, no VALUE");
+        assert_eq!(line(0).trim(), "JQ CHECK", "one header, no VALUE");
         let drawn = line(1);
         assert!(drawn.contains("map(select(.price > 100))"), "past the name column: {drawn}");
         for row in 0..3 {

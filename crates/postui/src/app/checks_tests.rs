@@ -3,10 +3,12 @@
 
 use super::key_matrix_tests::{draw, feed, use_persisted_profile};
 use super::*;
+use crate::components::editor::CHECK_FIELDS;
 use crate::components::table_editor::Stop;
 use crate::config::KeyProfile;
 use crate::keyroute::{FieldCaret, FieldId};
 use postui_core::model::{Checks, HttpRequest};
+use ratatui::layout::Rect;
 
 const PROFILES: [KeyProfile; 2] = [KeyProfile::Arrows, KeyProfile::Vim];
 
@@ -76,7 +78,7 @@ use ratatui::crossterm::event::MouseButton::{Left, Right};
 
 /// The walk: every move key from every stop, at rest and out of an open
 /// field or check, lands where the table's one walk puts it: the fields
-/// are places 0 to 2, the checks follow, `+ Add check` is last. ↑ on the
+/// are places 0 to 2, the checks follow, `+ Add jq check` is last. ↑ on the
 /// status field climbs out to the URL line, as from a table's first row.
 #[test]
 fn every_move_key_walks_the_fields_the_checks_and_add_as_one() {
@@ -155,7 +157,7 @@ fn every_move_key_walks_the_fields_the_checks_and_add_as_one() {
 
 /// Q1 to Q3: the tab opens unchanged, on its fields and one-column rows,
 /// the caret on the status field. Tab in an open field goes on through
-/// the fields, then the checks, then `+ Add check`, and out; Shift-Tab
+/// the fields, then the checks, then `+ Add jq check`, and out; Shift-Tab
 /// comes back the same way.
 #[test]
 fn tab_walks_the_open_inputs_across_fields_and_checks() {
@@ -226,7 +228,7 @@ fn a_field_takes_a_value_or_refuses_it_and_undoes_in_one_step() {
 
 /// Q3, Q4, Q7: add, edit, copy, delete and put on a check, each one undo
 /// step, worded for a check; on a field copy and delete do nothing, add
-/// and put act as on `+ Add check`.
+/// and put act as on `+ Add jq check`.
 #[test]
 fn a_check_answers_the_keys_a_headers_row_does() {
     for profile in PROFILES {
@@ -241,7 +243,7 @@ fn a_check_answers_the_keys_a_headers_row_does() {
             (checks(&app), app.toasts.last_message()),
             (checks(&checks_app(FOUR, profile)), None)
         );
-        // Add, from a field: `+ Add check` opens; a new check goes last.
+        // Add, from a field: `+ Add jq check` opens; a new check goes last.
         feed(&mut app, "a");
         assert_eq!(app.field_caret(), FieldCaret::Live(FieldId::TableCell { row: 2, col: 0 }));
         retype(&mut app, ".items | length == 4");
@@ -303,13 +305,13 @@ fn every_message_on_the_tab_says_check() {
     // The footer's chips and the pills' hints, on a check.
     feed(&mut app, "u");
     let labels: Vec<String> = crate::ui::footer_chips_of(&app).into_iter().map(|c| c.1).collect();
-    assert_eq!(labels[..3], ["add check", "copy", "delete"], "{labels:?}");
+    assert_eq!(labels[..3], ["add jq check", "copy", "delete"], "{labels:?}");
     assert!(!labels.iter().any(|l| l == "vars" || l == "disable"), "{labels:?}");
     let hint = |app: &App, hit: Hit| crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit));
     assert_eq!(hint(&app, Hit::TableCopy(0)).as_deref(), Some("Copy this check"));
     assert_eq!(hint(&app, Hit::TableDelete(0)).as_deref(), Some("Delete this check"));
     let add = || Hit::FooterChip(Action::TableAddRow);
-    assert_eq!(hint(&app, add()).as_deref(), Some("Add a check"));
+    assert_eq!(hint(&app, add()).as_deref(), Some("Add a jq check"));
     // The other tabs' add, copy and delete hints are worded as before.
     for tab in [EditorTab::Params, EditorTab::Headers, EditorTab::Vars] {
         app.update(Action::EditorTabSelect(tab.index()));
@@ -482,6 +484,189 @@ fn a_multi_line_check_from_a_file_is_written_back_as_read() {
     feed(&mut app, "<CR><CR>");
     assert!(!app.editor.is_dirty(), "opened and closed untouched");
     assert_eq!(checks(&app).jq, [".a\n  | . == 2"]);
+}
+
+/// The frame `app` draws, at `draw`'s size.
+fn frame(app: &mut App) -> ratatui::buffer::Buffer {
+    use ratatui::{Terminal, backend::TestBackend};
+    app.anims.finish_all();
+    let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// The text `buf` holds in the one-line `rect`.
+fn text_in(buf: &ratatui::buffer::Buffer, rect: Rect) -> String {
+    (rect.x..rect.right()).map(|x| buf.cell((x, rect.y)).unwrap().symbol()).collect()
+}
+
+/// What the well of field `k` shows, trimmed, with the cell its first
+/// char is in.
+fn well_of(app: &mut App, k: usize) -> (String, ratatui::buffer::Cell) {
+    let buf = frame(app);
+    let well = app.hits.rect_of(&Hit::CheckField(k)).expect("the field's well");
+    let shown = text_in(&buf, well);
+    let first = well.x + (shown.len() - shown.trim_start().len()) as u16;
+    (shown.trim().to_string(), buf.cell((first, well.y)).unwrap().clone())
+}
+
+/// Section 8, H1 to H3: an empty field says what empty means, muted, at
+/// rest and open (the caret on its first char); a value hides it. The
+/// labels give the unit, the list says jq, and a new check's empty input
+/// says what to type; another tab's new row says nothing.
+#[test]
+fn the_tab_says_what_goes_in_each_input() {
+    use ratatui::style::Modifier;
+    for profile in PROFILES {
+        let mut app = checks_app(FOUR, profile);
+        let muted = app.theme.text_muted;
+        let buf = frame(&mut app);
+        let screen: String =
+            (0..buf.area.height).map(|y| text_in(&buf, Rect::new(0, y, 160, 1)) + "\n").collect();
+        for words in ["status", "first byte (ms)", "last byte (ms)", "JQ CHECK", "+ Add jq check"] {
+            assert!(screen.contains(words), "{profile:?}: {words}\n{screen}");
+        }
+        assert!(!screen.contains("total"), "{profile:?}: the old label\n{screen}");
+        // A value shows; the empty first-byte limit says it has none.
+        assert_eq!(well_of(&mut app, 0).0, "200", "{profile:?}");
+        assert_eq!(well_of(&mut app, 2).0, "2000", "{profile:?}");
+        let (shown, first) = well_of(&mut app, 1);
+        assert_eq!(shown, "no limit", "{profile:?}");
+        assert_eq!(first.fg, muted, "{profile:?}");
+        assert!(!first.modifier.contains(Modifier::REVERSED), "{profile:?}: at rest, no caret");
+        // Open, the caret sits on its first char; typed, the value shows.
+        app.editor.table.set_selected(Some(Stop::Head(1)));
+        feed(&mut app, open(profile));
+        let (shown, first) = well_of(&mut app, 1);
+        assert_eq!((shown.as_str(), first.symbol()), ("no limit", "n"), "{profile:?}");
+        assert_eq!(first.fg, muted, "{profile:?}");
+        assert!(first.modifier.contains(Modifier::REVERSED), "{profile:?}: the caret");
+        feed(&mut app, "5");
+        assert_eq!(well_of(&mut app, 1).0, "5", "{profile:?}");
+        retype(&mut app, "");
+        // Status, emptied, says what passes then.
+        app.editor.table.set_selected(Some(Stop::Head(0)));
+        feed(&mut app, open(profile));
+        retype(&mut app, "");
+        assert_eq!(well_of(&mut app, 0).0, "any code below 400", "{profile:?}");
+        // A new check's input says it takes a jq filter.
+        app.update(Action::TableAddRow);
+        let say = TableSpec::CHECKS.placeholder.unwrap();
+        let buf = frame(&mut app);
+        let ghost = app.hits.rect_of(&Hit::TableCell { row: 2, col: 0 }).unwrap();
+        assert_eq!(text_in(&buf, ghost).trim(), say, "{profile:?}");
+        assert_eq!(buf.cell((ghost.x, ghost.y)).unwrap().fg, muted, "{profile:?}");
+        feed(&mut app, "<Esc>");
+        // The other tabs' new rows say nothing.
+        app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+        app.editor.focus_content_from_app();
+        app.update(Action::TableAddRow);
+        let buf = frame(&mut app);
+        let ghost = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
+        assert_eq!(text_in(&buf, ghost).trim(), "", "{profile:?}");
+    }
+}
+
+/// Moves the pointer onto `hit`, as the terminal reports it.
+fn point_at(app: &mut App, hit: &Hit) {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    draw(app);
+    let r = app.hits.rect_of(hit).unwrap_or_else(|| panic!("no {hit:?}"));
+    let kind = MouseEventKind::Moved;
+    app.handle_mouse(MouseEvent { kind, column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
+    draw(app);
+}
+
+/// Section 8, H4 to H6: after a key the footer explains the input under the
+/// keyboard cursor, closed or open (a field, a check, `+ Add jq check`),
+/// and nothing where the cursor is on no such input; moving the pointer
+/// gives the line back to what is under it; the hints switch turns both
+/// off. A jq check's row says it on hover too.
+#[test]
+fn the_footer_explains_the_input_under_the_keyboard_cursor() {
+    let jq = TableSpec::CHECKS.cell_hint;
+    let field = |k: usize| Some(CHECK_FIELDS[k].hint);
+    for profile in PROFILES {
+        let vim = profile == KeyProfile::Vim;
+        let (down, up) = if vim { ("j", "k") } else { ("<Down>", "<Up>") };
+        let close = if vim { "<Esc><CR>" } else { "<CR>" };
+        // An empty new check is dropped as it closes.
+        let drop = if vim { "<Esc><Esc>" } else { "<Esc>" };
+        let mut app = checks_app(FOUR, profile);
+        let hint = |app: &App| app.footer_hint().hint;
+        // The pointer, resting on the tab row, speaks until a key.
+        let tab = Hit::EditorTab(EditorTab::Headers.draw_position());
+        point_at(&mut app, &tab);
+        assert_eq!(hint(&app).as_deref(), Some("Edit the request headers"), "{profile:?}");
+        // Every stop of the walk, closed and open.
+        let walk = [field(0), field(1), field(2), jq, jq, jq];
+        for (p, want) in walk.into_iter().enumerate() {
+            let at = format!("{profile:?} at {p}");
+            if p > 0 {
+                feed(&mut app, down);
+            } else {
+                feed(&mut app, &format!("{down}{up}"));
+            }
+            assert_eq!(cursor(&app), Some(place(2, p)), "{at}");
+            assert_eq!(hint(&app).as_deref(), want, "{at}");
+            feed(&mut app, open(profile));
+            assert!(app.field_caret().is_live(), "{at}: open");
+            assert_eq!(hint(&app).as_deref(), want, "{at}: open");
+            feed(&mut app, if p == 5 { drop } else { close });
+            assert!(!app.field_caret().is_live(), "{at}: closed");
+        }
+        // Moving the pointer hands the line back; a jq row says it there.
+        point_at(&mut app, &tab);
+        assert_eq!(hint(&app).as_deref(), Some("Edit the request headers"), "{profile:?}");
+        point_at(&mut app, &Hit::TableCell { row: 0, col: 0 });
+        assert_eq!(hint(&app).as_deref(), jq, "{profile:?}: hovered");
+        // Off the inputs, a key leaves the line empty: the URL line.
+        app.editor.table.set_selected(Some(Stop::Head(0)));
+        feed(&mut app, up);
+        assert_eq!(app.editor.sub_focus, SubFocus::Url, "{profile:?}");
+        assert_eq!(hint(&app), None, "{profile:?}: on the URL line");
+        // The hints switch turns the keyboard's off too.
+        feed(&mut app, down);
+        assert_eq!(hint(&app).as_deref(), field(0), "{profile:?}");
+        app.ui_settings.hover_hints = false;
+        assert_eq!(hint(&app), None, "{profile:?}: hints off");
+    }
+}
+
+/// Section 8, H4 (question 1: A): the Project tab's Name and the Settings
+/// tab's four text rows show their text under the keyboard cursor too;
+/// the other rows there show none.
+#[test]
+fn the_project_name_and_settings_text_rows_explain_themselves_to_the_keyboard() {
+    use crate::components::manage::ManageTab;
+    for profile in PROFILES {
+        let vim = profile == KeyProfile::Vim;
+        let (down, up) = if vim { ("j", "k") } else { ("<Down>", "<Up>") };
+        let mut app = super::project_tests::project_app("name = \"Orders\"\n", profile);
+        let hint = |app: &App| app.footer_hint().hint;
+        feed(&mut app, &format!("{down}{up}"));
+        assert!(app.project_tab.on_name(), "{profile:?}");
+        assert_eq!(hint(&app).as_deref(), Some("Edit the project's name"), "{profile:?}");
+        feed(&mut app, open(profile));
+        assert!(app.project_tab.name_open(), "{profile:?}");
+        assert_eq!(hint(&app).as_deref(), Some("Edit the project's name"), "{profile:?}: open");
+        feed(&mut app, if vim { "<Esc><Esc>" } else { "<Esc>" });
+        feed(&mut app, down);
+        assert_eq!(hint(&app), None, "{profile:?}: + Add header");
+        app.update(Action::SelectManageTab(ManageTab::Settings));
+        let texts = [
+            (4, "Edit the spaces in one indent level"),
+            (6, "Edit the command the AI filter runs"),
+            (9, "Edit the external clipboard command"),
+            (10, "Edit the terminal clipboard size limit"),
+        ];
+        for row in 0..crate::components::settings::SettingsTab::rows().len() {
+            app.settings.set_cursor(row);
+            feed(&mut app, &format!("{down}{up}"));
+            let want = texts.iter().find(|(r, _)| *r == row).map(|(_, t)| *t);
+            assert_eq!(hint(&app).as_deref(), want, "{profile:?}: row {row}");
+        }
+    }
 }
 
 /// A send of the open request that brings a response with `body`, handed

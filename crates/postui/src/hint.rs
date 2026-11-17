@@ -316,8 +316,6 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::SettingsRow(_)
         | Hit::SidebarRow(_)
         | Hit::UrlBar
-        | Hit::TableRow(_)
-        | Hit::TableCell { .. }
         | Hit::AutoHeaderRow(_)
         | Hit::ReferencedVarRow(_)
         | Hit::BodyEditor
@@ -363,9 +361,13 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
                 EditorTab::Checks => "Edit the checks the response must pass",
             })
         }
+        // The Checks tab's inputs say what goes in them (checks tabs spec
+        // section 8, H7): a field, and a jq check's row or `+ Add`. The
+        // other tables' rows are surfaces, with none.
         Hit::CheckField(k) => {
-            crate::components::editor::CHECK_FIELDS.get(*k).and_then(|(_, hint)| text(hint))
+            crate::components::editor::CHECK_FIELDS.get(*k).and_then(|f| text(f.hint))
         }
+        Hit::TableRow(_) | Hit::TableCell { .. } => table.cell_hint.and_then(text),
         Hit::ResponseTab(mode) => of(Action::ResponseViewMode(*mode)),
         // Not `SelectManageTab`'s own wording ("Show the Spaces tab"),
         // which is written for a footer chip a strip away from the tab;

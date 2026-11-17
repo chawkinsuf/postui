@@ -392,6 +392,11 @@ pub struct App {
     /// by `hovered_token` instead, so crossing a `{{token}}` never takes a
     /// row's or a button's hover styling away from it.
     pub hovered: Option<Hit>,
+    /// The last input was a key, not the mouse: the footer's centre line
+    /// explains the input under the keyboard cursor rather than the
+    /// pointer's ([`Self::footer_hint`]; checks tabs spec section 8, H5).
+    /// Set by `handle_key`, cleared by `handle_mouse`.
+    pub hint_from_keys: bool,
     /// Whether the terminal can report Shift+Enter (kitty keyboard
     /// protocol). Set once by `main` after probing; only affects which
     /// send key the footer advertises — the bindings themselves are
@@ -1418,20 +1423,59 @@ impl App {
     /// error stands in for a note that used to sit on the row itself, so
     /// the hints switch leaves it on. It speaks only on the request screen
     /// with no dialog up, since the keyboard is elsewhere otherwise.
+    ///
+    /// After a key the hint is the one for the input under the keyboard
+    /// cursor ([`Self::cursor_hit`]) instead, until the pointer moves
+    /// (checks tabs spec section 8, H4 to H6): the latest input used
+    /// speaks, and the hints switch turns both off.
     pub fn footer_hint(&self) -> crate::components::footer::CentreLine {
         let hovered = self.hovered.as_ref();
+        let explained = if self.hint_from_keys { self.cursor_hit() } else { hovered.cloned() };
         let hint = self
             .ui_settings
             .hover_hints
-            .then_some(hovered)
+            .then_some(explained)
             .flatten()
-            .and_then(|h| crate::hint::hint_for(h, &self.keymap, &self.hint_ctx(h)));
+            .and_then(|h| crate::hint::hint_for(&h, &self.keymap, &self.hint_ctx(&h)));
         let error = if self.screen == Screen::Main && self.modals.top().is_none() {
             self.editor.client_owned_message(hovered, self.focus == PaneId::Editor)
         } else {
             Vec::new()
         };
         crate::components::footer::CentreLine { hint, error }
+    }
+
+    /// The hit the text input under the keyboard cursor registers, open or
+    /// closed, for the footer to explain after a key: the request's table
+    /// tab ([`crate::components::editor::Editor::cursor_hit`]), the Project
+    /// tab's Name, a Settings
+    /// text row. `None` where the keyboard is on anything else, a dialog
+    /// included; a hit with no text of its own shows none
+    /// ([`crate::hint::hint_for`]).
+    pub fn cursor_hit(&self) -> Option<Hit> {
+        use crate::components::manage::ManageTab;
+        use crate::components::settings::SettingsRow;
+        if !self.modals.is_empty() {
+            return None;
+        }
+        match self.screen {
+            Screen::Main if self.focus == PaneId::Editor => self.editor.cursor_hit(),
+            Screen::Manage => match self.manage.tab {
+                ManageTab::Project => {
+                    let tab = &self.project_tab;
+                    let on = self.project().is_some() && tab.focused && !tab.hidden;
+                    (on && (tab.on_name() || tab.name_open())).then_some(Hit::ProjectName)
+                }
+                ManageTab::Settings if self.settings.focused => match self.settings.row() {
+                    SettingsRow::Setting(f) if f.text_value(&self.ui_settings).is_some() => {
+                        Some(Hit::SettingsControl(f))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The state the hovered control's hint needs (see [`crate::hint::HintCtx`]).
@@ -2088,6 +2132,7 @@ impl App {
             resumed_config_edit: None,
             hits: HitMap::default(),
             hovered: None,
+            hint_from_keys: false,
             shift_enter_send: false,
             hovered_token: None,
             drawn_tip: None,
@@ -12664,6 +12709,8 @@ impl App {
         if self.edit_block.is_some() && self.modals.is_empty() {
             return self.blocked_key(ev);
         }
+        // A key hands the footer's line to the keyboard cursor's input.
+        let handed = !std::mem::replace(&mut self.hint_from_keys, true);
         // Where the keyboard is before this key (plan M4a Deviation 6).
         self.note_pane();
         // The field session catches up first with whatever moved the caret
@@ -12682,7 +12729,8 @@ impl App {
         self.vim_after_key(ran);
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
-        let changed = ran.changed || self.key_echo() != echo || armed.is_some() || unselected;
+        let changed =
+            ran.changed || self.key_echo() != echo || armed.is_some() || unselected || handed;
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
