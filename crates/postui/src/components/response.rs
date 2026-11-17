@@ -904,22 +904,21 @@ impl CheckState {
     /// which is what `ui::ellipsize` takes the `…` of a cut label for.
     const CHECKING_MARK: &str = "\u{2026}";
 
-    /// How `data`'s checks stand as it arrives. Checks that read no body
+    /// How `data`'s checks stand as it arrives, and the run that judges
+    /// them later when they can't be judged here. Checks that read no body
     /// (`http::reads_body`) are judged here; with one that does among them
-    /// they are all judged together, after the response is shown.
+    /// they are all judged together by the run, after the response is
+    /// shown, each jq check stopped at `limit`.
     pub fn on_arrival(
         data: &crate::http::ResponseData,
-        checks: &postui_core::model::Checks,
-    ) -> Self {
+        checks: postui_core::model::Checks,
+        limit: std::time::Duration,
+    ) -> (Self, Option<crate::http::CheckJob>) {
         if checks.is_empty() {
-            Self::None
-        } else if !crate::http::reads_body(checks) {
-            // No jq check among them, so no jq check limit comes into it.
-            let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
-            Self::Judged(data.check_lines(checks, limit))
-        } else {
-            Self::Judging
+            return (Self::None, None);
         }
+        let run = data.check_run(checks, limit);
+        if run.reads_body() { (Self::Judging, Some(run)) } else { (Self::Judged(run.run()), None) }
     }
 
     /// How many rows the tab has.
@@ -7142,7 +7141,8 @@ mod tests {
         let mut d = data(body);
         d.status = status;
         let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
-        let (state, lines) = (CheckState::on_arrival(&d, checks), d.check_lines(checks, limit));
+        let lines = d.check_run(checks.clone(), limit).run();
+        let (state, _) = CheckState::on_arrival(&d, checks.clone(), limit);
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         r.set_checks(state);

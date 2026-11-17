@@ -12,6 +12,7 @@ use crate::components::varmanager::{
 };
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
+use crate::http::CheckJob;
 use crate::keys::KeyCombo;
 use crate::layout::PaneId;
 use crate::theme::Theme;
@@ -2229,11 +2230,6 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
         let _ = tx.send(Action::AiLogFailed { path: path.to_path_buf(), error: e.to_string() });
     }
 }
-
-/// A response's one check job (checks tabs spec 2026-11-16, section 7):
-/// the run that judges it by the checks it was sent with
-/// (`ResponseData::check_run`).
-type CheckJob = crate::http::ChecksRun<Vec<(bool, String)>>;
 
 /// The blocking-pool half of a background jq run: parse the body if the
 /// view has no cached document yet, run, and flatten the outputs into
@@ -5468,7 +5464,6 @@ impl App {
                 // before delivery so the response itself still moves into
                 // the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
-                let state = CheckState::on_arrival(&data, &checks);
                 // jq checks read the body, so they are judged after the
                 // response is delivered, off this thread, and for a big
                 // body after its Tree parse (section 7). Nothing ends the
@@ -5476,7 +5471,7 @@ impl App {
                 // are dropped when it ends. Each jq check is stopped at the
                 // project's time limit (#310).
                 let limit = self.meta().jq_check_limit();
-                let job = (state == CheckState::Judging).then(|| data.check_run(checks, limit));
+                let (state, job) = CheckState::on_arrival(&data, checks, limit);
                 if !self.session.arrived(generation, data, state) {
                     return false;
                 }

@@ -70,7 +70,9 @@ impl Stop {
 /// Runs `run` with a [`Stop`] whose flag a timer thread sets once `limit`
 /// has passed, unless `run` ends first. The run reads a flag on each step
 /// rather than the clock, so a run whose steps are each slow still stops
-/// one step past the limit. Costs a thread for each run.
+/// one step past the limit. Costs a thread for each run. The limit is
+/// wall-clock time, so a run slowed by other work on the machine counts
+/// that time too.
 fn with_limit<T>(limit: std::time::Duration, run: impl FnOnce(&Stop) -> T) -> T {
     use std::sync::mpsc::{RecvTimeoutError, channel};
     let stop = Stop { limit, ..Stop::default() };
@@ -872,20 +874,45 @@ mod tests {
     }
 
     /// #310 review round 1: a run whose steps are each slow (a long string
-    /// exploded and imploded on every pass) is stopped near its limit too,
-    /// not after a fixed number of its steps.
+    /// exploded and imploded on every pass, about 30 ms in a debug build)
+    /// is stopped near its limit too, not after a fixed number of its steps.
     #[test]
     fn a_run_of_slow_steps_is_stopped_near_its_limit() {
         let limit = std::time::Duration::from_millis(50);
         let started = std::time::Instant::now();
-        let code = "\"x\" * 1000000 | until(false; explode | implode)";
+        let code = "\"x\" * 200000 | until(false; explode | implode)";
         let err = run_limited(code, &doc(), limit).unwrap_err();
         assert_eq!(err.message(), "stopped at the 50 ms limit");
         let took = started.elapsed();
         assert!(took < std::time::Duration::from_millis(1000), "{took:?}");
     }
 
-    /// #310 spec L6: postui's `range` gives what jaq's did.
+    /// The outputs of `code` over `doc` compiled with jaq's own natives, its
+    /// `range/3` included, for comparing postui's copy with it.
+    fn with_jaqs_range(code: &str, doc: &JqDocument) -> JqRun {
+        let arena = Arena::default();
+        let modules = Loader::new(defs()).load(&arena, File { code, path: () }).unwrap();
+        let inputs = jaq_std::input::funs().into_vec().into_iter().map(jaq_core::native::run);
+        let funs = jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(inputs);
+        let filter =
+            Compiler::default().with_funs(funs.chain(jaq_json::funs())).compile(modules).unwrap();
+        collect(&filter, doc, OUTPUT_CAP, &Stop::default()).unwrap()
+    }
+
+    /// `range`'s copy and the claim that no other native loops without
+    /// passing through `lut()` (#310 spec, §1) were checked against these
+    /// versions: an update has to check them again.
+    #[test]
+    fn the_jaq_crates_are_the_versions_range_was_checked_against() {
+        let lock = include_str!("../../../../Cargo.lock");
+        for (name, version) in [("jaq-core", "3.1.1"), ("jaq-std", "3.0.3"), ("jaq-json", "2.0.3")]
+        {
+            let entry = format!("name = \"{name}\"\nversion = \"{version}\"\n");
+            assert!(lock.contains(&entry), "{name} is no longer {version}");
+        }
+    }
+
+    /// #310 spec L6: postui's `range` gives what jaq's does.
     #[test]
     fn range_gives_what_jaqs_did() {
         let limit = std::time::Duration::from_secs(60);
@@ -902,19 +929,18 @@ mod tests {
             ("[range(0, 1; 3, 4)]", "[0,1,2,0,1,2,3,1,2,1,2,3]"),
         ] {
             assert_eq!(outputs(code, &doc()), [want], "{code}");
+            assert_eq!(with_jaqs_range(code, &doc()).outputs, [want], "{code}");
             let limited = run_limited(code, &doc(), limit).unwrap();
             assert_eq!(limited, JqRun { outputs: vec![want.into()], error: None }, "{code}");
         }
         // A step that can't be added ends the range with its error, after
         // the values before it.
-        for out in [
-            run(".[] | range(0; 3; \"a\")", &JqDocument::parse("[1]").unwrap()).unwrap(),
-            run_limited(".[] | range(0; 3; \"a\")", &JqDocument::parse("[1]").unwrap(), limit)
-                .unwrap(),
-        ] {
-            assert_eq!(out.outputs, ["0"]);
-            assert!(out.error.is_some(), "{out:?}");
-        }
+        let (code, one) = (".[] | range(0; 3; \"a\")", JqDocument::parse("[1]").unwrap());
+        let jaqs = with_jaqs_range(code, &one);
+        assert_eq!(jaqs.outputs, ["0"]);
+        assert!(jaqs.error.is_some(), "{jaqs:?}");
+        assert_eq!(run(code, &one).unwrap(), jaqs);
+        assert_eq!(run_limited(code, &one, limit).unwrap(), jaqs);
     }
 
     /// #310 spec L6: a filter that ends gives the same run under a limit.
@@ -935,13 +961,14 @@ mod tests {
         assert!(run_limited(".a ==", &doc(), limit).unwrap_err().incomplete());
     }
 
-    /// #310 spec L10: only `run_limited` has a limit; `run` goes on.
+    /// #310 spec L10: only `run_limited` has a limit; `run` goes on. The
+    /// filter runs 100 times the limit or more, so a late timer still stops it.
     #[test]
     fn run_has_no_limit() {
-        let code = "last(range(1000000))";
+        let code = "last(range(10000000))";
         let err = run_limited(code, &doc(), std::time::Duration::from_millis(1)).unwrap_err();
         assert_eq!(err.message(), "stopped at the 1 ms limit");
-        assert_eq!(outputs(code, &doc()), ["999999"]);
+        assert_eq!(outputs(code, &doc()), ["9999999"]);
     }
 
     #[test]

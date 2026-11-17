@@ -512,7 +512,7 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
     let started = Instant::now();
     app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
     let limit = app.meta().jq_check_limit();
-    let (lines, checks) = (data.check_lines(checks, limit), checks.clone());
+    let (lines, checks) = (data.check_run(checks.clone(), limit).run(), checks.clone());
     app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     draw(app);
     (generation, lines)

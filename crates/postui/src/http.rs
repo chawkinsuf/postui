@@ -53,6 +53,11 @@ impl<T> ChecksRun<T> {
     pub fn run(self) -> T {
         (self.job)()
     }
+
+    /// Whether its checks read the body ([`reads_body`]).
+    pub fn reads_body(&self) -> bool {
+        self.reads_body
+    }
 }
 
 /// Runs `run`, off the async loop when its checks read the body: over a
@@ -71,51 +76,36 @@ pub fn reads_body(checks: &postui_core::model::Checks) -> bool {
     !checks.jq.is_empty()
 }
 
+/// A response's one check job (checks tabs spec 2026-11-16, section 7):
+/// the run that judges it by the checks it was sent with
+/// ([`ResponseData::check_run`]).
+pub type CheckJob = ChecksRun<Vec<(bool, String)>>;
+
 /// `run` through [`run_checks`], the hop the suite's checks take too, for
 /// the app's one check job per response (checks tabs spec 2026-11-16,
 /// section 7): its lines, or for a run that panicked one failed line that
 /// says so.
-pub async fn judge(run: ChecksRun<Vec<(bool, String)>>) -> Vec<(bool, String)> {
+pub async fn judge(run: CheckJob) -> Vec<(bool, String)> {
     let run = run_checks(run).await;
     run.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))])
 }
 
 impl ResponseData {
     /// The response judged by `checks`, as lines, each jq check stopped at
-    /// `limit`; a request with no checks has none (spec P1).
-    pub fn check_lines(
-        &self,
-        checks: &postui_core::model::Checks,
-        limit: Duration,
-    ) -> Vec<(bool, String)> {
-        self.judging(limit)(checks)
-    }
-
-    /// [`Self::check_lines`] over `checks` as a run for [`judge`].
-    pub fn check_run(
-        &self,
-        checks: postui_core::model::Checks,
-        limit: Duration,
-    ) -> ChecksRun<Vec<(bool, String)>> {
-        ChecksRun::new(checks, self.judging(limit))
-    }
-
-    /// The judging [`Self::check_lines`] and [`Self::check_run`] do. It
-    /// shares the body and lets go of it once jq has read it.
-    fn judging(
-        &self,
-        limit: Duration,
-    ) -> impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<> {
+    /// `limit`; a request with no checks has none (spec P1). A run for
+    /// [`judge`], or for [`ChecksRun::run`] on this thread. It shares the
+    /// body and lets go of it once jq has read it.
+    pub fn check_run(&self, checks: postui_core::model::Checks, limit: Duration) -> CheckJob {
         use postui_core::checks::{Timing, evaluate, lines};
         let (status, body) = (self.status, self.body.clone());
         let timing = Timing::of(self.ttfb, self.elapsed);
-        move |checks| {
+        ChecksRun::new(checks, move |checks| {
             if checks.is_empty() {
                 return Vec::new();
             }
             let doc = move || postui_core::jq::JqDocument::parse(&body);
             lines(status, &evaluate(checks, status, timing, limit, doc))
-        }
+        })
     }
 }
 

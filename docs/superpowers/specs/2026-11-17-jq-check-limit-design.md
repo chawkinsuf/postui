@@ -187,6 +187,19 @@ Amended 2026-11-17, review round 1 (mine):
 - The app reads the limit as the response arrives, from the project as
   the app last read it (on a reload), not from the file at that moment.
 
+Amended 2026-11-17, review round 2 (mine):
+
+- **`on_arrival` makes the check run** with the project's limit, which
+  its caller passes: `CheckState::on_arrival(data, checks, limit)` gives
+  the state and, for checks that read the body, the run for the job;
+  checks that read none it runs at once. `ResponseData::check_lines` is
+  removed, so no caller judges with a stand-in limit.
+- **`run`'s `record` takes the session** in place of its mask and the
+  limit, and reads the limit from its project.
+- A test pins the jaq crates' versions in `Cargo.lock` that `range`'s
+  copy and section 1's claim about the other natives were checked
+  against, and `range`'s test compares postui's copy with jaq's own.
+
 **Docs:** the skill's `reference.md` lists `jq_check_limit_ms` under
 `project.toml` and says in the `[checks]` paragraph that a jq check is
 stopped at the limit; the checks tabs spec's section 7 detail 4 and A8
