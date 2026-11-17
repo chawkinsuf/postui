@@ -224,17 +224,16 @@ impl Session {
 
     /// Delivers a completed response to its owner — on screen when that
     /// request is still open, its cache slot otherwise — with how its
-    /// checks stand as it arrives, and answers the response it landed on.
-    /// A result from a superseded generation is dropped (`None`).
+    /// checks stand as it arrives. A result from a superseded generation
+    /// is dropped.
     pub fn arrived(
         &mut self,
         generation: u64,
         data: Box<crate::http::ResponseData>,
         checks: CheckState,
-    ) -> Option<&Response> {
-        let response = self.deliver(generation, ResponseState::Ready(data))?;
-        response.set_checks(checks);
-        Some(response)
+    ) -> bool {
+        let response = self.deliver(generation, ResponseState::Ready(data));
+        response.map(|r| r.set_checks(checks)).is_some()
     }
 
     /// Like `arrived`, for a send that failed.
@@ -275,15 +274,16 @@ impl Session {
 
     /// Gives the response the send `generation` brought its jq checks'
     /// lines (`Action::ChecksJudged`). Found as a finished parse finds it,
-    /// on screen or in the cache; `false` when no response is that send's
-    /// any more (a new send replaced it), and the lines are dropped.
+    /// on screen or in the cache; when no response is that send's any more
+    /// (a new send replaced it) the lines are dropped. Whether the
+    /// response on screen took them: only then is there anything to draw.
     pub fn checks_judged(&mut self, generation: u64, lines: Vec<(bool, String)>) -> bool {
+        let on_screen = self.response.is_from(generation);
         let mut slots = std::iter::once(&mut self.response).chain(self.cache.values_mut());
-        let Some(response) = slots.find(|r| r.is_from(generation)) else {
-            return false;
-        };
-        response.set_checks(CheckState::Judged(lines));
-        true
+        if let Some(response) = slots.find(|r| r.is_from(generation)) {
+            response.set_checks(CheckState::Judged(lines));
+        }
+        on_screen
     }
 
     /// Forgets everything — cache, screen, in-flight — for a project
@@ -320,7 +320,7 @@ mod tests {
             url: "https://x.test/a".into(),
             headers: vec![],
             sent_headers: vec![],
-            body: body.to_string(),
+            body: body.to_string().into(),
             ttfb: Duration::from_millis(1),
             elapsed: Duration::from_millis(1),
             size: body.len(),
@@ -330,7 +330,7 @@ mod tests {
 
     /// A response to a request without checks arrives.
     fn arrives(s: &mut Session, generation: u64, body: &str) -> bool {
-        s.arrived(generation, data(body), CheckState::None).is_some()
+        s.arrived(generation, data(body), CheckState::None)
     }
 
     fn body_of(r: &Response) -> Option<&str> {
@@ -503,24 +503,26 @@ mod tests {
             open(&mut s, &slug);
             let generation = s.begin_send(&Some(slug.clone()));
             s.in_flight.push(in_flight(generation, &slug).await);
-            assert!(s.arrived(generation, data(&big), CheckState::Judging).is_some());
+            assert!(s.arrived(generation, data(&big), CheckState::Judging));
             assert!(s.tree_arrived(generation, JsonTree::parse(&big)));
             sent.push(generation);
         }
         open(&mut s, "elsewhere");
         assert!(s.cache[&Some("big0".into())].view().unwrap().tree.is_none(), "shed");
-        assert!(s.checks_judged(sent[0], lines(".a")));
+        assert!(!s.checks_judged(sent[0], lines(".a")), "off screen: nothing to draw");
         assert_eq!(checks_tab(&mut s.response), None, "not the request on screen");
         open(&mut s, "big1");
         let waiting = Some("checking\u{2026}");
         assert_eq!(checks_tab(&mut s.response).as_deref(), waiting, "nor another send's");
+        assert!(s.checks_judged(sent[1], lines(".b")), "on screen");
+        assert_eq!(checks_tab(&mut s.response).as_deref(), Some("✓ .b"));
         open(&mut s, "big0");
         assert_eq!(checks_tab(&mut s.response).as_deref(), Some("✓ .a"));
         // A new send of the request: the earlier send's lines find nothing.
         let again = s.begin_send(&Some("big0".into()));
         s.in_flight.push(in_flight(again, "big0").await);
         assert!(!s.checks_judged(sent[0], lines("stale")));
-        assert!(s.arrived(again, data("{}"), CheckState::Judging).is_some());
+        assert!(s.arrived(again, data("{}"), CheckState::Judging));
         assert!(!s.checks_judged(sent[0], lines("stale")));
         assert_eq!(checks_tab(&mut s.response).as_deref(), waiting);
         // A project switch forgets every response.

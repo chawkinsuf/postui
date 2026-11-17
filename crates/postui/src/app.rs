@@ -2474,7 +2474,7 @@ impl App {
     /// worker, whose result comes back as `PrettyParsed` tagged with
     /// `generation`. Outside a tokio runtime (`App::new_for_test`) the
     /// parse runs inline and its result is dispatched immediately.
-    fn spawn_pretty_parse(&mut self, generation: u64, body: String) {
+    fn spawn_pretty_parse(&mut self, generation: u64, body: std::sync::Arc<String>) {
         use crate::components::json_tree::JsonTree;
         if tokio::runtime::Handle::try_current().is_err() {
             let tree = JsonTree::parse(&body);
@@ -5436,23 +5436,29 @@ impl App {
                 }
             }
             Action::ResponseArrived { generation, data, checks } => {
+                use crate::components::response::CheckState;
                 // A body too big to parse on the UI thread is handed to a
                 // blocking worker, whose result comes back as
-                // `PrettyParsed`. The clone happens before delivery so the
-                // response itself still moves into the session.
+                // `PrettyParsed`. Its hold on the shared body is taken
+                // before delivery so the response itself still moves into
+                // the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
-                let state = crate::components::response::CheckState::on_arrival(&data, &checks);
-                let Some(response) = self.session.arrived(generation, data, state) else {
+                let state = CheckState::on_arrival(&data, &checks);
+                // jq checks read the body, so they are judged after the
+                // response is delivered, off this thread (section 7).
+                let run = (state == CheckState::Judging).then(|| data.check_run());
+                if !self.session.arrived(generation, data, state) {
                     return false;
-                };
-                let run = response.check_run();
+                }
                 if let Some(body) = big {
                     self.spawn_pretty_parse(generation, body);
                 }
-                // jq checks read the body, so they are judged after the
-                // response is delivered, off this thread (section 7).
                 if let Some(run) = run {
                     let tx = self.tx.clone();
+                    // Unlike `spawn_pretty_parse`, no inline run for a caller
+                    // without a runtime: a response is delivered only for a
+                    // send in flight, and `Action::Send` spawns that the
+                    // same way.
                     tokio::spawn(async move {
                         let lines = crate::http::judge(checks, run).await;
                         let _ = tx.send(Action::ChecksJudged { generation, lines });
@@ -12096,7 +12102,7 @@ impl App {
         match target {
             CopyTarget::ResponseBody => match self.session.response.state() {
                 ResponseState::Ready(d) => {
-                    Some((d.body.clone(), "Copied response body".to_string()))
+                    Some((d.body.to_string(), "Copied response body".to_string()))
                 }
                 _ => None,
             },

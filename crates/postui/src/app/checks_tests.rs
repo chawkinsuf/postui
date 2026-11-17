@@ -495,7 +495,7 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
         url: "http://x.test/".into(),
         headers: vec![],
         sent_headers: vec![],
-        body: body.to_string(),
+        body: body.to_string().into(),
         ttfb: std::time::Duration::from_millis(5),
         elapsed: std::time::Duration::from_millis(9),
         size: body.len(),
@@ -642,7 +642,8 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     // Another request on screen, with a response of its own.
     app.update(Action::ForceOpenRequest("main/other".into()));
     send_arrives(&mut app, 200, "theirs", &Checks::default());
-    assert!(app.update(Action::ChecksJudged { generation: first, lines: lines.clone() }));
+    let off_screen = Action::ChecksJudged { generation: first, lines: lines.clone() };
+    assert!(!app.update(off_screen), "nothing to draw");
     assert_eq!(shown(&app), "theirs");
     assert!(!response_modes(&app).contains(&ViewMode::Checks), "not the other request's");
     app.update(Action::ForceOpenRequest("main/probe".into()));
@@ -669,7 +670,7 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     let (last, _) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
     app.update(Action::DeleteRequest("main/probe".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
-    assert!(app.update(Action::ChecksJudged { generation: last, lines }));
+    assert!(!app.update(Action::ChecksJudged { generation: last, lines }));
     assert_eq!(shown(&app), "theirs", "nothing lands on the request now open");
     assert!(!response_modes(&app).contains(&ViewMode::Checks));
     app.update(Action::Undo);

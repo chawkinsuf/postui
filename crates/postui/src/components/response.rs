@@ -3073,26 +3073,6 @@ impl Response {
         self.view.as_ref().is_some_and(|v| v.generation == generation)
     }
 
-    /// While the response's checks are being judged, the run that judges
-    /// them, for the blocking pool. It shares the view's body and rebuilds
-    /// it when it runs, so nothing is copied here.
-    pub fn check_run(
-        &self,
-    ) -> Option<impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<>>
-    {
-        let (ResponseState::Ready(data), Some(view)) = (&self.state, &self.view) else {
-            return None;
-        };
-        if view.checks != CheckState::Judging {
-            return None;
-        }
-        let (status, timing, body) = (data.status, data.timing(), view.raw_body());
-        Some(move |checks: &postui_core::model::Checks| {
-            let doc = move || JqDocument::parse(&body.join());
-            crate::http::check_lines(checks, status, timing, doc)
-        })
-    }
-
     /// Sets how the response's checks stand: as it arrives, and when its
     /// jq checks' lines land. With the Checks tab up, the tab's lines are
     /// other lines now.
@@ -3101,9 +3081,12 @@ impl Response {
             return;
         };
         view.checks = checks;
-        // The measure's key is the tab and its line count, which one
-        // judged line shares with `checking…`.
-        view.content_width = None;
+        // A measure of the Checks tab is of the old lines, and its key
+        // (the tab, its line count) is one judged line's too. Another
+        // tab's measure stays.
+        if matches!(view.content_width, Some((ViewMode::Checks, ..))) {
+            view.content_width = None;
+        }
         if view.mode == ViewMode::Checks {
             view.lines_replaced();
         }
@@ -3413,7 +3396,7 @@ impl Response {
     /// The parse a shed response needs now that it is back on screen: its
     /// generation and body, once — the caller hands them to the same
     /// background parse a fresh arrival gets. `None` when nothing was shed.
-    pub fn take_reparse(&mut self) -> Option<(u64, String)> {
+    pub fn take_reparse(&mut self) -> Option<(u64, Arc<String>)> {
         let view = self.view.as_mut()?;
         if !view.shed {
             return None;
@@ -6275,7 +6258,7 @@ mod tests {
                 value: "Bearer s3cret".into(),
                 display: format!("Bearer {}", postui_core::prepare::SECRET_MASK),
             }],
-            body: body.to_string(),
+            body: body.to_string().into(),
             ttfb: Duration::from_millis(38),
             elapsed: Duration::from_millis(342),
             size: body.len(),
@@ -7263,13 +7246,9 @@ mod tests {
         // The first `…` in reading order is the label's.
         let mark = buf.content().iter().find(|c| c.symbol() == "\u{2026}");
         assert_eq!(mark.unwrap().fg, t.text_muted, "a dim mark on the label");
-        // The run its check job is given judges it as its own body does.
-        let run = r.check_run().expect("a run while its checks are judged");
-        assert_eq!(run(&jq_checks(&[".ok"])), lines);
         // The lines land: the verdict takes the mark's place and the tab
         // keeps its cells.
         r.set_checks(CheckState::Judged(lines));
-        assert!(r.check_run().is_none(), "judged once");
         assert!(render(&mut r).contains("Checks \u{2717}"));
         assert_eq!(render_hits(&mut r).rect_of(&tab).unwrap(), waiting, "nothing on the row moves");
         assert_eq!(r.view().unwrap().view_text(), "✗ status 500, expected below 400\n✓ .ok");
@@ -7281,7 +7260,6 @@ mod tests {
         };
         let (quick, lines) = arrived(200, body, &quick);
         assert_eq!(quick.view().unwrap().checks, CheckState::Judged(lines));
-        assert!(quick.check_run().is_none(), "nothing left to run");
         let none = arrived(500, body, &Default::default()).0;
         assert_eq!(none.view().unwrap().checks, CheckState::None);
     }
@@ -7318,13 +7296,16 @@ mod tests {
         render(&mut one);
         one.set_checks(CheckState::Judged(lines));
         assert_eq!(one.view().unwrap().measured_width(), None);
-        // On another tab the cursor and the selection stay.
+        // On another tab the cursor, the selection and that tab's measure
+        // stay.
         let (mut r, lines) = arrived(200, "a\nb\nc", &jq_checks(&[".k"]));
         let (area, _) = render_buf(&mut r);
         r.handle_key(key(KeyCode::Down));
         assert!(r.select_word_at(area.x, area.y + 2));
+        assert_eq!(r.view().unwrap().measured_width(), Some(1));
         r.set_checks(CheckState::Judged(lines));
         assert_eq!((r.view().unwrap().cursor, r.selected_text().as_deref()), (1, Some("c")));
+        assert_eq!(r.view().unwrap().measured_width(), Some(1), "not measured again");
     }
 
     /// `c` (the router's row) copies the header under the cursor; on the

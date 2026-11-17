@@ -3,11 +3,13 @@
 //! knowing anything about reqwest itself.
 use postui_core::prepare::{PreparedRequest, SentHeader};
 use std::error::Error as _;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A fully-resolved HTTP response, shaped for the UI. `body` is a lossy
 /// UTF-8 decode of the raw bytes (never fails, may show replacement chars
 /// for non-text bodies); `size` is the exact raw byte length regardless.
+/// The body is shared, so a background job reads it without a copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseData {
     pub status: u16,
@@ -22,7 +24,7 @@ pub struct ResponseData {
     /// request has been edited (`PreparedRequest::wire`). Shown
     /// under the response headers as the Headers tab's `sent` section.
     pub sent_headers: Vec<SentHeader>,
-    pub body: String,
+    pub body: Arc<String>,
     /// Time to first byte: send → response headers received.
     pub ttfb: Duration,
     /// Total: send → body fully downloaded.
@@ -44,26 +46,10 @@ pub async fn run_checks<T: Send + 'static>(
     tokio::task::spawn_blocking(move || run(&checks)).await
 }
 
-/// A response with `status` that took `timing`, judged by `checks`, as
-/// lines; a request with no checks has none (spec P1). `doc` reads the
-/// body, called as `evaluate` calls it: once, and only for a jq check.
-pub fn check_lines(
-    checks: &postui_core::model::Checks,
-    status: u16,
-    timing: postui_core::checks::Timing,
-    doc: impl FnOnce() -> Result<postui_core::jq::JqDocument, postui_core::jq::JqError>,
-) -> Vec<(bool, String)> {
-    use postui_core::checks::{evaluate, lines};
-    if checks.is_empty() {
-        return Vec::new();
-    }
-    lines(status, &evaluate(checks, status, timing, doc))
-}
-
-/// `run` through [`run_checks`], for the app's one check job per response
-/// (checks tabs spec 2026-11-16, section 7): its lines, or for a run that
-/// panicked one failed line that says so. A jq check has no time limit
-/// yet: that is #310.
+/// `run` through [`run_checks`], the hop the suite's checks take too, for
+/// the app's one check job per response (checks tabs spec 2026-11-16,
+/// section 7): its lines, or for a run that panicked one failed line that
+/// says so. A jq check has no time limit yet: that is #310.
 pub async fn judge(
     checks: postui_core::model::Checks,
     run: impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + 'static,
@@ -73,15 +59,27 @@ pub async fn judge(
 }
 
 impl ResponseData {
-    /// [`check_lines`] over this response.
+    /// The response judged by `checks`, as lines; a request with no checks
+    /// has none (spec P1).
     pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
-        let timing = self.timing();
-        check_lines(checks, self.status, timing, || postui_core::jq::JqDocument::parse(&self.body))
+        self.check_run()(checks)
     }
 
-    /// The response's two times as its checks judge them.
-    pub fn timing(&self) -> postui_core::checks::Timing {
-        postui_core::checks::Timing::of(self.ttfb, self.elapsed)
+    /// [`Self::check_lines`] as a run for [`judge`]. It shares the body
+    /// and lets go of it once jq has read it.
+    pub fn check_run(
+        &self,
+    ) -> impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<> {
+        use postui_core::checks::{Timing, evaluate, lines};
+        let (status, body) = (self.status, self.body.clone());
+        let timing = Timing::of(self.ttfb, self.elapsed);
+        move |checks| {
+            if checks.is_empty() {
+                return Vec::new();
+            }
+            let doc = move || postui_core::jq::JqDocument::parse(&body);
+            lines(status, &evaluate(checks, status, timing, doc))
+        }
     }
 }
 
@@ -197,7 +195,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         url: raw.url,
         headers: raw.headers,
         sent_headers: raw.sent_headers,
-        body,
+        body: Arc::new(body),
         ttfb: raw.ttfb,
         elapsed: raw.elapsed,
         size,
@@ -423,7 +421,7 @@ mod tests {
         assert_eq!(raw.status, 200);
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
-        assert_eq!(data.body, "ok\u{fffd}\u{fffd}");
+        assert_eq!(*data.body, "ok\u{fffd}\u{fffd}");
         assert_eq!(data.size, 4);
     }
 
@@ -449,10 +447,10 @@ mod tests {
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
         assert_eq!(data.status, 500);
-        let judged = |checks: Checks| {
-            let data = data.clone();
-            judge(checks, move |checks| data.check_lines(checks))
-        };
+        let run = data.check_run();
+        assert_eq!(Arc::strong_count(&data.body), 2, "the run shares the body");
+        drop(run);
+        let judged = |checks: Checks| judge(checks, data.check_run());
         assert!(judged(Checks::default()).await.is_empty());
         let checks = Checks {
             max_elapsed_ms: Some(60_000),

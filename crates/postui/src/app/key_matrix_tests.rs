@@ -795,7 +795,7 @@ pub(super) fn build(f: Fixture) -> App {
                     url: "https://x.test/a".into(),
                     headers: vec![("content-type".into(), content_type.into())],
                     sent_headers: Vec::new(),
-                    body: body.clone(),
+                    body: body.clone().into(),
                     ttfb: std::time::Duration::from_millis(1),
                     elapsed: std::time::Duration::from_millis(1),
                     size: body.len(),

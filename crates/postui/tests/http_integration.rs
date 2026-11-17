@@ -38,7 +38,7 @@ async fn sends_json_with_auto_content_type_and_reads_response() {
         prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 201);
-    assert_eq!(data.body, "{\"ok\":true}");
+    assert_eq!(*data.body, "{\"ok\":true}");
     assert_eq!(data.size, 11);
 }
 
@@ -71,7 +71,7 @@ async fn non_2xx_is_a_response_not_an_error() {
         prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 500);
-    assert_eq!(data.body, "boom");
+    assert_eq!(*data.body, "boom");
 }
 
 #[tokio::test]
@@ -116,7 +116,7 @@ async fn redirects_are_followed() {
     let (prepared, _) = prepare(&r, &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 200);
-    assert_eq!(data.body, "done");
+    assert_eq!(*data.body, "done");
 }
 
 #[tokio::test]

@@ -101,22 +101,21 @@ how its checks stand (`Session::arrived` takes a
 `response::CheckState`, from `CheckState::on_arrival`): none, the
 judged lines when no jq check has to read the body
 (`ResponseData::check_lines`), or being judged. For the last the app
-then starts the one job (`Response::check_run`, through `http::judge`
-and `http::run_checks`, the suite's hop too): it runs the checks once
-on the blocking pool and sends the lines as `Action::ChecksJudged` with
-the send's generation. `Session::checks_judged` gives them to the
+then starts the one job (`ResponseData::check_run`, through
+`http::judge` and `http::run_checks`, the suite's hop too): it runs the
+checks once on the blocking pool and sends the lines as
+`Action::ChecksJudged` with the send's generation.
+`Session::checks_judged` gives them to the
 response that send made, on screen or in the session's cache, found by
 its view's generation as a background parse finds it (`tree_arrived`);
 when that response is gone they are dropped. The response keeps the
 lines and not the outcomes, which hold every output of a jq check whole
-(#309 review round 1). The job shares the view's body
-(`ReadyView::raw_body`) and rebuilds it on the blocking pool for jq's
-read, as the AI prompt's job does, so nothing is copied for the checks
-before the response shows (#312 review round 1). The costs: that
-rebuilt copy is held while the body is read, and the body is read again
-when the jq bar is used on it. A jq check has no time limit yet, so one
-that never ends leaves the tab on `checking…` and keeps its thread and
-its read of the body: that limit is #310.
+(#309 review round 1). The job shares the response's body
+(`ResponseData::body`, an `Arc`), so the checks copy no body, before
+the response shows or after (#312 review rounds 1 and 2). The cost: the
+body is read again when the jq bar is used on it. A jq check has no
+time limit yet, so one that never ends leaves the tab on `checking…`
+and keeps its thread and its read of the body: that limit is #310.
 
 **The response tab.** `ViewMode::Checks`, offered unless the view's
 `checks` (`CheckState`) is `None`. That one field is all the view keeps
@@ -389,13 +388,14 @@ to them. What changes:
   #309.
 - **One job per response.** Only a request with a jq check has one. The
   app starts it when the response is delivered, through
-  `http::run_checks`, over the body the view shares
-  (`Response::check_run`; review round 1: the send's task ran it over
-  its own copy of the response, made before the response was handed
-  over). Nothing tracks the job, so nothing cancels it: a new send of
-  the request leaves the earlier job running to its end, and its lines
-  are dropped. A send cancelled or replaced before its response is
-  delivered starts none.
+  `http::run_checks`, over the response's own body, which is shared
+  (`ResponseData::check_run`; before review round 1 the send's task
+  ran it over its own copy of the response, made before the response
+  was handed over, and before round 2 the job rebuilt the body from
+  the view's lines). Nothing tracks the job, so nothing cancels it: a
+  new send of the request leaves the earlier job running, and its
+  lines are dropped (detail 4 below). A send cancelled or replaced
+  before its response is delivered starts none.
 - **One action back,** `Action::ChecksJudged { generation, lines }`,
   matched as a background parse is: `Session::checks_judged` finds the
   response whose view was made for that generation, on screen or in the
@@ -415,8 +415,8 @@ to them. What changes:
 Every reader of `ReadyView::checks`, and what it does in each state.
 All of them read it through `CheckState::row` and `len` (`None`: no
 rows; `Judging`: the one row `checking…` with no verdict; `Judged`: a
-row a line) or `CheckState::verdict`. `Response::check_run` reads it
-too: it gives the job only while `Judging`.
+row a line) or `CheckState::verdict`. The app starts the job when
+`CheckState::on_arrival` answers `Judging`.
 
 - **Presence:** `ReadyView::tab_modes` (the strip, the tab keys through
   `Response::tab_modes`, `set_view_mode`'s refusal of a tab not
@@ -443,9 +443,11 @@ too: it gives the job only while `Judging`.
   them as a tab switch does (`ReadyView::lines_replaced`, which
   `set_mode` now calls too): the cursor on the first line, the scroll
   at the top, the selection and the remembered column dropped, the
-  search's matches found again. On another tab nothing visible changes.
-  Either way the cached width is forgotten: its key (mode, line count)
-  is the same for one judged line as for `checking…`.
+  search's matches found again. On another tab nothing visible changes
+  but the label's mark. A cached width of the Checks tab is forgotten:
+  its key (mode, line count) is the same for one judged line as for
+  `checking…`. Another tab's is kept, and lines that land on a response
+  that is not on screen ask for no draw (review round 2).
 - **Words:** unchanged. The toolbar's hints and the copy toast say
   "check results" whatever the state (`HintCtx::checks`,
   `App::resolve_copy`).
@@ -458,16 +460,16 @@ lines find it by its generation as above.
 - The send (`tests/http_integration.rs`): a request with a jq check
   sent to a local server arrives judging, then its lines land; one with
   only a status check arrives judged. `http.rs`: the lines a sent
-  response is judged into, and the one failed line of a run that
-  panicked.
+  response is judged into by a run that shares its body, and the one
+  failed line of a run that panicked.
 - Response: the three states' tab, label, text and paint; the tab's
-  cells are the same judging and judged; the job's run gives the lines
-  the response's own body gives, and there is one only while judging;
-  lines landing with the Checks tab up reset the cursor, the selection,
-  the search's matches and the width, and on another tab leave the
-  cursor and the selection.
+  cells are the same judging and judged; lines landing with the Checks
+  tab up reset the cursor, the selection, the search's matches and the
+  width, and on another tab leave the cursor, the selection and that
+  tab's width.
 - Session: lines land on a cached response, a shed one included, and
-  are dropped after a new send and a reset.
+  are dropped after a new send and a reset; only a landing on the
+  response on screen asks for a draw.
 - App, in both profiles: the response is ready with its tab on
   `checking…`; copy and search act on that line; `ChecksJudged` fills
   the tab with no toast and no tab switched. Lines for a request
@@ -481,10 +483,27 @@ lines find it by its generation as above.
 2. When the lines arrive with the Checks tab up, the cursor goes to the
    first line and a selection made on `checking…` is dropped, as on a
    tab switch.
-3. The check job shares the view's body and rebuilds it on the blocking
-   pool for jq's read, as the AI prompt's job does (review round 1;
-   before, it kept its own copy of the response, made before the
-   response was handed over).
-4. A new send of a request whose checks still run leaves that job
-   running to its end, as an edit in the jq bar leaves the run it
-   replaced. Ending it early is #310's.
+3. The check job reads the response's own body. `ResponseData::body`
+   is an `Arc` for that, and the background Tree parse of a large body
+   shares it too, where on `main` it had a copy. So while a large
+   response's Tree parse and checks run, its body is held twice (the
+   response's and the view's lines), where `main` held it three times
+   during the parse and round 1's job a fourth. The job lets go of the
+   body once jq has
+   read it and keeps jq's document until its last check ends (review
+   round 2).
+4. Nothing ends a running check job. A new send of a request whose
+   checks still run starts another job and leaves the earlier one
+   running; its lines are dropped. With checks that end, the leftover
+   jobs end too. With a check that never ends, every send of that
+   request leaves one more thread busy and one more read of the body
+   in memory until postui quits, up to the blocking pool's 512 threads,
+   after which Tree parses and jq bar runs wait. A quit gives the
+   terminal back at once, and the process ends when the running jobs
+   do (seen in tmux in round 2 with a check that ends). `main` leaks
+   the same way through Esc and a new send, since a cancelled send's
+   checks run on. Nothing short of ending the run bounds this without
+   a wrong result: a new job refused or skipped while an old one runs leaves a
+   corrected check on `checking…`, and a job that gives up between its
+   checks is still stuck in the one that never ends. Ending a run is
+   #310's (review rounds 1 and 2).
