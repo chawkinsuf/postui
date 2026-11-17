@@ -52,10 +52,10 @@ pub enum EditorTab {
 const DRAW_ORDER: [EditorTab; 5] =
     [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Body, EditorTab::Checks];
 
-/// The tab row's mark that the body's variables are on, drawn
-/// [`VARS_MARK_GAP`] cells after the last tab.
-const VARS_MARK: &str = "vars ";
-const VARS_MARK_GAP: u16 = 2;
+/// What the Body tab's label ends with while the body's variables are on,
+/// as a counted tab's ends with its count (checks tabs spec 2026-11-16,
+/// W3).
+const BODY_VARS: &str = " · vars";
 
 /// The Checks tab's three fields, in walk order (the table's heads), each
 /// with its label: the status codes, then the two time limits in
@@ -1885,9 +1885,12 @@ impl Editor {
 
     /// A tab's label in the strip: its name, and with `counts` its entry
     /// count when it has entries. The Checks tab counts its checks: a
-    /// status field that is set, each limit, each jq check.
+    /// status field that is set, each limit, each jq check. The Body tab
+    /// has no count; while the body's variables are on its label carries
+    /// [`BODY_VARS`], with or without `counts`.
     fn tab_label_text(&self, t: EditorTab, counts: bool) -> String {
         let count = match t {
+            EditorTab::Body if self.substitute_body => return format!("{}{BODY_VARS}", t.label()),
             EditorTab::Body => 0,
             EditorTab::Checks => {
                 usize::from(!self.check_status.is_empty())
@@ -4051,15 +4054,15 @@ impl Editor {
             tabs.iter().map(|t| (self.tab_label_text(*t, counts), badge(t))).collect()
         };
         // The row must end before the split chips, with room kept for the
-        // `vars` mark after the last tab whether or not it is drawn. When
-        // it doesn't, every tab drops its count: the one compact form
-        // (checks tabs spec 2026-11-16, W1). The form follows the room and
-        // the labels, never the selected tab, so switching tabs moves
-        // nothing (W2).
+        // Body tab's `vars` whether or not it is on. When it doesn't,
+        // every tab drops its count: the one compact form (checks tabs
+        // spec 2026-11-16, W1). The form follows the room and the labels,
+        // never the selected tab, so switching tabs moves nothing (W2).
         let control_x = area.right().saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
+        let vars_room = if self.substitute_body { 0 } else { crate::ui::cells(BODY_VARS) as u16 };
         let fits = |labels: &Labels| {
             let end = crate::paint::TabStrip::spans(labels).last().map_or(0, |(x, w)| x + w);
-            area.x + end + VARS_MARK_GAP + VARS_MARK.len() as u16 <= control_x
+            area.x + end + vars_room <= control_x
         };
         let full = labels(true);
         let tab_strip = if fits(&full) { full } else { labels(false) };
@@ -4080,8 +4083,8 @@ impl Editor {
             ratio: self.split.ratio,
         };
         // The pane-collapse progress doubles as the tabs' fade: hiding the
-        // editor fades the tab labels (underline, badge, and vars indicator
-        // with them) out entirely — settled hidden, the strip isn't painted
+        // editor fades the tab labels (underline and badge with them) out
+        // entirely — settled hidden, the strip isn't painted
         // at all, and the `› show` toggle is the row's only surviving
         // control. Hidden tabs also take no clicks, so registration is
         // gated on the settled flag, not the fade.
@@ -4117,17 +4120,6 @@ impl Editor {
                 for (i, rect) in rects.iter().enumerate() {
                     hits.register(*rect, crate::hit::Hit::EditorTab(i));
                 }
-            }
-
-            // The "vars" indicator sits right after the tab blocks, on the
-            // labels row.
-            let last_rect = rects[tabs.len() - 1];
-            if self.substitute_body {
-                let x = last_rect.x + last_rect.width + VARS_MARK_GAP;
-                frame.render_widget(
-                    Paragraph::new(Line::styled(VARS_MARK, Style::default().fg(theme.accent))),
-                    Rect::new(x, area.y, VARS_MARK.len() as u16, 1),
-                );
             }
             if fade_t > 0.0 {
                 // Mid-slide: blend the whole strip toward the page it sits
@@ -7225,7 +7217,7 @@ mod tests {
     #[test]
     fn the_tab_row_fits_beside_the_split_control_at_the_main_minimum() {
         // The widest everyday tab row: single-digit counts on the four
-        // counted tabs, the Body badge, and the "vars" indicator. With the
+        // counted tabs, and the Body tab's `vars` and badge. With the
         // fifth tab it no longer fits at the main-column minimum, so every
         // tab drops its count there (checks tabs spec 2026-11-16, W1), and
         // all five still end before the split chips.
@@ -7247,20 +7239,32 @@ mod tests {
             (tabs, first.x)
         };
         let (tabs, control_x) = tab_rects(&mut e, crate::layout::MAIN_MIN_COLS);
-        // "vars " sits two cells after the last tab.
-        let vars_end = tabs[4].right() + 2 + 5;
-        assert!(
-            vars_end < control_x,
-            "the row ends at {vars_end}, the control starts at {control_x}"
-        );
+        let end = tabs[4].right();
+        assert!(end < control_x, "the row ends at {end}, the control starts at {control_x}");
         // A tab is its label and a cell either side: `Checks`, or with
         // room `Checks · 9`.
         assert_eq!(tabs[4].width, 8, "no count at the minimum");
         assert_eq!(tab_rects(&mut e, 120).0[4].width, 12, "the count with room");
+        // W3: `vars` is inside the Body tab, in both forms: the label, two
+        // cells for the badge, and a cell either side.
+        assert_eq!(tabs[3].width, 15, "`Body · vars ✓` at the minimum");
+        assert!(draw_editor(&mut e).0.contains("Body · vars ✓"));
         // W2: the form follows the room, never the selected tab.
         for tab in DRAW_ORDER {
             e.active_tab = tab;
             assert_eq!(tab_rects(&mut e, crate::layout::MAIN_MIN_COLS).0, tabs, "{tab:?}");
+        }
+        // Nor does it follow the body's variables: off, the Body tab is
+        // `vars` narrower and every other tab keeps its form, at any width.
+        for width in crate::layout::MAIN_MIN_COLS..=120 {
+            e.substitute_body = true;
+            let on = tab_rects(&mut e, width).0;
+            e.substitute_body = false;
+            let off = tab_rects(&mut e, width).0;
+            assert_eq!(off[3].width + 7, on[3].width, "at {width}");
+            for i in [0, 1, 2, 4] {
+                assert_eq!(off[i].width, on[i].width, "tab {i} at {width}");
+            }
         }
     }
 

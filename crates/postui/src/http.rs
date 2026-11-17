@@ -43,11 +43,11 @@ pub struct ResponseData {
 /// response comes back with its results. The response's own times are
 /// measured inside the send and don't include them.
 ///
-/// The response is held until its checks are done (checks tabs spec
-/// 2026-11-16, section 3, "The send"). A check's filter has no time
-/// limit, as a saved jq view's has none (#308). The body's read is not
-/// kept for the jq bar: kept, it would hold the body a second time for as
-/// long as the response is, whether or not the bar is opened.
+/// The response is handed on after its checks (checks tabs spec
+/// 2026-11-16, section 3, "The send"). A jq check has no time limit yet:
+/// that is #310. The body's read is not kept for the jq bar: kept, it
+/// would hold the body a second time for as long as the response is,
+/// whether or not the bar is opened.
 pub async fn send_checked(
     client: &reqwest::Client,
     req: &PreparedRequest,

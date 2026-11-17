@@ -232,8 +232,9 @@ jq = [
   value (`.name` alone, so compare it), or an error fails, and so does a
   body that isn't JSON (a stream is read value by value, as `run --jq`
   does). Write filters as `'...'` literal strings so their quotes need no
-  escaping. `check` reports a filter that doesn't compile. The TUI keeps
-  checks but doesn't show them.
+  escaping. `check` reports a filter that doesn't compile. A code or a
+  filter listed twice counts once. The TUI edits them on the request's
+  Checks tab and shows each response's results on the response's.
 - `max_ttfb_ms` and `max_elapsed_ms` in `[checks]` are time limits in whole
   milliseconds, each optional; a response passes at or under them, its
   time cut to whole milliseconds as the reports print it (500.9 ms passes

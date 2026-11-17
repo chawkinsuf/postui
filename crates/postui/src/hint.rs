@@ -1155,7 +1155,7 @@ mod tests {
         use crate::components::response::ViewMode;
         let keymap = Keymap::default_bindings();
         let mut seen: Vec<String> = Vec::new();
-        for i in 0..4 {
+        for i in 0..EditorTab::COUNT {
             seen.push(hint_for(&Hit::EditorTab(i), &keymap, &ctx()).unwrap());
         }
         for mode in [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers, ViewMode::Checks] {

@@ -756,6 +756,8 @@ pub struct ReadyView {
     /// for the check, from the lines the response carries
     /// (`ResponseData::checks`); empty when it carries none (spec P1, P2).
     check_lines: Vec<String>,
+    /// Whether each of `check_lines` passed, for its mark's colour.
+    check_line_passed: Vec<bool>,
     /// Whether the response passed, for the Checks tab's badge (P3):
     /// `None` when it carries no lines, and so has no such tab.
     checks_passed: Option<bool>,
@@ -1047,6 +1049,7 @@ impl ReadyView {
             .iter()
             .map(|(passed, line)| format!("{} {line}", if *passed { PASS_MARK } else { FAIL_MARK }))
             .collect();
+        let check_line_passed = data.checks.iter().map(|(passed, _)| *passed).collect();
         let checks_passed =
             (!data.checks.is_empty()).then(|| postui_core::checks::passed(&data.checks));
         let mut view = Self {
@@ -1062,6 +1065,7 @@ impl ReadyView {
             header_lines,
             header_rows,
             check_lines,
+            check_line_passed,
             checks_passed,
             cursor: 0,
             scroll: 0,
@@ -5362,9 +5366,11 @@ fn body_lines(
         }
         ViewMode::Checks => {
             // The mark in its verdict's colour, then the line as it is.
-            for (i, line) in view.check_lines.iter().enumerate().take(end).skip(start) {
-                let (mark, rest) = line.split_at(line.find(' ').unwrap_or(line.len()));
-                let colour = if mark == PASS_MARK { t.success } else { t.error };
+            let lines = view.check_lines.iter().zip(&view.check_line_passed);
+            for (i, (line, passed)) in lines.enumerate().take(end).skip(start) {
+                let (mark, colour) =
+                    if *passed { (PASS_MARK, t.success) } else { (FAIL_MARK, t.error) };
+                let rest = &line[mark.len()..];
                 let pieces =
                     vec![(mark.to_string(), Style::default().fg(colour)), (rest.to_string(), text)];
                 push(i, i, pieces, Vec::new(), true, (0, view.h_scroll));
@@ -7067,6 +7073,16 @@ mod tests {
         for line in lines {
             assert!(out.contains(line), "{line}: {out}");
         }
+        // Each line's mark is in its verdict's colour.
+        let (body, buf) = render_buf(&mut r);
+        let t = Theme::dark();
+        let mark = |row: u16| {
+            (body.x..body.right())
+                .map(|x| &buf[(x, body.y + row)])
+                .find(|c| [PASS_MARK, FAIL_MARK].contains(&c.symbol()))
+        };
+        let colours: Vec<_> = (0..3).map(|row| mark(row).unwrap().fg).collect();
+        assert_eq!(colours, [t.error, t.success, t.error]);
         // Passed: the same request over a 200 whose items are four.
         let mut ok = judged(200, r#"{"ok":true,"items":[1,2,3,4]}"#, &jq_checks(&[".ok"]));
         assert!(render(&mut ok).contains("Checks ✓"));

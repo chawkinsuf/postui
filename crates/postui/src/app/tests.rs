@@ -10121,13 +10121,12 @@ fn toggle_body_vars_flips_flag_and_shows_badge() {
     assert!(app.editor.substitute_body);
 
     app.editor.active_tab = EditorTab::Body;
-    // Wide enough for all 4 tabs (Params, Headers, Vars, Body) plus the
-    // "vars" substitution badge that follows the strip.
+    // The Body tab's label says so (checks tabs spec 2026-11-16, W3).
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let content = format!("{:?}", terminal.backend().buffer());
-    assert!(content.contains("vars"), "expected a vars badge: {content}");
+    assert!(content.contains("Body · vars"), "expected a vars badge: {content}");
 }
 
 #[test]
