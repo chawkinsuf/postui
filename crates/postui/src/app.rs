@@ -392,10 +392,11 @@ pub struct App {
     /// by `hovered_token` instead, so crossing a `{{token}}` never takes a
     /// row's or a button's hover styling away from it.
     pub hovered: Option<Hit>,
-    /// The last input was a key, not the mouse: the footer's centre line
-    /// explains the input under the keyboard cursor rather than the
-    /// pointer's ([`Self::footer_hint`]; checks tabs spec section 8, H5).
-    /// Set by `handle_key`, cleared by `handle_mouse`.
+    /// The last input was a key or a paste, not the mouse: the footer's
+    /// centre line explains the input under the keyboard cursor rather
+    /// than the pointer's ([`Self::footer_hint`]; checks tabs spec section
+    /// 8, H5). Set by `handle_key` and `handle_paste`, cleared by
+    /// `handle_mouse`.
     pub hint_from_keys: bool,
     /// Whether the terminal can report Shift+Enter (kitty keyboard
     /// protocol). Set once by `main` after probing; only affects which
@@ -1424,34 +1425,35 @@ impl App {
     /// the hints switch leaves it on. It speaks only on the request screen
     /// with no dialog up, since the keyboard is elsewhere otherwise.
     ///
-    /// After a key the hint is the one for the input under the keyboard
-    /// cursor ([`Self::cursor_hit`]) instead, until the pointer moves
-    /// (checks tabs spec section 8, H4 to H6): the latest input used
-    /// speaks, and the hints switch turns both off.
+    /// After a key or a paste the pointer says nothing: the hint is the
+    /// one for the input under the keyboard cursor ([`Self::cursor_hit`])
+    /// instead, and the error is the cursor row's, until the mouse is used
+    /// again (checks tabs spec section 8, H4 to H6): the latest input used
+    /// speaks, and the hints switch turns both hints off.
     pub fn footer_hint(&self) -> crate::components::footer::CentreLine {
-        let hovered = self.hovered.as_ref();
-        let explained = if self.hint_from_keys { self.cursor_hit() } else { hovered.cloned() };
+        let cursor = self.cursor_hit();
+        let pointer = if self.hint_from_keys { None } else { self.hovered.as_ref() };
+        let explained = if self.hint_from_keys { cursor.as_ref() } else { pointer };
         let hint = self
             .ui_settings
             .hover_hints
             .then_some(explained)
             .flatten()
-            .and_then(|h| crate::hint::hint_for(&h, &self.keymap, &self.hint_ctx(&h)));
+            .and_then(|h| crate::hint::hint_for(h, &self.keymap, &self.hint_ctx(h)));
         let error = if self.screen == Screen::Main && self.modals.top().is_none() {
-            self.editor.client_owned_message(hovered, self.focus == PaneId::Editor)
+            self.editor.client_owned_message(pointer, cursor.as_ref())
         } else {
             Vec::new()
         };
         crate::components::footer::CentreLine { hint, error }
     }
 
-    /// The hit the text input under the keyboard cursor registers, open or
-    /// closed, for the footer to explain after a key: the request's table
-    /// tab ([`crate::components::editor::Editor::cursor_hit`]), the Project
-    /// tab's Name, a Settings
-    /// text row. `None` where the keyboard is on anything else, a dialog
-    /// included; a hit with no text of its own shows none
-    /// ([`crate::hint::hint_for`]).
+    /// The hit the keyboard cursor is on, open or closed, for the footer
+    /// to explain: the request's table tab
+    /// ([`crate::components::editor::Editor::cursor_hit`]), the Project
+    /// tab's Name, a Settings text row. `None` where the keyboard is on
+    /// anything else, a dialog included; a hit with no text of its own
+    /// shows none ([`crate::hint::hint_for`]).
     pub fn cursor_hit(&self) -> Option<Hit> {
         use crate::components::manage::ManageTab;
         use crate::components::settings::SettingsRow;
@@ -11953,12 +11955,17 @@ impl App {
     /// it ends an armed row press first ([`Self::end_armed_press`], #247),
     /// as [`Self::handle_key`] does for a key, then routes the text
     /// ([`Self::paste_text`], which keeps its own check for the edit
-    /// flag's waiting screen). That is all it shares with `handle_key`:
-    /// the key path's other steps (the quit disarm, the event-end
-    /// bookkeeping) do not run for a paste, as they did not before #247.
+    /// flag's waiting screen). That and the footer's handover to the
+    /// keyboard ([`Self::hint_from_keys`]) are all it shares with
+    /// `handle_key`: the key path's other steps (the quit disarm, the
+    /// event-end bookkeeping) do not run for a paste, as they did not
+    /// before #247.
     pub fn handle_paste(&mut self, text: &str) -> bool {
         self.end_armed_press();
-        self.paste_text(text)
+        // A paste lands where the keyboard is, so it hands the footer's
+        // line to the keyboard cursor's input, as a key does.
+        let handed = !std::mem::replace(&mut self.hint_from_keys, true);
+        self.paste_text(text) || handed
     }
 
     /// Routes pasted text — read from the OS clipboard by `Action::Paste`

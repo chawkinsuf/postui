@@ -402,22 +402,16 @@ pub(crate) fn stored_in<'a>(
     scope_values.iter().find(|(l, _)| l == label).and_then(|(_, v)| v.as_deref())
 }
 
-/// The value popup's empty value box: a muted "(not set)" (the variable
-/// form's own wording). Focused, the caret is the placeholder's own
-/// first char drawn REVERSED — over the `(`, where typing would land —
-/// rather than a prepended cell that would shift the text sideways.
-fn value_placeholder_line(focused: bool, theme: &Theme) -> Line<'static> {
-    use ratatui::style::Modifier;
-    use ratatui::text::Span;
-    let muted = Style::default().fg(theme.text_muted);
-    if focused {
-        Line::from(vec![
-            Span::styled("(", muted.add_modifier(Modifier::REVERSED)),
-            Span::styled("not set)", muted),
-        ])
-    } else {
-        Line::styled("(not set)", muted)
-    }
+/// The value popup's value box while `input` is empty: a muted "(not
+/// set)" (the variable form's own wording), the caret over its `(` when
+/// focused ([`LineInput::placeholder_line`]). `None` once it has text.
+fn value_placeholder_line(
+    input: &LineInput,
+    focused: bool,
+    theme: &Theme,
+    width: u16,
+) -> Option<Line<'static>> {
+    input.placeholder_line("(not set)", focused, theme, width)
 }
 
 /// The value popup's chosen Write-to label and whether that scope stores
@@ -3557,18 +3551,17 @@ impl ModalStack {
                         // set)" (the variable form's own wording) — the
                         // chosen scope stores nothing, and typing replaces
                         // the placeholder the moment the field is non-empty.
-                        let placeholder = matches!(kind, PromptKind::EditVarValue { .. })
-                            && field.key == "value"
-                            && field.input.text().is_empty();
-                        let content = if placeholder {
-                            value_placeholder_line(field_caret_live, theme)
-                        } else {
-                            field.input.draw_line_windowed(
-                                field_caret_live,
-                                theme,
-                                field_w.saturating_sub(2),
-                            )
-                        };
+                        let value_box =
+                            matches!(kind, PromptKind::EditVarValue { .. }) && field.key == "value";
+                        let w = field_w.saturating_sub(2);
+                        let content = value_box
+                            .then(|| {
+                                value_placeholder_line(&field.input, field_caret_live, theme, w)
+                            })
+                            .flatten()
+                            .unwrap_or_else(|| {
+                                field.input.draw_line_windowed(field_caret_live, theme, w)
+                            });
                         TextField {
                             content,
                             state: if focused {
@@ -4259,7 +4252,8 @@ mod tests {
         let theme = Theme::dark();
         use ratatui::style::Modifier;
 
-        let focused = value_placeholder_line(true, &theme);
+        let empty = LineInput::new("");
+        let focused = value_placeholder_line(&empty, true, &theme, 40).unwrap();
         assert_eq!(focused.spans.len(), 2, "caret char + the rest");
         assert_eq!(
             focused.spans[0].content.as_ref(),
@@ -4273,13 +4267,15 @@ mod tests {
         );
         assert_eq!(focused.spans[1].content.as_ref(), "not set)");
 
-        let resting = value_placeholder_line(false, &theme);
+        let resting = value_placeholder_line(&empty, false, &theme, 40).unwrap();
         assert_eq!(resting.spans.len(), 1);
         assert_eq!(resting.spans[0].content.as_ref(), "(not set)");
         assert!(
             !resting.spans[0].style.add_modifier.contains(Modifier::REVERSED),
             "no caret while unfocused"
         );
+        let typed = LineInput::new("x");
+        assert!(value_placeholder_line(&typed, true, &theme, 40).is_none(), "text hides it");
     }
 
     #[test]

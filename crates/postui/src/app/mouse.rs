@@ -133,12 +133,11 @@ impl App {
         if self.edit_block.is_some() && self.modals.is_empty() {
             return self.blocked_mouse(m);
         }
-        // Moving the pointer hands the footer's line back to what is under
-        // it (`handle_key` hands it to the keyboard). A press or the wheel
-        // alone doesn't: a terminal that reports no motion leaves `hovered`
-        // unset, and the keyboard cursor's text is what a click there moved.
-        let moved = matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_));
-        let handed = moved && std::mem::replace(&mut self.hint_from_keys, false);
+        // Any mouse event hands the footer's line back to what is under the
+        // pointer (`handle_key` and `handle_paste` hand it to the keyboard).
+        // A press counts as a move does: it records where the pointer is,
+        // and the frame after it hovers what is there (`resync_hover`).
+        let handed = std::mem::replace(&mut self.hint_from_keys, false);
         // Where the keyboard is before this event, as `handle_key` learns
         // it: a click's focus change counts for `<C-w>l` and `p` (plan M4a
         // Deviation 6).

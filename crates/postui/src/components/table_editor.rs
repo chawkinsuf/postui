@@ -1720,10 +1720,9 @@ impl TableEditorState {
         }
         let bg = crate::theme::lift_color(row_bg, 0.06);
         fill(buf, Rect::new(x, y, w, 1), bg);
-        let mut line = match placeholder {
-            Some(p) => input.draw_line_or_placeholder(p, true, theme, w),
-            None => input.draw_line_windowed(true, theme, w),
-        };
+        let mut line = placeholder
+            .and_then(|p| input.placeholder_line(p, true, theme, w))
+            .unwrap_or_else(|| input.draw_line_windowed(true, theme, w));
         line.style = Style::default().bg(bg).patch(line.style);
         buf.set_line(x, y, &line, w);
     }

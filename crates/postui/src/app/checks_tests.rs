@@ -564,6 +564,17 @@ fn the_tab_says_what_goes_in_each_input() {
         let buf = frame(&mut app);
         let ghost = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
         assert_eq!(text_in(&buf, ghost).trim(), "", "{profile:?}");
+        // With no other check a send judges nothing (no response Checks
+        // tab), so the empty status claims no rule; another check, a limit
+        // or a jq one, brings the below-400 rule in.
+        let mut app = checks_app("url = \"http://x.test/\"\n", profile);
+        assert_eq!(well_of(&mut app, 0).0, "no status check", "{profile:?}");
+        app.editor.table.set_selected(Some(Stop::Head(1)));
+        feed(&mut app, open(profile));
+        retype(&mut app, "500");
+        assert_eq!(well_of(&mut app, 0).0, "any code below 400", "{profile:?}");
+        let mut app = checks_app("url = \"http://x.test/\"\n[checks]\njq = ['.a']\n", profile);
+        assert_eq!(well_of(&mut app, 0).0, "any code below 400", "{profile:?}");
     }
 }
 
@@ -633,12 +644,60 @@ fn the_footer_explains_the_input_under_the_keyboard_cursor() {
     }
 }
 
+/// Section 8, H5: a paste is the keyboard's, as a key is, and any mouse
+/// event is the pointer's, a click with no motion before it included.
+#[test]
+fn a_paste_speaks_for_the_keyboard_and_a_still_click_for_the_pointer() {
+    let tab = Hit::EditorTab(EditorTab::Checks.draw_position());
+    let says_tab = Some("Edit the checks the response must pass");
+    for profile in PROFILES {
+        let mut app = checks_app(FOUR, profile);
+        let hint = |app: &App| app.footer_hint().hint;
+        app.editor.table.set_selected(Some(Stop::Head(1)));
+        feed(&mut app, open(profile));
+        point_at(&mut app, &tab);
+        assert_eq!(hint(&app).as_deref(), says_tab, "{profile:?}: the pointer moved");
+        app.handle_paste("500");
+        let typed = app.editor.table.editing.as_ref().map(|e| e.input.text().to_string());
+        assert_eq!(typed.as_deref(), Some("500"), "{profile:?}");
+        assert_eq!(hint(&app).as_deref(), Some(CHECK_FIELDS[1].hint), "{profile:?}: pasted");
+        // A click where the pointer rests, with no motion first.
+        click(&mut app, tab.clone(), Left);
+        assert_eq!(hint(&app).as_deref(), says_tab, "{profile:?}: clicked");
+    }
+}
+
+/// Section 8, H5, the footer's error line too: after a key it is the
+/// keyboard cursor's row's, not the resting pointer's, until the mouse is
+/// used again.
+#[test]
+fn the_client_owned_error_follows_the_latest_input_too() {
+    for profile in PROFILES {
+        let toml =
+            "url = \"http://x.test/\"\n[headers]\nHost = \"a.test\"\nContent-Length = \"5\"\n";
+        let mut app = checks_app(toml, profile);
+        app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+        app.editor.focus_content_from_app();
+        app.editor.table.set_selected(Some(Stop::Row(0)));
+        let error = |app: &App| app.footer_hint().error.first().cloned();
+        point_at(&mut app, &Hit::TableCell { row: 0, col: 0 });
+        assert_eq!(error(&app).as_deref(), Some("Host cannot be set manually"), "{profile:?}");
+        feed(&mut app, if profile == KeyProfile::Vim { "j" } else { "<Down>" });
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "{profile:?}");
+        let want = Some("Content-Length cannot be set manually");
+        assert_eq!(error(&app).as_deref(), want, "{profile:?}: the key's row");
+        point_at(&mut app, &Hit::TableCell { row: 0, col: 1 });
+        assert_eq!(error(&app).as_deref(), Some("Host cannot be set manually"), "{profile:?}");
+    }
+}
+
 /// Section 8, H4 (question 1: A): the Project tab's Name and the Settings
 /// tab's four text rows show their text under the keyboard cursor too;
 /// the other rows there show none.
 #[test]
 fn the_project_name_and_settings_text_rows_explain_themselves_to_the_keyboard() {
     use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
     for profile in PROFILES {
         let vim = profile == KeyProfile::Vim;
         let (down, up) = if vim { ("j", "k") } else { ("<Down>", "<Up>") };
@@ -655,16 +714,16 @@ fn the_project_name_and_settings_text_rows_explain_themselves_to_the_keyboard() 
         assert_eq!(hint(&app), None, "{profile:?}: + Add header");
         app.update(Action::SelectManageTab(ManageTab::Settings));
         let texts = [
-            (4, "Edit the spaces in one indent level"),
-            (6, "Edit the command the AI filter runs"),
-            (9, "Edit the external clipboard command"),
-            (10, "Edit the terminal clipboard size limit"),
+            (SettingsField::IndentWidth, "Edit the spaces in one indent level"),
+            (SettingsField::AiCmd, "Edit the command the AI filter runs"),
+            (SettingsField::ClipboardCmd, "Edit the external clipboard command"),
+            (SettingsField::Osc52Limit, "Edit the terminal clipboard size limit"),
         ];
-        for row in 0..crate::components::settings::SettingsTab::rows().len() {
+        for (row, &on) in SettingsTab::rows().iter().enumerate() {
             app.settings.set_cursor(row);
             feed(&mut app, &format!("{down}{up}"));
-            let want = texts.iter().find(|(r, _)| *r == row).map(|(_, t)| *t);
-            assert_eq!(hint(&app).as_deref(), want, "{profile:?}: row {row}");
+            let want = texts.iter().find(|(f, _)| on == SettingsRow::Setting(*f)).map(|(_, t)| *t);
+            assert_eq!(hint(&app).as_deref(), want, "{profile:?}: {on:?}");
         }
     }
 }

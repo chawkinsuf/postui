@@ -18,10 +18,11 @@ change the project file format.
 - A request has a Checks tab that edits its `[checks]`: the status codes
   that pass, the time limits until the first byte and until the last byte
   (the total time), and the jq checks. An empty box says what empty means
-  (`any code below 400`, `no limit`), a new jq check's input says it takes
-  a jq filter that must give true, and the footer says what goes in the
-  input under the pointer or the keyboard cursor. The
-  response has a Checks tab, when the request had checks at the send, with
+  (`no limit`; for the status `any code below 400` while another check is
+  set, `no status check` while none is), a new jq check's input says it
+  takes a jq filter that must give true, and the footer says what goes in
+  the input under the pointer or the keyboard cursor. The response has a
+  Checks tab, when the request had checks at the send, with
   a line for each check and `✓` or `✗` on the tab for the response as a
   whole. The response shows as soon as it arrives. Until its jq checks
   have run, the tab's mark is a dim `…` and its one line reads `checking…`.
@@ -53,8 +54,9 @@ change the project file format.
   (`Body · vars`).
 - A text input whose hover text the footer shows, the Manage screen's
   project Name and the Settings tab's text rows among them, shows it too
-  when the keyboard selects it, until the pointer moves again. After a key,
-  the footer no longer explains what is under the resting pointer.
+  when the keyboard selects it, until the mouse is used again. After a key
+  or a paste, the footer no longer explains what is under the resting
+  pointer.
 - `ai_cmd` is now run as `exec env <ai_cmd>`, so it must be a single
   command: nothing after a `;` or `&&` in it runs, and one that starts
   with a shell builtin such as `cd` fails. To run more than one command,

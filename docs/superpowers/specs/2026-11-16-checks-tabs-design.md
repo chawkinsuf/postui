@@ -634,14 +634,14 @@ Variable Manager's fields, the jq bar, the body) is a surface with none.
 
 | # | Rule | Source |
 |---|---|---|
-| H1 | An empty field draws, in the muted colour inside its well, what empty means: `any code below 400` for status, `no limit` for a time limit. Open and empty, the same words show with the caret on their first character, as a dialog's `(not set)` does. | mine |
+| H1 | An empty field draws, in the muted colour inside its well, what empty means: `no limit` for a time limit; for status, `any code below 400` while another check is set, and `no status check` while none is. With no check at all a send judges nothing in the app (no response Checks tab, P1), so the status well claims no rule then; `run` and `suite` still apply the below-400 rule (R3). Open and empty, the same words show with the caret on their first character, as a dialog's `(not set)` does. | mine; the status well's two forms: mine (review round 1, 2026-11-17) |
 | H2 | The two time-limit fields are labelled `first byte (ms)` and `last byte (ms)`. "Last byte" is the total time: from the send until the response has fully arrived (`Response::elapsed`), the limit the file calls `max_elapsed_ms`. The response's Checks tab and `run`/`suite` keep their words (`first byte 812 ms, limit 500 ms`, `total 900 ms, …`). | you: "how about 'first byte (ms)' and 'last byte (ms)'" (Q3) |
 | H3 | The list of jq checks says it is jq: its header reads `JQ CHECK`, its add row `+ Add jq check`, the footer's add chip `add jq check`. A new check's empty input shows, muted, `a jq filter that must give true`. | mine |
 | H4 | The footer's centre line shows the text of the input under the keyboard cursor, closed or open, on every text input that has hover text (the list above, with a jq check row and `+ Add jq check` added; those two show it on hover too). | you: "show the hover text for an input when it is selected"; which inputs: mine (approved) (Q1: A); the jq rows: mine |
-| H5 | Which of the two shows: the latest one used. A key hands the footer's line to the keyboard cursor's input; moving the pointer hands it back to what is under the pointer. | mine |
+| H5 | Which of the two shows: the latest one used. A key or a paste hands the footer's line to the keyboard cursor's input; any mouse event (a move, a click, the wheel) hands it back to what is under the pointer. The line's client-owned header error follows the same rule. | mine; the paste, the click and the error: mine (review round 1, 2026-11-17) |
 | H6 | The keyboard's text follows the `hover_hints` setting, as the pointer's does: one switch for the footer's explanations. | mine |
-| H7 | The Checks texts say what goes in, so they serve both: status `Codes that pass, e.g. 200, 201; empty: below 400`; first byte `Most ms until the response starts to arrive; empty: no limit`; last byte `Most ms until the response has fully arrived; empty: no limit`; a jq check `A jq filter on the body that must give true`. The two limit texts were reworded on 2026-11-17 to match H2's labels. | mine |
-| H8 | Status ranges (`< 400`, `200-299`) are not in this task: they are their own task, with the file format question. H1's `any code below 400` covers the user's example, which is already what an empty field does. | mine (approved) (Q2: A) |
+| H7 | The Checks texts say what goes in, so they serve both: status `Codes that pass, e.g. 200, 201` (what empty means is H1's placeholder, which depends on the other checks; review round 1); first byte `Most ms until the response starts to arrive; empty: no limit`; last byte `Most ms until the response has fully arrived; empty: no limit`; a jq check `A jq filter on the body that must give true`. The two limit texts were reworded on 2026-11-17 to match H2's labels. | mine |
+| H8 | Status ranges (`< 400`, `200-299`) are not in this task: they are their own task, with the file format question. H1's `any code below 400` covers the user's example, which is already what an empty field does once another check is set. | mine (approved) (Q2: A) |
 
 ### Not in this task
 
@@ -668,20 +668,26 @@ fields and so on); the keyboard cursor's text for buttons and toggles
   `Hit::ProjectName`, `Hit::SettingsControl(field)` for a Settings text
   row, and the Checks list's row and add row), or `None` where the
   cursor is on no such input. One flag on `App` says which input came
-  last: set by a key, cleared by a mouse move. `hint_for` stays the one
+  last: set by a key, cleared by the mouse. `hint_for` stays the one
   table of words; a check row's text is a new arm there.
 - **As built (2026-11-17, mine).** The placeholder is
-  `LineInput::draw_line_or_placeholder`; `CHECK_FIELDS` holds a
-  `CheckField { label, placeholder, hint }` each. A jq row's text comes from
+  `LineInput::placeholder_line` (the value popup's `(not set)` draws through
+  it too); `CHECK_FIELDS` holds a `CheckField { label, placeholder, alone,
+  hint }` each, `alone` being what the well shows while no other check is
+  set. A jq row's text comes from
   `TableSpec::cell_hint` (`None` on the other tables), read by `hint_for`'s
   `TableRow`/`TableCell` arm, so `+ Add jq check` and every check row say it
-  under the pointer and the keyboard alike. The flag is `App::hint_from_keys`;
-  only pointer motion (`Moved`, `Drag`) clears it, not a press or the wheel,
-  so in a terminal that reports no motion a click leaves the footer on the
-  keyboard cursor's input, which the click just moved. The editor's half is
-  `Editor::cursor_hit`; the app's (`App::cursor_hit`) adds the Project tab's
+  under the pointer and the keyboard alike. The flag is `App::hint_from_keys`:
+  `handle_key` and `handle_paste` set it, and every mouse event clears it (a
+  press records where the pointer is, and the frame after it hovers what is
+  there). The editor's half is
+  `Editor::cursor_hit` (an auto row on Headers included); the app's
+  (`App::cursor_hit`) adds the Project tab's
   Name and the Settings rows whose `text_value` is `Some`, and answers
-  `None` under a dialog.
+  `None` under a dialog. `App::footer_hint` gives the pointer's hit to
+  neither line while the flag is set, so the hint and the client-owned
+  error (`Editor::client_owned_message`, which takes the pointer's hit and
+  the cursor's) both speak for the keyboard.
 
 ### Tests
 
