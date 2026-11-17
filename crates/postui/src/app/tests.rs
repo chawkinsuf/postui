@@ -29157,6 +29157,73 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
     assert_eq!(view.view_text(), "1", "the filter ran against the fresh tree");
 }
 
+/// #317: a big response shed from the cache keeps a selection on Raw,
+/// Headers or Checks all the way back: the switch to it, the re-parse
+/// landing and its filter re-running. On the Tree tab, whose lines went
+/// with the tree, the view starts over.
+#[test]
+fn a_shed_response_keeps_a_selection_on_another_tab_through_its_return() {
+    use crate::components::json_tree::JsonTree;
+    use crate::components::response::{CheckState, SYNC_PRETTY_BYTES, ViewMode};
+    use crate::session::KEEP_WARM;
+    let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+    for filter in [false, true] {
+        for mode in [ViewMode::Raw, ViewMode::Headers, ViewMode::Checks, ViewMode::Pretty] {
+            let case = format!("{mode:?}, filter {filter}");
+            let mut app = App::new_for_test_with_anims(false);
+            app.editor.jq = "{n}".into();
+            app.editor.jq_enabled = filter;
+            let mut kept = None;
+            for i in 1..=KEEP_WARM + 1 {
+                app.editor.slug = Some(format!("big{i}"));
+                app.update(Action::Render);
+                app.session.send_generation = i as u64;
+                ready_response(&mut app, &big(i));
+                app.session.response.set_checks(CheckState::Judged(vec![(true, ".n".into())]));
+                app.update(Action::PrettyParsed {
+                    generation: i as u64,
+                    tree: JsonTree::parse(&big(i)).map(Box::new),
+                });
+                app.update(Action::ResponseViewMode(mode));
+                if i > 1 {
+                    continue;
+                }
+                render_once(&mut app);
+                let r = &mut app.session.response;
+                let area = r.view().unwrap().last_area.expect("the response was drawn");
+                // The tree's first line is its `{`; a key is on the next.
+                let y = area.y + u16::from(mode == ViewMode::Pretty);
+                assert!(r.begin_selection_at(area.x + 1, y), "{case}");
+                assert!(r.drag_selection_to(area.x + 4, y), "{case}");
+                let v = r.view().unwrap();
+                kept = Some((r.selected_text(), v.cursor, v.scroll, v.h_scroll));
+                assert!(kept.as_ref().unwrap().0.is_some(), "{case}: a selection to keep");
+            }
+            // Leaving the last one pushes big1 past `KEEP_WARM`: it sheds.
+            app.editor.slug = Some("elsewhere".into());
+            app.update(Action::Render);
+
+            app.editor.slug = Some("big1".into());
+            app.update(Action::Render);
+            let r = &app.session.response;
+            let v = r.view().expect("big1's response is back");
+            assert!(v.tree.is_some() && !v.parsing, "{case}: re-parsed");
+            assert_eq!(v.mode, mode, "{case}");
+            let now = (r.selected_text(), v.cursor, v.scroll, v.h_scroll);
+            // A response that came back from the cache whole would keep
+            // this one too: its loss is the shed's.
+            if mode == ViewMode::Pretty {
+                assert_eq!(now, (None, 0, 0, 0), "{case}: the Tree tab starts over");
+            } else {
+                assert_eq!(Some(now), kept, "{case}: the selection and place are kept");
+            }
+            app.update(Action::ResponseViewMode(ViewMode::Pretty));
+            let text = app.session.response.view().unwrap().view_text();
+            assert_eq!(text.contains("pad"), !filter, "{case}: the filter re-ran: {text:.40}");
+        }
+    }
+}
+
 // --- sidebar row drags (press arms, motion promotes, release writes) ---
 
 fn row_rect(app: &mut App, i: usize) -> ratatui::layout::Rect {

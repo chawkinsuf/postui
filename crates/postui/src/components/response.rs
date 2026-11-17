@@ -3453,8 +3453,8 @@ impl Response {
     /// Drops the tree, the filtered tree, the jq document and the raw
     /// column index — everything derived from the body — while keeping the
     /// body, headers, tab and filter, and on a tab other than Tree the
-    /// cursor and scroll. The Tree tab, whose lines go, starts over
-    /// (`drop_trees`). The response reads as "parsing" again, so the
+    /// cursor, scroll and selection (#317). The Tree tab, whose lines go,
+    /// starts over (`drop_trees`). The response reads as "parsing" again, so the
     /// Tree tab stays and shows its spinner once the response is back on
     /// screen and `take_reparse` has restarted the parse; `attach_tree`
     /// then clears `jq_applied` so the filter re-runs against the fresh
@@ -3470,11 +3470,6 @@ impl Response {
         view.jq_outputs = 1;
         view.raw_marks.clear();
         view.content_width = None;
-        // Only the Tree tab's lines go with the tree (#317): another tab's
-        // selection is on lines the shed leaves as they are.
-        if view.mode == ViewMode::Pretty {
-            view.clear_sel();
-        }
         view.parsing = true;
         view.shed = true;
         self.jq.pending = None;
