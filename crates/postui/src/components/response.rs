@@ -1253,20 +1253,39 @@ impl ReadyView {
     fn set_body_tree(&mut self, tree: Option<JsonTree>) {
         self.tree = tree;
         self.tree_epoch += 1;
+        self.tree_swapped(true);
     }
 
     /// Swaps the filtered tree in (or out), bumping the epoch only when
     /// the tree on screen actually changes — clearing an already-absent
     /// filter tree leaves the body tree, and its width measure, as it was.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
-        // Only the Tree tab's cursor is on this tree (#313).
-        if self.mode == ViewMode::Pretty {
-            self.cursor_moved();
-        }
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
         }
         self.jq_tree = tree;
+        self.tree_swapped(false);
+    }
+
+    /// A tree setter ran. Only the Tree tab shows the trees, so another
+    /// tab's place is on lines this didn't change and is left alone
+    /// (#313). On the Tree tab, a new body tree starts the view over (its
+    /// folds are the new tree's), and a filter's output going in or out
+    /// puts the place back inside the lines now shown.
+    fn tree_swapped(&mut self, body: bool) {
+        if self.mode != ViewMode::Pretty {
+            return;
+        }
+        if body {
+            self.lines_replaced();
+            return;
+        }
+        self.cursor_moved();
+        self.clear_sel();
+        self.clamp_cursor();
+        self.follow_cursor();
+        self.h_scroll = 0;
+        self.recompute_matches();
     }
 
     /// The one mutable way to the tree on screen, so every fold it makes
@@ -2293,21 +2312,6 @@ impl ReadyView {
         self.recompute_matches();
     }
 
-    /// A filter's output went in or out of the tree. Only the Tree tab
-    /// shows that tree: with it up, the place is put back inside the new
-    /// lines; another tab's lines didn't change, so its place stays
-    /// (#313).
-    fn tree_refiltered(&mut self) {
-        if self.mode != ViewMode::Pretty {
-            return;
-        }
-        self.clear_sel();
-        self.clamp_cursor();
-        self.follow_cursor();
-        self.h_scroll = 0;
-        self.recompute_matches();
-    }
-
     /// Every match of the query, in corpus order, and of the search an open
     /// box replaced. `Some(note)` for a Vim pattern outside the engine's
     /// subset: no matches then.
@@ -3101,12 +3105,11 @@ impl Response {
             return false;
         }
         view.parsing = false;
-        // Only the Tree tab is about the tree. On another tab the user's
-        // place is on lines this doesn't change, so it is left alone
-        // (#313).
-        let on_tree = view.mode == ViewMode::Pretty;
         match tree {
             Some(tree) => {
+                // On the Tree tab (watching the spinner), the view starts
+                // over on the tree it was waiting for; another tab is left
+                // as it is (`set_body_tree`).
                 view.set_body_tree(Some(tree));
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
@@ -3118,20 +3121,13 @@ impl Response {
                 // that the body tree exists, forget what was "applied" so
                 // the app's reconcile step re-runs the pending filter.
                 view.jq_applied = None;
-                // Already on the Tree tab (watching the spinner): the tree
-                // it was waiting for is now the view's content. A tree
-                // parsed again after a shed starts over too: its folds
-                // are the new tree's, not the ones the old place was on.
-                if on_tree {
-                    view.lines_replaced();
-                }
             }
             // Not JSON after all: the Tree tab disappears, exactly as it
             // never appears for a small non-JSON body. On it, the view
             // moves to Raw, and the jq bar a filter typed against the
             // spinner had focused goes with the tab. On another tab
-            // the tab just leaves the strip.
-            None if on_tree => {
+            // the tab just leaves the strip (#313).
+            None if view.mode == ViewMode::Pretty => {
                 view.set_mode(ViewMode::Raw);
                 self.jq.blur();
             }
@@ -3451,8 +3447,9 @@ impl Response {
     /// response reads as "parsing" again, so the Tree tab stays and shows
     /// its spinner once the response is back on screen and
     /// `take_reparse` has restarted the parse; `attach_tree` then clears
-    /// `jq_applied` so the filter re-runs against the fresh tree, and with
-    /// the Tree tab up starts the view over on it.
+    /// `jq_applied` so the filter re-runs against the fresh tree. With the
+    /// Tree tab up, the view starts over here, as the tree goes
+    /// (`set_body_tree`), and again on the tree parsed anew.
     pub fn shed_derived(&mut self) {
         let Some(view) = self.view.as_mut() else {
             return;
@@ -3617,7 +3614,6 @@ impl Response {
             self.jq.error = None;
             self.jq.stale = false;
             self.jq.note = None;
-            view.tree_refiltered();
             return None;
         }
         if let Err(e) = postui_core::jq::check(code_trim) {
@@ -3935,7 +3931,6 @@ impl Response {
                         self.jq.error = None;
                         self.jq.stale = true;
                         self.jq.note = Some(if outputs.is_empty() { "no output" } else { "null" });
-                        view.tree_refiltered();
                     }
                     // This filter's outputs, shown even when a value
                     // failed: the tree is its output, so not stale, and the
@@ -3949,7 +3944,6 @@ impl Response {
                         self.jq.error = error;
                         self.jq.stale = false;
                         self.jq.note = None;
-                        view.tree_refiltered();
                     }
                     None => {
                         self.jq.error =
@@ -8265,6 +8259,22 @@ mod tests {
             let v = r.view().unwrap();
             assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None), "{reparse}");
         }
+    }
+
+    /// #313: a shed takes the Tree tab's lines away, so with that tab up
+    /// the place starts over at the shed, not at the parse landing again
+    /// (comment 1442, 1: A).
+    #[test]
+    fn a_shed_on_the_tree_tab_starts_it_over() {
+        let body = format!("[{}]", vec![format!("\"{}\"", "x".repeat(8000)); 40].join(","));
+        let mut r = ready_gen(&body, 2);
+        assert!(r.attach_tree(2, JsonTree::parse(&body)));
+        let v = r.view.as_mut().unwrap();
+        assert_eq!(v.mode, ViewMode::Pretty);
+        (v.cursor, v.scroll, v.h_scroll) = (20, 10, 3);
+        r.shed_derived();
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None));
     }
 
     /// #313: a parse that says "not JSON" while another tab is up takes the
