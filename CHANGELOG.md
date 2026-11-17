@@ -42,15 +42,16 @@ change the project file format.
   once, in the app and in `postui run` and `postui suite`.
 - The mark that a body's variables are on is part of the Body tab's label
   (`Body · vars`).
+- `ai_cmd` must be a single command, which may start with `NAME=value`
+  settings. "Describe a filter…" refuses one with `;`, `&`, `|` or a line
+  break outside quotes. To run more than one command, put them in a script
+  that ends with `exec` and the AI command, and set `ai_cmd` to the script.
 
 ### Fixed
 
 - Cancelling "Describe a filter…", or quitting while it runs, stops the AI
   command. Before, only the shell that started it was stopped, so the
   command could go on running, and spending, with its reply thrown away.
-  `ai_cmd` is now run as a single command: no `;`, `&&` or pipes, and no
-  leading `NAME=value` settings. A script that ends with `exec` and the
-  command can hold those.
 
 ## [0.4.1] - 2026-11-13
 

@@ -28962,6 +28962,25 @@ fn describe_is_disabled_when_the_program_is_missing() {
     assert!(app.toasts.last_message().unwrap().contains("not found"));
 }
 
+/// The command is run with `exec`, which only the first of several
+/// commands would get.
+#[test]
+fn describe_is_disabled_when_ai_cmd_is_more_than_one_command() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ui_settings.ai_cmd = "sh -c 'cat' | cat".into();
+    right_click_row(&mut app, "\"items\"");
+    assert_eq!(
+        menu_action(&app, "Describe a filter\u{2026}  (ai_cmd is more than one command)"),
+        None
+    );
+    app.update(Action::Close);
+    app.update(Action::OpenJqDescribe);
+    assert!(app.modals.top().is_none(), "no prompt");
+    let toast = app.toasts.last_message().unwrap();
+    assert!(toast.contains("more than one command") && toast.contains("script"), "{toast}");
+}
+
 #[tokio::test]
 async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     let mut app = App::new_for_test();
@@ -29048,13 +29067,18 @@ async fn a_send_ends_the_ai_request() {
 /// (#314).
 #[tokio::test]
 async fn cancelling_or_quitting_kills_the_ai_command() {
+    let ps = |field: &str, pid: u32| {
+        let out = std::process::Command::new("ps")
+            .args(["-o", field, "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // Gone, or a zombie that nothing has reaped yet: either way it was
+    // killed.
     let alive = |pid: u32| {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
+        let stat = ps("stat=", pid);
+        !stat.is_empty() && !stat.starts_with('Z')
     };
     for quit in [false, true] {
         let mut app = App::new_for_test();
@@ -29062,16 +29086,15 @@ async fn cancelling_or_quitting_kills_the_ai_command() {
         app.ui_settings.ai_cmd = "sleep 30".into();
         app.ui_settings.ai_confirmed = true;
         app.update(Action::RunJqDescribe("x".into()));
-        // The child is `sleep` itself once `sh` has exec'd it.
+        // The child is `sleep` itself once `sh` has exec'd it (macOS's
+        // `ps` gives the path, `/bin/sleep`).
         let mut pid = None;
         for _ in 0..2000 {
-            pid = app.ai_task.as_ref().and_then(|task| task.run.pid()).filter(|&pid| {
-                let ps = std::process::Command::new("ps")
-                    .args(["-o", "comm=", "-p", &pid.to_string()])
-                    .output()
-                    .unwrap();
-                String::from_utf8_lossy(&ps.stdout).trim() == "sleep"
-            });
+            pid = app
+                .ai_task
+                .as_ref()
+                .and_then(|task| task.run.pid())
+                .filter(|&pid| ps("comm=", pid).rsplit('/').next() == Some("sleep"));
             if pid.is_some() {
                 break;
             }

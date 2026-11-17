@@ -626,8 +626,9 @@ pub fn config_seed() -> String {
 # The spaces in one indent level, from 1 to {}.
 # indent_width = {}
 
-# The command \"Describe a filter…\" pipes its prompt into. One command:
-# no ;, && or pipes, and no leading NAME=value (a script can hold those).
+# The command \"Describe a filter…\" pipes its prompt into. One command,
+# which may start with NAME=value settings: no ;, & or | outside quotes
+# (a script that ends with exec and the command can hold more).
 # ai_cmd = {:?}
 
 # Set once by the AI prompt's \"Always send\" choice. false asks again.

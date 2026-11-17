@@ -47,7 +47,7 @@ at all is reported and left alone, never overwritten.
 | `jq_tab` | `"menu"` | What Tab does in the jq bar: `"menu"` lists the candidates under the bar, `"ghost"` shows the best one after the caret and cycles in place. The older names `"accept"` (menu) and `"cycle"` (ghost) still work. |
 | `indent` | `"spaces"` | How a request body with no indentation of its own indents: `"spaces"` or `"tabs"`. A body that's already indented keeps its own style. |
 | `indent_width` | `2` | The spaces in one indent level, from 1 to 8. |
-| `ai_cmd` | `"claude -p"` | The command "Describe a filter…" pipes its prompt into; it should print a jq filter. It must be a single command: no `;`, `&&` or pipes, and no leading `NAME=value` settings. To use those, put them in a script that ends with `exec` and the command, and point `ai_cmd` at the script. |
+| `ai_cmd` | `"claude -p"` | The command "Describe a filter…" pipes its prompt into; it should print a jq filter. It must be a single command, which may start with `NAME=value` settings: one with `;`, `&`, `|` or a line break outside quotes is refused. To run more than one command, put them in a script that ends with `exec` and the AI command, and point `ai_cmd` at the script. |
 | `ai_confirmed` | `false` | Set by the "Always send" answer to the AI prompt's confirmation. Set it back to `false` to be asked again. |
 | `clipboard_cmd` | unset | An external command to pipe copied text to, such as `"xclip -selection clipboard"`. When set, it's tried first for every copy. Otherwise postui uses the system clipboard, then the terminal's OSC 52 sequence (for SSH and headless sessions). |
 | `osc52_limit` | `65536` | The largest copy, in bytes, sent over OSC 52. A bigger one is refused rather than cut short. |

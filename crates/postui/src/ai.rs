@@ -26,13 +26,49 @@ pub fn program_available(cmd: &str) -> bool {
 /// environment assignments — for toasts, menu hints, and the log, which
 /// never sees the rest of the command (a key may be in it).
 pub fn program_name(cmd: &str) -> &str {
-    shell_words(cmd).into_iter().find(|word| !is_assignment(word)).unwrap_or("")
+    shell_words(cmd).into_iter().find(|(_, word)| !is_assignment(word)).map_or("", |(_, word)| word)
 }
 
-/// `cmd` split at whitespace the way a shell sees words: a quoted stretch
-/// (`"a b"`, `'a b'`) stays inside its word, so `KEY="sk abc" llm` is two
-/// words and `llm` is the program.
-fn shell_words(cmd: &str) -> Vec<&str> {
+/// The byte offset of `program_name`'s word in `cmd`, or `cmd.len()` when
+/// it has none: what comes before it is the leading assignments.
+fn program_start(cmd: &str) -> usize {
+    shell_words(cmd)
+        .into_iter()
+        .find(|(_, word)| !is_assignment(word))
+        .map_or(cmd.len(), |(start, _)| start)
+}
+
+/// Whether `cmd` is one command for the shell: no `;`, `&`, `|` or line
+/// break outside quotes (a backslash makes the next character plain).
+/// `run_command` runs `cmd` with `exec`, which only the first command of a
+/// list or pipeline would get.
+pub fn is_single_command(cmd: &str) -> bool {
+    let mut quote = None;
+    let mut chars = cmd.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') if c == '\'' => quote = None,
+            Some('\'') => {}
+            Some(_) if c == '"' => quote = None,
+            Some(_) if c == '\\' => {
+                chars.next();
+            }
+            Some(_) => {}
+            None if c == '\\' => {
+                chars.next();
+            }
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if matches!(c, ';' | '&' | '|' | '\n') => return false,
+            None => {}
+        }
+    }
+    true
+}
+
+/// `cmd` split at whitespace the way a shell sees words, each with its byte
+/// offset: a quoted stretch (`"a b"`, `'a b'`) stays inside its word, so
+/// `KEY="sk abc" llm` is two words and `llm` is the program.
+fn shell_words(cmd: &str) -> Vec<(usize, &str)> {
     let mut words = Vec::new();
     let mut start = None;
     let mut quote = None;
@@ -46,7 +82,7 @@ fn shell_words(cmd: &str) -> Vec<&str> {
             }
             None if c.is_whitespace() => {
                 if let Some(s) = start.take() {
-                    words.push(&cmd[s..i]);
+                    words.push((s, &cmd[s..i]));
                 }
             }
             None => {
@@ -55,7 +91,7 @@ fn shell_words(cmd: &str) -> Vec<&str> {
         }
     }
     if let Some(s) = start {
-        words.push(&cmd[s..]);
+        words.push((s, &cmd[s..]));
     }
     words
 }
@@ -109,7 +145,12 @@ enum RunState {
 
 impl CommandRun {
     /// Kills the command if it is running, and keeps it from starting if
-    /// it hasn't yet.
+    /// it hasn't yet. The kill is SIGKILL, sent at once: the command gets
+    /// no chance to stop what it started itself, so a helper process it
+    /// forked can outlive it (a cost of the `exec` design, in the #314
+    /// paragraph of the jq-response-filter spec). A SIGTERM first would
+    /// need a later SIGKILL for a command that ignores it, and a quit
+    /// doesn't wait for anything after this call.
     pub fn kill(&self) {
         if let RunState::Running(mut child) = std::mem::replace(&mut *self.state(), RunState::Over)
         {
@@ -136,12 +177,12 @@ impl CommandRun {
     }
 }
 
-/// Runs `sh -c "exec <cmd>"` with `stdin` piped in. The shell becomes the
-/// command, so `CommandRun::kill` reaches the command and not only the
-/// shell; `cmd` is therefore one command: no `;`, `&&` or pipes, and no
-/// leading `NAME=value` assignments (a wrapper script covers those).
-/// `Err` when the command could not be started or waited on, or `run` was
-/// killed before it finished.
+/// Runs `cmd` through `sh -c` with `exec` put before its program (after
+/// any leading `NAME=value` assignments), with `stdin` piped in. The shell
+/// becomes the command, so `CommandRun::kill` reaches the command and not
+/// only the shell; `cmd` is therefore one command (`is_single_command`,
+/// which the app checks before a request). `Err` when the command could
+/// not be started or waited on, or `run` was killed before it finished.
 pub async fn run_command(
     cmd: String,
     stdin: String,
@@ -150,9 +191,10 @@ pub async fn run_command(
     if run.is_over() {
         return Err("cancelled".into());
     }
+    let (assignments, command) = cmd.split_at(program_start(&cmd));
     let mut child = tokio::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("exec {cmd}"))
+        .arg(format!("{assignments}exec {command}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -169,18 +211,23 @@ pub async fn run_command(
         }
         *state = RunState::Running(child);
     }
-    if let Some(mut pipe) = pipe {
-        // A child that exits early closes the pipe; that is reported by
-        // its exit status below, not here.
-        let _ = pipe.write_all(stdin.as_bytes()).await;
-        drop(pipe);
-    }
+    // Written while stdout and stderr are read, so a command that prints
+    // before it has read all its input can't fill a pipe and stall both.
+    let write = async move {
+        if let Some(mut pipe) = pipe {
+            // A child that exits early closes the pipe; that is reported
+            // by its exit status below, not here.
+            let _ = pipe.write_all(stdin.as_bytes()).await;
+        }
+        Ok::<_, std::io::Error>(())
+    };
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let read = match (out, err) {
         (Some(mut out), Some(mut err)) => {
-            tokio::try_join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr)).map(|_| ())
+            tokio::try_join!(write, out.read_to_end(&mut stdout), err.read_to_end(&mut stderr))
+                .map(|_| ())
         }
-        _ => Ok(()),
+        _ => write.await,
     };
     // Waited on only once out of the run, so `kill` never signals a pid
     // that has been reaped and may belong to another process by then.
@@ -277,6 +324,32 @@ mod tests {
         assert_eq!(program_name("1X=1 llm"), "1X=1", "not an identifier: a program");
     }
 
+    #[test]
+    fn a_single_command_has_no_list_or_pipe_outside_quotes() {
+        for one in [
+            "claude -p",
+            "KEY=\"sk abc\" llm -m x",
+            "llm -s 'a; b | c && d'",
+            "llm -s \"a; b | c\"",
+            "llm -s a\\;b",
+            "llm -s \"say \\\"hi\\\"; ok\"",
+        ] {
+            assert!(is_single_command(one), "{one}");
+        }
+        for more in [
+            "llm; echo done",
+            "llm -m x && echo done",
+            "llm || true",
+            "claude -p | jq -r .result",
+            "llm &",
+            "llm 2>&1",
+            "llm\necho done",
+            "llm -s 'quoted'; echo",
+        ] {
+            assert!(!is_single_command(more), "{more}");
+        }
+    }
+
     async fn run(cmd: &str, stdin: &str) -> Result<CommandOutput, String> {
         run_command(cmd.into(), stdin.into(), &CommandRun::default()).await
     }
@@ -285,6 +358,26 @@ mod tests {
     async fn run_command_pipes_stdin_and_returns_stdout() {
         let out = run("cat", "hello").await.unwrap();
         assert_eq!(out.into_reply().unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn run_command_keeps_leading_assignments() {
+        let out = run("GREETING=\"hi there\" sh -c 'echo \"$GREETING\"'", "").await.unwrap();
+        assert_eq!(out.into_reply().unwrap(), "hi there\n");
+    }
+
+    /// The command reads its input only after it has printed more than a
+    /// pipe holds, so the write and the reads have to go on together.
+    #[tokio::test]
+    async fn run_command_writes_and_reads_at_once() {
+        let input = "x".repeat(256 * 1024);
+        let fut = run("sh -c 'head -c 262144 /dev/zero >&2; cat'", &input);
+        let out = tokio::time::timeout(Duration::from_secs(10), fut)
+            .await
+            .expect("no stall between the stdin write and the reads")
+            .unwrap();
+        assert_eq!(out.stderr.len(), 256 * 1024);
+        assert_eq!(out.stdout, input);
     }
 
     #[tokio::test]
@@ -301,25 +394,27 @@ mod tests {
     /// and leave `sleep` holding it.
     #[tokio::test]
     async fn kill_ends_the_command() {
-        let run = std::sync::Arc::new(CommandRun::default());
-        let task = tokio::spawn({
-            let run = std::sync::Arc::clone(&run);
-            async move { run_command("sleep 30".into(), String::new(), &run).await }
-        });
-        for _ in 0..2000 {
-            if run.pid().is_some() {
-                break;
+        for cmd in ["sleep 30", "NAP=1 sleep 30"] {
+            let run = std::sync::Arc::new(CommandRun::default());
+            let task = tokio::spawn({
+                let run = std::sync::Arc::clone(&run);
+                async move { run_command(cmd.into(), String::new(), &run).await }
+            });
+            for _ in 0..2000 {
+                if run.pid().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert!(run.pid().is_some(), "{cmd}: the command started");
+            run.kill();
+            let out = tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .expect("the run ends at the kill, not when sleep does")
+                .unwrap();
+            assert_eq!(out.unwrap_err(), "cancelled", "{cmd}");
+            assert!(run.is_over());
         }
-        assert!(run.pid().is_some(), "the command started");
-        run.kill();
-        let out = tokio::time::timeout(Duration::from_secs(10), task)
-            .await
-            .expect("the run ends at the kill, not when sleep does")
-            .unwrap();
-        assert_eq!(out.unwrap_err(), "cancelled");
-        assert!(run.is_over());
     }
 
     #[tokio::test]
