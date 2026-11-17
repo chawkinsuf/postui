@@ -203,11 +203,14 @@ fn clip(text: &str) -> String {
 /// `doc` gives, read as `run --jq` reads it (JSON, NDJSON or an SSE
 /// stream). `doc` is called once, and only when there is a filter. A body
 /// that doesn't read fails each filter with the reader's error, or with
-/// the filter's own when it doesn't compile (R5).
+/// the filter's own when it doesn't compile (R5). Each filter's run is
+/// stopped at `limit`, the project's `jq_check_limit_ms`, counted from
+/// its own start, after the body is read (#310 spec L3, L4).
 pub fn evaluate(
     checks: &Checks,
     status: u16,
     timing: Timing,
+    limit: std::time::Duration,
     doc: impl FnOnce() -> Result<JqDocument, JqError>,
 ) -> Vec<Outcome> {
     let mut outcomes = Vec::new();
@@ -229,7 +232,7 @@ pub fn evaluate(
     let doc = doc();
     for filter in &checks.jq {
         let run = match &doc {
-            Ok(doc) => jq::run(filter, doc),
+            Ok(doc) => jq::run_limited(filter, doc, limit),
             Err(e) => jq::check(filter).and(Err(e.clone())),
         };
         let (got, error) = match run {
@@ -253,9 +256,52 @@ mod tests {
         }
     }
 
+    /// The default jq check limit, for the tests that don't test it.
+    const LIMIT: std::time::Duration = crate::project::DEFAULT_JQ_CHECK_LIMIT;
+
     /// `evaluate` over `body` as text, taking no time.
     fn over(checks: &Checks, status: u16, body: &str) -> Vec<Outcome> {
-        evaluate(checks, status, Timing::default(), || JqDocument::parse(body))
+        evaluate(checks, status, Timing::default(), LIMIT, || JqDocument::parse(body))
+    }
+
+    /// #310 spec L3, L7, L8: each never-ending filter is stopped at the
+    /// limit on its own, fails with its line, and the checks after it run.
+    #[test]
+    fn a_filter_past_the_limit_fails_and_the_others_still_run() {
+        let limit = std::time::Duration::from_millis(50);
+        let never = ["last(range(1e18)) > 0", "[repeat(1)] | length == 1"];
+        let checks = checks(&[200], &[never[0], never[1], ".ok"]);
+        let out = evaluate(&checks, 200, Timing::default(), limit, || {
+            JqDocument::parse(r#"{"ok":true}"#)
+        });
+        assert_eq!(
+            lines(200, &out),
+            [
+                (true, "status 200".to_string()),
+                (false, format!("{}: stopped at the 50 ms limit", never[0])),
+                (false, format!("{}: stopped at the 50 ms limit", never[1])),
+                (true, ".ok".to_string()),
+            ]
+        );
+        assert_eq!(
+            out[1],
+            Outcome::Jq {
+                filter: never[0].to_string(),
+                got: Vec::new(),
+                error: Some("stopped at the 50 ms limit".to_string()),
+            }
+        );
+    }
+
+    /// #310 spec L4: reading the body is not counted in a filter's limit.
+    #[test]
+    fn the_bodys_read_is_outside_the_limit() {
+        let limit = std::time::Duration::from_millis(50);
+        let out = evaluate(&checks(&[], &[".ok"]), 200, Timing::default(), limit, || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            JqDocument::parse(r#"{"ok":true}"#)
+        });
+        assert_eq!(lines(200, &out), [(true, ".ok".to_string())]);
     }
 
     /// Spec §2.7 (T1–T3): each limit passes at or under it and fails over
@@ -265,7 +311,9 @@ mod tests {
         let limits =
             Checks { max_ttfb_ms: Some(500), max_elapsed_ms: Some(2000), ..Checks::default() };
         let at = |ttfb_ms, elapsed_ms| {
-            evaluate(&limits, 200, Timing { ttfb_ms, elapsed_ms }, || panic!("the body was read"))
+            evaluate(&limits, 200, Timing { ttfb_ms, elapsed_ms }, LIMIT, || {
+                panic!("the body was read")
+            })
         };
         assert!(at(500, 2000).iter().all(Outcome::passed));
         assert!(at(0, 0).iter().all(Outcome::passed));
@@ -276,9 +324,10 @@ mod tests {
             ["first byte 812 ms, limit 500 ms", "total 2310 ms, limit 2000 ms"]
         );
         let only_total = Checks { max_elapsed_ms: Some(100), ..Checks::default() };
-        let out = evaluate(&only_total, 200, Timing { ttfb_ms: 9000, elapsed_ms: 100 }, || {
-            panic!("the body was read")
-        });
+        let out =
+            evaluate(&only_total, 200, Timing { ttfb_ms: 9000, elapsed_ms: 100 }, LIMIT, || {
+                panic!("the body was read")
+            });
         assert_eq!(out, [Outcome::Time { measure: Measure::Total, limit: 100, got: 100 }]);
         assert!(out[0].passed());
     }
@@ -293,7 +342,7 @@ mod tests {
             max_elapsed_ms: Some(20),
             jq: vec![".a".into()],
         };
-        let out = evaluate(&checks, 200, Timing { ttfb_ms: 5, elapsed_ms: 25 }, || {
+        let out = evaluate(&checks, 200, Timing { ttfb_ms: 5, elapsed_ms: 25 }, LIMIT, || {
             JqDocument::parse(r#"{"a":true}"#)
         });
         assert!(matches!(&out[0], Outcome::Status { .. }));
@@ -339,7 +388,8 @@ mod tests {
         assert!(passed(204, &[]) && !passed(400, &[]));
         // A time limit's line reads the same passed or failed.
         let limit = Checks { max_elapsed_ms: Some(2000), ..Checks::default() };
-        let out = evaluate(&limit, 200, Timing { ttfb_ms: 1, elapsed_ms: 2310 }, || panic!());
+        let out =
+            evaluate(&limit, 200, Timing { ttfb_ms: 1, elapsed_ms: 2310 }, LIMIT, || panic!());
         assert_eq!(lines(200, &out), [(false, "total 2310 ms, limit 2000 ms".to_string())]);
         assert!(!passed(200, &out));
     }
@@ -431,8 +481,9 @@ mod tests {
     /// calls `doc`.
     #[test]
     fn a_status_check_alone_reads_no_body() {
-        let out =
-            evaluate(&checks(&[200], &[]), 200, Timing::default(), || panic!("the body was read"));
+        let out = evaluate(&checks(&[200], &[]), 200, Timing::default(), LIMIT, || {
+            panic!("the body was read")
+        });
         assert_eq!(out, [Outcome::Status { expected: vec![200], got: 200 }]);
     }
 

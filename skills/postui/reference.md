@@ -63,6 +63,10 @@ name = "Staging"
   Leave `order` alone unless asked.
 - `[environment.<name>]`: `name`, and `tls = "verify"` or `"insecure"` to
   force certificate checks on or off for every request in that environment.
+- `jq_check_limit_ms`: how long each jq check in a request's `[checks]` may
+  run, in whole milliseconds, 1 or more (default 1000). A top-level key,
+  above the tables. Leave it out unless a check over a large body needs
+  longer.
 
 ## variables.toml
 
@@ -231,7 +235,10 @@ jq = [
   `true` and nothing else: a filter giving `false`, no output, any other
   value (`.name` alone, so compare it), or an error fails, and so does a
   body that isn't JSON (a stream is read value by value, as `run --jq`
-  does). Write filters as `'...'` literal strings so their quotes need no
+  does). A filter still running at the project's `jq_check_limit_ms` (1 s
+  by default, counted after the body is read) is stopped and fails with
+  `<filter>: stopped at the 1000 ms limit`; the other checks still run.
+  Write filters as `'...'` literal strings so their quotes need no
   escaping. `check` reports a filter that doesn't compile. A code or a
   filter listed twice counts once. The TUI edits them on the request's
   Checks tab and shows each response's results on the response's, whose

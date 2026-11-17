@@ -22,6 +22,10 @@ change the project file format.
   whole. The response shows as soon as it arrives. Until its jq checks
   have run, the tab's mark is a dim `…` and its one line reads `checking…`.
 - `editor_tab_5` can be bound to open the request's Checks tab.
+- Each jq check in a request's `[checks]` is stopped after 1 second and
+  fails with `stopped at the 1000 ms limit`, in `postui run`, `postui
+  suite` and the app alike, so a filter that never ends no longer hangs
+  them. `jq_check_limit_ms` in `project.toml` sets another limit.
 
 ### Changed
 

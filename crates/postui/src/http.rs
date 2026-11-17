@@ -74,28 +74,37 @@ pub fn reads_body(checks: &postui_core::model::Checks) -> bool {
 /// `run` through [`run_checks`], the hop the suite's checks take too, for
 /// the app's one check job per response (checks tabs spec 2026-11-16,
 /// section 7): its lines, or for a run that panicked one failed line that
-/// says so. A jq check has no time limit yet: that is #310.
+/// says so.
 pub async fn judge(run: ChecksRun<Vec<(bool, String)>>) -> Vec<(bool, String)> {
     let run = run_checks(run).await;
     run.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))])
 }
 
 impl ResponseData {
-    /// The response judged by `checks`, as lines; a request with no checks
-    /// has none (spec P1).
-    pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
-        self.judging()(checks)
+    /// The response judged by `checks`, as lines, each jq check stopped at
+    /// `limit`; a request with no checks has none (spec P1).
+    pub fn check_lines(
+        &self,
+        checks: &postui_core::model::Checks,
+        limit: Duration,
+    ) -> Vec<(bool, String)> {
+        self.judging(limit)(checks)
     }
 
     /// [`Self::check_lines`] over `checks` as a run for [`judge`].
-    pub fn check_run(&self, checks: postui_core::model::Checks) -> ChecksRun<Vec<(bool, String)>> {
-        ChecksRun::new(checks, self.judging())
+    pub fn check_run(
+        &self,
+        checks: postui_core::model::Checks,
+        limit: Duration,
+    ) -> ChecksRun<Vec<(bool, String)>> {
+        ChecksRun::new(checks, self.judging(limit))
     }
 
     /// The judging [`Self::check_lines`] and [`Self::check_run`] do. It
     /// shares the body and lets go of it once jq has read it.
     fn judging(
         &self,
+        limit: Duration,
     ) -> impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<> {
         use postui_core::checks::{Timing, evaluate, lines};
         let (status, body) = (self.status, self.body.clone());
@@ -105,7 +114,7 @@ impl ResponseData {
                 return Vec::new();
             }
             let doc = move || postui_core::jq::JqDocument::parse(&body);
-            lines(status, &evaluate(checks, status, timing, doc))
+            lines(status, &evaluate(checks, status, timing, limit, doc))
         }
     }
 }
@@ -474,10 +483,11 @@ mod tests {
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
         assert_eq!(data.status, 500);
-        let run = data.check_run(Checks::default());
+        let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+        let run = data.check_run(Checks::default(), limit);
         assert_eq!(Arc::strong_count(&data.body), 2, "the run shares the body");
         drop(run);
-        let judged = |checks: Checks| judge(data.check_run(checks));
+        let judged = |checks: Checks| judge(data.check_run(checks, limit));
         assert!(judged(Checks::default()).await.is_empty());
         let checks = Checks {
             max_elapsed_ms: Some(60_000),

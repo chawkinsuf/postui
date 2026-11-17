@@ -130,7 +130,8 @@ pub(super) fn failure_lines(checks: &[ShownCheck]) -> impl Iterator<Item = Strin
 }
 
 /// `checks` run over a response with `status` and `body` that took
-/// `timing`, masked by `mask`: a test's fixture.
+/// `timing`, masked by `mask`, with the default jq check limit: a test's
+/// fixture.
 #[cfg(test)]
 pub(super) fn over(
     checks: &postui_core::model::Checks,
@@ -140,7 +141,8 @@ pub(super) fn over(
     mask: &Mask,
 ) -> Vec<ShownCheck> {
     let doc = || postui_core::jq::JqDocument::parse(body);
-    shown(&postui_core::checks::evaluate(checks, status, timing, doc), mask)
+    let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+    shown(&postui_core::checks::evaluate(checks, status, timing, limit, doc), mask)
 }
 
 /// Checks with `status` codes and `jq` filters run over a response with
@@ -251,7 +253,8 @@ mod tests {
         for (checks, status) in [(&limits, 200), (&limits, 500), (&named, 201), (&named, 404)] {
             let timing = Timing { ttfb_ms: 3, elapsed_ms: 40 };
             let doc = || postui_core::jq::JqDocument::parse(body);
-            let outcomes = evaluate(checks, status, timing, doc);
+            let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+            let outcomes = evaluate(checks, status, timing, limit, doc);
             let run = shown(&outcomes, &Mask::none());
             let app = lines(status, &outcomes);
             assert_eq!(passed(status, &run), core_passed(&app), "{status}");

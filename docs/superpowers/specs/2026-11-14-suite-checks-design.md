@@ -126,6 +126,13 @@ under the row. The JSON gives each check's `failure`, the line's text,
 instead of the filter's outputs and error, which could be as large as the
 body.
 
+Amended 2026-11-17, #310: a jq check that runs past the project's
+`jq_check_limit_ms` (1 s by default; the user: "Each jq check should
+have a max runtime or it fails") is stopped and fails with
+`check failed: <filter>: stopped at the 1000 ms limit`, the limit in use
+in the line (mine (approved)). The request's other checks still run and
+the suite goes on. See `2026-11-17-jq-check-limit-design.md`.
+
 - **Plain text:** the row as today (the real status shows), the failure
   lines under it, where an error goes now.
 - **Live view:** a `✗` row, its status in its usual colour; the first

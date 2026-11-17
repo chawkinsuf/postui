@@ -5468,15 +5468,18 @@ impl App {
                 // before delivery so the response itself still moves into
                 // the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
-                let state = CheckState::on_arrival(&data, &checks);
+                // The project's limit as it stands now, so an outside edit
+                // to it applies from the next response.
+                let limit = self.meta().jq_check_limit();
+                let state = CheckState::on_arrival(&data, &checks, limit);
                 // jq checks read the body, so they are judged after the
                 // response is delivered, off this thread, and for a big
                 // body after its Tree parse (section 7). Nothing ends the
-                // job: a re-send starts another, and this one's lines are
-                // dropped when it ends. A check that never ends keeps its
-                // thread, as on main after Esc and a re-send, until #310's
-                // time limit (section 7, detail 4).
-                let job = (state == CheckState::Judging).then(|| data.check_run(checks));
+                // job early: a re-send starts another, and this one's lines
+                // are dropped when it ends. Each jq check ends at the
+                // project's time limit (#310), which bounds how long a job
+                // keeps its thread.
+                let job = (state == CheckState::Judging).then(|| data.check_run(checks, limit));
                 if !self.session.arrived(generation, data, state) {
                     return false;
                 }
