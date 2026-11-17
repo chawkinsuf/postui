@@ -1,0 +1,212 @@
+# A time limit for each jq check (#310)
+
+Branch `jq-check-limit`, from `main` at `a207b70` (#312 merged).
+
+## 1. The problem and what was found
+
+A jq check in a request's `[checks]` runs as long as its filter takes.
+One that never ends (`last(range(1e12)) > 0`, a loop written by mistake)
+hangs `postui run` and `postui suite` on that request, and in the app
+leaves the response's Checks tab on `checking…` while its job keeps a
+blocking-pool thread and its read of the body until postui quits; every
+re-send adds another (checks tabs spec, section 7, detail 4). A check
+that builds an endless array (`[repeat(1)] | length == 1`) also grows
+memory until the process dies.
+
+> "Why would we let checks run forever even in the cli? Each jq check
+> should have a max runtime or it fails." (you, #309)
+
+All three run a request's checks through one function,
+`postui_core::checks::evaluate`, which runs each filter with `jq::run`.
+
+**How a run can be stopped in-process.** Verified against jaq-core 3.1.1
+and measured on a prototype (built, measured, then removed; nothing of it
+is on the branch):
+
+- jaq evaluates every term through `Id::run`
+  (`jaq-core-3.1.1/src/filter.rs:464-466`), which starts with
+  `cv.0.lut()`; `Ctx::lut` (`filter.rs:116-118`) calls the data's
+  `HasLut::lut`, which is postui's (`crates/postui-core/src/jq/mod.rs:33-37`).
+  So every step of a filter that loops through jq definitions (`repeat`,
+  `until`, `while`, `recurse`, `limit`, `reduce`/`foreach` bodies, a
+  recursive `def`) passes through postui's code, with or without output.
+- jaq's native `range/3` (`jaq-core-3.1.1/src/funs.rs:31-36`, `55-71`) is
+  a plain Rust iterator that never calls `lut()`, and `first`, `last`,
+  `limit` and `[...]` pull it in Rust. So `last(range(1e18))` and
+  `[range(1e10)]` loop without passing through postui. `range/1` and
+  `range/2` are defined on top of it (`defs.jq:16-17`). No other native
+  in jaq-core, jaq-std 3.0.3 or jaq-json 2.0.3 loops without input: the
+  rest walk values the run already holds, and regex (`regex-bites`, the
+  regex-lite engine) is linear in its input.
+- Stopping: a counter in `lut()` reads the clock every 1024 calls, and
+  past the deadline unwinds with a marker value through
+  `std::panic::resume_unwind`, which skips the panic hook (std docs).
+  That matters: `main.rs:183-198` prints a worker thread's panic to
+  stderr, which would land on the TUI's screen. `catch_unwind` around the
+  run catches the marker and turns it into the run's error; any other
+  payload is re-raised. A filter's `try`/`catch`, `?` and `//` can't
+  catch it, since it is not a jaq error. No profile sets
+  `panic = "abort"` (`Cargo.toml`), which this needs.
+- `range/3` is replaced by the same iterator with the same check on each
+  step (about 20 lines, a copy of jaq's).
+
+**Measured** (release build, a 4.9 MB body of 60,000 objects, best of 7):
+
+| Filter | No limit | With the hook and a deadline |
+|---|---|---|
+| `.data.items \| map(select(.status == "active")) \| length > 0` | 65.4 ms | 65.5 ms |
+| `[.data.items[] \| .price] \| add > 0` | 45.5 ms | 45.4 ms |
+| `[.data.items[] \| .tags \| join(",")] \| unique \| length == 1` | 253.6 ms | 252.1 ms |
+| `.data.items \| group_by(.status) \| length == 2` | 48.7 ms | 48.5 ms |
+| `reduce range(3000000) as $x (0; . + $x) > 0` | 431.6 ms | 432.3 ms |
+| `[limit(1000000; repeat(1))] \| length == 1000000` | 110.8 ms | 110.3 ms |
+| `last(range(30000000)) > 0` | 460.1 ms | 466.4 ms |
+
+The overhead is within run-to-run noise (the unmodified code varied by
+up to 12 ms between two runs). With a 1 s limit, every one of these
+stopped and returned the error: `last(range(1e18))` 1000.2 ms,
+`def f: f; f` 1000.1 ms, `until(false; .)` 1000.1 ms,
+`reduce range(1e18) as $x (0; . + 1)` 1000.1 ms, `last(repeat(1))`
+1000.1 ms, `label $out | repeat(1) | select(false)` 1001.0 ms,
+`try (last(range(1e18))) catch true` 1000.1 ms,
+`(last(range(1e18)))? // true` 1000.1 ms, a nested loop over the body's
+60,000 items 1005.9 ms, `[repeat(1)]` 1021.2 ms (peak memory 149 MB),
+`[limit(1e12; repeat(1))]` 1018.3 ms, `[range(1e10)]` 1083.2 ms (peak
+640 MB). The time past the limit is the run's values being freed.
+
+**What it does not stop.** A native step already running finishes before
+the next check of the clock: one huge allocation (`"x" * 1e10`) still
+fails the process, and a deep recursion (`def f: 1 + f; f`) still
+overflows the stack (#282). A sort or `group_by` of a large array the
+run built is bounded by what it could build within the limit, so it ends,
+late. An endless array grows for the limit's length, then is freed.
+
+## 2. Rules
+
+| # | Rule | Source |
+|---|---|---|
+| L1 | Each jq check has a maximum runtime; a check that passes it fails, in `run`, `suite` and the app alike. | you ("Each jq check should have a max runtime or it fails") |
+| L2 | The limit is 1 second by default. | you ("Yes I already confirmed 1 second.") |
+| L3 | The limit is per check: each jq check gets the whole limit, not a budget shared by the request's checks. | mine (approved) |
+| L4 | The time counts from the check's run, after the body is read: reading the body into jq's document is not counted, and is done once for all of a request's checks. | you (1 second "counted after the body is read") |
+| L5 | The limit is a project setting, `jq_check_limit_ms` in `project.toml`, in whole milliseconds; absent means 1000. It has no control in the app's Settings tab. | you ("Might as well make it configurable on a project level I think. Could be only in config for now."); that this means `project.toml`: mine, to confirm (Q1) |
+| L6 | The run is stopped in-process: postui's `lut()` hook checks a deadline, and `range` is replaced by one that checks it; past it the run unwinds, frees its thread and memory, and the check fails. | mine (approved) ("C and in process") |
+| L7 | A stopped check fails with the line `<filter>: stopped at the <N> ms limit`, the same in `run`'s `check failed:` line, `run -v`, `suite`'s rows, both JSONs' `failure`, and the app's Checks tab. | mine |
+| L8 | The request's other checks still run, each with its own limit; a request with a stopped check fails as one with any failed check does, and the suite goes on to the next request. | you (ticket: "the rest of the request's checks, and the rest of the suite, go on") |
+| L9 | A bad `jq_check_limit_ms` (0, negative, a fraction, a string, above 4294967295) is a bad `project.toml`, as any bad value there is today: `run`, `suite` and `check` refuse with the file named; the app can't open the project; an outside edit while the app is open keeps the last good value with the "could not read project.toml" warning. | mine (existing rule, "parse errors never default") |
+| L10 | Nothing else changes: the jq bar, saved views, completion and `run --jq` run without a limit (#308 has the bar). | mine (ticket scope) |
+
+## 3. Design
+
+**Core, `jq` module** (`crates/postui-core/src/jq/mod.rs`):
+
+- `Globals` gains `stop: &Stop`. `Stop` holds an optional deadline and a
+  call counter (`Cell<u32>`); `Stop::tick` counts and, every 1024 calls,
+  compares the clock with the deadline, and past it calls
+  `resume_unwind` with a private marker type. With no deadline it does
+  nothing. `HasLut::lut` calls `tick` first.
+- `funs()` drops jaq-core's native `range/3` and adds postui's, which
+  ticks on each value it yields. Its outputs and errors are jaq's (a
+  copy of `jaq-core/src/funs.rs:55-71`).
+- `for_each_output` takes the `Stop` and runs its loop inside
+  `catch_unwind`: the marker becomes `Err(JqError::Runtime { message:
+  "stopped at the <N> ms limit" })`, the whole run's error, as the output
+  cap's is; any other panic is re-raised.
+- New `pub fn run_limited(code, doc, limit: Duration) -> Result<JqRun,
+  JqError>`: `run` with a deadline at `now + limit`, set before the filter
+  compiles. `run` and `run_with_cap` keep their signatures and pass no
+  deadline, so the bar, completion and `run --jq` behave as before.
+- The `Stop` is the reusable part: #308 can give it a cancel flag beside
+  the deadline. Not built here.
+
+**Core, `checks`**: `evaluate(checks, status, timing, limit: Duration,
+doc)` runs each filter with `jq::run_limited(filter, doc, limit)`. The
+stop arrives as the run's `Err`, so it becomes `Outcome::Jq { got: [],
+error: Some("stopped at the 1000 ms limit") }` and its line is the
+existing `"{filter}: {error}"`. `Outcome` and the JSON shapes don't
+change.
+
+**Core, project** (`project/meta.rs`): `ProjectMeta` gains
+`jq_check_limit_ms: Option<NonZeroU32>` (serde refuses 0, negatives,
+fractions and strings) and `ProjectMeta::jq_check_limit() -> Duration`,
+1000 ms when absent. Nothing writes the key: `Project::init` doesn't add
+it, and the TUI's `project.toml` edits keep it (they edit the document in
+place).
+
+**Callers** read the limit from the open project and pass it on:
+
+- `run` (`cli/run.rs`, `record`): `s.project.meta().jq_check_limit()`.
+- `suite` (`cli/suite/mod.rs`): read once before the sends start, moved
+  into each send's `evaluate`.
+- The app (`app.rs`, `Action::ResponseArrived`): read from
+  `self.project` when the response arrives, so an outside edit to the
+  key applies from the next response; passed into
+  `ResponseData::check_run(limit)` (`http.rs`), which `check_lines` uses
+  too. With no project open, the default.
+
+**What it ends from #312's section 7, detail 4:** a check job that holds
+a never-ending check now ends within the limit for each of its checks, so
+re-sends leave at most that long a job each, and a quit waits at most
+that long for a running job.
+
+**Contract changes:** `checks::evaluate` gains a parameter;
+`ResponseData::check_run` and `check_lines` gain one; `jq::run_limited` is
+new; `ProjectMeta` gains a field (a `project.toml` key). No enum changes.
+
+**Docs:** the skill's `reference.md` lists `jq_check_limit_ms` under
+`project.toml` and says in the `[checks]` paragraph that a jq check is
+stopped at the limit; the checks tabs spec's section 7 detail 4 and A8
+and the suite checks spec get a dated #310 paragraph.
+
+## 4. Tests
+
+| Rule | Test |
+|---|---|
+| L1, L6 | `jq`: `run_limited` with a 50 ms limit stops `last(range(1e18))`, `[range(1e10)]`, `[repeat(1)]`, `def f: f; f`, `until(false; .)`, and `try (last(range(1e18))) catch true`, each with the error `stopped at the 50 ms limit`, well under 5 s. |
+| L6 | `jq`: postui's `range` gives what jaq's did: `[range(5)]`, `[range(2; 8)]`, `[range(0; 10; 3)]`, `[range(5; 0; -2)]`, `[limit(3; range(0; 1; 0))]`, `[range(0.5; 3)]`, `range(1; "a")` errors; over `run` and `run_limited` alike. |
+| L6 | `jq`: a filter that ends gives the same `JqRun` from `run` and from `run_limited` (the existing fixtures). |
+| L10 | `jq`: `run` has no limit (a filter of about 100 ms with a deadline of 1 ms in `run_limited` is stopped, through `run` it ends). |
+| L2, L4, L5 | `meta`: absent key gives 1000 ms; `jq_check_limit_ms = 2500` gives 2.5 s; L9's bad values fail to parse. |
+| L9 | `project`: opening a project whose `project.toml` holds `jq_check_limit_ms = 0` is refused naming `project.toml`. |
+| L3, L7, L8 | `checks`: a request with a status check, a never-ending filter, a second never-ending filter and `.ok`: the status line, two `<filter>: stopped at the 50 ms limit` lines, and `.ok` passed, in order. |
+| L4 | `checks`: the body's read is outside the limit (a `doc` closure that sleeps 100 ms, a 50 ms limit, a filter that ends: it passes). |
+| L1, L7, L8 | `cli_run` (integration): a project with `jq_check_limit_ms = 50` and a request with `last(range(1e18)) > 0`: `run` exits 1 with `check failed: last(range(1e18)) > 0: stopped at the 50 ms limit`, and its JSON's `failure` says the same. |
+| L8 | `suite`: two requests, the first with a never-ending check: the first fails with that line, the second passes, the run ends. |
+| L1, L7 | app (`checks_tests.rs`): a response arriving for a request with a never-ending check and the project's limit at 50 ms gets its Checks tab's failed line and leaves `checking…`. |
+| L1 | TUI in tmux: a request with `last(range(1e18)) > 0` sent: the tab says `checking…`, then about 1 s later the failed line. |
+
+## 5. `mine` choices, for veto
+
+- L5's reading: the setting lives in `project.toml` (shared with the
+  team and with `run`/`suite`), not the user's own `config.toml` (which
+  `run` and `suite` would also have to read). Asked as Q1.
+- The key's name, `jq_check_limit_ms`, top level in `project.toml`, in
+  milliseconds like `max_ttfb_ms`. Not a project-level `[checks]` table,
+  which would read as checks for every request.
+- L7's wording, `stopped at the 1000 ms limit`, without the key's name
+  (the docs name it). Naming it,
+  `stopped at the 1000 ms limit (jq_check_limit_ms)`, would tell a reader
+  where to change it, at 20 more characters.
+- No "no limit" value (the user: every check has a maximum); the largest
+  is about 49 days.
+- L9: a bad value fails `project.toml` like any other bad value, rather
+  than falling back to 1 s with a warning.
+- The clock is read every 1024 term evaluations; measured, a stop comes
+  within about 1 ms of the limit, plus the time to free what the run
+  built (up to 85 ms seen).
+- A postui older than this branch refuses a `project.toml` that has the
+  key (`ProjectMeta` denies unknown keys), as it would any newer key.
+- L10: the jq bar, views, completion and `run --jq` get no limit here.
+
+## 6. Plan
+
+One sequence, TDD:
+
+1. `meta`: the field, its accessor, parse tests.
+2. `jq`: `Stop`, the `lut()` hook, `range/3`, `catch_unwind`,
+   `run_limited`; its tests.
+3. `checks::evaluate` with the limit; its tests; the callers in `run`,
+   `suite`, `http`/app; their tests.
+4. Docs: `reference.md`; dated paragraphs in the checks tabs and suite
+   checks specs.
+5. Suite, clippy, fmt; the TUI check in tmux.
