@@ -13,7 +13,7 @@ use serde::Serialize;
 /// from the masked checks, which are what a report keeps.
 pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
     checks.iter().find_map(|c| match c.kind {
-        Kind::Status { passed, .. } => Some(passed),
+        Kind::Status { .. } => Some(c.passed()),
         Kind::Time { .. } | Kind::Jq { .. } => None,
     })
 }
@@ -23,7 +23,7 @@ pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
 pub(super) fn total_failed(checks: &[ShownCheck]) -> bool {
     checks
         .iter()
-        .any(|c| matches!(c.kind, Kind::Time { measure: Measure::Total, passed: false, .. }))
+        .any(|c| matches!(c.kind, Kind::Time { measure: Measure::Total, .. }) && !c.passed())
 }
 
 /// Whether a response with `status` passes, given its `checks`: its status
@@ -35,28 +35,36 @@ pub(super) fn passed(status: u16, checks: &[ShownCheck]) -> bool {
 }
 
 /// One check's outcome, every string in it through the run's mask.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub(super) struct ShownCheck {
-    #[serde(flatten)]
     kind: Kind,
     /// What `run -v` lists for it ([`Outcome::summary`]): `Ok` what
     /// passed, `Err` why it failed, the line after `check failed: `. The
     /// JSON's `failure` is the `Err` line, `null` for a check that passed:
     /// clipped as the text is, rather than a filter's outputs, which can
     /// be as large as the body (§2.3).
-    #[serde(rename = "failure", serialize_with = "failure")]
     line: Result<String, String>,
 }
 
-/// A check's `failure`: its line when it failed.
-fn failure<S: serde::Serializer>(line: &Result<String, String>, s: S) -> Result<S::Ok, S::Error> {
-    line.as_ref().err().serialize(s)
+/// The JSON of a check: its kind's fields, then `passed` and `failure`.
+impl Serialize for ShownCheck {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Json<'a> {
+            #[serde(flatten)]
+            kind: &'a Kind,
+            passed: bool,
+            failure: Option<&'a String>,
+        }
+        let failure = self.line.as_ref().err();
+        Json { kind: &self.kind, passed: self.passed(), failure }.serialize(s)
+    }
 }
 
-/// The JSON's three shapes (§2.3, §2.7): `{"check": "status", "expected",
-/// "got", "passed", "failure"}`, `{"check": "max_ttfb_ms" or
-/// "max_elapsed_ms", "limit", "got", "passed", "failure"}` and `{"check":
-/// FILTER, "passed", "failure"}`.
+/// The JSON's three shapes (§2.3, §2.7), each followed by `"passed",
+/// "failure"`: `{"check": "status", "expected", "got"}`, `{"check":
+/// "max_ttfb_ms" or "max_elapsed_ms", "limit", "got"}` and `{"check":
+/// FILTER}`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 enum Kind {
@@ -64,18 +72,15 @@ enum Kind {
         check: &'static str,
         expected: Vec<u16>,
         got: u16,
-        passed: bool,
     },
     Time {
         #[serde(rename = "check", serialize_with = "measure_key")]
         measure: Measure,
         limit: u64,
         got: u64,
-        passed: bool,
     },
     Jq {
         check: String,
-        passed: bool,
     },
 }
 
@@ -102,17 +107,16 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
     outcomes
         .iter()
         .map(|outcome| {
-            let passed = outcome.passed();
             let line = outcome.summary(|text| mask.apply(text));
-            let line = if passed { Ok(line) } else { Err(line) };
+            let line = if outcome.passed() { Ok(line) } else { Err(line) };
             let kind = match outcome {
                 Outcome::Status { expected, got } => {
-                    Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
+                    Kind::Status { check: "status", expected: expected.clone(), got: *got }
                 }
                 Outcome::Time { measure, limit, got } => {
-                    Kind::Time { measure: *measure, limit: *limit, got: *got, passed }
+                    Kind::Time { measure: *measure, limit: *limit, got: *got }
                 }
-                Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
+                Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter) },
             };
             ShownCheck { kind, line }
         })
@@ -287,9 +291,16 @@ mod tests {
                 {"check": ".ok", "passed": true, "failure": null},
             ])
         );
+        // Each shape's fields in their order.
         assert_eq!(
-            serde_json::to_string(&out[1]).unwrap(),
-            r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"failure":"first byte 812 ms, limit 500 ms"}"#
+            serde_json::to_string(&out).unwrap(),
+            concat!(
+                r#"[{"check":"status","expected":[200],"got":200,"passed":true,"failure":null},"#,
+                r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"#,
+                r#""failure":"first byte 812 ms, limit 500 ms"},"#,
+                r#"{"check":"max_elapsed_ms","limit":2000,"got":900,"passed":true,"failure":null},"#,
+                r#"{"check":".ok","passed":true,"failure":null}]"#,
+            )
         );
         assert!(!passed(200, &out));
         assert!(!total_failed(&out));

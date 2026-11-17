@@ -2231,12 +2231,9 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 }
 
 /// A response's one check job (checks tabs spec 2026-11-16, section 7):
-/// the checks it was sent with and the run that judges them
+/// the run that judges it by the checks it was sent with
 /// (`ResponseData::check_run`).
-type CheckJob = (
-    postui_core::model::Checks,
-    Box<dyn FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send>,
-);
+type CheckJob = crate::http::ChecksRun<Vec<(bool, String)>>;
 
 /// The blocking-pool half of a background jq run: parse the body if the
 /// view has no cached document yet, run, and flatten the outputs into
@@ -2498,8 +2495,8 @@ impl App {
                 let tree = JsonTree::parse(&body).map(Box::new);
                 self.dispatch(Action::PrettyParsed { generation, tree });
             }
-            if let Some((checks, run)) = checks {
-                self.dispatch(Action::ChecksJudged { generation, lines: run(&checks) });
+            if let Some(run) = checks {
+                self.dispatch(Action::ChecksJudged { generation, lines: run.run() });
             }
             return;
         }
@@ -2510,8 +2507,8 @@ impl App {
                 let tree = tree.await.ok().flatten().map(Box::new);
                 let _ = tx.send(Action::PrettyParsed { generation, tree });
             }
-            if let Some((checks, run)) = checks {
-                let lines = crate::http::judge(checks, run).await;
+            if let Some(run) = checks {
+                let lines = crate::http::judge(run).await;
                 let _ = tx.send(Action::ChecksJudged { generation, lines });
             }
         });
@@ -5479,8 +5476,7 @@ impl App {
                 // dropped when it ends. A check that never ends keeps its
                 // thread, as on main after Esc and a re-send, until #310's
                 // time limit (section 7, detail 4).
-                let job = (state == CheckState::Judging)
-                    .then(|| -> CheckJob { (checks, Box::new(data.check_run())) });
+                let job = (state == CheckState::Judging).then(|| data.check_run(checks));
                 if !self.session.arrived(generation, data, state) {
                     return false;
                 }

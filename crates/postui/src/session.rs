@@ -278,12 +278,14 @@ impl Session {
     /// (a new send replaced it) the lines are dropped. Whether the
     /// response on screen took them: only then is there anything to draw.
     pub fn checks_judged(&mut self, generation: u64, lines: Vec<(bool, String)>) -> bool {
-        let on_screen = self.response.is_from(generation);
-        let mut slots = std::iter::once(&mut self.response).chain(self.cache.values_mut());
-        if let Some(response) = slots.find(|r| r.is_from(generation)) {
-            response.set_checks(CheckState::Judged(lines));
+        if self.response.is_from(generation) {
+            self.response.set_checks(CheckState::Judged(lines));
+            return true;
         }
-        on_screen
+        if let Some(cached) = self.cache.values_mut().find(|r| r.is_from(generation)) {
+            cached.set_checks(CheckState::Judged(lines));
+        }
+        false
     }
 
     /// Forgets everything — cache, screen, in-flight — for a project
