@@ -439,11 +439,10 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
 
 /// Fills `report` from `raw`: the response, the request's `checks` run over
 /// it (each jq check stopped at the project's limit), the jq results (also
-/// stopped at it), the
-/// `-o` file, all masked with the session's mask. A file that can't be
-/// written is the report's `error`, with the response shown as if there
-/// were no `-o`. The body takes the form the report will print in: text,
-/// or with `json` parsed when it parses.
+/// stopped at it), the `-o` file, all masked with the session's mask. A
+/// file that can't be written is the report's `error`, with the response
+/// shown as if there were no `-o`. The body takes the form the report will
+/// print in: text, or with `json` parsed when it parses.
 fn record(
     report: &mut RunReport,
     s: &Session,

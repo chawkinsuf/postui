@@ -428,7 +428,7 @@ pub fn run(
 }
 
 /// [`run`], refused past `cap_bytes` of output.
-pub fn run_with_cap(
+fn run_with_cap(
     code: &str,
     doc: &JqDocument,
     cap_bytes: usize,

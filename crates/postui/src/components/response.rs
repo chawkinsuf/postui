@@ -226,16 +226,36 @@ impl JqMenu {
     }
 }
 
+/// The code a jq run, or a key lookup, was for, and the limit it was
+/// stopped at, if it was (#308). A stopped one is kept like any result, so
+/// it isn't run again on every update.
+struct JqRanFor {
+    code: String,
+    stopped_at: Option<Duration>,
+}
+
+impl JqRanFor {
+    /// For `code`, not stopped (yet).
+    fn new(code: String) -> Self {
+        Self { code, stopped_at: None }
+    }
+
+    /// Whether this stands for `code` under `limit`: one that ended stands
+    /// under any limit, one stopped at a limit only under that limit. A
+    /// lower limit runs it again too, so the error shown names the limit in
+    /// force.
+    fn stands_for(&self, code: &str, limit: Duration) -> bool {
+        self.code == code && self.stopped_at.is_none_or(|l| l == limit)
+    }
+}
+
 /// The bar's completion state: the candidates for the caret's position
 /// and the keys they were built from. See the completion spec.
 #[derive(Default)]
 pub struct JqCompletion {
-    /// The context expression `cached_keys` were fetched for, and the
-    /// limit the fetch was stopped at, if it was (#308). A stopped fetch's
-    /// keys, those found before the stop, are kept like any others, so it
-    /// isn't run again on every update; under another limit it is fetched
-    /// again.
-    cached_expr: Option<(String, Option<Duration>)>,
+    /// The context expression `cached_keys` were fetched for. A stopped
+    /// fetch's keys are those found before the stop.
+    cached_expr: Option<JqRanFor>,
     cached_keys: Vec<String>,
     /// What the caret is typing; `None` when nothing is offered there.
     ctx: Option<Context>,
@@ -260,13 +280,9 @@ impl JqCompletion {
         self.pending.as_ref().map(|(s, _)| *s)
     }
 
-    /// Whether the cached keys are for `expr` and still stand under
-    /// `limit`: a fetch that ended stands under any limit, one stopped at
-    /// a limit only under that limit.
+    /// Whether the cached keys are for `expr` and still stand under `limit`.
     fn cached_for(&self, expr: &str, limit: Duration) -> bool {
-        self.cached_expr
-            .as_ref()
-            .is_some_and(|(e, stopped)| e == expr && stopped.is_none_or(|l| l == limit))
+        self.cached_expr.as_ref().is_some_and(|c| c.stands_for(expr, limit))
     }
 
     fn step(&mut self, forward: bool) {
@@ -864,11 +880,8 @@ pub struct ReadyView {
     /// this over `tree` while it's set.
     jq_tree: Option<JsonTree>,
     /// The code `jq_tree` (or `Response::jq`'s error) reflects — `None`
-    /// before any filter has run, `Some("")` for an explicitly cleared one —
-    /// and the limit its run was stopped at, if it was (#308). A stopped
-    /// run is kept like any result, so it isn't run again on every update;
-    /// under another limit it runs again.
-    jq_applied: Option<(String, Option<Duration>)>,
+    /// before any filter has run, `Some("")` for an explicitly cleared one.
+    jq_applied: Option<JqRanFor>,
     /// The code `jq_tree` is the output of — what the structural verbs
     /// compose onto, since the tree on screen is what the user clicked.
     /// `None` while the body tree shows (no filter, or a filter with
@@ -3534,14 +3547,13 @@ impl Response {
             self.jq.pending = None;
             return None;
         }
-        if view
-            .jq_applied
-            .as_ref()
-            .is_some_and(|(c, stopped)| c == code && stopped.is_none_or(|l| l == limit))
-        {
+        // A run still going is awaited, at whatever limit it started with,
+        // and judged when it lands: nothing cancels it, so starting another
+        // would leave two busy.
+        if view.jq_applied.as_ref().is_some_and(|a| a.stands_for(code, limit)) {
             return None;
         }
-        let applied = Some((code.to_string(), None));
+        let applied = Some(JqRanFor::new(code.to_string()));
         // A new filter supersedes the run in flight, whether or not it
         // starts one of its own: an error or a cleared bar must not be
         // overwritten by the earlier filter's result.
@@ -3716,7 +3728,7 @@ impl Response {
             // On the UI thread, as the bar's inline run (`apply_jq`).
             let found = complete::keys_at(&expr, &doc, limit, None);
             c.cached_keys = found.keys;
-            c.cached_expr = Some((expr, found.stopped_at));
+            c.cached_expr = Some(JqRanFor { code: expr, stopped_at: found.stopped_at });
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
             c.fall_back_to_closer(&text);
             return None;
@@ -3768,9 +3780,9 @@ impl Response {
         }
         let c = &mut self.jq.completion;
         c.cached_keys = keys.keys;
-        c.cached_expr = Some((input_expr, keys.stopped_at));
+        c.cached_expr = Some(JqRanFor { code: input_expr, stopped_at: keys.stopped_at });
         if let Some(ctx) = &c.ctx
-            && ctx.input_expr.as_deref() == c.cached_expr.as_ref().map(|(e, _)| e.as_str())
+            && ctx.input_expr.as_deref() == c.cached_expr.as_ref().map(|e| e.code.as_str())
         {
             c.candidates = complete::candidates(ctx, &c.cached_keys);
             let text = self.jq.input.text().to_string();
@@ -3889,7 +3901,7 @@ impl Response {
                     Some(tree) => {
                         view.jq_outputs = outputs.len();
                         view.set_jq_tree(Some(*tree));
-                        view.jq_tree_code = view.jq_applied.as_ref().map(|(c, _)| c.clone());
+                        view.jq_tree_code = view.jq_applied.as_ref().map(|a| a.code.clone());
                         self.jq.error = error;
                         self.jq.stale = false;
                         self.jq.note = None;
@@ -3908,8 +3920,8 @@ impl Response {
                 }
             }
             Err(e) => {
-                if let Some((_, stopped)) = view.jq_applied.as_mut() {
-                    *stopped = e.stopped_at();
+                if let Some(applied) = view.jq_applied.as_mut() {
+                    applied.stopped_at = e.stopped_at();
                 }
                 self.jq.error = Some(e);
                 self.jq.stale = true;
