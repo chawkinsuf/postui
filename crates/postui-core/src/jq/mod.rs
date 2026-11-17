@@ -67,6 +67,8 @@ impl Stop<'_> {
     fn tick(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         if self.stopped.load(Relaxed) || self.quit.is_some_and(|quit| quit.load(Relaxed)) {
+            // A quit stop reports as the limit's: nothing reads a run's
+            // result after a quit.
             std::panic::resume_unwind(Box::new(Stopped(self.limit)));
         }
     }
