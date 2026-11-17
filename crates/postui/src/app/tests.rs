@@ -27105,6 +27105,72 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
     assert_eq!(keys.stopped_at, None);
 }
 
+/// #318: a key lookup started on request A lands after a switch to B,
+/// whose own lookup has the same number. B's lookup keeps waiting, and its
+/// keys land when it ends. The lookups run on the app's own paths and their
+/// results come back through its channel; the test's runtime runs them
+/// only while it waits, so it can land A's result before B's.
+#[tokio::test]
+async fn a_key_lookup_from_a_request_left_behind_leaves_the_open_ones_alone() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
+    // Each request gets a response from its own send, then a `.` typed in
+    // its bar: a key lookup on the pool, left outstanding.
+    let lookup = |app: &mut App| {
+        app.session.send_generation += 1;
+        ready_response(app, JQ_BODY);
+        app.focus = PaneId::Response;
+        app.update(Action::OpenJqBar);
+        app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        let pending = app.session.response.jq_bar().completion.pending();
+        pending.expect("a lookup on the pool")
+    };
+    app.update(Action::ForceOpenRequest("main/a".into()));
+    let a = lookup(&mut app);
+    app.update(Action::OpenRequest("main/b".into()));
+    let b = lookup(&mut app);
+    assert_ne!(a.0, b.0, "two sends");
+    assert_eq!(a.1, b.1, "the two responses' numbers meet");
+
+    // Run the pool work; land everything but B's lookup, A's included.
+    let (mut held, mut a_landed) = (None, false);
+    for _ in 0..400 {
+        while let Ok(action) = rx.try_recv() {
+            match action {
+                Action::JqCompleteFinished { generation, .. } if generation == b.0 => {
+                    held = Some(action);
+                }
+                other => {
+                    if let Action::JqCompleteFinished { generation, .. } = &other {
+                        a_landed |= *generation == a.0;
+                    }
+                    app.update(other);
+                }
+            }
+        }
+        if held.is_some() && a_landed && app.session.response.jq_bar().pending.is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(a_landed, "A's lookup ended and landed");
+    let held = held.expect("B's lookup ended");
+    assert_eq!(
+        app.session.response.jq_bar().completion.pending(),
+        Some(b),
+        "B still waits on its lookup"
+    );
+    assert_eq!(app.session.response.jq_ghost(), None);
+    app.update(held);
+    assert_eq!(app.session.response.jq_bar().completion.pending(), None);
+    assert_eq!(app.session.response.jq_ghost(), Some("data"), "B's keys land");
+}
+
 /// #308 spec B1, B6: with the project's `jq_limit_ms` at 50, a filter that
 /// never ends, run on the pool over a big body, fails with the limit's
 /// error under the bar, and the run's parse of the body still reaches the
