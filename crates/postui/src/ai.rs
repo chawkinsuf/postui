@@ -60,7 +60,11 @@ fn shell_words(cmd: &str) -> Vec<&str> {
     words
 }
 
-/// `NAME=…` as a shell reads it: an identifier, then `=`.
+/// `NAME=…` as a shell reads it: an identifier, then `=`. `env`, which
+/// runs the command, takes any leading word with `=` as a setting; the two
+/// differ for a word whose part before `=` is not an identifier, such as
+/// a program path with `=` in it. That is left unhandled (the #314
+/// paragraph of the jq-response-filter spec).
 fn is_assignment(word: &str) -> bool {
     word.split_once('=').is_some_and(|(name, _)| {
         !name.is_empty()
@@ -194,7 +198,10 @@ pub async fn run_command(
         .map(|_| ());
     // Waited on only once out of the run, so `kill` never signals a pid
     // that has been reaped and may belong to another process by then.
-    // From here, dropping this future ends the command (`kill_on_drop`).
+    // From here, only dropping this future ends the command
+    // (`kill_on_drop`), and a quit doesn't wait for that: a command that
+    // has closed both streams and keeps running can outlive a quit, a cost
+    // the #314 paragraph of the jq-response-filter spec accepts.
     let RunState::Running(mut child) = std::mem::replace(&mut *run.state(), RunState::Over) else {
         return Err("cancelled".into());
     };

@@ -29043,9 +29043,8 @@ async fn a_send_ends_the_ai_request() {
     assert!(app.session.response.jq_bar().ai_asking.is_none());
 }
 
-/// Esc, and a quit (the app dropped, before the runtime would drop the
-/// task), kill the command itself, not only the `sh` that started it
-/// (#314).
+/// Esc, and a quit (the app dropped, while the task may never be), kill
+/// the command itself, not only the `sh` that started it (#314).
 #[tokio::test]
 async fn cancelling_or_quitting_kills_the_ai_command() {
     let ps = |field: &str, pid: u32| {
@@ -29082,6 +29081,9 @@ async fn cancelling_or_quitting_kills_the_ai_command() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         let pid = pid.unwrap_or_else(|| panic!("quit {quit}: the command started as sleep"));
+        // Held as the task holds it when a quit leaves the task undropped,
+        // so the command's `kill_on_drop` can't end it here.
+        let _run = std::sync::Arc::clone(&app.ai_task.as_ref().unwrap().run);
         if quit {
             drop(app);
         } else {
