@@ -82,6 +82,9 @@ impl Session {
         // re-applies the filter — as a fresh run — instead of trusting a
         // filter that was only ever started, never finished.
         outgoing.drop_pending_jq();
+        // The incoming response leaves `warm` before the outgoing one is
+        // pushed, so the shed below never picks the one being opened.
+        self.warm.retain(|s| s != open);
         // An Empty response carries nothing worth restoring; keeping the
         // cache to requests that actually have a result bounds its size to
         // the requests used this session.
@@ -100,7 +103,6 @@ impl Session {
                 }
             }
         }
-        self.warm.retain(|s| s != open);
         self.response = self.cache.remove(open).unwrap_or_default();
         self.response.drop_pending_jq();
         self.response.collapsed = collapsed;
@@ -397,6 +399,38 @@ mod tests {
         assert_eq!(s.response.take_reparse(), None, "handed out once");
         assert!(s.response.attach_tree(generation, JsonTree::parse(&body)));
         assert!(s.response.view().unwrap().tree.is_some(), "the tree is back");
+    }
+
+    /// #321: the response being opened is never the one shed on its way in.
+    #[test]
+    fn going_straight_back_to_the_oldest_warm_response_keeps_its_tree() {
+        use crate::components::json_tree::JsonTree;
+        use crate::components::response::SYNC_PRETTY_BYTES;
+        let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+        let mut s = Session::default();
+        for i in 1..=KEEP_WARM + 1 {
+            open(&mut s, &format!("big{i}"));
+            let body = big(i);
+            s.response.set_state(ResponseState::Ready(data(&body)), i as u64);
+            assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
+        }
+        // Straight from the newest back to the oldest of the last few.
+        open(&mut s, "big1");
+        let view = s.response.view().unwrap();
+        assert!(view.tree.is_some() && !view.parsing, "big1 was warm: no re-parse");
+        assert_eq!(s.response.take_reparse(), None);
+        // The bound holds: the one on screen plus KEEP_WARM warm.
+        let has_tree = |s: &Session, slug: &str| {
+            s.cache[&Some(slug.to_string())].view().is_some_and(|v| v.tree.is_some())
+        };
+        for i in 2..=KEEP_WARM + 1 {
+            assert!(has_tree(&s, &format!("big{i}")), "big{i} stays warm");
+        }
+        open(&mut s, "elsewhere");
+        assert!(!has_tree(&s, "big2"), "pushing big1 past KEEP_WARM sheds the oldest");
+        for slug in ["big3", "big4", "big1"] {
+            assert!(has_tree(&s, slug), "{slug} stays warm");
+        }
     }
 
     #[test]

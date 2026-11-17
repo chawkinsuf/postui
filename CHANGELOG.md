@@ -73,6 +73,8 @@ change the project file format.
   it used to clear.
 - A large response opened again after visiting three other large ones keeps
   a selection made on Raw or Headers.
+- Going straight back to the first of four large responses opens it at
+  once, Tree tab as it was, instead of loading it again.
 
 ## [0.4.1] - 2026-11-13
 
