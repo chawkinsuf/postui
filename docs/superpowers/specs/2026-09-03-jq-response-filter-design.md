@@ -312,38 +312,50 @@ generation and a request counter. The bar shows the spinner and `asking…`;
 while a request is pending `Esc` in the bar cancels it (kills the child)
 instead of blurring, and a stale reply is dropped.
 
-2026-11-17 (#314): the command runs as `sh -c "exec <ai_cmd>"`, so the
-shell becomes the command and the child the app kills (SIGKILL) is the
-command itself, not a `sh` that forked it. Every way a request ends early
-kills it: Esc, a new request, its view leaving the screen, and quitting
-the app, which kills it from the UI thread before the runtime is shut
-down (a quit doesn't wait for the runtime to drop its tasks). The command
-stays in the app's process group, so a closed terminal window, Ctrl+C and
-a SIGTERM to the group reach it as they reach the app. The user asked for
+2026-11-17 (#314): the command runs as `sh -c "exec env <ai_cmd>"`. The
+shell becomes `env`, which takes `ai_cmd`'s leading `NAME=value` words as
+its settings and becomes the program in turn, so the child the app kills
+(SIGKILL) is the command itself, not a `sh` that forked it. Every way a
+request ends early kills it: Esc, a new request, its view leaving the
+screen, and quitting the app, which kills it from the UI thread before
+the runtime is shut down (a quit doesn't wait for the runtime to drop its
+tasks). The command stays in the app's process group, so a closed
+terminal window, Ctrl+C and a SIGTERM to the group reach it as they reach
+the app. The user asked for
 something simpler than the process group this branch first built ("it
 seems complicated to just run an exec command. is there a simplier way?",
-you); `exec` was my proposal, and the user agreed (mine (approved)). It
-replaces the process group and the picks of #314's comments 1440 and 1444
-(a hangup handler, a command that reads the terminal stopped until Esc),
-and the question of comment 1450. Its costs, accepted:
+you); `sh -c "exec <ai_cmd>"` was my proposal, and the user agreed (mine
+(approved)). It replaces the process group and the picks of #314's
+comments 1440 and 1444 (a hangup handler, a command that reads the
+terminal stopped until Esc), and the question of comment 1450. Review
+rounds then moved it to `exec env`, so that a leading `NAME=value`
+setting still works, and the user kept `env` once round 3 had named its
+costs ("whats wrong with using env so the same thing works everywhere?",
+then "yes keep env, go ahead", you). The app does not parse `ai_cmd`:
+what a list, a pipeline or a setting does is documented, not refused or
+rewritten. The costs, accepted and left unhandled:
 
-- `ai_cmd` must be a single command: no `;`, `&&`, `||` or pipes. A
-  wrapper script that ends in `exec <command>` covers those.
-- Helper processes the command itself forks are not killed by Esc or a
-  quit.
+- `ai_cmd` is a single command. Nothing after `;` or `&&` runs, Esc
+  doesn't stop a pipeline (only its first command gets `exec env`), and a
+  command that starts with a shell builtin (`cd x && llm`, `exec llm`)
+  fails. A wrapper script that ends in `exec <command>` covers these.
+- A setting's value is expanded as a command word, not as a shell
+  assignment: an unquoted `$VAR` or `$(…)` in it is split at spaces, and a
+  `~` after `=` or `:` is not expanded. The docs say to quote it and to
+  use `$HOME`.
+- A program path that contains `=` (`/opt/tools=v2/llm`) is read by `env`
+  as a setting. With no program left, `env` prints the environment, which
+  comes back as the reply. Left unhandled (mine (approved), comment 1458).
+- Esc and a quit kill only the program `ai_cmd` names. Helper processes
+  it forks, and the tool a launcher (`timeout`, `npx`, `uvx`) starts, keep
+  running. The docs say to prefer the tool itself.
+- Once the command has closed both its output and its error stream, the
+  app waits for it to exit, and from then on a quit no longer kills it
+  (Esc still does). A command that closes both and keeps running outlives
+  the app (comment 1457, question 2: A, mine (approved)).
 
-Review round 2 of the `exec` design (mine): the app does not parse
-`ai_cmd`. Round 1 had put `exec` after the leading assignments and
-refused lists and pipes, which took two shell scanners, and round 2 found
-inputs each of them misread. Instead the command runs as `sh -c "exec env
-<ai_cmd>"`: `env` takes the leading `NAME=value` words as its settings
-and execs the program, so `KEY=… llm` still works and is still the
-process the app kills. What a list or a pipeline does is documented, not
-refused: nothing after `;` or `&&` runs, and Esc doesn't stop a pipeline.
-A launcher (`timeout`, `npx`, `uvx`) that forks the tool is the second
-cost above; the docs say to prefer the tool itself. The kill stays a
-SIGKILL at once: a SIGTERM first would need a later SIGKILL for a command
-that ignores it, which a quit can't wait for.
+The kill is a SIGKILL at once: a SIGTERM first would need a later SIGKILL
+for a command that ignores it, which a quit can't wait for.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the

@@ -165,7 +165,11 @@ pub async fn run_command(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| e.to_string())?;
-    let (pipe, out, err) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+    let pipe = child.stdin.take();
+    // Both are piped above, so both are there.
+    let (Some(mut out), Some(mut err)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err("the command's output was not piped".into());
+    };
     {
         let mut state = run.state();
         if matches!(*state, RunState::Over) {
@@ -186,13 +190,8 @@ pub async fn run_command(
         Ok::<_, std::io::Error>(())
     };
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-    let read = match (out, err) {
-        (Some(mut out), Some(mut err)) => {
-            tokio::try_join!(write, out.read_to_end(&mut stdout), err.read_to_end(&mut stderr))
-                .map(|_| ())
-        }
-        _ => write.await,
-    };
+    let read = tokio::try_join!(write, out.read_to_end(&mut stdout), err.read_to_end(&mut stderr))
+        .map(|_| ());
     // Waited on only once out of the run, so `kill` never signals a pid
     // that has been reaped and may belong to another process by then.
     // From here, dropping this future ends the command (`kill_on_drop`).

@@ -626,11 +626,14 @@ pub fn config_seed() -> String {
 # The spaces in one indent level, from 1 to {}.
 # indent_width = {}
 
-# The command \"Describe a filter…\" pipes its prompt into. One command,
-# which may start with NAME=value settings. It is run with exec so Esc
-# stops it: nothing after ; or && runs, and Esc doesn't stop a pipeline.
-# For more than one command, use a script that ends with exec and the
-# command.
+# The command \"Describe a filter…\" pipes its prompt into. It is run as
+# exec env <ai_cmd> so Esc stops it, so it must be one command: nothing
+# after ; or && runs, Esc doesn't stop a pipeline, and a shell builtin
+# (cd, exec) at the start fails. For more than one command, use a script
+# that ends with exec and the command. Esc doesn't stop a tool that a
+# launcher such as timeout or npx starts, so name the AI tool itself.
+# NAME=value settings at the start are read by env: quote a $VAR or $(…)
+# in a value, or it is split at spaces, and use $HOME rather than ~.
 # ai_cmd = {:?}
 
 # Set once by the AI prompt's \"Always send\" choice. false asks again.
