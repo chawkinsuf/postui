@@ -511,7 +511,8 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
     };
     let started = Instant::now();
     app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
-    let (lines, checks) = (data.check_lines(checks), checks.clone());
+    let limit = app.meta().jq_check_limit();
+    let (lines, checks) = (data.check_run(checks.clone(), limit).run(), checks.clone());
     app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     draw(app);
     (generation, lines)
@@ -751,6 +752,52 @@ async fn a_large_bodys_tree_lands_before_its_checks_run() {
     assert!(app.session.response.view().unwrap().tree.is_some(), "built as it arrived");
     assert_eq!(next_job(&mut app).await, (Job::Lines(generation), true));
     assert_eq!(checks_tab(&mut app), as_shown(&lines));
+}
+
+/// #310 spec L1, L7: a jq check that never ends is stopped at the
+/// project's limit, and the Checks tab leaves `checking…` for its failed
+/// line, with the request's other check judged after it.
+#[tokio::test]
+async fn a_check_that_never_ends_fails_at_the_projects_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    postui_core::fixtures::init_project(root, Some("limit")).unwrap();
+    std::fs::write(root.join("project.toml"), "jq_check_limit_ms = 50\n").unwrap();
+    postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
+        .unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, root.to_path_buf());
+    app._test_rx = Some(rx);
+    app._test_dir = Some(dir);
+    let toml = "url = \"http://x.test/\"\n[checks]\njq = ['last(range(1e18)) > 0', '.a']\n";
+    let req = HttpRequest::from_toml_str(toml).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/probe", &req).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/probe".into()));
+    assert_eq!(app.meta().jq_check_limit(), std::time::Duration::from_millis(50));
+    let sent = checks(&app);
+    let slug = app.editor.slug.clone();
+    let generation = app.session.begin_send(&slug);
+    let (started, task) = (Instant::now(), tokio::spawn(async {}));
+    app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
+    let data = crate::http::ResponseData {
+        status: 200,
+        url: "http://x.test/".into(),
+        headers: vec![],
+        sent_headers: vec![],
+        body: r#"{"a":true}"#.to_string().into(),
+        ttfb: std::time::Duration::from_millis(5),
+        elapsed: std::time::Duration::from_millis(9),
+        size: 10,
+        content_type: None,
+    };
+    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks: sent });
+    assert_eq!(checks_tab(&mut app), "checking\u{2026}");
+    assert_eq!(next_job(&mut app).await, (Job::Lines(generation), true));
+    assert_eq!(
+        checks_tab(&mut app),
+        "\u{2717} last(range(1e18)) > 0: stopped at the 50 ms limit\n\u{2713} .a"
+    );
 }
 
 /// Outside a runtime (`App::new_for_test` in a plain test) a response's

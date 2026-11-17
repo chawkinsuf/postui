@@ -118,6 +118,9 @@ the response shows or after (#312 review rounds 1 and 2). The cost: the
 body is read again when the jq bar is used on it. A jq check has no
 time limit yet, so one that never ends leaves the tab on `checking…`
 and keeps its thread and its read of the body: that limit is #310.
+(2026-11-17, #310: each jq check now stops at the project's
+`jq_check_limit_ms`, 1 s by default, and fails with its line, so the
+tab leaves `checking…` and the thread and the body are let go.)
 
 **The response tab.** `ViewMode::Checks`, offered unless the view's
 `checks` (`CheckState`) is `None`. That one field is all the view keeps
@@ -370,7 +373,7 @@ Sources are copied from the ticket: `you` is the user's own words,
 | A5 | The result belongs to its response. It lands there when another request is on screen and is there on the way back. A new send replaces the response, and the earlier send's result is dropped. | mine |
 | A6 | Still judged once, with the checks as they were at the send. Editing a check re-judges nothing. | P5, Q8 |
 | A7 | While the tab says `checking…`, search, copy, save and open in the editor act on that one line, as they act on whatever lines the tab shows (P7). | mine |
-| A8 | A check that never finishes leaves the Checks tab on `checking…` and the rest of the response usable. #310 gives each check a time limit. For a large body the Tree is parsed before the checks start, so a check never holds it back (2026-11-17, detail 3). | mine; the Tree part: you, "I'd rather the tree not wait" |
+| A8 | A check that never finishes leaves the Checks tab on `checking…` and the rest of the response usable. #310 gives each check a time limit (2026-11-17: `jq_check_limit_ms`, 1 s by default; past it the check fails with `<filter>: stopped at the <N> ms limit` and the tab fills in). For a large body the Tree is parsed before the checks start, so a check never holds it back (2026-11-17, detail 3). | mine; the Tree part: you, "I'd rather the tree not wait" |
 | A9 | Checks that crash give the one failed line they gave: `✗ the checks did not run: …`. | choice 14 |
 
 The ticket's "Not in this task" is binding: no time limit or cancel for
@@ -551,3 +554,13 @@ lines find it by its generation as above.
    corrected check on `checking…`, and a job that gives up between its
    checks is still stuck in the one that never ends. Ending a run is
    #310's (review rounds 1 and 2).
+
+   **2026-11-17, #310.** Each jq check now ends at the project's
+   `jq_check_limit_ms` (1 s by default; the user: "Yes I already
+   confirmed 1 second."), stopped inside the run and failed with
+   `<filter>: stopped at the <N> ms limit`. So a job ends about the
+   limit after each of its jq checks starts: a re-send leaves about that
+   long a job, and a quit waits about that long. A huge allocation in one
+   native step is still not stopped, and a filter that overflows the
+   stack still ends the process (#282). See
+   `2026-11-17-jq-check-limit-design.md`.

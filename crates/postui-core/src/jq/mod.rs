@@ -28,12 +28,66 @@ impl DataT for Data {
 struct Globals<'a> {
     lut: &'a Lut<Data>,
     inputs: Inputs<'a, Val>,
+    stop: &'a Stop,
 }
 
+/// jaq calls this on every term it evaluates (`Id::run`), so a filter that
+/// loops through jq definitions passes here on each step, output or not:
+/// the point where a run past its limit is stopped (#310 spec, §1).
 impl<'a> HasLut<'a, Data> for &'a Globals<'a> {
     fn lut(&self) -> &'a Lut<Data> {
+        self.stop.tick();
         self.lut
     }
+}
+
+/// Whether a run is stopped (#310). [`Stop::tick`] is called on each step
+/// of the run; once the flag is set it unwinds out of jaq with a
+/// [`Stopped`], which [`for_each_output`] catches. A run with no limit has
+/// a flag nothing sets.
+#[derive(Default)]
+struct Stop {
+    stopped: std::sync::atomic::AtomicBool,
+    /// The limit that sets the flag, for the message.
+    limit: std::time::Duration,
+}
+
+/// What a stopped run unwinds with. `resume_unwind` skips the panic hook,
+/// so nothing is printed (the app's hook would print on the TUI's screen),
+/// and a filter's `try`, `?` and `//` can't catch it, since it is not a
+/// jaq error.
+struct Stopped(std::time::Duration);
+
+impl Stop {
+    /// One step of the run: unwinds with [`Stopped`] once the flag is set.
+    fn tick(&self) {
+        if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            std::panic::resume_unwind(Box::new(Stopped(self.limit)));
+        }
+    }
+}
+
+/// Runs `run` with a [`Stop`] whose flag a timer thread sets once `limit`
+/// has passed, unless `run` ends first. The run reads a flag on each step
+/// rather than the clock, so a run whose steps are each slow still stops
+/// one step past the limit. Costs a thread for each run. The limit is
+/// wall-clock time, so a run slowed by other work on the machine counts
+/// that time too.
+fn with_limit<T>(limit: std::time::Duration, run: impl FnOnce(&Stop) -> T) -> T {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    let stop = Stop { limit, ..Stop::default() };
+    let (ended, wait) = channel::<()>();
+    std::thread::scope(|scope| {
+        let stop = &stop;
+        scope.spawn(move || {
+            if let Err(RecvTimeoutError::Timeout) = wait.recv_timeout(limit) {
+                stop.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        // Dropped as `run` returns or unwinds, which ends the timer's wait.
+        let _ended = ended;
+        run(stop)
+    })
 }
 
 impl<'a> HasInputs<'a, Val> for &'a Globals<'a> {
@@ -244,9 +298,45 @@ fn defs() -> impl Iterator<Item = jaq_core::load::parse::Def<&'static str>> {
     jaq_core::defs().chain(jaq_std::defs()).chain(jaq_json::defs())
 }
 
+/// jaq's native filters, with its `range/3` replaced by [`range`].
 fn funs() -> impl Iterator<Item = jaq_core::native::Fun<Data>> {
     let inputs = jaq_std::input::funs().into_vec().into_iter().map(jaq_core::native::run);
-    jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(inputs).chain(jaq_json::funs())
+    let core =
+        jaq_core::funs::<Data>().filter(|(name, args, _)| (*name, args.len()) != ("range", 3));
+    let range = jaq_core::native::run::<Data>(("range", jaq_core::native::v(3), range));
+    core.chain([range]).chain(jaq_std::funs()).chain(inputs).chain(jaq_json::funs())
+}
+
+/// `range($from; $to; $by)`, jaq's own (`jaq-core-3.1.1/src/funs.rs`,
+/// `range`), with a [`Stop::tick`] on each value: jaq's is a plain Rust
+/// loop that never passes through `lut()`, so `last(range(1e18))` would
+/// not be stopped (#310 spec, §1). `range/1` and `range/2` are defined
+/// on top of it. A copy rather than a wrapper around jaq's: jaq-core keeps
+/// its `range` and a native filter's function private, so there is
+/// nothing to call.
+fn range<'a>(mut cv: jaq_core::Cv<'a, Data>) -> jaq_core::ValXs<'a, Val> {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let by = cv.0.pop_var();
+    let to = cv.0.pop_var();
+    let mut from: jaq_core::ValX<'a, Val> = Ok(cv.0.pop_var());
+    let stop = cv.0.data().stop;
+    let cmp = by.partial_cmp(&Val::from(0usize)).unwrap_or(Equal);
+    Box::new(std::iter::from_fn(move || {
+        stop.tick();
+        match from.clone() {
+            Ok(x) => match cmp {
+                Greater => x < to,
+                Less => x > to,
+                Equal => x != to,
+            }
+            .then(|| std::mem::replace(&mut from, (x + by.clone()).map_err(jaq_core::Exn::from))),
+            e @ Err(_) => {
+                // Nothing after the error.
+                from = Ok(to.clone());
+                Some(e)
+            }
+        }
+    }))
 }
 
 /// Compiles `code` against a fresh arena and hands the compiled filter to
@@ -290,55 +380,74 @@ pub struct JqRun {
     pub error: Option<JqError>,
 }
 
-/// Runs `code` over `doc`. `Err` is for what fails the whole run: a filter
-/// that doesn't compile, or output past the cap. A filter error on a value
-/// is the run's [`JqRun::error`], beside the outputs.
+/// Runs `code` over `doc`, for as long as it takes. `Err` is for what
+/// fails the whole run: a filter that doesn't compile, or output past the
+/// cap. A filter error on a value is the run's [`JqRun::error`], beside
+/// the outputs.
 pub fn run(code: &str, doc: &JqDocument) -> Result<JqRun, JqError> {
     run_with_cap(code, doc, OUTPUT_CAP)
 }
 
+/// [`run`], stopped once `limit` has passed since the filter compiled
+/// (#310): the run fails whole with `stopped at the <N> ms limit`. One
+/// limit covers the whole run, every value of a stream body included, as
+/// one jq program runs over all its inputs. Checked between the filter's
+/// steps, so one native step already running (a huge allocation, a sort)
+/// finishes first.
+pub fn run_limited(
+    code: &str,
+    doc: &JqDocument,
+    limit: std::time::Duration,
+) -> Result<JqRun, JqError> {
+    with_compiled(code, |filter| with_limit(limit, |stop| collect(filter, doc, OUTPUT_CAP, stop)))
+}
+
 pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<JqRun, JqError> {
-    with_compiled(code, |filter| {
-        let mut outputs = Vec::new();
-        let mut total = 0usize;
-        let mut first = None;
-        let mut failed = 0usize;
-        for_each_output(filter, doc, |item| {
-            match item {
-                Ok(value) => {
-                    let text = value.to_string();
-                    total += text.len();
-                    if total > cap_bytes {
-                        return Err(JqError::Runtime {
-                            message: format!(
-                                "output too large to display (over {} bytes)",
-                                cap_bytes
-                            ),
-                        });
-                    }
-                    outputs.push(text);
+    with_compiled(code, |filter| collect(filter, doc, cap_bytes, &Stop::default()))
+}
+
+/// The [`JqRun`] of `filter` over `doc`, refused past `cap_bytes` of output.
+fn collect(
+    filter: &jaq_core::Filter<Data>,
+    doc: &JqDocument,
+    cap_bytes: usize,
+    stop: &Stop,
+) -> Result<JqRun, JqError> {
+    let mut outputs = Vec::new();
+    let mut total = 0usize;
+    let mut first = None;
+    let mut failed = 0usize;
+    for_each_output(filter, doc, stop, |item| {
+        match item {
+            Ok(value) => {
+                let text = value.to_string();
+                total += text.len();
+                if total > cap_bytes {
+                    return Err(JqError::Runtime {
+                        message: format!("output too large to display (over {} bytes)", cap_bytes),
+                    });
                 }
-                // `for_each_output` ends the value's run on its error, so
-                // each one is a value that failed. Every one has had its
-                // message formatted (jaq's holds the value), though only
-                // the first is kept: a filter failing on every line of a
-                // big stream formats the whole body, where the run used to
-                // stop at the first error. Accepted to keep the error
-                // handling simple (the user, #229); jq formats every error
-                // too.
-                Err(e) => {
-                    failed += 1;
-                    first.get_or_insert(e);
-                }
+                outputs.push(text);
             }
-            Ok(ControlFlow::Continue(()))
-        })?;
-        let error = first.map(|e| match failed {
-            1 => e,
-            n => JqError::Runtime { message: format!("first of {n} errors: {}", e.message()) },
-        });
-        Ok(JqRun { outputs, error })
-    })
+            // `for_each_output` ends the value's run on its error, so each
+            // one is a value that failed. Every one has had its message
+            // formatted (jaq's holds the value), though only the first is
+            // kept: a filter failing on every line of a big stream formats
+            // the whole body, where the run used to stop at the first
+            // error. Accepted to keep the error handling simple (the user,
+            // #229); jq formats every error too.
+            Err(e) => {
+                failed += 1;
+                first.get_or_insert(e);
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
+    let error = first.map(|e| match failed {
+        1 => e,
+        n => JqError::Runtime { message: format!("first of {n} errors: {}", e.message()) },
+    });
+    Ok(JqRun { outputs, error })
 }
 
 /// Runs `filter` over `doc` the way jq runs a program over its inputs:
@@ -349,31 +458,47 @@ pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<Jq
 /// (`Continue`) ends only that value's run, as in jq, and the run goes on
 /// with the next value: [`run`] and completion both do that, so one odd
 /// line in a stream hides neither the results nor the keys of the rest.
+///
+/// A run whose `stop` is set ends whole with its error (#310): the unwind
+/// from [`Stop::tick`] is caught here, and any other panic goes on.
 fn for_each_output(
     filter: &jaq_core::Filter<Data>,
     doc: &JqDocument,
+    stop: &Stop,
     mut each: impl FnMut(Result<Val, JqError>) -> Result<ControlFlow<()>, JqError>,
 ) -> Result<(), JqError> {
     let values = RcIter::new(doc.0.iter().cloned().map(Ok));
-    let globals = Globals { lut: &filter.lut, inputs: &values };
-    while let Some(Ok(input)) = (&values).next() {
-        for item in filter.id.run((Ctx::<Data>::new(&globals, Vars::new([])), input)) {
-            let failed = item.is_err();
-            let item = item.map_err(|exn| JqError::Runtime {
-                message: match exn.get_err() {
-                    Ok(err) => err.to_string(),
-                    Err(_) => "filter broke out of its loop".to_string(),
-                },
-            });
-            if each(item)?.is_break() {
-                return Ok(());
-            }
-            if failed {
-                break;
+    let globals = Globals { lut: &filter.lut, inputs: &values, stop };
+    let run = || {
+        while let Some(Ok(input)) = (&values).next() {
+            for item in filter.id.run((Ctx::<Data>::new(&globals, Vars::new([])), input)) {
+                let failed = item.is_err();
+                let item = item.map_err(|exn| JqError::Runtime {
+                    message: match exn.get_err() {
+                        Ok(err) => err.to_string(),
+                        Err(_) => "filter broke out of its loop".to_string(),
+                    },
+                });
+                if each(item)?.is_break() {
+                    return Ok(());
+                }
+                if failed {
+                    break;
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    };
+    // Nothing the run touched is used after an unwind: the error is the
+    // whole run's, as the output cap's is.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|payload| {
+        match payload.downcast::<Stopped>() {
+            Ok(stopped) => Err(JqError::Runtime {
+                message: format!("stopped at the {} ms limit", stopped.0.as_millis()),
+            }),
+            Err(other) => std::panic::resume_unwind(other),
+        }
+    })
 }
 
 fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
@@ -720,6 +845,130 @@ mod tests {
             panic!("expected a runtime error, got {err:?}");
         };
         assert!(message.contains("too large"), "message: {message}");
+    }
+
+    /// #310 spec L1, L6: a run that never ends is stopped at its limit,
+    /// whatever shape its loop has, and a filter's `try` doesn't catch it.
+    #[test]
+    fn a_run_that_never_ends_is_stopped_at_its_limit() {
+        let limit = std::time::Duration::from_millis(50);
+        let stream = JqDocument::parse(STREAM).unwrap();
+        for code in [
+            "last(range(1e18))",
+            "[range(1e10)]",
+            "[repeat(1)]",
+            "def f: f; f",
+            "until(false; .)",
+            "try (last(range(1e18))) catch true",
+            "(last(range(1e18)))? // true",
+            "reduce range(1e18) as $x (0; . + 1)",
+            "label $out | repeat(1) | select(false)",
+        ] {
+            for doc in [doc(), stream.clone()] {
+                let started = std::time::Instant::now();
+                let err = run_limited(code, &doc, limit).unwrap_err();
+                assert_eq!(err.message(), "stopped at the 50 ms limit", "{code}");
+                assert!(started.elapsed() < std::time::Duration::from_secs(5), "{code}");
+            }
+        }
+    }
+
+    /// #310 review round 1: a run whose steps are each slow (a long string
+    /// exploded and imploded on every pass, about 30 ms in a debug build)
+    /// is stopped near its limit too, not after a fixed number of its steps.
+    #[test]
+    fn a_run_of_slow_steps_is_stopped_near_its_limit() {
+        let limit = std::time::Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        let code = "\"x\" * 200000 | until(false; explode | implode)";
+        let err = run_limited(code, &doc(), limit).unwrap_err();
+        assert_eq!(err.message(), "stopped at the 50 ms limit");
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_millis(1000), "{took:?}");
+    }
+
+    /// The outputs of `code` over `doc` compiled with jaq's own natives, its
+    /// `range/3` included, for comparing postui's copy with it.
+    fn with_jaqs_range(code: &str, doc: &JqDocument) -> JqRun {
+        let arena = Arena::default();
+        let modules = Loader::new(defs()).load(&arena, File { code, path: () }).unwrap();
+        let inputs = jaq_std::input::funs().into_vec().into_iter().map(jaq_core::native::run);
+        let funs = jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(inputs);
+        let filter =
+            Compiler::default().with_funs(funs.chain(jaq_json::funs())).compile(modules).unwrap();
+        collect(&filter, doc, OUTPUT_CAP, &Stop::default()).unwrap()
+    }
+
+    /// `range`'s copy and the claim that no other native loops without
+    /// passing through `lut()` (#310 spec, §1) were checked against these
+    /// versions: an update has to check them again.
+    #[test]
+    fn the_jaq_crates_are_the_versions_range_was_checked_against() {
+        let lock = include_str!("../../../../Cargo.lock");
+        for (name, version) in [("jaq-core", "3.1.1"), ("jaq-std", "3.0.3"), ("jaq-json", "2.0.3")]
+        {
+            let entry = format!("name = \"{name}\"\nversion = \"{version}\"\n");
+            assert!(lock.contains(&entry), "{name} is no longer {version}");
+        }
+    }
+
+    /// #310 spec L6: postui's `range` gives what jaq's does.
+    #[test]
+    fn range_gives_what_jaqs_did() {
+        let limit = std::time::Duration::from_secs(60);
+        for (code, want) in [
+            ("[range(5)]", "[0,1,2,3,4]"),
+            ("[range(2; 8)]", "[2,3,4,5,6,7]"),
+            ("[range(0; 10; 3)]", "[0,3,6,9]"),
+            ("[range(5; 0; -2)]", "[5,3,1]"),
+            ("[range(0; 0)]", "[]"),
+            ("[range(3; 0)]", "[]"),
+            ("[limit(3; range(0; 1; 0))]", "[0,0,0]"),
+            ("[range(0.5; 3)]", "[0.5,1.5,2.5]"),
+            ("[range(1; 3) as $x | range($x)]", "[0,0,1]"),
+            ("[range(0, 1; 3, 4)]", "[0,1,2,0,1,2,3,1,2,1,2,3]"),
+        ] {
+            assert_eq!(outputs(code, &doc()), [want], "{code}");
+            assert_eq!(with_jaqs_range(code, &doc()).outputs, [want], "{code}");
+            let limited = run_limited(code, &doc(), limit).unwrap();
+            assert_eq!(limited, JqRun { outputs: vec![want.into()], error: None }, "{code}");
+        }
+        // A step that can't be added ends the range with its error, after
+        // the values before it.
+        let (code, one) = (".[] | range(0; 3; \"a\")", JqDocument::parse("[1]").unwrap());
+        let jaqs = with_jaqs_range(code, &one);
+        assert_eq!(jaqs.outputs, ["0"]);
+        assert!(jaqs.error.is_some(), "{jaqs:?}");
+        assert_eq!(run(code, &one).unwrap(), jaqs);
+        assert_eq!(run_limited(code, &one, limit).unwrap(), jaqs);
+    }
+
+    /// #310 spec L6: a filter that ends gives the same run under a limit.
+    #[test]
+    fn a_filter_that_ends_gives_the_same_run_under_a_limit() {
+        let limit = std::time::Duration::from_secs(60);
+        let stream = JqDocument::parse(STREAM).unwrap();
+        for (code, doc) in [
+            (".data.items[] | .id", doc()),
+            (r#".data.items | map(select(.status == "active")) | map(.name)"#, doc()),
+            (".data.total | .x", doc()),
+            (".a", stream.clone()),
+            ("[., inputs] | map(.a)", stream.clone()),
+            ("[limit(5000; repeat(1))] | length", doc()),
+        ] {
+            assert_eq!(run_limited(code, &doc, limit), run(code, &doc), "{code}");
+        }
+        assert!(run_limited(".a ==", &doc(), limit).unwrap_err().incomplete());
+    }
+
+    /// #310 spec L10: only `run_limited` has a limit; `run` goes on. The
+    /// filter runs 100 times the limit or more, so a late timer still stops it.
+    #[test]
+    fn run_has_no_limit() {
+        let code = "last(range(10000000))";
+        let err = run_limited(code, &doc(), std::time::Duration::from_millis(1)).unwrap_err();
+        assert_eq!(err.message(), "stopped at the 1 ms limit");
+        assert_eq!(outputs(code, &doc()), ["9999999"]);
     }
 
     #[test]

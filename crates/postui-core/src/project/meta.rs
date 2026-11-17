@@ -33,6 +33,23 @@ pub struct ProjectMeta {
     /// Per-environment settings, keyed by slug: `[environment.<slug>]`.
     #[serde(default)]
     pub environment: IndexMap<String, ItemSettings>,
+    /// How long each jq check in a request's `[checks]` may run, in
+    /// milliseconds (#310): [`Self::jq_check_limit`]. Nothing writes it.
+    #[serde(default)]
+    pub jq_check_limit_ms: Option<std::num::NonZeroU32>,
+}
+
+/// A jq check's limit when `project.toml` sets none (#310 spec L2).
+pub const DEFAULT_JQ_CHECK_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl ProjectMeta {
+    /// How long each jq check may run: `jq_check_limit_ms`, else
+    /// [`DEFAULT_JQ_CHECK_LIMIT`].
+    pub fn jq_check_limit(&self) -> std::time::Duration {
+        self.jq_check_limit_ms.map_or(DEFAULT_JQ_CHECK_LIMIT, |ms| {
+            std::time::Duration::from_millis(u64::from(ms.get()))
+        })
+    }
 }
 
 /// The settings a space or an environment carries in `project.toml`
@@ -416,5 +433,31 @@ mod tests {
         assert_eq!(st.space_open.get("accounts").map(String::as_str), Some("accounts/login"));
         assert!(!st.space_open.contains_key("auth"));
         assert_eq!(st.space_open.get("main").map(String::as_str), Some("main/a"));
+    }
+
+    fn meta(text: &str) -> Result<ProjectMeta, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    /// #310 spec L2, L5: a jq check's limit is `jq_check_limit_ms`, 1000 ms
+    /// when the key is absent.
+    #[test]
+    fn the_jq_check_limit_is_the_key_or_one_second() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(meta("").unwrap().jq_check_limit(), ms(1000));
+        assert_eq!(meta("name = \"x\"").unwrap().jq_check_limit(), ms(1000));
+        assert_eq!(meta("jq_check_limit_ms = 2500").unwrap().jq_check_limit(), ms(2500));
+        assert_eq!(meta("jq_check_limit_ms = 1").unwrap().jq_check_limit(), ms(1));
+        let max = meta("jq_check_limit_ms = 4294967295").unwrap().jq_check_limit();
+        assert_eq!(max, ms(u64::from(u32::MAX)));
+    }
+
+    /// #310 spec L9: a bad value is a bad `project.toml`, never the default.
+    #[test]
+    fn a_bad_jq_check_limit_does_not_parse() {
+        for bad in ["0", "-1", "1.5", "\"1000\"", "4294967296", "true"] {
+            let text = format!("jq_check_limit_ms = {bad}");
+            assert!(meta(&text).is_err(), "{text}");
+        }
     }
 }

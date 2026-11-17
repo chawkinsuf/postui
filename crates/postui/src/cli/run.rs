@@ -437,19 +437,21 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
 }
 
 /// Fills `report` from `raw`: the response, the request's `checks` run over
-/// it, the jq results, the `-o` file. A file that can't be written is the
-/// report's `error`, with the response shown as if there were no `-o`. The
-/// body takes the form the report will print in: text, or with `json`
-/// parsed when it parses.
+/// it (each jq check stopped at the project's limit), the jq results, the
+/// `-o` file, all masked with the session's mask. A file that can't be
+/// written is the report's `error`, with the response shown as if there
+/// were no `-o`. The body takes the form the report will print in: text,
+/// or with `json` parsed when it parses.
 fn record(
     report: &mut RunReport,
-    mask: &Mask,
+    s: &Session,
     raw: RawResponse,
     checks: &Checks,
     jq: Option<&str>,
     output: Option<&Path>,
     json: bool,
 ) {
+    let mask = &s.mask;
     // The body as text, decoded once and only when something reads it (a
     // byte-exact `-o` that succeeds never does).
     let decoded = OnceCell::new();
@@ -458,7 +460,8 @@ fn record(
     let parsed = OnceCell::new();
     let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
     let timing = Timing::of(raw.ttfb, raw.elapsed);
-    let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, doc);
+    let limit = s.project.meta().jq_check_limit();
+    let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, limit, doc);
     report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
         status: raw.status,
@@ -649,7 +652,7 @@ pub async fn run(
         return Ok(report);
     }
     match send_raw(s.clients.for_request(&request), &request).await {
-        Ok(raw) => record(&mut report, mask, raw, &read.checks, jq, output, g.json),
+        Ok(raw) => record(&mut report, &s, raw, &read.checks, jq, output, g.json),
         Err(message) => report.error = Some(mask.apply(&message)),
     }
     Ok(report)
@@ -848,7 +851,9 @@ mod tests {
         let timing = Timing::of(Duration::from_micros(40_999), Duration::from_micros(500_900));
         assert_eq!(timing, Timing { ttfb_ms: 40, elapsed_ms: 500 });
         let checks = Checks { max_elapsed_ms: Some(500), ..Checks::default() };
-        let outcomes = postui_core::checks::evaluate(&checks, 200, timing, || unreachable!());
+        let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+        let outcomes =
+            postui_core::checks::evaluate(&checks, 200, timing, limit, || unreachable!());
         assert_eq!(failure_lines(&shown(&outcomes, &Mask::none())).count(), 0);
     }
 }

@@ -152,12 +152,20 @@ impl SuiteResult {
     }
 }
 
-/// Runs `checks` over a response. Its jq filters run off the async loop:
-/// over a large body they would otherwise stall the live view's ticks and
-/// the other sends. Without a filter the body is never read.
-async fn evaluate(checks: Checks, status: u16, timing: Timing, body: Vec<u8>) -> Vec<Outcome> {
+/// Runs `checks` over a response, each jq filter stopped at `limit`. Its
+/// jq filters run off the async loop: over a large body they would
+/// otherwise stall the live view's ticks and the other sends. Without a
+/// filter the body is never read.
+async fn evaluate(
+    checks: Checks,
+    status: u16,
+    timing: Timing,
+    limit: Duration,
+    body: Vec<u8>,
+) -> Vec<Outcome> {
     let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
-    let run = move |checks: &Checks| postui_core::checks::evaluate(checks, status, timing, doc);
+    let run =
+        move |checks: &Checks| postui_core::checks::evaluate(checks, status, timing, limit, doc);
     // A panic in the checks is a bug: it surfaces as it would inline.
     run_checks(ChecksRun::new(checks, run))
         .await
@@ -268,6 +276,7 @@ pub async fn suite(
         total: n,
     };
     watch.begin(&plan);
+    let limit = s.project.meta().jq_check_limit();
 
     // What `run` would warn of for each request, in suite order: requests
     // are prepared in that order, whatever order they finish in.
@@ -333,7 +342,8 @@ pub async fn suite(
                             Ok(raw) => {
                                 let (status, size) = (raw.status, raw.bytes.len());
                                 let timing = Timing::of(raw.ttfb, raw.elapsed);
-                                let outcomes = evaluate(checks, status, timing, raw.bytes).await;
+                                let outcomes =
+                                    evaluate(checks, status, timing, limit, raw.bytes).await;
                                 Ok((status, timing, size, outcomes))
                             }
                             Err(message) => Err(message),

@@ -4,7 +4,7 @@
 //! (`candidates`). Pure apart from `keys_at`; jaq's types never leave the
 //! module.
 
-use super::{JqDocument, for_each_output, with_compiled};
+use super::{JqDocument, Stop, for_each_output, with_compiled};
 use jaq_json::Val;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
@@ -28,7 +28,7 @@ pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     let mut outputs = 0;
     let _ = with_compiled(input_expr, |filter| {
-        for_each_output(filter, doc, |item| {
+        for_each_output(filter, doc, &Stop::default(), |item| {
             if let Ok(Val::Obj(map)) = &item {
                 for (k, _) in map.iter() {
                     if let Val::TStr(s) = k {

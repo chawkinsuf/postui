@@ -1040,6 +1040,68 @@ fn suite_fails_a_request_on_its_checks() {
     assert!(text.contains("3 requests, 2 passed, 1 failed"), "{text}");
 }
 
+/// A filter that never ends.
+const ENDLESS: &str = "last(range(1e18)) > 0";
+
+/// main: `endless` (a 200 with a check that never ends, then one that
+/// passes) and `good`, in a project whose jq checks stop at 50 ms.
+fn endless_project(home: &Home, base: &str) -> PathBuf {
+    let root = write_suite_project(
+        home,
+        base,
+        &[
+            (
+                "main/endless",
+                &format!("{}\n[checks]\njq = ['{ENDLESS}', '.id == 42']\n", get("/ok")),
+            ),
+            ("main/good", &format!("{}\n[checks]\njq = ['.id == 42']\n", get("/ok"))),
+        ],
+    );
+    let meta = root.join("project.toml");
+    let text = std::fs::read_to_string(&meta).unwrap();
+    std::fs::write(&meta, format!("jq_check_limit_ms = 50\n{text}")).unwrap();
+    root
+}
+
+/// #310 spec L1, L7, L8: `run` stops a jq check at the project's limit
+/// and fails it with its line; the request's other check still runs.
+#[test]
+fn run_stops_a_jq_check_at_the_projects_limit() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = endless_project(&home, &server.base());
+    let started = std::time::Instant::now();
+    let (code, out, err) = streams(&home, &root, "main/endless", &[]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert_eq!(code, Some(1));
+    assert_eq!(out, "{\"id\":42}\n");
+    assert_eq!(err, format!("postui: check failed: {ENDLESS}: stopped at the 50 ms limit\n"));
+    let v = json(&send(&home, &root, "main/endless", &[]));
+    assert_eq!(
+        v["checks"],
+        serde_json::json!([
+            {"check": ENDLESS, "passed": false,
+             "failure": format!("{ENDLESS}: stopped at the 50 ms limit")},
+            {"check": ".id == 42", "passed": true, "failure": null},
+        ])
+    );
+}
+
+/// #310 spec L8: the suite fails the request whose check was stopped and
+/// goes on to the next.
+#[test]
+fn suite_goes_on_past_a_stopped_jq_check() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = endless_project(&home, &server.base());
+    let out = home.run(&["suite", "-p", s(&root), "--plain"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = format!("\n    check failed: {ENDLESS}: stopped at the 50 ms limit\n");
+    assert!(text.contains(&line), "{text}");
+    assert!(text.contains("2 requests, 1 passed, 1 failed"), "{text}");
+}
+
 /// main: `fast` (`/ok` within generous limits), `slow` (`/slow`, which
 /// answers after 300 ms, over a 100 ms first-byte limit, within its total).
 fn timed_project(home: &Home, base: &str) -> PathBuf {
