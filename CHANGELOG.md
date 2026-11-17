@@ -71,6 +71,10 @@ change the project file format.
   result is up), a jq filter whose result is `null` or no output, or
   switching the filter off, keeps the selection and sideways scroll, which
   it used to clear.
+- On a large response, the jq bar's key completion no longer shows late
+  after you open another request while a key lookup is still running. The
+  lookup left behind used to throw away the open request's own lookup,
+  which then started over.
 - A large response opened again after visiting three other large ones keeps
   a selection made on Raw or Headers.
 

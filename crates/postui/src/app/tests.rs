@@ -27105,45 +27105,70 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
     assert_eq!(keys.stopped_at, None);
 }
 
-/// #318: a key lookup started on one request lands after a switch to
-/// another, whose own lookup has the same number. The open request's
-/// lookup keeps waiting, uncancelled.
-#[test]
-fn a_key_lookup_from_a_request_left_behind_leaves_the_open_ones_alone() {
-    use crate::components::response::JQ_SYNC_BYTES;
-    let mut app = App::new_for_test();
-    app.focus = PaneId::Response;
-    app.editor.jq = ".".into();
-    // A lookup left outstanding on the pool: started directly, since
-    // outside a tokio runtime `sync_jq` would run it inline.
+/// #318: a key lookup started on request A lands after a switch to B,
+/// whose own lookup has the same number. B's lookup keeps waiting, and its
+/// keys land when it ends. The lookups run on the app's own paths and their
+/// results come back through its channel; the test's runtime runs them
+/// only while it waits, so it can land A's result before B's.
+#[tokio::test]
+async fn a_key_lookup_from_a_request_left_behind_leaves_the_open_ones_alone() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
+    // Each request gets a response from its own send, then a `.` typed in
+    // its bar: a key lookup on the pool, left outstanding.
     let lookup = |app: &mut App| {
         app.session.send_generation += 1;
         ready_response(app, JQ_BODY);
-        let limit = app.meta().jq_limit();
-        let response = &mut app.session.response;
-        response.set_jq_focus(true);
-        response.jq_bar_mut().input = LineInput::new(".");
-        response.refresh_jq_completion(JQ_SYNC_BYTES, limit).expect("a lookup on the pool")
+        app.focus = PaneId::Response;
+        app.update(Action::OpenJqBar);
+        app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        let pending = app.session.response.jq_bar().completion.pending();
+        pending.expect("a lookup on the pool")
     };
+    app.update(Action::ForceOpenRequest("main/a".into()));
     let a = lookup(&mut app);
-    // The switch the next update would make, made here so B's lookup can
-    // start after it.
-    app.editor.slug = Some("b".into());
-    assert!(app.session.sync_open(&app.editor.slug.clone()));
-    assert!(a.cancel.is_cancelled(), "A's lookup went with its response");
+    app.update(Action::OpenRequest("main/b".into()));
     let b = lookup(&mut app);
-    assert_eq!(a.seq, b.seq, "the two responses' numbers meet");
-    app.update(Action::JqCompleteFinished {
-        generation: a.generation,
-        seq: a.seq,
-        input_expr: a.input_expr.clone(),
-        keys: postui_core::jq::complete::Keys { keys: vec!["zzz".into()], stopped_at: None },
-        doc: None,
-    });
-    let completion = &app.session.response.jq_bar().completion;
-    assert_eq!(completion.pending(), Some(b.seq), "the open request still waits on its lookup");
-    assert!(!b.cancel.is_cancelled(), "and has not cancelled it");
+    assert_ne!(a.0, b.0, "two sends");
+    assert_eq!(a.1, b.1, "the two responses' numbers meet");
+
+    // Run the pool work; land everything but B's lookup, A's included.
+    let (mut held, mut a_landed) = (None, false);
+    for _ in 0..400 {
+        while let Ok(action) = rx.try_recv() {
+            match action {
+                Action::JqCompleteFinished { generation, .. } if generation == b.0 => {
+                    held = Some(action);
+                }
+                other => {
+                    if let Action::JqCompleteFinished { generation, .. } = &other {
+                        a_landed |= *generation == a.0;
+                    }
+                    app.update(other);
+                }
+            }
+        }
+        if held.is_some() && a_landed && app.session.response.jq_bar().pending.is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(a_landed, "A's lookup ended and landed");
+    let held = held.expect("B's lookup ended");
+    assert_eq!(
+        app.session.response.jq_bar().completion.pending(),
+        Some(b),
+        "B still waits on its lookup"
+    );
     assert_eq!(app.session.response.jq_ghost(), None);
+    app.update(held);
+    assert_eq!(app.session.response.jq_bar().completion.pending(), None);
+    assert_eq!(app.session.response.jq_ghost(), Some("data"), "B's keys land");
 }
 
 /// #308 spec B1, B6: with the project's `jq_limit_ms` at 50, a filter that
