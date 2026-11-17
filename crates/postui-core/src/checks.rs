@@ -204,7 +204,7 @@ fn clip(text: &str) -> String {
 /// stream). `doc` is called once, and only when there is a filter. A body
 /// that doesn't read fails each filter with the reader's error, or with
 /// the filter's own when it doesn't compile (R5). Each filter's run is
-/// stopped at `limit`, the project's `jq_check_limit_ms`, counted from
+/// stopped at `limit`, the project's `jq_limit_ms`, counted from
 /// its own start, after the body is read (#310 spec L3, L4).
 pub fn evaluate(
     checks: &Checks,
@@ -232,7 +232,7 @@ pub fn evaluate(
     let doc = doc();
     for filter in &checks.jq {
         let run = match &doc {
-            Ok(doc) => jq::run_limited(filter, doc, limit),
+            Ok(doc) => jq::run(filter, doc, limit),
             Err(e) => jq::check(filter).and(Err(e.clone())),
         };
         let (got, error) = match run {
@@ -256,8 +256,8 @@ mod tests {
         }
     }
 
-    /// The default jq check limit, for the tests that don't test it.
-    const LIMIT: std::time::Duration = crate::project::DEFAULT_JQ_CHECK_LIMIT;
+    /// The default jq limit, for the tests that don't test it.
+    const LIMIT: std::time::Duration = crate::project::DEFAULT_JQ_LIMIT;
 
     /// `evaluate` over `body` as text, taking no time.
     fn over(checks: &Checks, status: u16, body: &str) -> Vec<Outcome> {

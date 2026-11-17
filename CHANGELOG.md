@@ -25,7 +25,10 @@ change the project file format.
 - Each jq check in a request's `[checks]` is stopped after 1 second and
   fails with `stopped at the 1000 ms limit`, in `postui run`, `postui
   suite` and the app alike, so a filter that never ends no longer hangs
-  them. `jq_check_limit_ms` in `project.toml` sets another limit.
+  them. A filter in the response's jq bar (a saved view's too) and
+  `postui run --jq` stop at the same limit with the same error, so such a
+  filter no longer keeps a CPU core busy until postui quits. `jq_limit_ms`
+  in `project.toml` sets another limit.
 
 ### Changed
 

@@ -383,13 +383,14 @@ fn status_line(status: u16) -> String {
 /// the results and the error (unmasked) as `JqReport` holds them: a filter
 /// that failed on some values of a stream has both, the other values'
 /// results and the first error (#229); `None` results only when it failed
-/// with none.
+/// with none. The run stops at `limit`, the project's (#308).
 fn run_jq(
     filter: &str,
     doc: Result<jq::JqDocument, jq::JqError>,
+    limit: std::time::Duration,
     mask: &Mask,
 ) -> (Option<Vec<serde_json::Value>>, Option<String>) {
-    let run = match doc.and_then(|doc| jq::run(filter, &doc)) {
+    let run = match doc.and_then(|doc| jq::run(filter, &doc, limit)) {
         Ok(run) => run,
         Err(e) => return (None, Some(e.message())),
     };
@@ -437,7 +438,8 @@ pub(super) fn write_output(file: &Path, bytes: &[u8]) -> Result<(), CliError> {
 }
 
 /// Fills `report` from `raw`: the response, the request's `checks` run over
-/// it (each jq check stopped at the project's limit), the jq results, the
+/// it (each jq check stopped at the project's limit), the jq results (also
+/// stopped at it), the
 /// `-o` file, all masked with the session's mask. A file that can't be
 /// written is the report's `error`, with the response shown as if there
 /// were no `-o`. The body takes the form the report will print in: text,
@@ -460,7 +462,7 @@ fn record(
     let parsed = OnceCell::new();
     let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
     let timing = Timing::of(raw.ttfb, raw.elapsed);
-    let limit = s.project.meta().jq_check_limit();
+    let limit = s.project.meta().jq_limit();
     let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, limit, doc);
     report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
@@ -485,7 +487,7 @@ fn record(
     // against printing 24 KB of stream on a failure (mine (approved)); the
     // skill tells the agent to add `-o` for such requests.
     if let Some(filter) = jq {
-        let (results, error) = run_jq(filter, doc(), mask);
+        let (results, error) = run_jq(filter, doc(), limit, mask);
         report.jq = Some(JqReport {
             filter: mask.apply(filter),
             output: results,
@@ -851,7 +853,7 @@ mod tests {
         let timing = Timing::of(Duration::from_micros(40_999), Duration::from_micros(500_900));
         assert_eq!(timing, Timing { ttfb_ms: 40, elapsed_ms: 500 });
         let checks = Checks { max_elapsed_ms: Some(500), ..Checks::default() };
-        let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+        let limit = postui_core::project::DEFAULT_JQ_LIMIT;
         let outcomes =
             postui_core::checks::evaluate(&checks, 200, timing, limit, || unreachable!());
         assert_eq!(failure_lines(&shown(&outcomes, &Mask::none())).count(), 0);

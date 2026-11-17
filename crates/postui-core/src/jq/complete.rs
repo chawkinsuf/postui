@@ -4,7 +4,7 @@
 //! (`candidates`). Pure apart from `keys_at`; jaq's types never leave the
 //! module.
 
-use super::{JqDocument, Stop, for_each_output, with_compiled};
+use super::{JqDocument, for_each_output, with_compiled, with_limit};
 use jaq_json::Val;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
@@ -24,26 +24,29 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 /// compile, a runtime error part-way — yields what was collected so far,
 /// never an error: a half-typed filter is normal here. In a stream, a
 /// runtime error ends only that value's run and the next value goes on.
-pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
+/// The run stops at `limit` like any jq run (#308), with the keys it had.
+pub fn keys_at(input_expr: &str, doc: &JqDocument, limit: std::time::Duration) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     let mut outputs = 0;
     let _ = with_compiled(input_expr, |filter| {
-        for_each_output(filter, doc, &Stop::default(), |item| {
-            if let Ok(Val::Obj(map)) = &item {
-                for (k, _) in map.iter() {
-                    if let Val::TStr(s) = k {
-                        let key = String::from_utf8_lossy(s).into_owned();
-                        if !keys.contains(&key) {
-                            keys.push(key);
+        with_limit(limit, |stop| {
+            for_each_output(filter, doc, stop, |item| {
+                if let Ok(Val::Obj(map)) = &item {
+                    for (k, _) in map.iter() {
+                        if let Val::TStr(s) = k {
+                            let key = String::from_utf8_lossy(s).into_owned();
+                            if !keys.contains(&key) {
+                                keys.push(key);
+                            }
                         }
                     }
                 }
-            }
-            outputs += 1;
-            Ok(if outputs < COMPLETE_OUTPUTS {
-                ControlFlow::Continue(())
-            } else {
-                ControlFlow::Break(())
+                outputs += 1;
+                Ok(if outputs < COMPLETE_OUTPUTS {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                })
             })
         })
     });
@@ -594,6 +597,22 @@ mod tests {
 
     fn doc() -> super::super::JqDocument {
         super::super::JqDocument::parse(DOC).expect("fixture is JSON")
+    }
+
+    /// [`super::keys_at`] with a limit no test here reaches.
+    fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
+        super::keys_at(input_expr, doc, std::time::Duration::from_secs(60))
+    }
+
+    /// #308 spec B2: a lookup that never ends stops at its limit, with the
+    /// keys it found before.
+    #[test]
+    fn a_lookup_that_never_ends_stops_at_its_limit_with_the_keys_found() {
+        let limit = std::time::Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        let code = "{a: 1}, (repeat(1) | select(. == 2))";
+        assert_eq!(super::keys_at(code, &doc(), limit), vec!["a"]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

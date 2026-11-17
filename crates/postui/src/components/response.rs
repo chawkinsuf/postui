@@ -393,6 +393,9 @@ pub struct JqBar {
     menu_scroll: std::cell::Cell<u16>,
     /// What the chip at the bar's left names (see [`JqChip`]).
     chip: JqChip,
+    /// How long each run and key lookup may take: the open project's
+    /// `jq_limit_ms`, which `App::sync_jq` sets before each apply (#308).
+    limit: Duration,
 }
 
 impl JqBar {
@@ -630,6 +633,7 @@ impl Default for JqBar {
             menu: None,
             menu_scroll: std::cell::Cell::new(0),
             chip: JqChip { label: JqChip::NO_VIEW.into(), ..JqChip::default() },
+            limit: postui_core::project::DEFAULT_JQ_LIMIT,
         }
     }
 }
@@ -654,26 +658,30 @@ fn all_null(outputs: &[String]) -> bool {
 
 /// Work the app must hand to the blocking pool: a jq run too big to run
 /// inline. `doc` is the cached parse when there is one; otherwise `body` is
-/// the raw text for the worker to parse before running the filter.
+/// the raw text for the worker to parse before running the filter. The run
+/// stops at `limit`, the bar's.
 pub struct JqRunRequest {
     pub generation: u64,
     pub run: u64,
     pub code: String,
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
+    pub limit: Duration,
 }
 
 /// A completion key fetch for the blocking pool: run `input_expr` against
 /// `doc` (`complete::keys_at`) and hand the keys back as
 /// `Action::JqCompleteFinished`. As with [`JqRunRequest`], `body` is the
 /// raw text to parse first when no document is cached yet; the parse
-/// comes back with the keys so the view can keep it.
+/// comes back with the keys so the view can keep it. The lookup stops at
+/// `limit`, the bar's.
 pub struct JqCompleteRequest {
     pub generation: u64,
     pub seq: u64,
     pub input_expr: String,
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
+    pub limit: Duration,
 }
 
 /// What a jq run hands back: the document it parsed (when it had to), the
@@ -3189,6 +3197,11 @@ impl Response {
         self.jq.chip = chip;
     }
 
+    /// Sets how long the bar's next runs and key lookups may take (#308).
+    pub fn set_jq_limit(&mut self, limit: Duration) {
+        self.jq.limit = limit;
+    }
+
     /// Where the next frame draws the bar's chip in a pane drawn at
     /// `pane`: the bar's row under the header strip (see `draw`), for a
     /// menu that hangs off a chip no frame has drawn yet.
@@ -3561,8 +3574,8 @@ impl Response {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
             // back, just the outputs.
-            let result =
-                postui_core::jq::run(code_trim, &doc).map(|run| JqRunOutput::from_run(None, run));
+            let result = postui_core::jq::run(code_trim, &doc, self.jq.limit)
+                .map(|run| JqRunOutput::from_run(None, run));
             self.land_jq_result(result);
             return None;
         }
@@ -3578,6 +3591,7 @@ impl Response {
             code: code_trim.to_string(),
             doc,
             body,
+            limit: self.jq.limit,
         })
     }
 
@@ -3631,6 +3645,7 @@ impl Response {
             return None;
         }
         let text = bar.input.text().to_string();
+        let limit = bar.limit;
         let c = &mut bar.completion;
         let ctx = complete::context(&text);
         if ctx != c.ctx {
@@ -3675,7 +3690,7 @@ impl Response {
                 view.jq_doc = JqDocument::parse(&view.raw.join()).ok();
             }
             let doc = view.jq_doc.clone()?;
-            c.cached_keys = complete::keys_at(&expr, &doc);
+            c.cached_keys = complete::keys_at(&expr, &doc, limit);
             c.cached_expr = Some(expr);
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
             c.fall_back_to_closer(&text);
@@ -3691,6 +3706,7 @@ impl Response {
             input_expr: expr,
             doc,
             body,
+            limit,
         })
     }
 
@@ -7140,7 +7156,7 @@ mod tests {
     fn arrived(status: u16, body: &str, checks: &postui_core::model::Checks) -> (Pane, Lines) {
         let mut d = data(body);
         d.status = status;
-        let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+        let limit = postui_core::project::DEFAULT_JQ_LIMIT;
         let lines = d.check_run(checks.clone(), limit).run();
         let (state, _) = CheckState::on_arrival(&d, checks.clone(), limit);
         let mut r = Pane::default();
@@ -11340,6 +11356,31 @@ mod tests {
         assert!(!r.jq_bar().stale && r.jq_bar().error.is_none());
     }
 
+    /// #308 spec B1, B2: a filter that never ends stops at the bar's limit
+    /// and fails as any filter does: the error under the bar, the last
+    /// result kept behind it. Over the pool, the run and the key lookup
+    /// carry the limit.
+    #[test]
+    fn a_filter_that_never_ends_stops_at_the_bars_limit() {
+        let limit = Duration::from_millis(50);
+        let mut r = ready(ITEMS);
+        r.set_jq_limit(limit);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
+        let started = Instant::now();
+        r.apply_jq("last(repeat(1))", SYNC_PRETTY_BYTES);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(r.view().unwrap().view_text(), "2", "the last good output stays");
+        assert!(r.jq_bar().stale);
+        let error = r.jq_bar().error.as_ref().map(JqError::message);
+        assert_eq!(error.as_deref(), Some("stopped at the 50 ms limit"));
+        let req = r.apply_jq("last(range(1e18))", 0).expect("over the sync limit: background");
+        assert_eq!(req.limit, limit);
+        assert!(r.set_jq_focus(true));
+        r.jq_bar_mut().input = LineInput::new("map(.a");
+        let req = r.refresh_jq_completion(0).expect("over the sync limit: background");
+        assert_eq!(req.limit, limit);
+    }
+
     /// A superseded background run (an older run counter than the view's
     /// latest) still hands back a parsed document worth keeping: adopting
     /// it means the next `apply_jq` for this view finds a cached doc and
@@ -11401,7 +11442,7 @@ mod tests {
     fn a_background_run_that_fails_on_one_value_lands_its_error_with_the_outputs() {
         let mut r = ready(PART_FAILING);
         let req = r.apply_jq(".items[]", 0).expect("over the sync limit: background");
-        let action = crate::app::jq_worker(req.generation, req.run, req.code, req.doc, req.body);
+        let action = crate::app::jq_worker(req);
         let crate::action::Action::JqRunFinished { generation, run, result } = action else {
             panic!("the worker answers with its run: {action:?}");
         };

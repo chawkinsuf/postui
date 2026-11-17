@@ -1786,17 +1786,17 @@ mod tests {
         assert_eq!(err.file, "project.toml");
     }
 
-    /// #310 spec L9: a bad jq check limit refuses the open, as any bad
-    /// value in `project.toml` does; a good one is the project's limit.
+    /// #310 spec L9: a bad jq limit refuses the open, as any bad value in
+    /// `project.toml` does; a good one is the project's limit.
     #[test]
-    fn a_bad_jq_check_limit_refuses_the_open_naming_project_toml() {
+    fn a_bad_jq_limit_refuses_the_open_naming_project_toml() {
         let (dir, _p) = fixture();
-        std::fs::write(dir.path().join("project.toml"), "jq_check_limit_ms = 0\n").unwrap();
+        std::fs::write(dir.path().join("project.toml"), "jq_limit_ms = 0\n").unwrap();
         let err = Project::open(dir.path().to_path_buf()).map(|_| ()).unwrap_err();
         assert_eq!(err.file, "project.toml");
-        std::fs::write(dir.path().join("project.toml"), "jq_check_limit_ms = 250\n").unwrap();
+        std::fs::write(dir.path().join("project.toml"), "jq_limit_ms = 250\n").unwrap();
         let p = Project::open(dir.path().to_path_buf()).map(|(p, _)| p).unwrap();
-        assert_eq!(p.meta().jq_check_limit(), std::time::Duration::from_millis(250));
+        assert_eq!(p.meta().jq_limit(), std::time::Duration::from_millis(250));
     }
 
     #[test]

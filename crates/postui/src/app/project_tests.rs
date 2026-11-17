@@ -300,15 +300,15 @@ fn a_change_overwrites_a_hand_edit_and_undo_restores_it() {
     assert_eq!(file(&app), hand, "undo restores the hand edit");
 }
 
-/// #310 spec §3: nothing on the tab writes `jq_check_limit_ms`, and a
-/// change there keeps it.
+/// #310 spec §3: nothing on the tab writes `jq_limit_ms`, and a change
+/// there keeps it.
 #[test]
-fn a_change_keeps_the_jq_check_limit() {
-    let mut app = project_app(&format!("jq_check_limit_ms = 250\n{THREE}"), KeyProfile::Arrows);
+fn a_change_keeps_the_jq_limit() {
+    let mut app = project_app(&format!("jq_limit_ms = 250\n{THREE}"), KeyProfile::Arrows);
     feed(&mut app, "<Down><Down><Space>");
-    assert_ne!(file(&app), format!("jq_check_limit_ms = 250\n{THREE}"), "the tab wrote");
-    assert!(file(&app).starts_with("jq_check_limit_ms = 250\n"), "{}", file(&app));
-    assert_eq!(app.meta().jq_check_limit(), std::time::Duration::from_millis(250));
+    assert_ne!(file(&app), format!("jq_limit_ms = 250\n{THREE}"), "the tab wrote");
+    assert!(file(&app).starts_with("jq_limit_ms = 250\n"), "{}", file(&app));
+    assert_eq!(app.meta().jq_limit(), std::time::Duration::from_millis(250));
 }
 
 /// R12: ↑ off the first row and Home go back to the Name row; Esc with

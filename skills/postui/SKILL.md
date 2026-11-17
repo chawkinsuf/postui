@@ -77,6 +77,8 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   skipped, event names dropped). A
   value the filter fails on prints the error, and the other values'
   results still print; the run still exits 1, so they may be incomplete.
+  A filter still running at the project's `jq_limit_ms` (1 s by default)
+  is stopped and fails with `stopped at the 1000 ms limit`.
 - `-o FILE` writes the body to a file instead of printing it. Alone, it
   writes the raw bytes: use it for a binary body, which prints as text.
   With `--jq` or `--view`, the results still print and the file gets the

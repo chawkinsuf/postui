@@ -26969,13 +26969,12 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
 
     // Direct coverage of the worker itself: parses the body when handed no
     // cached document, and runs the filter against it.
-    let action = crate::app::jq_worker(
-        app.session.send_generation,
-        req2.run,
-        ".n".into(),
-        None,
-        Some(big.clone()),
-    );
+    let action = crate::app::jq_worker(crate::components::response::JqRunRequest {
+        code: ".n".into(),
+        doc: None,
+        body: Some(big.clone()),
+        ..req2
+    });
     let Action::JqRunFinished {
         result:
             Ok(crate::components::response::JqRunOutput {
@@ -27046,11 +27045,65 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
 
     // The worker itself.
     let doc = postui_core::jq::JqDocument::parse(&big).unwrap();
-    let action = crate::app::jq_complete_worker(generation, 5, ".".into(), Some(doc), None);
+    let action = crate::app::jq_complete_worker(crate::components::response::JqCompleteRequest {
+        generation,
+        seq: 5,
+        input_expr: ".".into(),
+        doc: Some(doc),
+        body: None,
+        limit: postui_core::project::DEFAULT_JQ_LIMIT,
+    });
     let Action::JqCompleteFinished { seq: 5, keys, .. } = &action else {
         panic!("{action:?}");
     };
     assert_eq!(keys, &["pad".to_string(), "n".to_string()]);
+}
+
+/// #308 spec B1, B6: with the project's `jq_limit_ms` at 50, a filter that
+/// never ends, run on the pool over a big body, fails with the limit's
+/// error under the bar, and the run's parse of the body still reaches the
+/// view, so the next run needs no body.
+#[test]
+fn a_bar_filter_that_never_ends_stops_at_the_projects_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    postui_core::fixtures::init_project(root, Some("limit")).unwrap();
+    std::fs::write(root.join("project.toml"), "jq_limit_ms = 50\n").unwrap();
+    postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
+        .unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, root.to_path_buf());
+    app._test_rx = Some(rx);
+    app._test_dir = Some(dir);
+    let limit = std::time::Duration::from_millis(50);
+    assert_eq!(app.meta().jq_limit(), limit);
+    let big = format!(
+        r#"{{"pad": "{}", "n": 7}}"#,
+        "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+    );
+    ready_response(&mut app, &big);
+    app.update(Action::PrettyParsed {
+        generation: app.session.send_generation,
+        tree: crate::components::json_tree::JsonTree::parse(&big).map(Box::new),
+    });
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
+    // Outside a tokio runtime the pool run happens inline, in this update.
+    let started = std::time::Instant::now();
+    app.update(Action::JqApply("last(repeat(1))".into()));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let bar = app.session.response.jq_bar();
+    assert_eq!(
+        bar.error.as_ref().map(|e| e.message()).as_deref(),
+        Some("stopped at the 50 ms limit")
+    );
+    assert!(bar.stale && bar.pending.is_none());
+    let req = app
+        .session
+        .response
+        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
+        .expect("still a background-sized run");
+    assert!(req.doc.is_some() && req.body.is_none(), "the stopped run's parse was kept");
+    assert_eq!(req.limit, limit);
 }
 
 #[test]

@@ -1044,7 +1044,7 @@ fn suite_fails_a_request_on_its_checks() {
 const ENDLESS: &str = "last(range(1e18)) > 0";
 
 /// main: `endless` (a 200 with a check that never ends, then one that
-/// passes) and `good`, in a project whose jq checks stop at 50 ms.
+/// passes) and `good`, in a project whose jq runs stop at 50 ms.
 fn endless_project(home: &Home, base: &str) -> PathBuf {
     let root = write_suite_project(
         home,
@@ -1059,8 +1059,26 @@ fn endless_project(home: &Home, base: &str) -> PathBuf {
     );
     let meta = root.join("project.toml");
     let text = std::fs::read_to_string(&meta).unwrap();
-    std::fs::write(&meta, format!("jq_check_limit_ms = 50\n{text}")).unwrap();
+    std::fs::write(&meta, format!("jq_limit_ms = 50\n{text}")).unwrap();
     root
+}
+
+/// #308 spec B3: `run --jq` stops the filter at the project's limit too:
+/// the stop is the filter's error, and the run fails.
+#[test]
+fn run_stops_a_jq_filter_at_the_projects_limit() {
+    let home = Home::new();
+    let server = Server::start();
+    let root = endless_project(&home, &server.base());
+    let filter = "last(range(1e18))";
+    let started = std::time::Instant::now();
+    let (code, out, err) = streams(&home, &root, "main/good", &["--jq", filter]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert_eq!((code, out.as_str()), (Some(1), ""));
+    assert!(err.starts_with("postui: jq: stopped at the 50 ms limit"), "{err}");
+    let v = json(&send(&home, &root, "main/good", &["--jq", filter]));
+    assert_eq!(v["jq"]["error"], "stopped at the 50 ms limit");
+    assert!(v["jq"]["output"].is_null());
 }
 
 /// #310 spec L1, L7, L8: `run` stops a jq check at the project's limit

@@ -2,6 +2,10 @@
 
 Branch `jq-check-limit`, from `main` at `a207b70` (#312 merged).
 
+Amended 2026-11-17 by #308 (section 7): the key is now `jq_limit_ms`,
+`run_limited` is folded into `jq::run`, and every jq run stops at the
+limit. Sections 1 to 6 keep #310's record under its names.
+
 ## 1. The problem and what was found
 
 A jq check in a request's `[checks]` runs as long as its filter takes.
@@ -304,10 +308,10 @@ most that long for a run still going.
   `JqCompleteRequest`, and `jq_worker` / `jq_complete_worker` run with it.
   An outside edit to the key applies from the next run after the app
   reloads `project.toml`.
-- `jq_worker` (B6): an error that fails the whole run after the worker
-  parsed the body comes back as a `JqRunOutput` with that parse, no
-  outputs and the error, which `land_jq_result` shows as it showed the
-  `Err`.
+- `jq_worker` (B6): an error that fails the whole run (the limit, the
+  output cap) comes back as a `JqRunOutput` with no outputs, the error and
+  the parse when the worker made one, which `land_jq_result` shows as it
+  showed the `Err`. A body that isn't JSON is still an `Err`.
 - `run --jq`: `run_jq` takes the session's project limit.
 
 **Tests.**

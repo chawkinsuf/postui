@@ -132,6 +132,8 @@ have a max runtime or it fails") is stopped and fails with
 `check failed: <filter>: stopped at the 1000 ms limit`, the limit in use
 in the line (mine (approved)). The request's other checks still run and
 the suite goes on. See `2026-11-17-jq-check-limit-design.md`.
+Amended 2026-11-17, #308: the key is renamed `jq_limit_ms` before any
+release, and `run --jq` stops at it too (that spec, section 7).
 
 - **Plain text:** the row as today (the real status shows), the failure
   lines under it, where an error goes now.

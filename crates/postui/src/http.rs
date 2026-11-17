@@ -473,7 +473,7 @@ mod tests {
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
         assert_eq!(data.status, 500);
-        let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+        let limit = postui_core::project::DEFAULT_JQ_LIMIT;
         let run = data.check_run(Checks::default(), limit);
         assert_eq!(Arc::strong_count(&data.body), 2, "the run shares the body");
         drop(run);

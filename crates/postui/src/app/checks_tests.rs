@@ -511,7 +511,7 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
     };
     let started = Instant::now();
     app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
-    let limit = app.meta().jq_check_limit();
+    let limit = app.meta().jq_limit();
     let (lines, checks) = (data.check_run(checks.clone(), limit).run(), checks.clone());
     app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     draw(app);
@@ -762,7 +762,7 @@ async fn a_check_that_never_ends_fails_at_the_projects_limit() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     postui_core::fixtures::init_project(root, Some("limit")).unwrap();
-    std::fs::write(root.join("project.toml"), "jq_check_limit_ms = 50\n").unwrap();
+    std::fs::write(root.join("project.toml"), "jq_limit_ms = 50\n").unwrap();
     postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
         .unwrap();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -774,7 +774,7 @@ async fn a_check_that_never_ends_fails_at_the_projects_limit() {
     postui_core::fixtures::save_request(app.proj().root(), "main/probe", &req).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/probe".into()));
-    assert_eq!(app.meta().jq_check_limit(), std::time::Duration::from_millis(50));
+    assert_eq!(app.meta().jq_limit(), std::time::Duration::from_millis(50));
     let sent = checks(&app);
     let slug = app.editor.slug.clone();
     let generation = app.session.begin_send(&slug);
