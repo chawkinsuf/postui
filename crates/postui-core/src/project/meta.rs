@@ -35,7 +35,10 @@ pub struct ProjectMeta {
     pub environment: IndexMap<String, ItemSettings>,
     /// How long each jq run may take, in milliseconds: a request's jq
     /// checks (#310), the jq bar, completion and `run --jq` (#308):
-    /// [`Self::jq_limit`]. Nothing writes it.
+    /// [`Self::jq_limit`]. Nothing writes it. One key for all of them, so a
+    /// filter stops in the bar where it would as a check (#308 spec B1); the
+    /// cost is that raising it for a slow check also lets a bar run that
+    /// never ends, and the TUI's quit waiting on it, last that long.
     #[serde(default)]
     pub jq_limit_ms: Option<std::num::NonZeroU32>,
 }

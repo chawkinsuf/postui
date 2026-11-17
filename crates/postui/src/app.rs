@@ -2240,8 +2240,9 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 /// The run stops at the request's limit (#308). An error that fails the
 /// whole run (that limit, the output cap) comes back as a run with no
 /// outputs and that error, beside the parse this worker made, so the parse
-/// still reaches the view (#308 spec B6); the bar shows it as it shows an
-/// `Err`.
+/// still reaches the view (#308 spec B6). An error with no outputs is the
+/// failed run of `Response::land_jq_result`'s first arm (#229 R6), which
+/// shows what an `Err` shows: the error, the last result kept behind it.
 pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Action {
     use crate::components::response::{JqRunOutput, JqRunRequest};
     use postui_core::jq::{JqDocument, JqRun, run as jq_run};
@@ -2354,17 +2355,13 @@ impl App {
         // Every run and key fetch goes to the blocking pool (see
         // `JQ_SYNC_BYTES`): a filter's cost is unbounded whatever the
         // body's size, and the UI thread must stay free to take the Esc.
-        // Each stops at the project's limit (#308), set here as the chip is.
+        // Each stops at the project's limit (#308).
+        use crate::components::response::JQ_SYNC_BYTES;
         let limit = self.meta().jq_limit();
-        self.session.response.set_jq_limit(limit);
-        if let Some(req) =
-            self.session.response.apply_jq(&code, crate::components::response::JQ_SYNC_BYTES)
-        {
+        if let Some(req) = self.session.response.apply_jq(&code, JQ_SYNC_BYTES, limit) {
             self.spawn_jq_run(req);
         }
-        if let Some(req) =
-            self.session.response.refresh_jq_completion(crate::components::response::JQ_SYNC_BYTES)
-        {
+        if let Some(req) = self.session.response.refresh_jq_completion(JQ_SYNC_BYTES, limit) {
             self.spawn_jq_complete(req);
         }
     }

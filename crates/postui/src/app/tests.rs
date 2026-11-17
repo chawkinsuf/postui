@@ -26962,7 +26962,11 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     let req2 = app
         .session
         .response
-        .apply_jq(".pad | length", crate::components::response::SYNC_PRETTY_BYTES)
+        .apply_jq(
+            ".pad | length",
+            crate::components::response::SYNC_PRETTY_BYTES,
+            app.meta().jq_limit(),
+        )
         .expect("still a background-sized run");
     assert!(req2.doc.is_some(), "the doc from the first run is cached");
     assert!(req2.body.is_none(), "…so no body needs to be handed to the worker");
@@ -27071,6 +27075,7 @@ fn a_bar_filter_that_never_ends_stops_at_the_projects_limit() {
     std::fs::write(root.join("project.toml"), "jq_limit_ms = 50\n").unwrap();
     postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
         .unwrap();
+    let project = root.to_path_buf();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, root.to_path_buf());
     app._test_rx = Some(rx);
@@ -27097,13 +27102,22 @@ fn a_bar_filter_that_never_ends_stops_at_the_projects_limit() {
         Some("stopped at the 50 ms limit")
     );
     assert!(bar.stale && bar.pending.is_none());
+    // A new limit read from `project.toml` runs the same filter again.
+    std::fs::write(project.join("project.toml"), "jq_limit_ms = 60\n").unwrap();
+    app.reload_project_documents();
+    app.update(Action::Tick);
+    let bar = app.session.response.jq_bar();
+    assert_eq!(
+        bar.error.as_ref().map(|e| e.message()).as_deref(),
+        Some("stopped at the 60 ms limit")
+    );
     let req = app
         .session
         .response
-        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
+        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES, app.meta().jq_limit())
         .expect("still a background-sized run");
     assert!(req.doc.is_some() && req.body.is_none(), "the stopped run's parse was kept");
-    assert_eq!(req.limit, limit);
+    assert_eq!(req.limit, std::time::Duration::from_millis(60));
 }
 
 #[test]
@@ -27135,7 +27149,7 @@ fn ticks_keep_redrawing_while_a_background_jq_run_is_outstanding() {
     assert!(!app.update(Action::Tick), "idle: a tick has nothing to redraw");
     app.session
         .response
-        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
+        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES, app.meta().jq_limit())
         .expect("big body → background");
     app.editor.jq = ".n".into();
     assert!(app.session.response.jq_bar().pending.is_some());
@@ -27169,7 +27183,7 @@ fn a_pending_background_run_is_dropped_and_reapplied_across_a_request_switch() {
     // still on the blocking pool looks from here.
     app.session
         .response
-        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
+        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES, app.meta().jq_limit())
         .expect("big body → background");
     app.editor.jq = ".n".into();
     assert!(app.session.response.jq_bar().pending.is_some());

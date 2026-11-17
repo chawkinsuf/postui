@@ -301,13 +301,19 @@ most that long for a run still going.
   limit)` takes the limit too. No unlimited run is left.
 - `complete::keys_at(expr, doc, limit)` runs with the limit; the keys it
   had when stopped are its result, as for any error part-way.
-- The app: `Response` holds the bar's limit, which `App::sync_jq` sets from
-  the open project (`meta().jq_limit()`) before each apply, the way it sets
-  the chip; the default is `DEFAULT_JQ_LIMIT`. `apply_jq` and
-  `refresh_jq_completion` use it inline and put it in `JqRunRequest` and
-  `JqCompleteRequest`, and `jq_worker` / `jq_complete_worker` run with it.
-  An outside edit to the key applies from the next run after the app
-  reloads `project.toml`.
+- The app: `App::sync_jq` passes the open project's limit
+  (`meta().jq_limit()`) to `apply_jq` and `refresh_jq_completion`, which
+  use it inline and put it in `JqRunRequest` and `JqCompleteRequest`;
+  `jq_worker` / `jq_complete_worker` run with it. What the bar remembers
+  having applied (`jq_applied`) and the keys completion cached are keyed on
+  the limit as well as the filter, so after the app reloads `project.toml`
+  with another limit the same filter runs again, and a run or lookup still
+  going at the old limit is superseded. (Review round 1, 2026-11-17: the
+  limit was first held on `Response` and keyed nothing, so a filter stopped
+  at the old limit stayed stopped until edited or re-sent.) A run stopped
+  by a slow moment is remembered like any result until the filter, the
+  response or the limit changes: running it again on every update would
+  keep a core busy, the problem this section fixes.
 - `jq_worker` (B6): an error that fails the whole run (the limit, the
   output cap) comes back as a `JqRunOutput` with no outputs, the error and
   the parse when the worker made one, which `land_jq_result` shows as it
@@ -324,10 +330,11 @@ most that long for a run still going.
 | B2 | `complete`: `keys_at` over a never-ending expression with a 50 ms limit returns in well under 5 s, with the keys found before the stop. |
 | B3 | `cli_run` (integration): `jq_limit_ms = 50` and `--jq 'last(range(1e18))'`: exits 1 with `stopped at the 50 ms limit`. |
 | B5 | `meta`, `project`, `project_tests.rs`, `checks_tests.rs`, `cli_run`: the existing tests under the new name. |
-| B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error. |
+| B1, B2 | response: the same filter, and the same completion lookup, under another limit runs again and supersedes the one going; app: a raised `jq_limit_ms` read from `project.toml` runs the stopped filter again. |
+| B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error; response: that run with no outputs lands as an `Err` does. |
 | quit | TUI in tmux: a never-ending filter in the bar shows the error about 1 s later, and quitting right after typing it ends the process within the limit. |
 
 **`mine` choices, for veto:** B2's keys found before the stop; B4; B6;
-the limit held on `Response` and set in `sync_jq`, rather than a
-parameter on `apply_jq` and `refresh_jq_completion` (whose tests call
-them about a hundred times); no cancel of a run the bar moved past.
+the bar's memo and completion's cache keyed on the limit (a run stopped
+by a slow moment stays until the filter, response or limit changes); no
+cancel of a run the bar moved past.
