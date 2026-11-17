@@ -1231,7 +1231,10 @@ impl ReadyView {
     /// the tree on screen actually changes — clearing an already-absent
     /// filter tree leaves the body tree, and its width measure, as it was.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
-        self.cursor_moved();
+        // Only the Tree tab's cursor is on this tree (#313).
+        if self.mode == ViewMode::Pretty {
+            self.cursor_moved();
+        }
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
         }
@@ -2265,6 +2268,21 @@ impl ReadyView {
         self.recompute_matches();
     }
 
+    /// A filter's output went in or out of the tree. Only the Tree tab
+    /// shows that tree: with it up, the place is put back inside the new
+    /// lines; another tab's lines didn't change, so its place stays
+    /// (#313).
+    fn tree_refiltered(&mut self) {
+        if self.mode != ViewMode::Pretty {
+            return;
+        }
+        self.clear_sel();
+        self.clamp_cursor();
+        self.follow_cursor();
+        self.h_scroll = 0;
+        self.recompute_matches();
+    }
+
     /// Every match of the query, in corpus order, and of the search an open
     /// box replaced. `Some(note)` for a Vim pattern outside the engine's
     /// subset: no matches then.
@@ -3058,8 +3076,8 @@ impl Response {
         }
         view.parsing = false;
         // Only the Tree tab is about the tree. On another tab the user's
-        // place (cursor, column, selection, matches) is on lines this
-        // doesn't change, so it is left alone (#313).
+        // place is on lines this doesn't change, so it is left alone
+        // (#313).
         let on_tree = view.mode == ViewMode::Pretty;
         match tree {
             Some(tree) => {
@@ -3073,20 +3091,11 @@ impl Response {
                 // nothing to run against yet (`apply_jq` bails out); now
                 // that the body tree exists, forget what was "applied" so
                 // the app's reconcile step re-runs the pending filter.
-                // With no filter on there is nothing to re-run, and
-                // applying no filter again would reset the tab on screen,
-                // whichever it is (#313).
-                if filter_on {
-                    view.jq_applied = None;
-                }
+                view.jq_applied = None;
                 // Already on the Tree tab (watching the spinner): the tree
                 // it was waiting for is now the view's content.
                 if on_tree {
-                    view.clear_sel();
-                    view.cursor_moved();
-                    view.cursor = 0;
-                    view.scroll = 0;
-                    view.recompute_matches();
+                    view.lines_replaced();
                 }
             }
             // Not JSON after all: the Tree tab disappears, exactly as it
@@ -3578,11 +3587,7 @@ impl Response {
             self.jq.error = None;
             self.jq.stale = false;
             self.jq.note = None;
-            view.clear_sel();
-            view.clamp_cursor();
-            view.follow_cursor();
-            view.h_scroll = 0;
-            view.recompute_matches();
+            view.tree_refiltered();
             return None;
         }
         if let Err(e) = postui_core::jq::check(code_trim) {
@@ -3894,11 +3899,7 @@ impl Response {
                         self.jq.error = None;
                         self.jq.stale = true;
                         self.jq.note = Some(if outputs.is_empty() { "no output" } else { "null" });
-                        view.clear_sel();
-                        view.clamp_cursor();
-                        view.follow_cursor();
-                        view.h_scroll = 0;
-                        view.recompute_matches();
+                        view.tree_refiltered();
                     }
                     // This filter's outputs, shown even when a value
                     // failed: the tree is its output, so not stale, and the
@@ -3912,11 +3913,7 @@ impl Response {
                         self.jq.error = error;
                         self.jq.stale = false;
                         self.jq.note = None;
-                        view.clear_sel();
-                        view.clamp_cursor();
-                        view.follow_cursor();
-                        view.h_scroll = 0;
-                        view.recompute_matches();
+                        view.tree_refiltered();
                     }
                     None => {
                         self.jq.error =
@@ -8120,20 +8117,28 @@ mod tests {
     }
 
     /// What a tab the user is reading holds of theirs: the cursor, its
-    /// column, the scroll, the selection and the search's matches.
+    /// column and the column it wants, both scrolls, the selection and the
+    /// search's matches.
     fn where_the_user_is(r: &Pane) -> impl PartialEq + std::fmt::Debug + use<> {
         let v = r.view().unwrap();
         let matches = v.search.as_ref().map(|s| (s.matches.clone(), s.current));
-        (v.mode, v.cursor, v.scroll, v.at_col, v.sel, r.selected_text(), matches)
+        let place = (v.cursor, v.scroll, v.h_scroll, v.at_col, v.want);
+        (v.mode, place, v.sel, r.selected_text(), matches)
     }
 
-    /// A big body, switched to `mode` while its parse runs, with the
-    /// user's place on it: searched for "Bearer" on Headers ("aaa" on
-    /// Raw), which puts the cursor on a line and column with matches, or
-    /// with a few cells selected on the first line.
+    /// The tabs other than Tree, which a big body's parse can land behind.
+    const OTHER_TABS: [ViewMode; 3] = [ViewMode::Raw, ViewMode::Headers, ViewMode::Checks];
+
+    /// A big body with a judged check, switched to `mode` while its parse
+    /// runs, with the user's place on it: searched for "Bearer" on Headers
+    /// ("aaa" elsewhere), which puts the cursor on a line and column with
+    /// matches, or with a few cells selected on the first line; and
+    /// scrolled sideways.
     fn reading_mid_parse(body: &str, generation: u64, mode: ViewMode, select: bool) -> Pane {
         let mut r = ready_gen(body, generation);
+        r.set_checks(CheckState::Judged(vec![(true, r#".a | startswith("aaa")"#.into())]));
         r.set_view_mode(mode);
+        assert_eq!(r.view().unwrap().mode, mode);
         let (area, _) = render_buf(&mut r);
         if select {
             assert!(r.begin_selection_at(area.x + 1, area.y));
@@ -8146,24 +8151,68 @@ mod tests {
             assert!(v.at_col.is_some_and(|(_, c)| c > 0), "{mode:?}: off column 0");
             assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
         }
+        r.view.as_mut().unwrap().h_scroll = 2;
         r
     }
 
     /// #313: a parse that lands while another tab is up is about the Tree
     /// tab only. That tab's lines didn't change, so the user's place on
-    /// it stays as they left it.
+    /// it stays as they left it, through the reconcile that applies no
+    /// filter to the new tree too.
     #[test]
     fn a_tree_landing_on_another_tab_leaves_that_tab_alone() {
         let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
-        for mode in [ViewMode::Raw, ViewMode::Headers] {
+        for mode in OTHER_TABS {
             for select in [false, true] {
                 let mut r = reading_mid_parse(&body, 7, mode, select);
                 let before = where_the_user_is(&r);
                 assert!(r.attach_tree(7, JsonTree::parse(&body)));
                 assert!(r.view().unwrap().tree.is_some(), "the tree waits on its tab");
                 assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}");
+                assert!(r.apply_jq("", 0, LIMIT).is_none());
+                assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}: no filter");
             }
         }
+    }
+
+    /// #313: with a filter on, the tree's landing runs it, and its output
+    /// landing while another tab is up leaves that tab alone too, whether
+    /// it is a tree or a note; so does the filter being switched off.
+    #[test]
+    fn a_filter_landing_on_another_tab_leaves_that_tab_alone() {
+        let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
+        for mode in OTHER_TABS {
+            for select in [false, true] {
+                for output in ["7", "null"] {
+                    let case = format!("{mode:?}, select {select}, {output}");
+                    let mut r = reading_mid_parse(&body, 7, mode, select);
+                    let before = where_the_user_is(&r);
+                    assert!(r.attach_tree(7, JsonTree::parse(&body)));
+                    let req = r.apply_jq(".n", 0, LIMIT).expect("a background run");
+                    let out = JqRunOutput::from_outputs(vec![output.to_string()]);
+                    assert!(r.attach_jq_result(7, req.run, None, Ok(out)), "{case}");
+                    let shown = r.view().unwrap().jq_tree.is_some();
+                    assert_eq!(shown, output == "7", "{case}: the output landed");
+                    assert_eq!(r.jq_bar().note, (output == "null").then_some("null"), "{case}");
+                    assert_eq!(where_the_user_is(&r), before, "{case}");
+                    assert!(r.apply_jq("", 0, LIMIT).is_none());
+                    assert_eq!(where_the_user_is(&r), before, "{case}: switched off");
+                }
+            }
+        }
+    }
+
+    /// #313: on the Tree tab the landed tree is new lines, so the place
+    /// starts over on it, sideways scroll included.
+    #[test]
+    fn a_tree_landing_on_the_tree_tab_starts_it_over() {
+        let body = big_json();
+        let mut r = ready_gen(&body, 2);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+        r.view.as_mut().unwrap().h_scroll = 3;
+        assert!(r.attach_tree(2, JsonTree::parse(&body)));
+        let v = r.view().unwrap();
+        assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None));
     }
 
     /// #313: a parse that says "not JSON" while another tab is up takes the
@@ -8171,7 +8220,7 @@ mod tests {
     #[test]
     fn a_failed_parse_on_another_tab_only_drops_the_tree_tab() {
         let body = format!("{{\"a\": \"aaa{}", "x".repeat(SYNC_PRETTY_BYTES));
-        for mode in [ViewMode::Raw, ViewMode::Headers] {
+        for mode in OTHER_TABS {
             for select in [false, true] {
                 let mut r = reading_mid_parse(&body, 3, mode, select);
                 let before = where_the_user_is(&r);

@@ -26992,16 +26992,21 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     assert_eq!(tree.line_count(), 1, "the output tree is built by the worker, not on attach");
 }
 
-/// #313: a big body's parse landing while Headers is up, with no filter
-/// on, leaves the selection made there during the wait, through the
-/// update's jq reconcile too, whether the parse made a tree or not.
+/// #313: a big body's parse landing while Headers is up leaves the
+/// selection made there during the wait, through the update's jq
+/// reconcile and the filter's run when one is on, whether the parse made
+/// a tree or not.
 #[test]
 fn a_big_bodys_parse_landing_keeps_a_selection_on_headers() {
     use crate::components::response::{SYNC_PRETTY_BYTES, ViewMode};
     let big = format!(r#"{{"pad": "{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
-    for parsed in [true, false] {
+    for (parsed, filter) in [(true, false), (false, false), (true, true), (false, true)] {
+        let case = format!("parsed {parsed}, filter {filter}");
         let mut app = App::new_for_test();
         ready_response(&mut app, &big);
+        if filter {
+            app.update(Action::JqApply(".pad | length".into()));
+        }
         app.update(Action::ResponseViewMode(ViewMode::Headers));
         render_once(&mut app);
         let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
@@ -27011,15 +27016,23 @@ fn a_big_bodys_parse_landing_keeps_a_selection_on_headers() {
         let selected = app.session.response.selected_text();
         assert!(selected.is_some(), "a selection to keep");
 
+        let generation = app.session.send_generation;
+        assert!(app.session.response.awaits_tree(generation), "{case}: a parse to land");
         let tree = if parsed { crate::components::json_tree::JsonTree::parse(&big) } else { None };
-        app.update(Action::PrettyParsed {
-            generation: app.session.send_generation,
-            tree: tree.map(Box::new),
-        });
+        app.update(Action::PrettyParsed { generation, tree: tree.map(Box::new) });
         render_once(&mut app);
-        let view = app.session.response.view().unwrap();
-        assert_eq!(view.mode, ViewMode::Headers, "parsed {parsed}");
-        assert_eq!(app.session.response.selected_text(), selected, "parsed {parsed}");
+        let response = &app.session.response;
+        assert!(!response.awaits_tree(generation), "{case}: the parse landed");
+        let tree_tab = response.tab_modes().unwrap().contains(&ViewMode::Pretty);
+        assert_eq!(tree_tab, parsed, "{case}");
+        assert!(response.jq_bar().pending.is_none(), "{case}: no run left going");
+        assert_eq!(response.view().unwrap().mode, ViewMode::Headers, "{case}");
+        assert_eq!(response.selected_text(), selected, "{case}");
+        if parsed && filter {
+            app.update(Action::ResponseViewMode(ViewMode::Pretty));
+            let shown = app.session.response.view().unwrap().view_text();
+            assert_eq!(shown, SYNC_PRETTY_BYTES.to_string(), "the filter ran on the tree");
+        }
     }
 }
 

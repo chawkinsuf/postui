@@ -45,11 +45,11 @@ change the project file format.
 
 ### Fixed
 
-- When a large response's Tree finishes loading while another of its tabs
-  is up and no jq filter is on, that tab keeps its selection, cursor and
-  search matches. A body
-  that turns out not to be JSON no longer moves the view from Headers or
-  Checks to Raw: only the Tree tab goes.
+- When a large response's Tree, or a jq filter's result, finishes loading
+  while another of the response's tabs is up, that tab keeps its
+  selection, cursor, scroll and search matches. A body that turns out not
+  to be JSON no longer moves the view from Headers or Checks to Raw: only
+  the Tree tab goes.
 
 ## [0.4.1] - 2026-11-13
 
