@@ -29043,29 +29043,43 @@ async fn a_send_ends_the_ai_request() {
 }
 
 /// Esc, and a quit (the app dropped, before the runtime would drop the
-/// task), kill the running command itself (#314; `ai::tests` pins that a
-/// kill reaches what `sh` forked).
+/// task), kill the command `sh` forked, not only `sh` (#314).
 #[tokio::test]
 async fn cancelling_or_quitting_kills_the_ai_command() {
+    use rustix::process::{Pid, test_kill_process};
+    let dir = tempfile::tempdir().unwrap();
     for quit in [false, true] {
+        let pid_file = dir.path().join(format!("sleep-{quit}"));
         let mut app = App::new_for_test();
         ready_response(&mut app, JQ_BODY);
-        stub_ai(&mut app, "sleep 30; echo .x");
+        stub_ai(&mut app, &format!("sleep 30 & echo $! > '{}'; wait", pid_file.display()));
         app.update(Action::RunJqDescribe("x".into()));
-        let run = std::sync::Arc::clone(&app.ai_task.as_ref().unwrap().run);
+        let mut forked = None;
         for _ in 0..2000 {
-            if run.is_running() {
+            forked = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+                .and_then(Pid::from_raw);
+            if forked.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        assert!(run.is_running(), "quit {quit}: the command started");
+        let forked = forked.unwrap_or_else(|| panic!("quit {quit}: sh forked sleep"));
         if quit {
             drop(app);
         } else {
             app.update(Action::CancelJqDescribe);
         }
-        assert!(run.is_over(), "quit {quit}: the command is killed");
+        let mut alive = true;
+        for _ in 0..2000 {
+            alive = test_kill_process(forked).is_ok();
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(!alive, "quit {quit}: the forked sleep is killed");
     }
 }
 

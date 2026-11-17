@@ -317,10 +317,11 @@ and ending a request kills the whole group (SIGKILL), so it reaches what
 `sh` forked and what the command itself started, not only `sh`. Every way
 a request ends early kills it: Esc, a new request, its view leaving the
 screen, and quitting the app, which kills it before the runtime is shut
-down (a quit doesn't wait for the runtime to drop its tasks). Its cost: a
-command outside the terminal's foreground group no longer gets the
-terminal's own SIGHUP when the window closes under the app, and one that
-reads the terminal is stopped (SIGTTIN) until the request ends.
+down (a quit doesn't wait for the runtime to drop its tasks). Its cost,
+put to the user on #314 and open: a command outside the terminal's
+foreground group no longer gets the terminal's own SIGHUP when the window
+closes under the app, and one that reads the terminal is stopped (SIGTTIN)
+until the request ends.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the

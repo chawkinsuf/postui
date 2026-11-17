@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::SystemTime;
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 /// Whether `cmd`'s program (`program_name`) resolves on `PATH` (or is an
 /// existing path).
@@ -143,42 +143,72 @@ pub async fn run_command(
     stdin: String,
     run: &CommandRun,
 ) -> Result<CommandOutput, String> {
-    let mut child = {
-        // Held across the spawn, so a `kill` either comes first and nothing
-        // starts, or comes after and finds the pid.
+    if run.is_over() {
+        return Err("cancelled".into());
+    }
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // `id` is `None` only once the child has been waited on.
+    let Some(pid) = child.id().and_then(|id| Pid::from_raw(i32::try_from(id).ok()?)) else {
+        return Err("the command has no pid".into());
+    };
+    {
         let mut state = run.state();
         if matches!(*state, RunState::Over) {
+            // Killed while it was being started.
+            let _ = rustix::process::kill_process_group(pid, Signal::KILL);
             return Err("cancelled".into());
         }
-        let child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        if let Some(pid) = child.id().and_then(|id| Pid::from_raw(i32::try_from(id).ok()?)) {
-            *state = RunState::Running(pid);
-        }
-        child
-    };
+        *state = RunState::Running(pid);
+    }
     if let Some(mut pipe) = child.stdin.take() {
         // A child that exits early closes the pipe; that is reported by
-        // wait_with_output below, not here.
+        // its exit status below, not here.
         let _ = pipe.write_all(stdin.as_bytes()).await;
         drop(pipe);
     }
-    let out = child.wait_with_output().await;
-    *run.state() = RunState::Over;
-    let out = out.map_err(|e| e.to_string())?;
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let read = match (child.stdout.take(), child.stderr.take()) {
+        (Some(mut out), Some(mut err)) => {
+            tokio::try_join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr)).map(|_| ())
+        }
+        _ => Ok(()),
+    };
+    // `sh` is reaped only here, under the run's lock, and the run is over
+    // from then: a `kill` signals the group only while `sh`, running or a
+    // zombie, still holds its id.
+    let status = loop {
+        {
+            let mut state = run.state();
+            match child.try_wait() {
+                Ok(None) => {}
+                Ok(Some(status)) => {
+                    *state = RunState::Over;
+                    break Ok(status);
+                }
+                Err(e) => {
+                    *state = RunState::Over;
+                    break Err(e);
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    read.map_err(|e| e.to_string())?;
+    let status = status.map_err(|e| e.to_string())?;
     Ok(CommandOutput {
-        success: out.status.success(),
-        status: out.status.to_string(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        success: status.success(),
+        status: status.to_string(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }
 
@@ -290,9 +320,13 @@ mod tests {
             let run = std::sync::Arc::clone(&run);
             async move { run_command("sleep 30; echo .x".into(), String::new(), &run).await }
         });
-        while !run.is_running() {
+        for _ in 0..2000 {
+            if run.is_running() {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        assert!(run.is_running(), "the command started");
         run.kill();
         let out = tokio::time::timeout(Duration::from_secs(10), task)
             .await
