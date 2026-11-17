@@ -294,10 +294,10 @@ pub struct JqCompletion {
     index: usize,
     /// A key fetch outstanding on the blocking pool: its sequence number
     /// and the expression it is for. Only the newest fetch's result is
-    /// kept. The caret moving off its context, or the bar blurring, leaves
+    /// kept. The caret moving off its context, or the bar blurring or
+    /// closing (which keeps the text and this cache for a reopen), leaves
     /// it running, since its keys are cached when it lands; the cost is a
-    /// core busy beside the bar's run until it ends or reaches the limit
-    /// (#315 spec C2).
+    /// core busy until it ends or reaches the limit (#315 spec C2).
     pending: Option<(JqWait, String)>,
     seq: u64,
 }
@@ -10886,6 +10886,29 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
 
+    /// #315 spec C2: closing the bar keeps its text and the completion
+    /// cache, so a lookup that lands while it is closed serves the bar
+    /// reopened on the same filter.
+    #[test]
+    fn a_lookup_landing_while_the_bar_is_closed_serves_its_reopening() {
+        let big = big_body("pad");
+        let mut r = big_body_bar(&big, 3, ".");
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
+            .expect("a big body fetches keys on the pool");
+        r.close_jq();
+        assert!(r.apply_jq("", SYNC_PRETTY_BYTES, LIMIT).is_none());
+        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        assert!(!r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad", "n"]), None));
+        assert!(r.open_jq());
+        r.apply_jq(".", SYNC_PRETTY_BYTES, LIMIT);
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
+            "the keys that landed are cached, not fetched again"
+        );
+        assert_eq!(r.jq_ghost(), Some("pad"));
+    }
+
     fn shift(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
@@ -11867,8 +11890,8 @@ mod tests {
 
     /// #315: completion's pool lookup is cancelled once the bar lets go of
     /// it (another lookup, a new response, a request switch, a shed, the
-    /// response dropped); the caret moving off it, or the bar blurring,
-    /// doesn't, since its keys are still cached on arrival.
+    /// response dropped); the caret moving off it, or the bar blurring or
+    /// closing, doesn't, since its keys are still cached on arrival.
     #[test]
     fn a_lookup_the_bar_lets_go_of_is_cancelled() {
         let gone = |release: &dyn Fn(&mut Pane)| {
@@ -11901,6 +11924,13 @@ mod tests {
             assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
         };
         assert!(!gone(&blur), "the bar blurred");
+        let close = |r: &mut Pane| {
+            r.close_jq();
+            assert!(!r.jq_enabled(), "the filter is switched off");
+            assert!(r.apply_jq("", SYNC_PRETTY_BYTES, LIMIT).is_none());
+            assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        };
+        assert!(!gone(&close), "the bar closed");
     }
 
     /// The cells of the buffer row `y`, joined.

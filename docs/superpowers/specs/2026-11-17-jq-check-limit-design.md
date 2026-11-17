@@ -410,8 +410,8 @@ this task only forgot the number; the worker's `Stop` was out of reach.
 | # | Rule | Source |
 |---|---|---|
 | C1 | A jq bar pool run is cancelled as soon as the bar lets go of it: the filter edited (run or not) or cleared, a new response or a re-send, another request opened, the response shed or dropped. It ends at its next step. | mine (approved) (#308 comment 1437, option B's shape, filed as #315 by A) |
-| C2 | Completion's pool key lookup is cancelled the same way when a new lookup replaces it, a new response comes, another request is opened, or the response is shed or dropped. The caret moving off it, or the bar blurring, does not: its keys are still cached when it lands (the completion spec, 2026-09-03, caches a lookup whose context has moved on), at the cost of a core busy beside the bar's run until the lookup ends or reaches the limit. | mine (approved), as C1; the caret rule: mine |
-| C3 | A cancelled run's result is dropped, as a superseded run's already was; its parse of the body is still handed back and kept (B6). A parse under way is not cut short: the switch is read by the run's steps, so a run let go of while it parses stops once the parse is done. | mine |
+| C2 | Completion's pool key lookup is cancelled the same way when a new lookup replaces it, a new response comes, another request is opened, or the response is shed or dropped. The caret moving off it, or the bar blurring or closing, does not: its keys are still cached when it lands (the completion spec, 2026-09-03, caches a lookup whose context has moved on), and closing keeps the bar's text and that cache, so a reopened bar uses them. The cost is a core busy until the lookup ends or reaches the limit. | mine (approved), as C1; the caret rule: mine |
+| C3 | A cancelled run's result is dropped, as a superseded run's already was; its parse of the body is still handed back and kept (B6). A parse under way is not cut short: the switch is read by the run's steps, so a run let go of while it parses stops once the parse is done. The switch is not read before the parse either: tokio's blocking pool starts a thread for a job when none is idle, so a job doesn't wait in a queue, and is let go of before its parse only in the moment it takes to start. | mine |
 | C4 | A run still going for the same filter is still awaited when only the limit changes (section 7). The reason given there, that superseding left two runs busy, no longer holds; it stays because the case needs `project.toml` edited while a run is going, and the run is judged when it lands (a stop at the old limit runs again under the new one). | mine |
 | C5 | Checks, inline runs and `run --jq` take no cancel. Inline runs and `run --jq` have nothing that lets go of them while they run. The check job of a response that is replaced (a re-send) still runs to its end or each check's limit: it is not the bar's, and covering it needs a switch on the response's check state that a re-send sets but a request switch doesn't, since a check job's lines still land in its request's cached response. | mine |
 
@@ -423,7 +423,14 @@ this task only forgot the number; the worker's `Stop` was out of reach.
   it on each step beside the timer's flag, and a cancelled run fails whole
   with the new `JqError::Cancelled` (message `cancelled`, no span, not a
   stop at a limit, so nothing remembers it as one). The unwind marker
-  carries the run's error.
+  carries the run's error. The switch stays apart from the timer's flag,
+  since the switch is the caller's and outlives the run; reading both on
+  each step measured no slower (release build, three rounds each of
+  `last(range(3e7))`, `[range(2e6) | {a: ., b: [.]}] | length` and
+  `reduce range(1e7) as $x (0; . + $x)`, with and without a switch given:
+  0.70 to 0.72 s, 1.53 to 1.90 s and 1.63 to 1.69 s; with the switch's
+  check taken out, 0.74 to 1.04 s, 1.59 to 2.07 s and 1.57 to 1.74 s, on a
+  machine shared with other builds).
 - App: `JqWait { id, cancel }` is what `JqBar::pending` and
   `JqCompletion::pending` hold; dropping it cancels the switch. So every
   path that clears or replaces the wait cancels the run, with no list of
@@ -460,6 +467,6 @@ one before rather than adding a core and two threads.
 | C1 | `jq`: a run cancelled from another thread while it goes ends with `Cancelled`, well before a 60 s limit, for loops through `range`, `repeat`, a recursive `def` and a `try`; one cancelled before it starts doesn't run; an unset switch changes nothing. |
 | C2 | `complete`: a lookup cancelled while it goes ends well before its limit, with no `stopped_at`. |
 | C1, C4 | response: a pool run's switch is set by a new filter, a syntax error, a cleared bar, `drop_pending_jq`, a shed, a new response, a re-send and the response dropped; not by the same filter written back or only the limit changed. |
-| C2 | response: a pool lookup's switch is set by another lookup, a new response, `drop_pending_jq`, a shed and the response dropped; not by the caret moving off the end or the bar blurring. |
+| C2 | response: a pool lookup's switch is set by another lookup, a new response, `drop_pending_jq`, a shed and the response dropped; not by the caret moving off the end, the bar blurring or the bar closing; a lookup that lands while the bar is closed serves it reopened. |
 | C1 | app: a request switch (`Session::sync_open`) cancels the run left behind. |
 | C3 | app: `jq_worker` with a cancelled switch and a never-ending filter returns at once with `Cancelled` and the parsed document. |

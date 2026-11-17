@@ -2240,7 +2240,10 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 /// The run stops at the request's limit (#308), or once the bar lets go of
 /// it (#315). Neither reaches the parse: the limit counts from after it
 /// (#308 spec B4), and the switch is read by the run's steps, so a run let
-/// go of while it parses stops once the parse is done. The parse this
+/// go of while it parses stops once the parse is done. Nor is the switch
+/// read before the parse: tokio's blocking pool starts a thread for a job
+/// when none is idle (up to 512), so a job is let go of before its parse
+/// only in the moment it takes to start. The parse this
 /// worker made comes back beside the result, failed or cancelled or not,
 /// so the next run needn't read the body again (#308 spec B6).
 pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Action {

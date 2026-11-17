@@ -64,6 +64,8 @@ struct Stopped(JqError);
 
 impl Stop {
     /// One step of the run: unwinds with [`Stopped`] once a flag is set.
+    /// The switch is a second load on every step; measured no slower than
+    /// the timer's flag alone (#315 spec section 8).
     fn tick(&self) {
         if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
             std::panic::resume_unwind(Box::new(Stopped(JqError::Stopped { limit: self.limit })));
