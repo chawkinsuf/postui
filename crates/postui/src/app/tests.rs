@@ -27105,6 +27105,47 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
     assert_eq!(keys.stopped_at, None);
 }
 
+/// #318: a key lookup started on one request lands after a switch to
+/// another, whose own lookup has the same number. The open request's
+/// lookup keeps waiting, uncancelled.
+#[test]
+fn a_key_lookup_from_a_request_left_behind_leaves_the_open_ones_alone() {
+    use crate::components::response::JQ_SYNC_BYTES;
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Response;
+    app.editor.jq = ".".into();
+    // A lookup left outstanding on the pool: started directly, since
+    // outside a tokio runtime `sync_jq` would run it inline.
+    let lookup = |app: &mut App| {
+        app.session.send_generation += 1;
+        ready_response(app, JQ_BODY);
+        let limit = app.meta().jq_limit();
+        let response = &mut app.session.response;
+        response.set_jq_focus(true);
+        response.jq_bar_mut().input = LineInput::new(".");
+        response.refresh_jq_completion(JQ_SYNC_BYTES, limit).expect("a lookup on the pool")
+    };
+    let a = lookup(&mut app);
+    // The switch the next update would make, made here so B's lookup can
+    // start after it.
+    app.editor.slug = Some("b".into());
+    assert!(app.session.sync_open(&app.editor.slug.clone()));
+    assert!(a.cancel.is_cancelled(), "A's lookup went with its response");
+    let b = lookup(&mut app);
+    assert_eq!(a.seq, b.seq, "the two responses' numbers meet");
+    app.update(Action::JqCompleteFinished {
+        generation: a.generation,
+        seq: a.seq,
+        input_expr: a.input_expr.clone(),
+        keys: postui_core::jq::complete::Keys { keys: vec!["zzz".into()], stopped_at: None },
+        doc: None,
+    });
+    let completion = &app.session.response.jq_bar().completion;
+    assert_eq!(completion.pending(), Some(b.seq), "the open request still waits on its lookup");
+    assert!(!b.cancel.is_cancelled(), "and has not cancelled it");
+    assert_eq!(app.session.response.jq_ghost(), None);
+}
+
 /// #308 spec B1, B6: with the project's `jq_limit_ms` at 50, a filter that
 /// never ends, run on the pool over a big body, fails with the limit's
 /// error under the bar, and the run's parse of the body still reaches the

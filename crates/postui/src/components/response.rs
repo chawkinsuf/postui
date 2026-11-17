@@ -3094,8 +3094,7 @@ impl Response {
         // the old document does: the cached keys are for a body that is
         // gone, and an in-flight pool fetch will be dropped on arrival, so
         // forget it here or `refresh_jq_completion` would never re-issue
-        // it. The sequence counter is kept so that stale fetch can't
-        // collide with a fresh one's `seq` (as in `shed_derived`).
+        // it. The sequence counter carries on, as in `shed_derived`.
         self.jq.completion =
             JqCompletion { seq: self.jq.completion.seq, ..JqCompletion::default() };
     }
@@ -3798,15 +3797,16 @@ impl Response {
         })
     }
 
-    /// Lands a pool key fetch. Keys for a view that is not on screen (a
-    /// stale `generation`), or from a fetch a newer one has superseded (a
-    /// stale `seq`), are dropped without being cached. The generation is
-    /// checked first: `seq` counts per response, so a fetch started on
-    /// another request can carry the number of this one's outstanding
-    /// fetch, and must leave it waiting (#318). A valid attach caches the
-    /// keys even when the caret's context has moved on; the ghost updates
-    /// only if that context still asks for this expression. Returns
-    /// whether the ghost changed.
+    /// Lands a pool key fetch. Keys for another view (another `generation`:
+    /// another request's response, or this request's before a new one
+    /// came), or from a fetch a newer one has superseded (a stale `seq`),
+    /// are dropped without being cached. The generation is checked first:
+    /// `seq` counts per response, so a fetch started on another request
+    /// can carry the number of this one's outstanding fetch, and must
+    /// leave it waiting (#318). A valid attach caches the keys even when
+    /// the caret's context has moved on; the ghost updates only if that
+    /// context still asks for this expression. Returns whether the ghost
+    /// changed.
     pub fn attach_jq_completion(
         &mut self,
         generation: u64,
