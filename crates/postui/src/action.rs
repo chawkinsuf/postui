@@ -662,6 +662,17 @@ pub enum Action {
     ResponseArrived {
         generation: u64,
         data: Box<crate::http::ResponseData>,
+        /// How the response's checks stand as it arrives: none, judged,
+        /// or (a jq check has to read the body) being judged, with
+        /// `ChecksJudged` to follow.
+        checks: crate::components::response::CheckState,
+    },
+    /// The jq checks of the response of `generation` finished: its Checks
+    /// tab's lines, for whichever response slot that send made (on screen
+    /// or cached). Dropped when that response is gone.
+    ChecksJudged {
+        generation: u64,
+        lines: Vec<(bool, String)>,
     },
     /// A background send task failed. Same staleness handling as
     /// `ResponseArrived`.

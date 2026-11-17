@@ -97,11 +97,12 @@ read's own limits, so the app's refusal and the file's are one rule.
 response until its checks were judged). The send's task takes the
 editor's checks at the send and hands the response over as it arrives
 (`Action::ResponseArrived`), with how its checks stand
-(`response::CheckState`): none, the judged lines when no jq check has
-to read the body (`ResponseData::check_lines`, run in the task), or
-being judged. For the last the same task then runs the checks once
-over its copy of the response, on the blocking pool
-(`http::run_checks`, the suite's hop too), and sends the lines as
+(`response::CheckState`, from `CheckState::on_arrival`): none, the
+judged lines when no jq check has to read the body
+(`ResponseData::check_lines`, run in the task), or being judged. For
+the last the same task then runs the checks once over its copy of the
+response, on the blocking pool (`ResponseData::judge`, through
+`http::run_checks`, the suite's hop too), and sends the lines as
 `Action::ChecksJudged` with the send's generation.
 `Session::checks_arrived` gives them to the response that send made, on
 screen or in the session's cache, found by its view's generation as a
@@ -441,16 +442,20 @@ lines find it by its generation as above.
 
 - The send (`tests/http_integration.rs`): a request with a jq check
   sent to a local server arrives judging, then its lines land; one with
-  only a status check and a limit arrives judged.
-- Response: the three states' tab, label, text and paint; the label's
-  width is the same judging and judged; lines landing with the Checks
+  only a status check arrives judged and nothing follows. `http.rs`:
+  the lines a sent response is judged into, and the one failed line of
+  a run that panicked.
+- Response: the three states' tab, label, text and paint; the tab's
+  cells are the same judging and judged; lines landing with the Checks
   tab up reset the cursor, the selection, the search's matches and the
-  width; lines for another generation are refused.
+  width, and on another tab leave the cursor and the selection.
 - Session: lines land on a cached response, a shed one included, and
-  are dropped after a new send, a cancel and a reset.
-- App: `ChecksJudged` for the open request, for a request navigated
-  away from, and for a send since replaced; copy while judging; checks
-  that crash, a body that isn't JSON, a failed send.
+  are dropped after a new send and a reset.
+- App, in both profiles: the response is ready with its tab on
+  `checking…`; copy and search act on that line; `ChecksJudged` fills
+  the tab with no toast and no tab switched. Lines for a request
+  navigated away from, for a send since replaced (in flight, arrived,
+  failed) and for a deleted request.
 
 ### `mine` details, for veto
 

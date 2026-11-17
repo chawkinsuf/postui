@@ -238,6 +238,58 @@ async fn drain_until_settled(
     }
 }
 
+/// Checks tabs spec 2026-11-16, section 7: a send hands the response over
+/// as it arrives. With a jq check its Checks tab says `checking…` until
+/// the lines follow; with none that reads the body it arrives judged and
+/// nothing follows.
+#[tokio::test]
+async fn a_response_arrives_before_its_jq_checks_are_judged() {
+    use postui::components::response::ViewMode;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
+    let checks_tab = |app: &mut postui::app::App| {
+        app.update(Action::ResponseViewMode(ViewMode::Checks));
+        let view = app.session.response.view().filter(|v| v.mode == ViewMode::Checks);
+        view.map(|v| v.view_text())
+    };
+    for (slug, checks, on_arrival, judged) in [
+        (
+            "main/slow",
+            "status = 200\njq = ['.ok', '.n == 1']",
+            "checking\u{2026}",
+            Some("✓ status 200\n✓ .ok\n✗ .n == 1 gave false"),
+        ),
+        ("main/quick", "status = 200", "✓ status 200", None),
+    ] {
+        let toml = format!("url = \"{}/x\"\n[checks]\n{checks}\n", server.uri());
+        let req = HttpRequest::from_toml_str(&toml).unwrap();
+        postui_core::fixtures::save_request(dir.path(), slug, &req).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest(slug.into()));
+        app.update(Action::ForceSend);
+        drain_until_settled(&mut app, &mut rx).await;
+        assert_eq!(checks_tab(&mut app).as_deref(), Some(on_arrival), "{slug}");
+        let wait = Duration::from_millis(if judged.is_some() { 5000 } else { 300 });
+        let next = tokio::time::timeout(wait, rx.recv()).await;
+        match judged {
+            Some(lines) => {
+                let action = next.expect("the lines follow").unwrap();
+                assert!(matches!(action, Action::ChecksJudged { .. }), "{action:?}");
+                app.update(action);
+                assert_eq!(checks_tab(&mut app).as_deref(), Some(lines));
+            }
+            None => assert!(next.is_err(), "nothing follows: {next:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn send_substitutes_vars_and_applies_default_headers() {
     let server = MockServer::start().await;

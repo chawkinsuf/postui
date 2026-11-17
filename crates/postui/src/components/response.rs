@@ -748,14 +748,13 @@ pub struct ReadyView {
     /// with (secrets masked — the real values live in `ResponseData`).
     header_lines: Vec<String>,
     header_rows: Vec<HeaderRow>,
-    /// The Checks tab's lines as the response carries them
-    /// (`ResponseData::checks`): whether each passed, and what `postui
-    /// run -v` lists for it. Empty when it carries none, and so has no
-    /// such tab (spec P1). The mark is not stored: the tab's text leads
-    /// each line with it ([`Self::check_texts`]) and the paint colours
-    /// it, both from the verdict. So the tab's text is made on each read,
-    /// a copy of its few lines, where Headers' is borrowed.
-    check_lines: Vec<(bool, String)>,
+    /// How the response's checks stand, which is all the Checks tab is
+    /// made from: its presence, label, text and paint
+    /// ([`Response::set_checks`] writes it). The mark is not stored: the
+    /// tab's text leads each line with it ([`Self::check_texts`]) and the
+    /// paint colours it, both from the verdict. So the tab's text is made
+    /// on each read, a copy of its few lines, where Headers' is borrowed.
+    checks: CheckState,
     pub cursor: usize,
     pub scroll: usize,
     /// Column offset of the body viewport — verbatim lines are never
@@ -880,6 +879,64 @@ pub struct ReadyView {
     /// scrolled sideways, by line — built lazily by `index_raw_rows`, never
     /// invalidated (the raw lines are immutable for the view's life).
     raw_marks: HashMap<usize, Vec<ColMark>>,
+}
+
+/// How a response's checks stand (checks tabs spec 2026-11-16, section
+/// 7): judged once, with the request's checks as they were at the send.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CheckState {
+    /// The request sent had no checks: the response has no Checks tab.
+    #[default]
+    None,
+    /// Its jq checks are still running.
+    Judging,
+    /// A line for each check: whether it passed, and what `postui run -v`
+    /// lists for it (`postui_core::checks::lines`). The lines and not the
+    /// outcomes, which hold a jq check's every output whole.
+    Judged(Vec<(bool, String)>),
+}
+
+impl CheckState {
+    /// The tab's one line while the checks are judged.
+    const CHECKING: &str = "checking\u{2026}";
+    /// What the tab's label carries meanwhile, where the verdict's mark
+    /// will go and as wide.
+    const CHECKING_MARK: &str = "\u{2026}";
+
+    /// How `data`'s checks stand as it arrives. Checks that read no body
+    /// are judged here; with a jq check among them they are all judged
+    /// together, after the response is shown.
+    pub fn on_arrival(
+        data: &crate::http::ResponseData,
+        checks: &postui_core::model::Checks,
+    ) -> Self {
+        if checks.is_empty() {
+            Self::None
+        } else if checks.jq.is_empty() {
+            Self::Judged(data.check_lines(checks))
+        } else {
+            Self::Judging
+        }
+    }
+
+    /// The tab's rows, each a verdict and a text; [`Self::CHECKING`] has
+    /// no verdict.
+    fn rows(&self) -> Vec<(Option<bool>, &str)> {
+        match self {
+            Self::None => Vec::new(),
+            Self::Judging => vec![(None, Self::CHECKING)],
+            Self::Judged(lines) => lines.iter().map(|(p, l)| (Some(*p), l.as_str())).collect(),
+        }
+    }
+
+    /// Whether the response passed, as `run` and `suite` give it (P3),
+    /// once it is judged.
+    fn verdict(&self) -> Option<bool> {
+        match self {
+            Self::Judged(lines) => Some(postui_core::checks::passed(lines)),
+            Self::None | Self::Judging => None,
+        }
+    }
 }
 
 /// What a line of the Headers tab is: a header the server answered with
@@ -1051,7 +1108,7 @@ impl ReadyView {
             raw: Arc::new(RawBody::split(&data.body)),
             header_lines,
             header_rows,
-            check_lines: data.checks.clone(),
+            checks: CheckState::None,
             cursor: 0,
             scroll: 0,
             h_scroll: 0,
@@ -1100,14 +1157,14 @@ impl ReadyView {
     }
 
     /// The views on the tab strip, in on-screen order: Pretty (when there
-    /// is a tree to show), Raw, Headers, Checks (when the response carries
-    /// check lines, spec P1). `response_tab_defs` draws them.
+    /// is a tree to show), Raw, Headers, Checks (when the request sent had
+    /// checks, spec P1). `response_tab_defs` draws them.
     fn tab_modes(&self) -> Vec<ViewMode> {
         [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers, ViewMode::Checks]
             .into_iter()
             .filter(|m| match m {
                 ViewMode::Pretty => self.has_tree_view(),
-                ViewMode::Checks => !self.check_lines.is_empty(),
+                ViewMode::Checks => self.checks != CheckState::None,
                 ViewMode::Raw | ViewMode::Headers => true,
             })
             .collect()
@@ -1172,12 +1229,13 @@ impl ReadyView {
     }
 
     /// The Checks tab's lines as text (spec P2): each check's mark, then
-    /// its line. What search, copy, save and `$EDITOR` act on.
+    /// its line; the line that says they are being judged has no mark.
+    /// What search, copy, save and `$EDITOR` act on.
     fn check_texts(&self) -> impl Iterator<Item = String> + '_ {
-        let text = |(passed, line): &(bool, String)| {
-            format!("{} {line}", crate::paint::verdict_mark(*passed))
-        };
-        self.check_lines.iter().map(text)
+        self.checks.rows().into_iter().map(|(verdict, line)| match verdict {
+            Some(passed) => format!("{} {line}", crate::paint::verdict_mark(passed)),
+            None => line.to_string(),
+        })
     }
 
     /// How many lines the current view shows right now (collapse included).
@@ -1186,7 +1244,7 @@ impl ReadyView {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_len()),
             ViewMode::Raw => self.raw.lines.len(),
             ViewMode::Headers => self.header_lines.len(),
-            ViewMode::Checks => self.check_lines.len(),
+            ViewMode::Checks => self.checks.rows().len(),
         }
     }
 
@@ -2136,13 +2194,20 @@ impl ReadyView {
             return;
         }
         self.mode = mode;
-        // Selection coordinates live in the old mode's line space. A view
-        // switch forgets the click too (R10), not only hides it.
-        self.clear_sel();
-        self.clicked = None;
         if mode.is_body() {
             self.body_mode = mode;
         }
+        self.lines_replaced();
+    }
+
+    /// The view shows other lines than it did: another tab's, or the
+    /// Checks tab's own once its checks are judged. It starts over on
+    /// them.
+    fn lines_replaced(&mut self) {
+        // Selection coordinates live in the old lines' space. A view
+        // switch forgets the click too (R10), not only hides it.
+        self.clear_sel();
+        self.clicked = None;
         self.cursor_moved();
         self.cursor = 0;
         self.scroll = 0;
@@ -2984,6 +3049,29 @@ impl Response {
     /// slot a finished parse belongs to.
     pub fn awaits_tree(&self, generation: u64) -> bool {
         self.view.as_ref().is_some_and(|v| v.awaits_tree(generation))
+    }
+
+    /// Whether this is the response the send `generation` brought: how
+    /// [`crate::session::Session`] finds the slot that send's checks
+    /// belong to.
+    pub fn is_from(&self, generation: u64) -> bool {
+        self.view.as_ref().is_some_and(|v| v.generation == generation)
+    }
+
+    /// Sets how the response's checks stand: as it arrives, and when its
+    /// jq checks' lines land. With the Checks tab up, the tab's lines are
+    /// other lines now.
+    pub fn set_checks(&mut self, checks: CheckState) {
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
+        view.checks = checks;
+        // The measure's key is the tab and its line count, which one
+        // judged line shares with `checking…`.
+        view.content_width = None;
+        if view.mode == ViewMode::Checks {
+            view.lines_replaced();
+        }
     }
 
     pub fn view(&self) -> Option<&ReadyView> {
@@ -5080,10 +5168,14 @@ fn response_tab_defs(view: &ReadyView, bar: &JqBar, theme: &Theme) -> (TabLabels
             }
             ViewMode::Raw => ("Raw".to_string(), None),
             ViewMode::Headers => ("Headers".to_string(), None),
-            // The response's verdict, as `run` and `suite` give it (P3).
+            // The response's verdict, or the dim mark that holds its place
+            // while the checks are judged, so the tab keeps its width.
             ViewMode::Checks => {
-                let passed = postui_core::checks::passed(&view.check_lines);
-                ("Checks".to_string(), Some(crate::paint::verdict(passed, theme)))
+                let badge = match view.checks.verdict() {
+                    Some(passed) => crate::paint::verdict(passed, theme),
+                    None => (CheckState::CHECKING_MARK, theme.text_muted),
+                };
+                ("Checks".to_string(), Some(badge))
             }
         })
         .collect();
@@ -5355,14 +5447,21 @@ fn body_lines(
             }
         }
         ViewMode::Checks => {
-            // The line as `check_texts` gives it, its mark in the verdict's
-            // colour.
-            for (i, (passed, line)) in view.check_lines.iter().enumerate().take(end).skip(start) {
-                let (mark, colour) = crate::paint::verdict(*passed, t);
-                let pieces = vec![
-                    (mark.to_string(), Style::default().fg(colour)),
-                    (format!(" {line}"), text),
-                ];
+            // The line as `check_texts` gives it: its mark in the verdict's
+            // colour, or with no verdict yet the whole line muted, as a
+            // Headers note is.
+            let rows = view.checks.rows();
+            for (i, (verdict, line)) in rows.into_iter().enumerate().take(end).skip(start) {
+                let pieces = match verdict {
+                    Some(passed) => {
+                        let (mark, colour) = crate::paint::verdict(passed, t);
+                        vec![
+                            (mark.to_string(), Style::default().fg(colour)),
+                            (format!(" {line}"), text),
+                        ]
+                    }
+                    None => vec![(line.to_string(), Style::default().fg(t.text_muted))],
+                };
                 push(i, i, pieces, Vec::new(), true, (0, view.h_scroll));
             }
         }
@@ -6144,7 +6243,6 @@ mod tests {
             elapsed: Duration::from_millis(342),
             size: body.len(),
             content_type: Some("application/json".into()),
-            checks: Vec::new(),
         }
     }
 
@@ -7016,14 +7114,26 @@ mod tests {
         assert!(!out.contains("s3cret"), "the secret never renders: {out}");
     }
 
-    /// A ready response to `body` with `status`, judged by `checks`, as
-    /// the send's task hands it over.
-    fn judged(status: u16, body: &str, checks: &postui_core::model::Checks) -> Pane {
+    /// A ready response to `body` with `status`, its checks as they stand
+    /// when the send's task hands it over.
+    fn arrived(status: u16, body: &str, checks: &postui_core::model::Checks) -> (Pane, Lines) {
         let mut d = data(body);
         d.status = status;
-        d.checks = d.check_lines(checks);
+        let (state, lines) = (CheckState::on_arrival(&d, checks), d.check_lines(checks));
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_checks(state);
+        (r, lines)
+    }
+
+    type Lines = Vec<(bool, String)>;
+
+    /// [`arrived`], and then its jq checks' lines landed.
+    fn judged(status: u16, body: &str, checks: &postui_core::model::Checks) -> Pane {
+        let (mut r, lines) = arrived(status, body, checks);
+        if r.view().unwrap().checks == CheckState::Judging {
+            r.set_checks(CheckState::Judged(lines));
+        }
         r
     }
 
@@ -7092,6 +7202,87 @@ mod tests {
         assert_eq!(r.copyable_header_row(), None);
         let hits = render_hits(&mut r);
         assert!(hits.rect_of(&crate::hit::Hit::HeaderCopy(0)).is_none());
+    }
+
+    /// Section 7, A2 and A4: a response whose request had a jq check
+    /// arrives with its Checks tab on the one line `checking…`, muted, and
+    /// a dim `…` where the verdict's mark goes. Checks that read no body
+    /// arrive judged.
+    #[test]
+    fn checks_being_judged_show_one_line_and_hold_the_marks_place() {
+        let body = r#"{"ok":true}"#;
+        let (mut r, lines) = arrived(500, body, &jq_checks(&[".ok"]));
+        assert_eq!(r.view().unwrap().checks, CheckState::Judging);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty, "no tab switched");
+        assert!(render(&mut r).contains("Checks \u{2026}"), "the mark's place");
+        let tab = crate::hit::Hit::ResponseTab(ViewMode::Checks);
+        let waiting = render_hits(&mut r).rect_of(&tab).unwrap();
+        r.set_view_mode(ViewMode::Checks);
+        let view = r.view().unwrap();
+        assert_eq!((view.view_text().as_str(), view.visible_len()), ("checking\u{2026}", 1));
+        let (area, buf) = render_buf(&mut r);
+        let t = Theme::dark();
+        assert_eq!((buf[(area.x, area.y)].symbol(), buf[(area.x, area.y)].fg), ("c", t.text_muted));
+        // The first `…` in reading order is the label's.
+        let mark = buf.content().iter().find(|c| c.symbol() == "\u{2026}");
+        assert_eq!(mark.unwrap().fg, t.text_muted, "a dim mark on the label");
+        // The lines land: the verdict takes the mark's place and the tab
+        // keeps its cells.
+        r.set_checks(CheckState::Judged(lines));
+        assert!(render(&mut r).contains("Checks \u{2717}"));
+        assert_eq!(render_hits(&mut r).rect_of(&tab).unwrap(), waiting, "nothing on the row moves");
+        assert_eq!(r.view().unwrap().view_text(), "✗ status 500, expected below 400\n✓ .ok");
+        // Only a status check and limits: judged as it arrives.
+        let quick = postui_core::model::Checks {
+            status: vec![200],
+            max_elapsed_ms: Some(60_000),
+            ..Default::default()
+        };
+        let (quick, lines) = arrived(200, body, &quick);
+        assert_eq!(quick.view().unwrap().checks, CheckState::Judged(lines));
+        let none = arrived(500, body, &Default::default()).0;
+        assert_eq!(none.view().unwrap().checks, CheckState::None);
+    }
+
+    /// Section 7's audit: lines that land with the Checks tab up replace
+    /// `checking…` under the cursor, the selection, the search and the
+    /// width's measure, so the tab starts over on them. On another tab
+    /// nothing moves.
+    #[test]
+    fn lines_that_land_with_the_checks_tab_up_start_the_tab_over() {
+        let (mut r, lines) = arrived(200, r#"{"k":1}"#, &jq_checks(&[".k == 1", ".k"]));
+        r.set_view_mode(ViewMode::Checks);
+        let (area, _) = render_buf(&mut r);
+        search_for(&mut r, SearchSyntax::Vim, "k");
+        assert!(r.select_word_at(area.x + 2, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("checking"));
+        let cols = |r: &Pane| {
+            let search = r.view().unwrap().search.as_ref().unwrap();
+            search.matches.iter().map(|m| (m.0, m.1)).collect::<Vec<_>>()
+        };
+        assert_eq!(cols(&r), [(0, 4)]);
+        assert_eq!(r.view().unwrap().measured_width(), Some(9));
+        r.set_checks(CheckState::Judged(lines));
+        let view = r.view().unwrap();
+        assert_eq!(view.view_text(), "✓ .k == 1\n✗ .k gave 1");
+        assert_eq!((view.cursor, view.scroll, view.h_scroll), (0, 0, 0));
+        assert_eq!(r.selected_text(), None, "the selection was of `checking…`");
+        assert_eq!(cols(&r), [(0, 3), (1, 3)], "the search is over the lines");
+        render(&mut r);
+        assert_eq!(r.view().unwrap().measured_width(), Some(11), "measured again");
+        // One judged line has `checking…`'s line count: still measured again.
+        let (mut one, lines) = arrived(200, r#"{"k":1}"#, &jq_checks(&[".k"]));
+        one.set_view_mode(ViewMode::Checks);
+        render(&mut one);
+        one.set_checks(CheckState::Judged(lines));
+        assert_eq!(one.view().unwrap().measured_width(), None);
+        // On another tab the cursor and the selection stay.
+        let (mut r, lines) = arrived(200, "a\nb\nc", &jq_checks(&[".k"]));
+        let (area, _) = render_buf(&mut r);
+        r.handle_key(key(KeyCode::Down));
+        assert!(r.select_word_at(area.x, area.y + 2));
+        r.set_checks(CheckState::Judged(lines));
+        assert_eq!((r.view().unwrap().cursor, r.selected_text().as_deref()), (1, Some("c")));
     }
 
     /// `c` (the router's row) copies the header under the cursor; on the

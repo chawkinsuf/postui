@@ -28,7 +28,6 @@ fn ready(app: &mut App, body: &str) {
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
-            checks: Vec::new(),
         })),
         app.session.send_generation,
     );

@@ -1924,7 +1924,6 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -3347,7 +3346,6 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             content_type: Some("text/plain".into()),
-            checks: Vec::new(),
         })),
         0,
     );
@@ -3630,7 +3628,6 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -4011,7 +4008,6 @@ fn app_with_wide_response() -> App {
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -8986,9 +8982,9 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
         elapsed: std::time::Duration::from_millis(1),
         size: 4,
         content_type: None,
-        checks: Vec::new(),
     };
-    app.update(Action::ResponseArrived { generation, data: Box::new(data) });
+    let checks = Default::default();
+    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     assert!(
         matches!(app.session.response.state(), ResponseState::Cancelled),
         "a result racing the cancel must not overwrite it"
@@ -9018,9 +9014,13 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
         elapsed: std::time::Duration::from_millis(1),
         size: 2,
         content_type: None,
-        checks: Vec::new(),
     };
-    app.update(Action::ResponseArrived { generation: 1, data: Box::new(data.clone()) });
+    let arrived = Box::new(data.clone());
+    app.update(Action::ResponseArrived {
+        generation: 1,
+        data: arrived,
+        checks: Default::default(),
+    });
     assert!(app.session.in_flight.is_empty());
     assert!(matches!(app.session.response.state(), ResponseState::Ready(d) if **d == data));
 }
@@ -9052,7 +9052,6 @@ fn plain_keys_reach_the_focused_response_pane() {
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -10802,7 +10801,6 @@ pub(super) fn ready_response(app: &mut App, body: &str) {
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
-            checks: Vec::new(),
         })),
         app.session.send_generation,
     );
@@ -34463,7 +34461,6 @@ fn the_response_toolbar_hints_follow_the_open_tab() {
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );

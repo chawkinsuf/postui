@@ -5345,18 +5345,27 @@ impl App {
                 let tx = self.tx.clone();
                 let client = self.clients.for_request(&prepared).clone();
                 // The checks as they are at the send: the response is judged
-                // by these, once, in the send's own task (checks tabs spec
-                // 2026-11-16, P5).
+                // by these, once (checks tabs spec 2026-11-16, P5).
                 let checks = self.editor.checks();
                 let task = tokio::spawn(async move {
-                    match crate::http::send_checked(&client, &prepared, checks).await {
-                        Ok(data) => {
-                            let _ = tx
-                                .send(Action::ResponseArrived { generation, data: Box::new(data) });
-                        }
+                    use crate::components::response::CheckState;
+                    let data = match crate::http::send(&client, &prepared).await {
+                        Ok(data) => data,
                         Err(error) => {
                             let _ = tx.send(Action::RequestFailed { generation, error });
+                            return;
                         }
+                    };
+                    // The response is handed over as it arrives (section 7).
+                    // Checks still to be judged run after it, over a copy,
+                    // and send their lines when they end.
+                    let state = CheckState::on_arrival(&data, &checks);
+                    let job = (state == CheckState::Judging).then(|| data.clone());
+                    let data = Box::new(data);
+                    let _ = tx.send(Action::ResponseArrived { generation, data, checks: state });
+                    if let Some(read) = job {
+                        let lines = read.judge(checks).await;
+                        let _ = tx.send(Action::ChecksJudged { generation, lines });
                     }
                 });
                 self.session.in_flight.push(crate::session::InFlight {
@@ -5437,17 +5446,24 @@ impl App {
                     }
                 }
             }
-            Action::ResponseArrived { generation, data } => {
+            Action::ResponseArrived { generation, data, checks } => {
                 // A body too big to parse on the UI thread is handed to a
                 // blocking worker, whose result comes back as
                 // `PrettyParsed`. The clone happens before delivery so the
                 // response itself still moves into the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
                 let delivered = self.session.arrived(generation, data);
+                if delivered {
+                    self.session.checks_arrived(generation, checks);
+                }
                 if delivered && let Some(body) = big {
                     self.spawn_pretty_parse(generation, body);
                 }
                 delivered
+            }
+            Action::ChecksJudged { generation, lines } => {
+                use crate::components::response::CheckState;
+                self.session.checks_arrived(generation, CheckState::Judged(lines))
             }
             Action::PrettyParsed { generation, tree } => {
                 self.session.tree_arrived(generation, tree.map(|t| *t))

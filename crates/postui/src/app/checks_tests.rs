@@ -484,10 +484,13 @@ fn a_multi_line_check_from_a_file_is_written_back_as_read() {
     assert_eq!(checks(&app).jq, [".a\n  | . == 2"]);
 }
 
-/// A response to the open request with `body`, judged by `checks`, as the
-/// send's task hands it over.
-fn arrive(app: &mut App, status: u16, body: &str, checks: &Checks) {
-    let mut data = crate::http::ResponseData {
+/// A send of the open request that brings a response with `body`, handed
+/// over as the send's task hands it: tracked in flight, then
+/// `ResponseArrived` with its checks as they stand on arrival. Answers
+/// the send's generation and the lines `checks` give, for `ChecksJudged`.
+fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64, Lines) {
+    use crate::components::response::CheckState;
+    let data = crate::http::ResponseData {
         status,
         url: "http://x.test/".into(),
         headers: vec![],
@@ -497,12 +500,30 @@ fn arrive(app: &mut App, status: u16, body: &str, checks: &Checks) {
         elapsed: std::time::Duration::from_millis(9),
         size: body.len(),
         content_type: None,
-        checks: Vec::new(),
     };
-    data.checks = data.check_lines(checks);
-    let generation = app.session.send_generation;
-    app.session.response.set_state(ResponseState::Ready(Box::new(data)), generation);
+    let slug = app.editor.slug.clone();
+    let generation = app.session.begin_send(&slug);
+    let (started, task) = (Instant::now(), tokio::spawn(async {}));
+    app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
+    let (state, lines) = (CheckState::on_arrival(&data, checks), data.check_lines(checks));
+    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks: state });
     draw(app);
+    (generation, lines)
+}
+
+type Lines = Vec<(bool, String)>;
+
+/// [`send_arrives`], and then its jq checks' lines landed.
+fn arrive(app: &mut App, status: u16, body: &str, checks: &Checks) {
+    let (generation, lines) = send_arrives(app, status, body, checks);
+    if !checks.jq.is_empty() {
+        app.update(Action::ChecksJudged { generation, lines });
+        draw(app);
+    }
+}
+
+fn shown(app: &App) -> String {
+    app.session.response.view().map(|v| v.view_text()).unwrap_or_default()
 }
 
 fn response_modes(app: &App) -> Vec<crate::components::response::ViewMode> {
@@ -513,8 +534,8 @@ fn response_modes(app: &App) -> Vec<crate::components::response::ViewMode> {
 /// outcomes, stays as it was when the checks are edited afterwards and
 /// across a switch to another request and back, and a failed send or a
 /// request without checks has none.
-#[test]
-fn the_results_are_the_responses_and_survive_edits_and_a_switch() {
+#[tokio::test]
+async fn the_results_are_the_responses_and_survive_edits_and_a_switch() {
     use crate::components::response::ViewMode;
     let mut app = checks_app(FOUR, KeyProfile::Arrows);
     let sent = checks(&app);
@@ -524,7 +545,6 @@ fn the_results_are_the_responses_and_survive_edits_and_a_switch() {
     assert!(app.toasts.last_message().is_none(), "a failed check shows no toast");
     app.session.response.set_view_mode(ViewMode::Checks);
     let lines = "✗ status 500, expected 200\n✓ total 9 ms, limit 2000 ms\n✓ .a\n✗ .b gave 1";
-    let shown = |app: &App| app.session.response.view().unwrap().view_text();
     assert_eq!(shown(&app), lines);
     // Editing the checks afterwards re-judges nothing.
     app.editor.table.set_selected(Some(Stop::Row(1)));
@@ -548,4 +568,106 @@ fn the_results_are_the_responses_and_survive_edits_and_a_switch() {
     let generation = app.session.send_generation;
     app.session.response.set_state(ResponseState::Failed("refused".into()), generation);
     assert!(response_modes(&app).is_empty());
+}
+
+/// Section 7, A1 to A4 and A7: the response shows as it arrives, with its
+/// Checks tab on `checking…` and a dim mark; copy and search act on that
+/// line; then the lines and the verdict take their place, with no toast,
+/// no tab switched and nothing on the tab row moved. Only a status check
+/// and a limit: judged as it arrives.
+#[tokio::test]
+async fn a_response_shows_at_once_and_its_checks_tab_fills_in_after() {
+    use super::tests::{last_copied, rendered_text_at};
+    use crate::components::response::ViewMode;
+    for profile in PROFILES {
+        let mut app = checks_app(FOUR, profile);
+        let sent = checks(&app);
+        let (generation, lines) = send_arrives(&mut app, 500, r#"{"a":true,"b":1}"#, &sent);
+        assert!(matches!(app.session.response.state(), ResponseState::Ready(_)), "{profile:?}");
+        assert!(response_modes(&app).contains(&ViewMode::Checks));
+        assert_ne!(app.session.response.view().unwrap().mode, ViewMode::Checks);
+        assert!(rendered_text_at(&mut app, 120, 30).contains("Checks \u{2026}"), "{profile:?}");
+        let tab = Hit::ResponseTab(ViewMode::Checks);
+        let waiting = app.hits.rect_of(&tab);
+        app.update(Action::ResponseViewMode(ViewMode::Checks));
+        assert_eq!(shown(&app), "checking\u{2026}");
+        app.update(Action::CopyToClipboard(crate::action::CopyTarget::ResponseView));
+        assert_eq!(last_copied(&app).as_deref(), Some("checking\u{2026}"));
+        assert_eq!(app.toasts.last_message(), Some("Copied check results"));
+        app.focus = PaneId::Response;
+        app.update(Action::OpenResponseSearch { backward: false });
+        feed(&mut app, "check<CR>");
+        let found =
+            |app: &App| app.session.response.view().unwrap().search.as_ref().unwrap().matches.len();
+        assert_eq!(found(&app), 1, "{profile:?}");
+        app.toasts = Default::default();
+        // The lines land.
+        assert!(app.update(Action::ChecksJudged { generation, lines }));
+        assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Checks, "{profile:?}");
+        assert!(app.toasts.last_message().is_none(), "no toast");
+        let lines = "✗ status 500, expected 200\n✓ total 9 ms, limit 2000 ms\n✓ .a\n✗ .b gave 1";
+        assert_eq!(shown(&app), lines);
+        assert_eq!(found(&app), 0, "the search is over the lines now");
+        assert!(rendered_text_at(&mut app, 120, 30).contains("Checks \u{2717}"), "{profile:?}");
+        assert_eq!(app.hits.rect_of(&tab), waiting, "the tab row did not move");
+        // Landing on another tab switches nothing.
+        let (generation, lines) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
+        let mode = app.session.response.view().unwrap().mode;
+        assert!(app.update(Action::ChecksJudged { generation, lines }));
+        assert_eq!(app.session.response.view().unwrap().mode, mode);
+        assert!(rendered_text_at(&mut app, 120, 30).contains("Checks \u{2713}"), "{profile:?}");
+        // No jq check: nothing to wait for.
+        let quick = Checks { jq: Vec::new(), ..sent };
+        send_arrives(&mut app, 200, "{}", &quick);
+        app.update(Action::ResponseViewMode(ViewMode::Checks));
+        assert_eq!(shown(&app), "✓ status 200\n✓ total 9 ms, limit 2000 ms", "{profile:?}");
+    }
+}
+
+/// Section 7, A5: the lines are their own response's. They land on it
+/// while another request is on screen and leave that one's response alone;
+/// once a new send has replaced the response (in flight, arrived or
+/// failed) they are dropped, and a deleted request's land on nothing shown.
+#[tokio::test]
+async fn check_lines_land_on_their_own_response_or_nowhere() {
+    use crate::components::response::ViewMode;
+    let mut app = checks_app(FOUR, KeyProfile::Arrows);
+    let sent = checks(&app);
+    let other = HttpRequest::from_toml_str("url = \"http://y.test/\"\n").unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/other", &other).unwrap();
+    app.update(Action::RefreshSidebar);
+    let (first, lines) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
+    let judged = "✓ status 200\n✓ total 9 ms, limit 2000 ms\n✓ .a\n✓ .b";
+    // Another request on screen, with a response of its own.
+    app.update(Action::ForceOpenRequest("main/other".into()));
+    send_arrives(&mut app, 200, "theirs", &Checks::default());
+    assert!(app.update(Action::ChecksJudged { generation: first, lines: lines.clone() }));
+    assert_eq!(shown(&app), "theirs");
+    assert!(!response_modes(&app).contains(&ViewMode::Checks), "not the other request's");
+    app.update(Action::ForceOpenRequest("main/probe".into()));
+    app.update(Action::ResponseViewMode(ViewMode::Checks));
+    assert_eq!(shown(&app), judged, "there on the way back");
+    // A second send while the first send's checks run.
+    let (stale, _) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
+    let (second, _) = send_arrives(&mut app, 200, r#"{"a":1}"#, &sent);
+    assert!(!app.update(Action::ChecksJudged { generation: stale, lines: lines.clone() }));
+    app.update(Action::ResponseViewMode(ViewMode::Checks));
+    assert_eq!(shown(&app), "checking\u{2026}", "the old result never lands on the new response");
+    // A send in flight, a failed one and a cancelled one hold no response.
+    let slug = app.editor.slug.clone();
+    let third = app.session.begin_send(&slug);
+    assert!(!app.update(Action::ChecksJudged { generation: second, lines: lines.clone() }));
+    let (started, task) = (Instant::now(), tokio::spawn(async {}));
+    let flight = crate::session::InFlight { started, generation: third, slug, task };
+    app.session.in_flight.push(flight);
+    app.update(Action::RequestFailed { generation: third, error: "refused".into() });
+    assert!(!app.update(Action::ChecksJudged { generation: third, lines: lines.clone() }));
+    assert!(matches!(app.session.response.state(), ResponseState::Failed(_)));
+    // The request deleted while its checks run.
+    let (last, _) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
+    app.update(Action::DeleteRequest("main/probe".into()));
+    assert_ne!(app.editor.slug.as_deref(), Some("main/probe"));
+    let before = shown(&app);
+    app.update(Action::ChecksJudged { generation: last, lines });
+    assert_eq!(shown(&app), before, "nothing lands on the request now open");
 }

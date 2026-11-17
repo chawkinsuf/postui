@@ -266,6 +266,24 @@ impl Session {
         false
     }
 
+    /// Gives the response the send `generation` made how its checks stand:
+    /// as it arrives, and when its jq checks' lines land
+    /// (`Action::ChecksJudged`). Found as a finished parse finds it, on
+    /// screen or in the cache; `false` when no response is that send's
+    /// any more (a new send replaced it), and the state is dropped.
+    pub fn checks_arrived(
+        &mut self,
+        generation: u64,
+        checks: crate::components::response::CheckState,
+    ) -> bool {
+        let mut slots = std::iter::once(&mut self.response).chain(self.cache.values_mut());
+        let Some(response) = slots.find(|r| r.is_from(generation)) else {
+            return false;
+        };
+        response.set_checks(checks);
+        true
+    }
+
     /// Forgets everything — cache, screen, in-flight — for a project
     /// switch: slugs are project-relative, so a cached response would
     /// otherwise leak across projects under a colliding slug.
@@ -305,7 +323,6 @@ mod tests {
             elapsed: Duration::from_millis(1),
             size: body.len(),
             content_type: None,
-            checks: Vec::new(),
         })
     }
 
@@ -455,6 +472,55 @@ mod tests {
 
         open(&mut s, "a");
         assert_eq!(body_of(&s.response), Some("late result"));
+    }
+
+    /// Checks tabs spec 2026-11-16, section 7 (A5): a send's check lines
+    /// land on the response that send brought, on screen or cached, a shed
+    /// one included, and nowhere once it is replaced or forgotten.
+    #[tokio::test]
+    async fn check_lines_find_the_response_their_send_brought() {
+        use crate::components::json_tree::JsonTree;
+        use crate::components::response::{CheckState, SYNC_PRETTY_BYTES, ViewMode};
+        let lines = |text: &str| CheckState::Judged(vec![(true, text.to_string())]);
+        let checks_tab = |r: &mut Response| {
+            r.set_view_mode(ViewMode::Checks);
+            r.view().filter(|v| v.mode == ViewMode::Checks).map(|v| v.view_text())
+        };
+        let big = format!(r#"{{"pad": "{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+        let mut s = Session::default();
+        let mut sent = Vec::new();
+        // A big response waiting on its checks, then enough big ones after
+        // it that it is shed in the cache.
+        for i in 0..=KEEP_WARM {
+            let slug = format!("big{i}");
+            open(&mut s, &slug);
+            let generation = s.begin_send(&Some(slug.clone()));
+            s.in_flight.push(in_flight(generation, &slug).await);
+            assert!(s.arrived(generation, data(&big)));
+            assert!(s.tree_arrived(generation, JsonTree::parse(&big)));
+            sent.push(generation);
+        }
+        assert!(s.checks_arrived(sent[0], CheckState::Judging));
+        open(&mut s, "elsewhere");
+        assert!(s.cache[&Some("big0".into())].view().unwrap().tree.is_none(), "shed");
+        assert!(s.checks_arrived(sent[0], lines(".a")));
+        assert_eq!(checks_tab(&mut s.response), None, "not the request on screen");
+        open(&mut s, "big1");
+        assert_eq!(checks_tab(&mut s.response), None, "nor another send's response");
+        open(&mut s, "big0");
+        assert_eq!(checks_tab(&mut s.response).as_deref(), Some("✓ .a"));
+        // A new send of the request: the earlier send's lines find nothing.
+        let again = s.begin_send(&Some("big0".into()));
+        s.in_flight.push(in_flight(again, "big0").await);
+        assert!(!s.checks_arrived(sent[0], lines("stale")));
+        assert!(s.arrived(again, data("{}")));
+        assert!(!s.checks_arrived(sent[0], lines("stale")));
+        assert_eq!(checks_tab(&mut s.response), None);
+        // A project switch forgets every response.
+        assert!(s.checks_arrived(again, CheckState::Judging));
+        s.reset();
+        assert!(!s.checks_arrived(again, lines("late")));
+        assert!(!s.checks_arrived(sent[1], lines("late")));
     }
 
     #[tokio::test]

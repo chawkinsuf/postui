@@ -29,38 +29,6 @@ pub struct ResponseData {
     pub elapsed: Duration,
     pub size: usize,
     pub content_type: Option<String>,
-    /// How the request's checks came out over this response, judged once,
-    /// with the checks as they were at the send ([`send_checked`]): a line
-    /// for each with whether it passed (`postui_core::checks::lines`);
-    /// empty when it had none. The response's Checks tab reads only this.
-    /// The lines and not the outcomes, which hold a jq check's every
-    /// output whole.
-    pub checks: Vec<(bool, String)>,
-}
-
-/// [`send`], then `checks` run over the response
-/// (`postui_core::checks::evaluate`, as `postui run` judges it): the
-/// response comes back with its results. The response's own times are
-/// measured inside the send and don't include them.
-///
-/// The response is handed on after its checks (checks tabs spec
-/// 2026-11-16, section 3, "The send"). A jq check has no time limit yet:
-/// that is #310. The body's read is not kept for the jq bar: kept, it
-/// would hold the body a second time for as long as the response is,
-/// whether or not the bar is opened.
-pub async fn send_checked(
-    client: &reqwest::Client,
-    req: &PreparedRequest,
-    checks: postui_core::model::Checks,
-) -> Result<ResponseData, String> {
-    // Shared with the run, not handed to it: checks that panic lose only
-    // their own lines, and the response still arrives.
-    let data = std::sync::Arc::new(send(client, req).await?);
-    let read = data.clone();
-    let lines = run_checks(checks, move |checks| read.check_lines(checks)).await;
-    let mut data = std::sync::Arc::unwrap_or_clone(data);
-    data.checks = lines.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))]);
-    Ok(data)
 }
 
 /// Runs `run` over `checks`, off the async loop when a jq filter has to
@@ -88,6 +56,22 @@ impl ResponseData {
         let doc = || postui_core::jq::JqDocument::parse(&self.body);
         lines(self.status, &evaluate(checks, self.status, timing, doc))
     }
+
+    /// [`Self::check_lines`] through [`run_checks`], for the send's task
+    /// to await once the response is handed over (checks tabs spec
+    /// 2026-11-16, section 7). A jq check has no time limit yet: that is
+    /// #310.
+    pub async fn judge(self, checks: postui_core::model::Checks) -> Vec<(bool, String)> {
+        lines_or_failure(run_checks(checks, move |checks| self.check_lines(checks)).await)
+    }
+}
+
+/// A check run's lines, or for a run that panicked one failed line that
+/// says so.
+fn lines_or_failure(
+    run: Result<Vec<(bool, String)>, tokio::task::JoinError>,
+) -> Vec<(bool, String)> {
+    run.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))])
 }
 
 /// Builds the client used for all requests. Deliberately no timeout of any
@@ -207,7 +191,6 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         elapsed: raw.elapsed,
         size,
         content_type: raw.content_type,
-        checks: Vec::new(),
     })
 }
 
@@ -433,50 +416,49 @@ mod tests {
         assert_eq!(data.size, 4);
     }
 
-    /// Checks tabs spec 2026-11-16 (P5): the response arrives with its
-    /// checks' lines, judged as `postui run` judges them; a request with
-    /// no checks gets none.
+    /// Checks tabs spec 2026-11-16 (P5): a response's lines are judged as
+    /// `postui run` judges it; a request with no checks gets none.
     #[tokio::test]
-    async fn send_checked_brings_the_results_with_the_response() {
+    async fn a_sent_response_is_judged_into_its_lines() {
         use postui_core::checks::passed;
         use postui_core::model::Checks;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
-            for _ in 0..3 {
-                let (mut sock, _) = listener.accept().await.unwrap();
-                let mut buf = vec![0u8; 4096];
-                let _ = sock.read(&mut buf).await.unwrap();
-                let body = r#"{"ok":true,"items":[1,2]}"#;
-                let head = "HTTP/1.1 500 Oops\r\nconnection: close\r\ncontent-length:";
-                let reply = format!("{head} {}\r\n\r\n{body}", body.len());
-                sock.write_all(reply.as_bytes()).await.unwrap();
-            }
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await.unwrap();
+            let body = r#"{"ok":true,"items":[1,2]}"#;
+            let head = "HTTP/1.1 500 Oops\r\nconnection: close\r\ncontent-length:";
+            let reply = format!("{head} {}\r\n\r\n{body}", body.len());
+            sock.write_all(reply.as_bytes()).await.unwrap();
         });
         let req = get(&format!("http://127.0.0.1:{port}/"));
-        let none = send_checked(&client(), &req, Checks::default()).await.unwrap();
-        assert!(none.checks.is_empty());
+        let data = send(&client(), &req).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(data.status, 500);
+        assert!(data.clone().judge(Checks::default()).await.is_empty());
         let checks = Checks {
             max_elapsed_ms: Some(60_000),
             jq: vec![".ok".into(), ".items | length == 4".into()],
             ..Checks::default()
         };
-        let data = send_checked(&client(), &req, checks).await.unwrap();
-        assert_eq!(data.status, 500);
-        let said: Vec<(bool, &str)> = data.checks.iter().map(|l| (l.0, l.1.as_str())).collect();
+        let lines = data.clone().judge(checks).await;
+        let said: Vec<(bool, &str)> = lines.iter().map(|l| (l.0, l.1.as_str())).collect();
         assert_eq!(said[0], (false, "status 500, expected below 400"));
         assert!(said[1].0 && said[1].1.ends_with(", limit 60000 ms"), "{said:?}");
         assert_eq!(said[2..], [(true, ".ok"), (false, ".items | length == 4 gave false")]);
-        assert!(!passed(&data.checks));
+        assert!(!passed(&lines));
         // A status check that names the code, over the same reply.
         let named = Checks { status: vec![500], jq: vec![".ok".into()], ..Checks::default() };
-        let data = send_checked(&client(), &req, named).await.unwrap();
-        server.await.unwrap();
-        assert!(passed(&data.checks), "{:?}", data.checks);
-        // A jq run that panics comes back as an `Err`.
+        let lines = data.judge(named).await;
+        assert!(passed(&lines), "{lines:?}");
+        // A jq run that panics gives one failed line.
         let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
-        assert!(run_checks(jq, |_| panic!("a check panicked")).await.is_err());
+        let lines = lines_or_failure(run_checks(jq, |_| panic!("a check panicked")).await);
+        let [(false, line)] = &lines[..] else { panic!("{lines:?}") };
+        assert!(line.starts_with("the checks did not run: "), "{line}");
     }
 
     #[tokio::test]
