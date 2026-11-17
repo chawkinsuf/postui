@@ -799,7 +799,8 @@ async fn a_check_still_running_holds_up_no_tree() {
         wait.recv().unwrap();
         vec![(true, ".pad".to_string())]
     };
-    app.spawn_response_jobs(generation, Some(shared), Some((checks(&app), Box::new(run))));
+    let job = crate::http::ChecksRun::new(checks(&app), run);
+    app.spawn_response_jobs(generation, Some(shared), Some(job));
     assert_eq!(next_job(&mut app).await, (Job::Tree(generation), true));
     assert!(app.session.response.view().unwrap().tree.is_some(), "the Tree is there");
     assert_eq!(checks_tab(&mut app), "checking\u{2026}");
