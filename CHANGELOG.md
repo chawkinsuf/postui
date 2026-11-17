@@ -62,9 +62,6 @@ change the project file format.
   command could go on running, and spending, with its reply thrown away.
   Esc stops only the program `ai_cmd` names: not the rest of a pipeline,
   and not a tool that a launcher such as `timeout` or `npx` starts.
-
-### Fixed
-
 - When a large response's Tree, or a jq filter's result, finishes loading
   while another of the response's tabs is up, that tab keeps its
   selection, cursor, scroll and search matches. A body that turns out not
