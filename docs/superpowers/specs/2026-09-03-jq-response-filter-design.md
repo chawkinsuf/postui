@@ -333,9 +333,16 @@ outside the terminal's foreground group has two costs, put to the user on
   is ignored when the app starts (`nohup`) stays ignored. With `$EDITOR`
   open the app ends at once, as it did before the handler.
 - One that opens the terminal itself (`/dev/tty`, for a login or a
-  yes/no) is stopped (SIGTTIN) when it reads it, and the bar shows
+  yes/no) is stopped when it reads it (SIGTTIN) or sets its modes, such
+  as turning echo off for a password (SIGTTOU), and the bar shows
   `asking…` until Esc ends it. Kept as is: nothing is lost and Esc ends
   it; the cost, accepted, is that nothing says why it waits.
+
+Open on #314 (review round 2): the hangup is one of the signals that
+reach the app's group and not the command's. Ctrl+C or Ctrl+\ in the
+terminal while `$EDITOR` is open, and a SIGTERM sent to the group, end the
+app and leave the command running; so does a SIGKILL sent to the group,
+which no handler can catch.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the
