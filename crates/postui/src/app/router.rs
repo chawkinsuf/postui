@@ -137,13 +137,15 @@ impl App {
             // Every stop: the rows, `+ Add`, and the section's rows under
             // it (task #56). A move out of an open cell never goes past
             // `+ Add`, so the section (a scan of every field on Vars) is
-            // counted only for the closed table, not per typed key.
-            Surface::Table(_) => {
+            // counted only for the closed table, not per typed key. The
+            // Checks tab's fields are stops above the rows.
+            Surface::Table(tab) => {
                 let section = match self.editor.table.editing {
                     Some(_) => 0,
                     None => self.editor.section_len(),
                 };
-                (self.editor.table_len() + 1 + section).max(2)
+                let fields = tab.table_spec().map_or(0, |spec| spec.heads);
+                (fields + self.editor.table_len() + 1 + section).max(2)
             }
             Surface::Response(_) | Surface::ResponseLines(_) => self
                 .session
@@ -366,7 +368,6 @@ impl App {
     /// `App::open_text_field_mut` read it rather than repeat the rules.
     pub(super) fn screen_field(&self) -> Option<FieldId> {
         use crate::components::manage::ManageTab;
-        use crate::components::table_editor::Col;
         match self.screen {
             Screen::Manage if self.manage.tab == ManageTab::Settings => {
                 self.settings.editing.map(FieldId::Settings)
@@ -388,11 +389,8 @@ impl App {
             }
             Screen::Main => match self.focus {
                 PaneId::Editor => {
-                    if let Some(e) = &self.editor.table.editing {
-                        return Some(FieldId::TableCell {
-                            row: e.row,
-                            col: usize::from(e.col == Col::Value),
-                        });
+                    if let Some(field) = self.editor.table_field() {
+                        return Some(field);
                     }
                     if self.editor.url_open() {
                         return Some(FieldId::Url);

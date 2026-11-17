@@ -290,6 +290,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("editor_tab_2", Action::EditorTabSelect(1)),
         ("editor_tab_3", Action::EditorTabSelect(2)),
         ("editor_tab_4", Action::EditorTabSelect(3)),
+        ("editor_tab_5", Action::EditorTabSelect(4)),
         // 2 == EditorTab::Vars.index(); kept a bare literal like the rows
         // above rather than pulling in the editor module here.
         ("tab_vars", Action::EditorTabSelect(2)),

@@ -75,8 +75,8 @@ fn a_tab_step_onto_the_current_tab_keeps_the_table_row() {
     let mut app = app_in(Fixture::TableThreeHeaders, KeyProfile::Vim);
     feed(&mut app, "j");
     assert_eq!(app.editor.table.selected(), Some(Stop::Row(2)));
-    // Headers is tab 1 of the GET's three; 12 and 3 steps back go round.
-    for keys in ["1gt", "12gT", "3gT"] {
+    // Headers is tab 1 of the GET's four; 12 and 4 steps back go round.
+    for keys in ["1gt", "12gT", "4gT"] {
         feed(&mut app, keys);
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
         assert_eq!(app.editor.table.selected(), Some(Stop::Row(2)), "{keys}: the row stays");
@@ -97,8 +97,8 @@ fn a_tab_step_onto_the_current_tab_keeps_an_open_field_open() {
     feed(&mut app, "<CR>0");
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
     let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
-    // Headers is tab 1 of the GET's three.
-    for keys in ["1gt", "3gT", "12gT"] {
+    // Headers is tab 1 of the GET's four.
+    for keys in ["1gt", "4gT", "12gT"] {
         feed(&mut app, keys);
         assert_eq!(
             app.vim.glue.session(),
@@ -122,7 +122,7 @@ fn a_tab_step_onto_the_current_tab_keeps_an_open_field_open() {
 fn a_tab_step_onto_the_current_tab_keeps_the_url_line_selected() {
     let mut app = app_in(Fixture::UrlLine, KeyProfile::Vim);
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
-    for keys in ["1gt", "3gT", "12gT"] {
+    for keys in ["1gt", "4gT", "12gT"] {
         feed(&mut app, keys);
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
         assert_eq!(app.editor.sub_focus, SubFocus::Url, "{keys}: the caret stays");
@@ -305,6 +305,7 @@ fn vim_alt_arrows_do_nothing_on_the_response() {
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
+            checks: Vec::new(),
         })),
         app.session.send_generation,
     );
@@ -414,6 +415,7 @@ fn the_tab_chord_walks_the_response_strip_both_ways() {
             elapsed: std::time::Duration::from_millis(1),
             size: 8,
             content_type: None,
+            checks: Vec::new(),
         })),
         app.session.send_generation,
     );
@@ -595,10 +597,10 @@ fn arrows_tab_chord_keeps_the_caret() {
 #[test]
 fn a_multi_step_cycle_skips_the_disabled_body_tab() {
     let mut app = app_in(Fixture::TableThreeHeaders, KeyProfile::Vim);
-    feed(&mut app, "gT");
-    assert_eq!(app.editor.active_tab, EditorTab::Vars, "Headers back one, over Body");
-    feed(&mut app, "5gT");
-    assert_eq!(app.editor.active_tab, EditorTab::Headers, "Vars back five over three enabled tabs");
+    feed(&mut app, "2gT");
+    assert_eq!(app.editor.active_tab, EditorTab::Vars, "Headers back two, over Body");
+    feed(&mut app, "6gT");
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "Vars back six over four enabled tabs");
 }
 
 /// Code review: a disabled tab left showing steps from where it sits, so

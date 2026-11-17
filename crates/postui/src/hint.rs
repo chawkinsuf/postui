@@ -14,6 +14,7 @@
 
 use crate::action::{Action, CopyTarget, ExtractDestination, KeymapAnswer, Verb};
 use crate::components::palette::all_commands;
+use crate::components::table_editor::TableSpec;
 use crate::hit::Hit;
 use crate::keys::Keymap;
 use crate::split::SplitStop;
@@ -46,6 +47,12 @@ pub struct HintCtx {
     /// not its body. `false` for controls with no second state (nothing
     /// reads it there).
     pub on: bool,
+    /// The response's Checks tab is up, so its toolbar's buttons act on
+    /// that tab's lines.
+    pub checks: bool,
+    /// The request tab's table, whose noun its rows' pills and chips
+    /// name a row by; `None` reads as [`TableSpec::ROWS`].
+    pub table: Option<&'static TableSpec>,
     /// The scope the open value popup's "✕ remove" would clear, from
     /// `ModalStack::value_popup_remove_scope`.
     pub remove_scope: Option<ExtractDestination>,
@@ -256,7 +263,6 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CancelSend => "Cancel the request in flight".to_string(),
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
-        Action::DeleteTableRow(_) => "Delete this row".to_string(),
         Action::AddDefaultHeader => "Add a default header".to_string(),
         Action::DeleteDefaultHeader(_) => "Delete this default header".to_string(),
         Action::CopyDefaultHeader(_) => "Copy this default header's value".to_string(),
@@ -266,8 +272,7 @@ fn fallback_description(action: &Action) -> Option<String> {
         }
         // The copy chips: the value, as the pills copy, in both profiles
         // (spec 2026-10-26 H5); a header's whole-header key is on the
-        // keycap (`Y`).
-        Action::CopyToClipboard(CopyTarget::TableRow(_)) => "Copy this row's value".to_string(),
+        // keycap (`Y`). A request table row's are worded in `hint_source`.
         Action::CopyRow { whole: false } => "Copy this header's value".to_string(),
         Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
@@ -277,6 +282,9 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::ResponseViewMode(ViewMode::Raw) => "Show the raw response body".to_string(),
         Action::ResponseViewMode(ViewMode::Headers) => "Show the response headers".to_string(),
         Action::ResponseViewMode(ViewMode::Pretty) => "Show the body as a JSON tree".to_string(),
+        Action::ResponseViewMode(ViewMode::Checks) => {
+            "Show how the response did against the request's checks".to_string()
+        }
         Action::CycleTabs(d) if *d < 0 => "Switch to the previous tab".to_string(),
         Action::CycleTabs(_) => "Switch to the next tab".to_string(),
         Action::CloseScreen => "Go back to the request screen".to_string(),
@@ -297,6 +305,7 @@ fn fallback_description(action: &Action) -> Option<String> {
 
 fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
     use crate::components::settings::SettingsField;
+    let table = ctx.table.unwrap_or(&TableSpec::ROWS);
     match hit {
         // -- Surfaces, not buttons: no hint. --
         // The edit flag's screen covers the footer, so its buttons can't
@@ -351,7 +360,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
                 EditorTab::Headers => "Edit the request headers",
                 EditorTab::Vars => "Edit the request variables",
                 EditorTab::Body => "Edit the request body",
+                EditorTab::Checks => "Edit the checks the response must pass",
             })
+        }
+        Hit::CheckField(k) => {
+            crate::components::editor::CHECK_FIELDS.get(*k).and_then(|(_, hint)| text(hint))
         }
         Hit::ResponseTab(mode) => of(Action::ResponseViewMode(*mode)),
         // Not `SelectManageTab`'s own wording ("Show the Spaces tab"),
@@ -379,6 +392,18 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             text(if ctx.on { "Close the Manage screen" } else { "Open the Manage screen" })
         }
         Hit::HeaderTheme => of(Action::OpenThemeChooser),
+        // A request table row's pills and chips name the row by its
+        // table's noun. A Headers-tab row's copy pill (`on`) takes
+        // alt+click too.
+        Hit::TableCopy(_) if ctx.on => header_pill_tip(),
+        Hit::TableCopy(_) | Hit::FooterChip(Action::CopyToClipboard(CopyTarget::TableRow(_))) => {
+            let of_it = if table.name_only { "" } else { "'s value" };
+            Some(Source::Text(format!("Copy this {}{of_it}", table.noun)))
+        }
+        Hit::TableDelete(_) | Hit::FooterChip(Action::DeleteTableRow(_)) => {
+            Some(Source::Text(format!("Delete this {}", table.noun)))
+        }
+        Hit::FooterChip(Action::TableAddRow) => text(table.add_hint),
         // The row toggle's chip drives the same two-state control as the
         // row's own checkbox, so it says the same thing. Handled here
         // rather than through `describe_action`, which has no `ctx`.
@@ -508,10 +533,6 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
-        // A Headers-tab row's pill (`on`) takes alt+click too.
-        Hit::TableCopy(_) if ctx.on => header_pill_tip(),
-        Hit::TableCopy(i) => of(Action::CopyToClipboard(CopyTarget::TableRow(*i))),
-        Hit::TableDelete(_) => text("Delete this row"),
         // A dropdown row's own buttons, with the menu's key for each.
         // No tip when the button is gone (a menu rebuilt under the pointer).
         Hit::DropdownRowButton { verb, .. } => (!ctx.row_tip.is_empty())
@@ -544,6 +565,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         // `PromptSaveView`, where the palette's own copy/save commands
         // always take the body. So they say what the open tab holds
         // rather than borrowing those palette lines.
+        Hit::CopyBodyButton if ctx.checks => text("Copy the check results"),
+        Hit::SaveBodyButton if ctx.checks => text("Save the check results to a file"),
+        Hit::ResponseEditorButton if ctx.checks => text("Open the check results in your editor"),
+        Hit::ResponseSearchButton if ctx.checks => text("Search the check results"),
         Hit::CopyBodyButton => {
             text(if ctx.on { "Copy the response headers" } else { "Copy the response body" })
         }
@@ -1128,10 +1153,10 @@ mod tests {
         use crate::components::response::ViewMode;
         let keymap = Keymap::default_bindings();
         let mut seen: Vec<String> = Vec::new();
-        for i in 0..4 {
+        for i in 0..EditorTab::COUNT {
             seen.push(hint_for(&Hit::EditorTab(i), &keymap, &ctx()).unwrap());
         }
-        for mode in [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers] {
+        for mode in [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers, ViewMode::Checks] {
             seen.push(hint_for(&Hit::ResponseTab(mode), &keymap, &ctx()).unwrap());
         }
         for i in 0..ManageTab::ALL.len() {

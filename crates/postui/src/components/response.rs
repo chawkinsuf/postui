@@ -63,12 +63,24 @@ pub enum ResponseState {
     Cancelled,
 }
 
-/// Which of the three renderings of a ready response is on screen.
+/// Which rendering of a ready response is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Pretty,
     Raw,
     Headers,
+    /// How the request's checks came out, one line each (checks tabs spec
+    /// 2026-11-16): plain lines, as Headers', with none of its pills.
+    /// Offered only for a response that carries check lines.
+    Checks,
+}
+
+impl ViewMode {
+    /// Whether the view shows the response's body (`Pretty`, `Raw`) rather
+    /// than plain lines about it (`Headers`, `Checks`).
+    pub fn is_body(self) -> bool {
+        matches!(self, ViewMode::Pretty | ViewMode::Raw)
+    }
 }
 
 /// How the search box's text reads (plan M5a Deviation 3): Vim's pattern
@@ -736,6 +748,14 @@ pub struct ReadyView {
     /// with (secrets masked — the real values live in `ResponseData`).
     header_lines: Vec<String>,
     header_rows: Vec<HeaderRow>,
+    /// The Checks tab's lines as the response carries them
+    /// (`ResponseData::checks`): whether each passed, and what `postui
+    /// run -v` lists for it. Empty when it carries none, and so has no
+    /// such tab (spec P1). The mark is not stored: the tab's text leads
+    /// each line with it ([`Self::check_texts`]) and the paint colours
+    /// it, both from the verdict. So the tab's text is made on each read,
+    /// a copy of its few lines, where Headers' is borrowed.
+    check_lines: Vec<(bool, String)>,
     pub cursor: usize,
     pub scroll: usize,
     /// Column offset of the body viewport — verbatim lines are never
@@ -1031,6 +1051,7 @@ impl ReadyView {
             raw: Arc::new(RawBody::split(&data.body)),
             header_lines,
             header_rows,
+            check_lines: data.checks.clone(),
             cursor: 0,
             scroll: 0,
             h_scroll: 0,
@@ -1079,11 +1100,16 @@ impl ReadyView {
     }
 
     /// The views on the tab strip, in on-screen order: Pretty (when there
-    /// is a tree to show), Raw, Headers. `response_tab_defs` draws them.
+    /// is a tree to show), Raw, Headers, Checks (when the response carries
+    /// check lines, spec P1). `response_tab_defs` draws them.
     fn tab_modes(&self) -> Vec<ViewMode> {
-        [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers]
+        [ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers, ViewMode::Checks]
             .into_iter()
-            .filter(|m| *m != ViewMode::Pretty || self.has_tree_view())
+            .filter(|m| match m {
+                ViewMode::Pretty => self.has_tree_view(),
+                ViewMode::Checks => !self.check_lines.is_empty(),
+                ViewMode::Raw | ViewMode::Headers => true,
+            })
             .collect()
     }
 
@@ -1141,7 +1167,17 @@ impl ReadyView {
             }
             ViewMode::Raw => self.raw.lines.get(line).cloned(),
             ViewMode::Headers => self.header_lines.get(line).cloned(),
+            ViewMode::Checks => self.check_texts().nth(line),
         }
+    }
+
+    /// The Checks tab's lines as text (spec P2): each check's mark, then
+    /// its line. What search, copy, save and `$EDITOR` act on.
+    fn check_texts(&self) -> impl Iterator<Item = String> + '_ {
+        let text = |(passed, line): &(bool, String)| {
+            format!("{} {line}", crate::paint::verdict_mark(*passed))
+        };
+        self.check_lines.iter().map(text)
     }
 
     /// How many lines the current view shows right now (collapse included).
@@ -1150,6 +1186,7 @@ impl ReadyView {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_len()),
             ViewMode::Raw => self.raw.lines.len(),
             ViewMode::Headers => self.header_lines.len(),
+            ViewMode::Checks => self.check_lines.len(),
         }
     }
 
@@ -1195,6 +1232,7 @@ impl ReadyView {
                 })
                 .max()
                 .unwrap_or(0),
+            ViewMode::Checks => self.check_texts().map(|l| crate::ui::cells(&l)).max().unwrap_or(0),
         };
         self.content_width = Some((key.0, key.1, key.2, w));
         w
@@ -1242,6 +1280,7 @@ impl ReadyView {
             }
             ViewMode::Raw => Cow::Borrowed(&self.raw.lines[..]),
             ViewMode::Headers => Cow::Borrowed(&self.header_lines),
+            ViewMode::Checks => Cow::Owned(self.check_texts().collect()),
         }
     }
 
@@ -1256,7 +1295,9 @@ impl ReadyView {
     pub fn view_text(&self) -> String {
         match self.mode {
             ViewMode::Raw => self.raw.join(),
-            ViewMode::Pretty | ViewMode::Headers => self.search_corpus().join("\n"),
+            ViewMode::Pretty | ViewMode::Headers | ViewMode::Checks => {
+                self.search_corpus().join("\n")
+            }
         }
     }
 
@@ -2099,7 +2140,7 @@ impl ReadyView {
         // switch forgets the click too (R10), not only hides it.
         self.clear_sel();
         self.clicked = None;
-        if mode != ViewMode::Headers {
+        if mode.is_body() {
             self.body_mode = mode;
         }
         self.cursor_moved();
@@ -2378,6 +2419,7 @@ impl ReadyView {
         match self.mode {
             ViewMode::Raw => self.raw.lines.get(i).cloned(),
             ViewMode::Headers => self.header_lines.get(i).cloned(),
+            ViewMode::Checks => self.check_texts().nth(i),
             ViewMode::Pretty => {
                 let tree = self.active_tree()?;
                 let line = tree.visible_line(i)?;
@@ -2560,6 +2602,7 @@ impl ReadyView {
             }
             ViewMode::Raw => self.raw.lines.get(row).cloned().into_iter().collect(),
             ViewMode::Headers => self.header_lines.get(row).cloned().into_iter().collect(),
+            ViewMode::Checks => self.check_texts().nth(row).into_iter().collect(),
         }
     }
 
@@ -3856,7 +3899,9 @@ impl Response {
         let Some(view) = self.view.as_mut() else {
             return;
         };
-        if mode == ViewMode::Pretty && !view.has_tree_view() {
+        // A tab the strip doesn't offer: `Pretty` with no tree, or `Checks`
+        // on a response that carries no check lines.
+        if !view.tab_modes().contains(&mode) {
             return;
         }
         view.set_mode(mode);
@@ -5035,6 +5080,11 @@ fn response_tab_defs(view: &ReadyView, bar: &JqBar, theme: &Theme) -> (TabLabels
             }
             ViewMode::Raw => ("Raw".to_string(), None),
             ViewMode::Headers => ("Headers".to_string(), None),
+            // The response's verdict, as `run` and `suite` give it (P3).
+            ViewMode::Checks => {
+                let passed = postui_core::checks::passed(&view.check_lines);
+                ("Checks".to_string(), Some(crate::paint::verdict(passed, theme)))
+            }
         })
         .collect();
     (tabs, modes)
@@ -5302,6 +5352,18 @@ fn body_lines(
                 let (char_start, crop, slice) =
                     viewport_window(&view.raw.lines[i], view.h_scroll, width, from);
                 push(i, i, vec![(slice.to_string(), text)], Vec::new(), true, (char_start, crop));
+            }
+        }
+        ViewMode::Checks => {
+            // The line as `check_texts` gives it, its mark in the verdict's
+            // colour.
+            for (i, (passed, line)) in view.check_lines.iter().enumerate().take(end).skip(start) {
+                let (mark, colour) = crate::paint::verdict(*passed, t);
+                let pieces = vec![
+                    (mark.to_string(), Style::default().fg(colour)),
+                    (format!(" {line}"), text),
+                ];
+                push(i, i, pieces, Vec::new(), true, (0, view.h_scroll));
             }
         }
         ViewMode::Headers => {
@@ -6082,6 +6144,7 @@ mod tests {
             elapsed: Duration::from_millis(342),
             size: body.len(),
             content_type: Some("application/json".into()),
+            checks: Vec::new(),
         }
     }
 
@@ -6951,6 +7014,84 @@ mod tests {
             "the sent value is masked: {out}"
         );
         assert!(!out.contains("s3cret"), "the secret never renders: {out}");
+    }
+
+    /// A ready response to `body` with `status`, judged by `checks`, as
+    /// the send's task hands it over.
+    fn judged(status: u16, body: &str, checks: &postui_core::model::Checks) -> Pane {
+        let mut d = data(body);
+        d.status = status;
+        d.checks = d.check_lines(checks);
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r
+    }
+
+    fn jq_checks(filters: &[&str]) -> postui_core::model::Checks {
+        postui_core::model::Checks {
+            jq: filters.iter().map(|f| f.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Checks tabs spec P1: no outcomes, no tab, whatever the status.
+    #[test]
+    fn a_response_without_outcomes_has_no_checks_tab() {
+        let mut r = judged(500, r#"{"a": 1}"#, &Default::default());
+        assert!(!r.tab_modes().unwrap().contains(&ViewMode::Checks));
+        r.set_view_mode(ViewMode::Checks);
+        assert_ne!(r.view().unwrap().mode, ViewMode::Checks, "a tab not offered is not opened");
+        assert!(!render(&mut r).contains("Checks"));
+    }
+
+    /// P2, P3, P6: one line a check, led by the 400 rule's line when it
+    /// failed the response; the badge is the verdict; the tab is offered
+    /// after Headers and is not switched to.
+    #[test]
+    fn the_checks_tab_lists_each_check_and_wears_the_verdict() {
+        let body = r#"{"ok":true,"items":[1,2]}"#;
+        let mut r = judged(500, body, &jq_checks(&[".ok", ".items | length == 4"]));
+        let modes = r.tab_modes().unwrap();
+        assert_eq!(modes[modes.len() - 2..], [ViewMode::Headers, ViewMode::Checks]);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Pretty, "a failed check switches no tab");
+        assert!(render(&mut r).contains("Checks ✗"), "the badge");
+        r.set_view_mode(ViewMode::Checks);
+        let lines =
+            ["✗ status 500, expected below 400", "✓ .ok", "✗ .items | length == 4 gave false"];
+        assert_eq!(r.view().unwrap().view_text(), lines.join("\n"), "copy, save, $EDITOR");
+        let out = render(&mut r);
+        for line in lines {
+            assert!(out.contains(line), "{line}: {out}");
+        }
+        // Each line's mark is in its verdict's colour.
+        let (body, buf) = render_buf(&mut r);
+        let t = Theme::dark();
+        let mark = |row: u16| {
+            (body.x..body.right())
+                .map(|x| &buf[(x, body.y + row)])
+                .find(|c| ["✓", "✗"].contains(&c.symbol()))
+        };
+        let colours: Vec<_> = (0..3).map(|row| mark(row).unwrap().fg).collect();
+        assert_eq!(colours, [t.error, t.success, t.error]);
+        // Passed: the same request over a 200 whose items are four.
+        let mut ok = judged(200, r#"{"ok":true,"items":[1,2,3,4]}"#, &jq_checks(&[".ok"]));
+        assert!(render(&mut ok).contains("Checks ✓"));
+        ok.set_view_mode(ViewMode::Checks);
+        assert_eq!(ok.view().unwrap().view_text(), "✓ .ok");
+    }
+
+    /// A body that isn't JSON fails a jq check with the reader's error, on
+    /// its line; the tab has no header pills, and no header to copy.
+    #[test]
+    fn a_body_that_is_not_json_fails_the_jq_checks_on_their_lines() {
+        let mut r = judged(200, "<html>", &jq_checks(&[".ok"]));
+        r.set_view_mode(ViewMode::Checks);
+        let text = r.view().unwrap().view_text();
+        assert!(text.starts_with("✗ .ok: not JSON: "), "{text}");
+        assert_eq!(r.view().unwrap().visible_len(), 1);
+        assert_eq!(r.copyable_header_row(), None);
+        let hits = render_hits(&mut r);
+        assert!(hits.rect_of(&crate::hit::Hit::HeaderCopy(0)).is_none());
     }
 
     /// `c` (the router's row) copies the header under the cursor; on the

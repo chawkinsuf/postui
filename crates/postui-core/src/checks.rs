@@ -1,11 +1,40 @@
 //! A request's `[checks]` run over its response (suite checks spec
-//! 2026-11-14 §2.2): the one runner `postui run` and `postui suite` share.
+//! 2026-11-14 §2.2): the one runner `postui run`, `postui suite` and the
+//! app's send share, with the verdict and the wording they all give.
 
 use crate::jq::{self, JqDocument, JqError};
 use crate::model::Checks;
 
 /// The most characters of a value or an error a failure line shows (§2.3).
 const SHOWN_CHARS: usize = 60;
+
+/// A status from here up fails a response that has no status check (R3).
+pub const FIRST_FAILING_STATUS: u16 = 400;
+
+/// Whether a response with `status` passes (R3): its status passes the
+/// status check (`status_check`, that check's verdict when there is one),
+/// or is below 400 when there is none, and every check passed (`checks`).
+pub fn passes(status: u16, status_check: Option<bool>, checks: bool) -> bool {
+    status_check.unwrap_or(status < FIRST_FAILING_STATUS) && checks
+}
+
+/// [`passes`] for a response whose checks read as `lines` ([`lines`]):
+/// every line passed, the below-400 rule's among them.
+pub fn passed(lines: &[(bool, String)]) -> bool {
+    lines.iter().all(|(passed, _)| *passed)
+}
+
+/// A response's checks as lines, each with whether it passed: what
+/// `run -v` lists for each outcome ([`Outcome::summary`]), in order. When
+/// the below-400 rule failed the response (no status check, a status of
+/// 400 or more), a first line says so, since no outcome does.
+pub fn lines(status: u16, outcomes: &[Outcome]) -> Vec<(bool, String)> {
+    let named = outcomes.iter().any(|o| matches!(o, Outcome::Status { .. }));
+    let rule = (!named && !passes(status, None, true))
+        .then(|| (false, format!("status {status}, expected below {FIRST_FAILING_STATUS}")));
+    let checks = outcomes.iter().map(|o| (o.passed(), o.summary(str::to_string)));
+    rule.into_iter().chain(checks).collect()
+}
 
 /// How one check came out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +90,20 @@ impl Outcome {
                 }
             }
         }))
+    }
+
+    /// What `run -v` lists for the check, on one line: its failure, else
+    /// what passed (`status 200`, `first byte 45 ms, limit 500 ms`, or the
+    /// filter). `shown` as in [`Self::failure`].
+    pub fn summary(&self, shown: impl Fn(&str) -> String) -> String {
+        if let Some(failure) = self.failure(&shown) {
+            return failure;
+        }
+        match self {
+            Outcome::Status { got, .. } => format!("status {got}"),
+            Outcome::Time { measure, limit, got } => measure.line(*limit, *got),
+            Outcome::Jq { filter, .. } => one_line(&shown(filter)),
+        }
     }
 }
 
@@ -120,10 +163,29 @@ pub struct Timing {
     pub elapsed_ms: u64,
 }
 
+impl Timing {
+    /// A response's two times in the whole milliseconds the reports print.
+    /// The time checks judge these same figures, so a check's line never
+    /// reads `total 500 ms, limit 500 ms` and fails (spec §2.7, T2).
+    pub fn of(ttfb: std::time::Duration, elapsed: std::time::Duration) -> Self {
+        Self { ttfb_ms: millis(ttfb), elapsed_ms: millis(elapsed) }
+    }
+}
+
+/// Whole milliseconds.
+pub fn millis(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// `text` with its lines joined by a space, each trimmed: a filter written
 /// over several lines in the file, shown in a line of output.
 pub fn one_line(text: &str) -> String {
     text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// A check's text as a message quotes it: on one line, cut short.
+pub fn brief(filter: &str) -> String {
+    clip(&one_line(filter))
 }
 
 /// `text` cut to [`SHOWN_CHARS`] characters, the last one `…` when cut.
@@ -243,6 +305,52 @@ mod tests {
 
     fn failures(outcomes: &[Outcome]) -> Vec<String> {
         outcomes.iter().filter_map(|o| o.failure(str::to_string)).collect()
+    }
+
+    /// R3 and checks tabs spec P2, P3: one verdict and one set of lines.
+    /// A status check replaces the below-400 rule; without one the rule
+    /// fails a 400 and says so on a first line of its own.
+    #[test]
+    fn the_verdict_and_the_lines_follow_the_status_rule() {
+        let body = r#"{"ok":true,"items":[1,2]}"#;
+        let jq_only = checks(&[], &[".ok", ".items | length == 4"]);
+        let out = over(&jq_only, 500, body);
+        let passed = |status, out: &[Outcome]| passed(&lines(status, out));
+        assert!(!passed(500, &out));
+        assert_eq!(
+            lines(500, &out),
+            [
+                (false, "status 500, expected below 400".to_string()),
+                (true, ".ok".to_string()),
+                (false, ".items | length == 4 gave false".to_string()),
+            ]
+        );
+        let out = over(&checks(&[], &[".ok"]), 399, body);
+        assert!(passed(399, &out));
+        assert_eq!(lines(399, &out), [(true, ".ok".to_string())]);
+        // A status check that names the code passes a 404, with no rule line.
+        let out = over(&checks(&[404], &[".ok"]), 404, body);
+        assert!(passed(404, &out));
+        assert_eq!(lines(404, &out), [(true, "status 404".to_string()), (true, ".ok".to_string())]);
+        let out = over(&checks(&[200], &[]), 500, body);
+        assert!(!passed(500, &out));
+        assert_eq!(lines(500, &out), [(false, "status 500, expected 200".to_string())]);
+        // No checks at all: the rule alone.
+        assert!(passed(204, &[]) && !passed(400, &[]));
+        // A time limit's line reads the same passed or failed.
+        let limit = Checks { max_elapsed_ms: Some(2000), ..Checks::default() };
+        let out = evaluate(&limit, 200, Timing { ttfb_ms: 1, elapsed_ms: 2310 }, || panic!());
+        assert_eq!(lines(200, &out), [(false, "total 2310 ms, limit 2000 ms".to_string())]);
+        assert!(!passed(200, &out));
+    }
+
+    /// A check quoted in a message is on one line, cut short.
+    #[test]
+    fn a_quoted_check_is_one_short_line() {
+        assert_eq!(brief(".a\n  | . == 2\n"), ".a | . == 2");
+        let long = brief(&".a | ".repeat(40));
+        assert_eq!(long.chars().count(), 60);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

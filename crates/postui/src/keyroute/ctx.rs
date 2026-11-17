@@ -113,6 +113,9 @@ pub enum FieldId {
         col: usize,
     },
     Body,
+    /// A field of the request's Checks tab, by its place (the table's
+    /// head): open in the table's edit slot, as a cell is.
+    CheckField(usize),
     VmForm(VmField),
     VmGrid {
         row: usize,

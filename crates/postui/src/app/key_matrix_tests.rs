@@ -371,11 +371,12 @@ const CASES: &[Case] = &[
     vim("P.ctrlw-arrows", ResponseLines, "<C-w><Left><C-w><Right>", &[FocusIs(PaneId::Response)]),
     vim("P.ctrlw-arrows", UrlLine, "i<Esc><C-w><Down>", &[FocusIs(PaneId::Response), FieldLive(false)]),
     // Key list §8, M4a: tab strips (spec §5.8). The fixture is a GET, so
-    // the editor's Body tab is disabled; the strip is Headers, Params, Vars.
+    // the editor's Body tab is disabled; the strip is Headers, Params, Vars,
+    // Checks.
     vim("P.gt", TableThreeHeaders, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
-    vim("P.gt", TableThreeHeaders, "gT", &[EditorTabIs(EditorTab::Vars)]),
+    vim("P.gt", TableThreeHeaders, "gT", &[EditorTabIs(EditorTab::Checks)]),
     vim("P.gt", TableThreeHeaders, "3gt", &[EditorTabIs(EditorTab::Vars)]),
-    vim("P.gt", TableThreeHeaders, "2gT", &[EditorTabIs(EditorTab::Params)]),
+    vim("P.gt", TableThreeHeaders, "2gT", &[EditorTabIs(EditorTab::Vars)]),
     vim("P.gt", UrlLine, "gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content)]),
     vim("P.gt", UrlLine, "i<Esc>gt", &[EditorTabIs(EditorTab::Params), Sub(SubFocus::Content), FieldLive(false)]),
     vim("P.gt", ResponseLines, "gt", &[ResponseModeIs(crate::components::response::ViewMode::Raw), FocusIs(PaneId::Response)]),
@@ -799,6 +800,7 @@ pub(super) fn build(f: Fixture) -> App {
                     elapsed: std::time::Duration::from_millis(1),
                     size: body.len(),
                     content_type: Some(content_type.into()),
+                    checks: Vec::new(),
                 })),
                 app.session.send_generation,
             );

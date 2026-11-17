@@ -91,6 +91,7 @@ pub(super) fn field_hit(field: FieldId) -> Option<Hit> {
         FieldId::Body => Hit::BodyEditor,
         FieldId::Jq => Hit::ResponseJqBar,
         FieldId::TableCell { row, col } => Hit::TableCell { row, col: u8::try_from(col).ok()? },
+        FieldId::CheckField(k) => Hit::CheckField(k),
         FieldId::VmForm(field) => Hit::VmFormField(field),
         FieldId::VmGrid { row, col } => Hit::VmEntryCell { row, col },
         FieldId::Settings(field) => Hit::SettingsControl(field),
@@ -708,6 +709,16 @@ impl App {
                             None => return self.update(Action::Render) || changed,
                         }
                     }
+                    // A Checks field that is not under edit: the cursor
+                    // goes onto it, as onto a row. A field has no menu.
+                    Hit::CheckField(k) => {
+                        changed |= self.update(Action::FocusPane(PaneId::Editor));
+                        self.move_editor_caret(SubFocus::Content);
+                        self.commit_table_edit();
+                        let stop = Stop::Head(*k);
+                        changed |= self.editor.table.selected() != Some(stop);
+                        self.editor.table.set_selected(Some(stop));
+                    }
                     _ => {}
                 }
                 match self.context_menu_for(&menu_hit) {
@@ -1245,7 +1256,10 @@ impl App {
         // label (`response::draw_jq_bar`), so it takes the area as it is.
         Some(match field {
             FieldId::ModalInput(_) => (area.x + 2, area.width.saturating_sub(2)),
-            FieldId::VmForm(_) | FieldId::Settings(_) | FieldId::ProjectName => {
+            FieldId::VmForm(_)
+            | FieldId::Settings(_)
+            | FieldId::ProjectName
+            | FieldId::CheckField(_) => {
                 (area.x + WELL_PAD, area.width.saturating_sub(WELL_PAD * 2))
             }
             _ => (area.x, area.width),
@@ -1279,12 +1293,9 @@ impl App {
     /// form field named, not another one (the URL is always its own).
     fn editing(&self, field: FieldId) -> bool {
         match field {
-            FieldId::TableCell { row, col } => self
-                .editor
-                .table
-                .editing
-                .as_ref()
-                .is_some_and(|e| e.row == row && usize::from(e.col.index()) == col),
+            FieldId::TableCell { .. } | FieldId::CheckField(_) => {
+                self.editor.table_field() == Some(field)
+            }
             FieldId::VmForm(f) => {
                 self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == f)
             }
@@ -1292,13 +1303,9 @@ impl App {
                 self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col)
             }
             FieldId::Settings(f) => self.settings.editing == Some(f),
-            FieldId::ProjectName => self.project_tab.name_open(),
-            FieldId::ProjectCell { row, col } => self
-                .project_tab
-                .table
-                .editing
-                .as_ref()
-                .is_some_and(|e| e.row == row && usize::from(e.col.index()) == col),
+            FieldId::ProjectName | FieldId::ProjectCell { .. } => {
+                self.project_tab.field() == Some(field)
+            }
             _ => true,
         }
     }
@@ -1554,7 +1561,8 @@ impl App {
     /// the raw `i` would hit the neighbour. `None` when the row the user
     /// clicked no longer exists (it was the one collapsed away).
     fn resolve_table_row_across_commit(&mut self, i: usize) -> Option<usize> {
-        let edited_row = self.editor.table.editing.as_ref().map(|e| e.row);
+        // An open field of the Checks tab is no row: its commit moves none.
+        let edited_row = self.editor.table.editing.as_ref().and_then(|e| Some(e.cell()?.0));
         let key = self.editor.table_key_at(i);
         self.commit_table_edit();
         match edited_row {
@@ -1680,6 +1688,7 @@ impl App {
             Action::EditorTabSelect(1),       // (converted through
             Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
+            Action::EditorTabSelect(4),
             // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew);
             // the rest of that face's hits either dispatch per-item actions
             // built from the live project (rename/delete/move/move-all) or
@@ -1840,6 +1849,7 @@ impl App {
                     | Hit::TableCopy(_)
                     | Hit::TableDelete(_)
                     | Hit::TableCell { .. }
+                    | Hit::CheckField(_)
                     // The auto row's pencil commits an open cell itself, as
                     // its own undo step, before it adds its row.
                     | Hit::AutoHeaderOverride(_)
@@ -2227,15 +2237,9 @@ impl App {
                 };
                 // A toggle click is just a toggle — it must not select (or
                 // expand) the row.
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Vars => &mut self.editor.variables,
-                    EditorTab::Body => {
-                        unreachable!("TableCheckbox only fires on Params/Headers/Vars")
-                    }
-                };
-                crate::components::table_editor::TableEditorState::toggle_row(map, i);
+                if let Some((_, map, _)) = self.editor.table_parts() {
+                    crate::components::table_editor::TableEditorState::toggle_row(map, i);
+                }
                 self.update(Action::Render)
             }
             // The row background is only reachable at the slivers its cells
@@ -2248,7 +2252,8 @@ impl App {
                 // chrome (the pad lines its expansion added): clicking it
                 // is inert, so the second click of a double click can't
                 // cancel the edit the first one started.
-                if self.editor.table.editing.as_ref().is_some_and(|e| e.row == i) {
+                let open = self.editor.table.editing.as_ref().and_then(|e| e.cell());
+                if open.is_some_and(|(row, _)| row == i) {
                     return self.update(Action::Render);
                 }
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
@@ -2264,12 +2269,8 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.move_editor_caret(SubFocus::Content);
                 let cell_col = crate::components::table_editor::Col::from_index(col);
-                let already_editing = self
-                    .editor
-                    .table
-                    .editing
-                    .as_ref()
-                    .is_some_and(|e| e.row == row && e.col == cell_col);
+                let already_editing =
+                    self.editing(FieldId::TableCell { row, col: usize::from(col) });
                 if !already_editing {
                     let outcome = self.editor.click_table_cell(row, cell_col);
                     if let Some(w) = outcome.warning {
@@ -2288,6 +2289,21 @@ impl App {
                     clicks,
                     already_editing,
                 );
+                self.update(Action::Render)
+            }
+            // A field of the Checks tab opens in place as a cell does,
+            // committing whatever was being edited before it.
+            Hit::CheckField(k) => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.move_editor_caret(SubFocus::Content);
+                let already_editing = self.editing(FieldId::CheckField(k));
+                if !already_editing {
+                    let outcome = self.editor.click_check_field(k);
+                    if let Some(w) = outcome.warning {
+                        self.toasts.push(w, ToastKind::Warning);
+                    }
+                }
+                self.press_text(FieldId::CheckField(k), m, clicks, already_editing);
                 self.update(Action::Render)
             }
             Hit::TableCopy(i) => {

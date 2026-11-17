@@ -174,6 +174,9 @@ pub struct TabStrip<'a> {
 }
 
 impl TabStrip<'_> {
+    /// The columns a badge adds to its tab.
+    pub const BADGE_W: u16 = 2;
+
     /// Pure geometry: each tab's `(x_offset, width)` span on the label row,
     /// relative to the strip's own origin, using the same `" label "` (+2
     /// for a badge) padding and 2-column inter-tab gap that [`Self::paint`]
@@ -184,7 +187,7 @@ impl TabStrip<'_> {
         let mut spans = Vec::with_capacity(tabs.len());
         for (label, badge) in tabs {
             let label_w = crate::ui::cells(label) as u16;
-            let width = label_w + 2 + badge.map_or(0, |_| 2);
+            let width = label_w + 2 + badge.map_or(0, |_| Self::BADGE_W);
             spans.push((x, width));
             x += width + 2; // 2-column gap between tabs
         }

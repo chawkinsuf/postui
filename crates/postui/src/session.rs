@@ -305,6 +305,7 @@ mod tests {
             elapsed: Duration::from_millis(1),
             size: body.len(),
             content_type: None,
+            checks: Vec::new(),
         })
     }
 

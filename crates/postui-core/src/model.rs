@@ -301,8 +301,8 @@ pub struct HttpRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jq_current: Option<String>,
     /// What `postui suite` and `postui run` check the response against
-    /// (`[checks]`, suite checks spec 2026-11-14). The TUI carries them
-    /// unseen (R10). postui 0.4.1 and older refuse a file with this table
+    /// (`[checks]`, suite checks spec 2026-11-14), edited on the app's
+    /// Checks tab. postui 0.4.1 and older refuse a file with this table
     /// (an unknown key): the cost named when checks were put in the
     /// request file (spec §2.1, R1).
     #[serde(default, skip_serializing_if = "Checks::is_empty")]
@@ -335,7 +335,7 @@ pub struct Checks {
     #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
     pub max_elapsed_ms: Option<u32>,
     /// jq filters that must each give `true` and nothing else (R4).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "filters", skip_serializing_if = "Vec::is_empty")]
     pub jq: Vec<String>,
 }
 
@@ -346,15 +346,72 @@ impl Checks {
             && self.max_elapsed_ms.is_none()
             && self.jq.is_empty()
     }
+
+    /// The status codes typed as `200, 201` (commas or spaces between),
+    /// by the read's own rule for a code; empty text is no status check.
+    /// A code typed twice counts once, as in the file.
+    pub fn parse_status(text: &str) -> Result<Vec<u16>, String> {
+        let mut codes = Vec::new();
+        for word in text.split([',', ' ']).filter(|w| !w.is_empty()) {
+            let code = word.parse::<u16>().ok().and_then(status_code).ok_or_else(|| {
+                let word = crate::checks::brief(word);
+                format!("a check's status must be a code from 100 to 599, not {word}")
+            })?;
+            if !codes.contains(&code) {
+                codes.push(code);
+            }
+        }
+        Ok(codes)
+    }
+
+    /// A time limit typed as a whole number of milliseconds, by the
+    /// read's own rule; empty text is no limit.
+    pub fn parse_limit(text: &str) -> Result<Option<u32>, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        text.parse::<u32>().ok().and_then(limit_of).map(Some).ok_or_else(|| {
+            format!(
+                "a check's time limit must be a whole number of milliseconds from 1 to {}, \
+                 not {}",
+                u32::MAX,
+                crate::checks::brief(text)
+            )
+        })
+    }
+}
+
+/// `v` when it is a status code a check may name: 100 to 599.
+fn status_code<V: TryInto<u16>>(v: V) -> Option<u16> {
+    v.try_into().ok().filter(|c| (100..=599).contains(c))
+}
+
+/// `v` when it is a time limit a check may hold: 1 to `u32::MAX`.
+fn limit_of<V: TryInto<u32>>(v: V) -> Option<u32> {
+    v.try_into().ok().filter(|ms| *ms > 0)
+}
+
+/// `jq = [...]` as the app's list holds it (checks tabs spec 2026-11-16):
+/// each filter without the whitespace around it, and one listed twice
+/// read once, the first kept. The read is the one `run` and `suite` use,
+/// so they list the check once too. The app's save writes the whole file
+/// from the request it holds ([`HttpRequest::to_toml_string`]), so it
+/// writes the list this way, as it writes no comment back; neither a
+/// repeat nor the whitespace changed a verdict.
+fn filters<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let mut seen = std::collections::HashSet::new();
+    let filters = Vec::<String>::deserialize(d)?.into_iter().map(|f| f.trim().to_string());
+    Ok(filters.filter(|f| seen.insert(f.clone())).collect())
 }
 
 /// `status = 200` or `status = [200, 201]`, each a code from 100 to 599; any
-/// other value refuses the read (R6).
+/// other value refuses the read (R6). A code listed twice reads once.
 fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
     struct Codes;
 
     fn code<E: de::Error, V: TryInto<u16> + fmt::Display + Copy>(v: V) -> Result<u16, E> {
-        v.try_into().ok().filter(|c| (100..=599).contains(c)).ok_or_else(|| {
+        status_code(v).ok_or_else(|| {
             E::custom(format!("a check's status must be a code from 100 to 599, not {v}"))
         })
     }
@@ -377,7 +434,10 @@ fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
             let mut codes = Vec::new();
             while let Some(v) = seq.next_element::<i64>()? {
-                codes.push(code(v)?);
+                let code = code(v)?;
+                if !codes.contains(&code) {
+                    codes.push(code);
+                }
             }
             Ok(codes)
         }
@@ -392,7 +452,7 @@ fn limit_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
     struct Limit;
 
     fn limit<E: de::Error, V: TryInto<u32> + fmt::Display + Copy>(v: V) -> Result<u32, E> {
-        v.try_into().ok().filter(|ms| *ms > 0).ok_or_else(|| {
+        limit_of(v).ok_or_else(|| {
             E::custom(format!(
                 "a check's time limit must be a whole number of milliseconds from 1 to {}, \
                  not {v}",
@@ -984,6 +1044,44 @@ mod tests {
         let out = req.to_toml_string();
         assert!(out.contains("[checks]\nmax_elapsed_ms = 4294967295\n"), "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    /// Checks tabs spec 2026-11-16: a status code or a filter listed twice
+    /// reads once, the first kept, so nothing downstream sees a repeat. A
+    /// filter reads without the whitespace around it.
+    #[test]
+    fn a_repeated_check_reads_once() {
+        let read = HttpRequest::from_toml_str(
+            "url = \"u\"\n[checks]\nstatus = [200, 201, 200]\njq = ['.a', ' .b', '.a ']\n",
+        )
+        .unwrap();
+        assert_eq!(read.checks.status, [200, 201]);
+        assert_eq!(read.checks.jq, [".a", ".b"]);
+    }
+
+    /// A field's text reads by the file's own limits (Q5).
+    #[test]
+    fn a_typed_status_or_limit_reads_by_the_files_rules() {
+        assert_eq!(Checks::parse_status(""), Ok(vec![]));
+        assert_eq!(Checks::parse_status("200"), Ok(vec![200]));
+        assert_eq!(Checks::parse_status(" 200, 201,200 404 "), Ok(vec![200, 201, 404]));
+        for bad in ["99", "600", "2xx", "200;201", "-200", "200.5"] {
+            let err = Checks::parse_status(bad).unwrap_err();
+            assert!(err.starts_with("a check's status must be a code from 100 to 599"), "{err}");
+        }
+        assert_eq!(Checks::parse_limit(" "), Ok(None));
+        assert_eq!(Checks::parse_limit(" 500 "), Ok(Some(500)));
+        assert_eq!(Checks::parse_limit("4294967295"), Ok(Some(u32::MAX)));
+        for bad in ["0", "-1", "1.5", "500 ms", "4294967296", "soon"] {
+            let err = Checks::parse_limit(bad).unwrap_err();
+            assert!(err.starts_with("a check's time limit must be a whole number"), "{err}");
+        }
+        // What was typed is quoted cut short.
+        let long = "9".repeat(200);
+        for err in [Checks::parse_status(&long), Checks::parse_limit(&long).map(|_| vec![])] {
+            let err = err.unwrap_err();
+            assert!(err.ends_with('…') && err.chars().count() < 150, "{err}");
+        }
     }
 
     /// `Checks` reads back what its `Serialize` gives in a format that hands

@@ -10,7 +10,9 @@
 use crate::action::{Action, Verb};
 use crate::components::DrawCtx;
 use crate::components::line_input::LineInput;
-use crate::components::table_editor::{Stop, TableEditorState, TableOwner, table_height};
+use crate::components::table_editor::{
+    Stop, TableEditorState, TableOwner, TableSpec, table_height,
+};
 use crate::components::var_tokens::VarView;
 use crate::hit::{Hit, HitMap};
 use crate::keyroute::FieldId;
@@ -29,7 +31,7 @@ const NAME_LABEL: &str = "Name";
 /// The ghost row's label in the header table.
 pub const ADD_HEADER: &str = "+ Add header";
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProjectTab {
     /// Whether the keyboard cursor is drawn, as the Settings tab's
     /// `focused`: a click away clears it, and a key or click on the tab,
@@ -39,8 +41,8 @@ pub struct ProjectTab {
     name: Option<LineInput>,
     /// The default headers' table: its open cell, its view, and the tab's
     /// cursor. The Name row is the head of the table's walk
-    /// ([`TableEditorState::handle_key_walk`]), so the cursor is on it when
-    /// the table has nothing selected ([`Self::on_name`]).
+    /// ([`TableEditorState::handle_key_walk`]): the cursor is on it as
+    /// [`Stop::Head`], where it starts ([`Self::on_name`]).
     pub table: TableEditorState,
     /// The last frame had no room for the tab ([`Self::draw`]) and drew
     /// none of it, so nothing on it acts at rest (R19).
@@ -48,6 +50,15 @@ pub struct ProjectTab {
     /// Where the last frame drew the header table, for the wheel, as the
     /// Variables tab's `grid_area`; empty when it drew none.
     pub table_area: Rect,
+}
+
+impl Default for ProjectTab {
+    /// The cursor starts on the Name row.
+    fn default() -> Self {
+        let mut table = TableEditorState::default();
+        table.set_selected(Some(Stop::Head(0)));
+        Self { focused: false, name: None, table, hidden: false, table_area: Rect::default() }
+    }
 }
 
 impl ProjectTab {
@@ -62,21 +73,18 @@ impl ProjectTab {
         if self.name.is_some() {
             return Some(FieldId::ProjectName);
         }
-        self.table
-            .editing
-            .as_ref()
-            .map(|e| FieldId::ProjectCell { row: e.row, col: usize::from(e.col.index()) })
+        let (row, col) = self.table.editing.as_ref()?.cell()?;
+        Some(FieldId::ProjectCell { row, col: usize::from(col.index()) })
     }
 
-    /// Whether the cursor is on the Name row: the table has nothing
-    /// selected.
+    /// Whether the cursor is on the Name row, the table's head.
     pub fn on_name(&self) -> bool {
-        self.table.selected().is_none()
+        matches!(self.table.selected(), Some(Stop::Head(_)))
     }
 
     /// Opens the Name row's edit, seeded with `seed`, the caret at its end.
     pub fn begin_name(&mut self, seed: &str) {
-        self.table.set_selected(None);
+        self.table.set_selected(Some(Stop::Head(0)));
         self.name = Some(LineInput::new(seed));
     }
 
@@ -171,7 +179,7 @@ impl ProjectTab {
 
     /// Paints the tab: the Name row, then the default headers' table,
     /// settled first by the request table's rules
-    /// ([`TableEditorState::settle_view_under_head`]): a cursor the rows
+    /// ([`TableEditorState::settle_view`]): a cursor the rows
     /// went from under (an undo, a reload) goes on the last row still there
     /// (R16), the view keeps the cursor and an open cell in sight, and a
     /// cursor on the Name row shows the table from its top. `name` is
@@ -201,7 +209,7 @@ impl ProjectTab {
         self.hidden = body.width < 24 || body.height < 9;
         self.table_area = Rect::default();
         if self.hidden {
-            self.table.settle_view_under_head(headers.len(), 0, 0);
+            self.table.settle_view(headers.len(), 0, 0);
             return;
         }
         let x0 = body.x + 2;
@@ -250,7 +258,7 @@ impl ProjectTab {
         let height = table_height(headers.len()).min(bottom.saturating_sub(y));
         let area = Rect { x: x0, y, width: row_w, height };
         self.table_area = area;
-        self.table.settle_view_under_head(headers.len(), 0, usize::from(height));
+        self.table.settle_view(headers.len(), 0, usize::from(height));
         let table_ctx = DrawCtx {
             theme,
             focused: self.focused && !self.on_name(),
@@ -260,8 +268,20 @@ impl ProjectTab {
             anims: ctx.anims,
             now: ctx.now,
         };
-        let (skip, owner) = (self.table.scroll, TableOwner::Project);
-        self.table.draw(frame, area, headers, &table_ctx, ADD_HEADER, hits, &[], vars, skip, owner);
+        let (skip, owner, spec) = (self.table.scroll, TableOwner::Project, &TableSpec::PROJECT);
+        self.table.draw(
+            frame,
+            area,
+            headers,
+            &table_ctx,
+            ADD_HEADER,
+            hits,
+            &[],
+            vars,
+            skip,
+            owner,
+            spec,
+        );
     }
 }
 

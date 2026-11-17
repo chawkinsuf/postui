@@ -1108,6 +1108,16 @@ impl PaneChipArgs {
                 response
                     .copyable_header_row()
                     .map(|_| crate::components::footer::TableCursor::ResponseHeader)
+            } else if focus == PaneId::Editor && !app.editor.caret_takes_vars() {
+                // The Checks tab's content, an input open or not: a check
+                // under the closed cursor has its row chips.
+                use crate::components::editor::CursorRow;
+                let live = app.editor.table_cursor_live();
+                let row = match app.editor.cursor_row().filter(|_| live) {
+                    Some(CursorRow::Main(i)) => Some(i),
+                    _ => None,
+                };
+                Some(crate::components::footer::TableCursor::Checks { row })
             } else if focus == PaneId::Editor && app.editor.table_cursor_live() {
                 use crate::components::editor::{CursorRow, EditorTab};
                 use crate::components::footer::TableCursor;

@@ -5,7 +5,7 @@ use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::{Row, RowKey};
-use crate::components::table_editor::Stop;
+use crate::components::table_editor::{Stop, TableSpec};
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{
     VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
@@ -1506,8 +1506,11 @@ impl App {
             // Every other control has one state; nothing reads `on` there.
             _ => false,
         };
+        use crate::components::response::ViewMode;
         crate::hint::HintCtx {
             on,
+            checks: self.session.response.view().is_some_and(|v| v.mode == ViewMode::Checks),
+            table: self.editor.active_tab.table_spec(),
             remove_scope: self.modals.value_popup_remove_scope(),
             manage_tab: (self.screen == Screen::Manage).then_some(self.manage.tab),
             // The Manager's `[Rename]`/`[Delete]` act on whatever the
@@ -3225,12 +3228,17 @@ impl App {
     }
 
     /// The toast for a deleted table row `i` named `key`, with the undo
-    /// hint: a request table's row and a default header alike. A row whose
-    /// key was never filled in has no name to quote; its 1-based position
-    /// is what the user was looking at, so that is what it says.
-    pub(super) fn toast_deleted_row(&mut self, key: &str, i: usize) {
-        let what =
-            if key.trim().is_empty() { format!("row {}", i + 1) } else { format!("row \"{key}\"") };
+    /// hint: a request table's row, a check and a default header alike,
+    /// in `spec`'s word for a row. A row whose key was never filled in
+    /// has no name to quote; its 1-based position is what the user was
+    /// looking at, so that is what it says.
+    pub(super) fn toast_deleted_row(&mut self, spec: &TableSpec, key: &str, i: usize) {
+        let noun = spec.noun;
+        let what = if key.trim().is_empty() {
+            format!("{noun} {}", i + 1)
+        } else {
+            format!("{noun} \"{}\"", spec.quoted(key))
+        };
         self.toasts.push(format!("Deleted {what}{}", self.undo_hint()), ToastKind::Info);
     }
 
@@ -4308,13 +4316,10 @@ impl App {
                     .unwrap_or_else(|| "response".to_string())
                     .replace('/', "-");
                 // The extension follows the tab like the content does: the
-                // header list is plain text whatever the body was.
-                let on_headers = self
-                    .session
-                    .response
-                    .view()
-                    .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers);
-                let ext = if !on_headers
+                // header list and the checks' lines are plain text whatever
+                // the body was.
+                let on_body = self.session.response.view().is_some_and(|v| v.mode.is_body());
+                let ext = if on_body
                     && data.content_type.as_deref().is_some_and(|c| c.contains("json"))
                 {
                     "json"
@@ -4779,32 +4784,22 @@ impl App {
             }
             Action::DeleteTableRow(i) => {
                 self.no_coalesce = true;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Vars => &mut self.editor.variables,
-                    EditorTab::Body => return true,
-                };
+                let Some((table, map, spec)) = self.editor.table_parts() else { return true };
                 let key = map.get_index(i).map(|(k, _)| k.clone());
-                self.editor.table.delete_row(map, i);
+                table.delete_row(map, i);
                 if let Some(key) = key {
-                    self.toast_deleted_row(&key, i);
+                    self.toast_deleted_row(spec, &key, i);
                 }
                 true
             }
             Action::DeleteTableRows { start, count } => {
                 self.no_coalesce = true;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Vars => &mut self.editor.variables,
-                    EditorTab::Body => return true,
-                };
-                let gone = self.editor.table.delete_rows(map, start, count);
+                let Some((table, map, spec)) = self.editor.table_parts() else { return true };
+                let gone = table.delete_rows(map, start, count);
                 if gone > 0 {
-                    let noun = if gone == 1 { "row" } else { "rows" };
+                    let plural = if gone == 1 { "" } else { "s" };
                     self.toasts.push(
-                        format!("Deleted {gone} {noun}{}", self.undo_hint()),
+                        format!("Deleted {gone} {}{plural}{}", spec.noun, self.undo_hint()),
                         ToastKind::Info,
                     );
                 }
@@ -4911,9 +4906,10 @@ impl App {
                     crate::yank::Register::Empty => return true,
                     // The register is invisible, so silence would read as a
                     // dead key: say what it holds.
-                    crate::yank::Register::Row { .. } => {
+                    crate::yank::Register::Row { tab, .. } => {
+                        let held = tab.table_spec().unwrap_or(&TableSpec::ROWS).yanked;
                         self.toasts.push(
-                            "nothing to put here: the register holds a table row",
+                            format!("nothing to put here: the register holds {held}"),
                             ToastKind::Warning,
                         );
                         self.last_action_failed = true;
@@ -4969,13 +4965,26 @@ impl App {
                         return true;
                     }
                 };
+                // The yanked row's table, for its words and what a row is.
+                let spec = tab.table_spec().unwrap_or(&TableSpec::ROWS);
                 // A header is not a param: the register stays on its tab.
                 if tab != self.editor.active_tab {
+                    let quoted = spec.quoted(&key);
                     self.toasts
-                        .push(format!("{key} was yanked from another tab"), ToastKind::Warning);
+                        .push(format!("{quoted} was yanked from another tab"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
+                // No second row is made of a name-only row (`-copy` would
+                // be another row): a put of one still in the list adds
+                // none, as its name typed into `+ Add` adds none, and a
+                // count puts the one.
+                if spec.name_only && self.editor.table_index_of(&key).is_some() {
+                    self.toasts.push(spec.taken(&key), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                let count = if spec.name_only { 1 } else { count };
                 // Each copy goes under the one before, so the run reads in
                 // the order it was made; the cursor ends on the first, as
                 // vim's `3p` leaves it. One action is one editor change.
@@ -5335,8 +5344,12 @@ impl App {
                 let generation = self.session.begin_send(&self.editor.slug);
                 let tx = self.tx.clone();
                 let client = self.clients.for_request(&prepared).clone();
+                // The checks as they are at the send: the response is judged
+                // by these, once, in the send's own task (checks tabs spec
+                // 2026-11-16, P5).
+                let checks = self.editor.checks();
                 let task = tokio::spawn(async move {
-                    match crate::http::send(&client, &prepared).await {
+                    match crate::http::send_checked(&client, &prepared, checks).await {
                         Ok(data) => {
                             let _ = tx
                                 .send(Action::ResponseArrived { generation, data: Box::new(data) });
@@ -6838,6 +6851,9 @@ impl App {
                 true
             }
             Action::OpenVarPicker { completing } => {
+                if self.refuse_vars_here() {
+                    return true;
+                }
                 self.apply(Action::ReloadProjectFiles);
                 if !completing
                     && let Some((text, cursor)) =
@@ -8424,6 +8440,22 @@ impl App {
         }
     }
 
+    /// A variable command (the picker, an extract) run with the editor's
+    /// caret in an input that takes no variables, the Checks tab's fields
+    /// and checks ([`Editor::caret_takes_vars`], the one question): it is
+    /// refused here with a toast. `true` when it was.
+    fn refuse_vars_here(&mut self) -> bool {
+        let takes = self.screen != Screen::Main
+            || self.focus != PaneId::Editor
+            || self.editor.caret_takes_vars();
+        if !takes {
+            let noun = self.editor.active_tab.table_spec().map_or("row", |spec| spec.noun);
+            self.toasts.push(format!("a {noun} takes no variables"), ToastKind::Warning);
+            self.last_action_failed = true;
+        }
+        !takes
+    }
+
     /// The `(text, cursor)` of whichever plain text field currently holds
     /// the caret — the URL line or a table cell under edit — for
     /// cursor-on-token detection (spec §6's first picker context). `None`
@@ -8484,6 +8516,9 @@ impl App {
     /// edit, which is what `focused_field_text` needs — the row menu only
     /// ever *selects* a row (see `context_menu_for`).
     fn focused_extract_text(&mut self) -> Option<String> {
+        if self.refuse_vars_here() {
+            return None;
+        }
         if self.focus == PaneId::Editor
             && self.editor.active_tab == EditorTab::Body
             && self.editor.sub_focus == SubFocus::Content
@@ -11021,15 +11056,9 @@ impl App {
                 }
                 (TextSurface::Jq, true)
             }
-            Hit::TableCell { row, col } => {
-                let cell_col = crate::components::table_editor::Col::from_index(*col);
-                let editing_this = self
-                    .editor
-                    .table
-                    .editing
-                    .as_ref()
-                    .is_some_and(|e| e.row == *row && e.col == cell_col);
-                if !editing_this {
+            // The table's open input: a cell, or a Checks field, under edit.
+            Hit::TableCell { .. } | Hit::CheckField(_) => {
+                if self.editor.table_field().and_then(mouse::field_hit).as_ref() != Some(hit) {
                     return None;
                 }
                 self.update(Action::FocusPane(PaneId::Editor));
@@ -11093,14 +11122,18 @@ impl App {
         // ... nor on the Settings tab, whose values are app preferences
         // rather than request text — and whose tab is reachable with no
         // project open, so there would be nowhere to put the variable.
-        if !matches!(
-            surface,
-            TextSurface::VmField
-                | TextSurface::VmCell
-                | TextSurface::Jq
-                | TextSurface::Settings
-                | TextSurface::Project
-        ) {
+        // ... nor on the Checks tab's inputs, which take no variables.
+        let takes_vars = surface != TextSurface::TableCell || self.editor.caret_takes_vars();
+        if takes_vars
+            && !matches!(
+                surface,
+                TextSurface::VmField
+                    | TextSurface::VmCell
+                    | TextSurface::Jq
+                    | TextSurface::Settings
+                    | TextSurface::Project
+            )
+        {
             items.push(if has_selection {
                 MenuItem::new("Extract to variable\u{2026}", Action::ExtractSelection(surface))
             } else {
@@ -11356,21 +11389,28 @@ impl App {
     /// table (Task 17, spec §5): duplicate, delete, and extract its value to
     /// a variable. `None` for the Body tab (no table there) or a row index
     /// past the map's end (the ghost row, or one that vanished under a
-    /// commit the caller already resolved past).
+    /// commit the caller already resolved past). A name-only row's menu
+    /// is its delete alone: no second row is made of one, and it has no
+    /// value to extract.
     fn table_row_context_menu(&self, i: usize) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
-        let (map, noun) = match self.editor.active_tab {
-            EditorTab::Params => (&self.editor.params, "param"),
-            EditorTab::Headers => (&self.editor.headers, "header"),
-            EditorTab::Vars => (&self.editor.variables, "variable"),
-            EditorTab::Body => return None,
+        let spec = self.editor.active_tab.table_spec()?;
+        let noun = match self.editor.active_tab {
+            EditorTab::Params => "param",
+            EditorTab::Headers => "header",
+            EditorTab::Vars => "variable",
+            _ => spec.noun,
         };
-        if i >= map.len() {
+        if i >= self.editor.table_len() {
             return None;
+        }
+        let delete = MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i));
+        if spec.name_only {
+            return Some(vec![delete]);
         }
         Some(vec![
             MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
-            MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i)),
+            delete,
             MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
             MenuItem::new("Extract value to selector…", Action::ExtractToSelector),
         ])
@@ -12053,7 +12093,9 @@ impl App {
                 let view = self.session.response.view()?;
                 let what = match view.mode {
                     crate::components::response::ViewMode::Headers => "response headers",
-                    _ => "response body",
+                    crate::components::response::ViewMode::Checks => "check results",
+                    crate::components::response::ViewMode::Pretty
+                    | crate::components::response::ViewMode::Raw => "response body",
                 };
                 Some((view.view_text(), format!("Copied {what}")))
             }
@@ -12079,7 +12121,13 @@ impl App {
             // on the new row and on a rename (`table_editor::commit_key`),
             // so a whole-header copy never reads `: value`.
             CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => {
-                self.editor.table_row_at(*i).map(|(key, value)| header_copy(key, value, key))
+                let (key, value) = self.editor.table_row_at(*i)?;
+                // A name-only row's copy takes its name.
+                let spec = self.editor.active_tab.table_spec()?;
+                if spec.name_only {
+                    return Some((key.to_string(), format!("Copied {}", spec.noun)));
+                }
+                Some(header_copy(key, value, key))
             }
             // The real value even while the row shows masked, as the sent
             // section's pill and the tooltip's copy do (spec 2026-10-18 R7);
@@ -14154,7 +14202,10 @@ fn line_buf<'a>(
     use crate::keyroute::FieldId;
     match id {
         FieldId::Url => Some(url),
-        FieldId::TableCell { .. } => table.editing.as_mut().map(|e| &mut e.input),
+        // A cell, or a Checks field: the table's one open input.
+        FieldId::TableCell { .. } | FieldId::CheckField(_) => {
+            table.editing.as_mut().map(|e| &mut e.input)
+        }
         FieldId::VmForm(_) => varmanager.form.editing.as_mut().map(|e| &mut e.input),
         FieldId::VmGrid { .. } => varmanager.grid.editing.as_mut().map(|e| &mut e.input),
         FieldId::Settings(_) => settings.editing.is_some().then(|| settings.input_mut()),
@@ -14164,6 +14215,8 @@ fn line_buf<'a>(
     }
 }
 
+#[cfg(test)]
+mod checks_tests;
 mod curl_flow;
 #[cfg(test)]
 mod curl_tests;

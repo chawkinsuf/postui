@@ -42,7 +42,7 @@ for postui itself.
 ## Editing a request
 
 The URL line holds the method and the URL. Under it are tabs for Headers,
-Params, Vars and Body:
+Params, Vars, Body and Checks:
 
 - **Headers and Params** are tables. A row's checkbox switches it off without
   deleting it. The Headers tab also lists the headers postui adds for you,
@@ -55,6 +55,10 @@ Params, Vars and Body:
   with the value it has now.
 - **Body** is a JSON editor that can format or minify the body, or open it in
   your `$EDITOR`.
+- **Checks** says what a good response is: the status codes that pass, limits
+  in milliseconds on the time to the first byte and on the total time, and jq
+  checks that must each give `true`. They are judged each time the request is
+  sent.
 
 Send sends, and turns into Cancel while the request is in flight. Saving
 writes the request to its file; discarding throws unsaved changes away. A
@@ -100,6 +104,10 @@ opens that variable or selector on the Manage screen.
 The response pane shows the status, timing and size, with three views: Tree,
 Raw and Headers. The tree folds and unfolds, the response can be searched, and
 its toolbar copies the body, saves it to a file or opens it in `$EDITOR`.
+
+When the request has checks, a fourth view, Checks, lists each one with a `✓`
+or a `✗`, and the tab wears the mark for the response as a whole. Without a
+status check, a status of 400 or more fails the response.
 
 ### The jq filter
 
@@ -188,5 +196,6 @@ status = 200
 jq = ['.items | length > 0', '.items[0].id == 42']
 ```
 
-`postui suite` and `postui run` both evaluate them and say which failed. The
-app keeps a request's checks when you edit it, but doesn't show them yet.
+`postui suite` and `postui run` both evaluate them and say which failed. In
+the app, the request's Checks tab edits them and the response's Checks tab
+shows how the last send did.

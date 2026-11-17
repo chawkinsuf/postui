@@ -15,11 +15,21 @@ change the project file format.
   without saving anything. `--plain`, a pipe or `TERM=dumb` gives the plain
   text as before. The plain heading gains `jobs N` when N is more than 1,
   and the JSON gains `"jobs"`.
+- A request has a Checks tab that edits its `[checks]`: the status codes
+  that pass, the first-byte and total time limits, and the jq checks. The
+  response has a Checks tab, when the request had checks at the send, with
+  a line for each check and `✓` or `✗` on the tab for the response as a
+  whole.
+- `editor_tab_5` can be bound to open the request's Checks tab.
 
 ### Changed
 
 - `postui suite`'s total time (`totals.elapsed_ms` and the plain total) is
   now the run's wall-clock time, not the sum of the requests' times.
+- A status code or a jq check listed twice in a request's `[checks]` counts
+  once, in the app and in `postui run` and `postui suite`.
+- The mark that a body's variables are on is part of the Body tab's label
+  (`Body · vars`).
 
 ## [0.4.1] - 2026-11-13
 

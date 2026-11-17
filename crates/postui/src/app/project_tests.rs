@@ -382,7 +382,7 @@ fn a_refused_write_keeps_the_typing() {
     assert!(!app.op_in_flight, "the refused write ends its op");
     // The name is refused the same way.
     app.project_tab.table.editing = None;
-    app.project_tab.table.set_selected(None);
+    app.project_tab.table.set_selected(Some(Stop::Head(0)));
     feed(&mut app, "<CR>");
     app.project_tab.name_input_mut().unwrap().set_text("New");
     feed(&mut app, "<CR>");
@@ -439,15 +439,18 @@ fn a_name_differing_only_by_spaces_starts_no_write() {
 }
 
 /// A key the tab hands on leaves its cursor as it was: after a click away
-/// dropped it, Tab on the Name row does nothing here and lights nothing.
+/// dropped it, Tab, ← or → on the Name row does nothing here and lights
+/// nothing.
 #[test]
 fn a_key_the_tab_hands_on_leaves_the_cursor_dropped() {
     let mut app = project_app(THREE, KeyProfile::Arrows);
     click(&mut app, Hit::ManageTab(ManageTab::Project.index()));
     assert!(!app.project_tab.focused);
     assert!(app.project_tab.on_name());
-    assert_eq!(app.handle_project_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)), None);
-    assert!(!app.project_tab.focused, "the unclaimed key relit the cursor");
+    for code in [KeyCode::Tab, KeyCode::Left, KeyCode::Right] {
+        assert_eq!(app.handle_project_key(KeyEvent::new(code, KeyModifiers::NONE)), None);
+        assert!(!app.project_tab.focused, "{code:?}: the unclaimed key relit the cursor");
+    }
 }
 
 /// R14: a right click away from an open header cell commits it first, as
@@ -533,7 +536,7 @@ fn the_pills_leave_the_cursor_where_it_was() {
         let mut app = project_app(THREE, KeyProfile::Arrows);
         app.hovered = Some(cell(1, 1));
         click(&mut app, hit.clone());
-        assert_eq!(app.project_tab.table.selected(), None, "{hit:?}: on the Name row");
+        assert!(app.project_tab.on_name(), "{hit:?}: on the Name row");
         assert!(app.project_tab.focused, "{hit:?}: the Name row is lit");
         feed(&mut app, "<Down>");
         assert_eq!(app.project_tab.table.selected(), Some(Stop::Row(0)), "{hit:?}");
@@ -674,7 +677,8 @@ fn a_refused_click_on_a_cell_leaves_the_open_one() {
         modifiers: KeyModifiers::NONE,
     });
     let edit = app.project_tab.table.editing.as_ref().expect("the old cell stays open");
-    assert_eq!((edit.row, edit.input.text(), edit.input.cursor()), (0, "b", 1));
+    let (row, _) = edit.cell().unwrap();
+    assert_eq!((row, edit.input.text(), edit.input.cursor()), (0, "b", 1));
     assert!(app.text_drag.is_none());
     assert!(app.last_action_failed);
     let messages = app.toasts.messages();
@@ -874,7 +878,7 @@ fn open_b_value(typed: &str) -> App {
     let mut app = project_app(THREE, KeyProfile::Arrows);
     feed(&mut app, "<Down><Down><Right><CR>");
     let edit = app.project_tab.table.editing.as_mut().expect("b's value is open");
-    assert_eq!(edit.row, 1);
+    assert_eq!(edit.cell().unwrap().0, 1);
     edit.input.set_text(typed);
     app
 }
@@ -957,7 +961,7 @@ fn tab_commits_a_cell_and_opens_the_next() {
     feed(&mut app, "<Tab>");
     assert_eq!(keys(&app), ["A2", "b", "c"]);
     let edit = app.project_tab.table.editing.as_ref().expect("the value opened");
-    assert_eq!((edit.row, edit.col), (0, crate::components::table_editor::Col::Value));
+    assert_eq!(edit.cell().unwrap(), (0, crate::components::table_editor::Col::Value));
 }
 
 /// The footer's delete chip keeps the tab's cursor, which the chip's
@@ -1025,13 +1029,13 @@ fn place_stop(p: usize) -> Option<Stop> {
 }
 
 /// The stop at place `p` of the tab's walk over `n` headers: the Name row
-/// (no table cursor), the headers, then `+ Add header`.
+/// (the table's head), the headers, then `+ Add header`.
 fn walk_place(n: usize, p: usize) -> Option<Stop> {
-    match p {
-        0 => None,
-        p if p <= n => Some(Stop::Row(p - 1)),
-        _ => Some(Stop::Add),
-    }
+    Some(match p {
+        0 => Stop::Head(0),
+        p if p <= n => Stop::Row(p - 1),
+        _ => Stop::Add,
+    })
 }
 
 /// The header table's view shows the cursor: from its top on the Name
@@ -1039,10 +1043,9 @@ fn walk_place(n: usize, p: usize) -> Option<Stop> {
 /// stop of the table.
 fn assert_view_shows_cursor(app: &App, n: usize, at: &str) {
     let t = &app.project_tab.table;
-    match t.selected() {
+    match t.selected().and_then(|stop| stop.line(n)) {
         None => assert_eq!(t.scroll, 0, "{at}: the Name row shows the table's top"),
-        Some(stop) => {
-            let line = stop.line(n);
+        Some(line) => {
             assert!(
                 line >= t.scroll && line < t.scroll + t.viewport,
                 "{at}: line {line} out of view {}+{}",
@@ -1177,7 +1180,7 @@ fn the_arrows_walk_on_from_an_open_field() {
         let mut app = project_app(THREE, profile);
         feed(&mut app, if profile == KeyProfile::Vim { "ji" } else { "<Down><CR>" });
         let edit = app.project_tab.table.editing.as_mut().expect("a's name is open");
-        assert_eq!(edit.row, 0, "{profile:?}");
+        assert_eq!(edit.cell().unwrap().0, 0, "{profile:?}");
         edit.input.set_text("A");
         feed(&mut app, "<Up>");
         assert_eq!(keys(&app), ["A", "b", "c"], "{profile:?}: committed");

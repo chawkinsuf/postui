@@ -183,14 +183,11 @@ pub(super) fn apply(app: &mut App, input: &Input) {
 /// could strand. The body is left out: it is a pane's content, always
 /// there, not an edit that opens and closes.
 pub(super) fn live_edits(app: &App) -> Vec<FieldId> {
-    use crate::components::table_editor::Col;
     let mut out = Vec::new();
     if app.editor.url_open() {
         out.push(FieldId::Url);
     }
-    if let Some(e) = &app.editor.table.editing {
-        out.push(FieldId::TableCell { row: e.row, col: usize::from(e.col == Col::Value) });
-    }
+    out.extend(app.editor.table_field());
     if let Some(e) = &app.varmanager.form.editing {
         out.push(FieldId::VmForm(e.field));
     }
@@ -607,7 +604,9 @@ fn paging_chords_survive_the_guard() {
     let cursor = |app: &App, f: Fixture| match f {
         SidebarThree => app.sidebar.selected,
         // The stop's place in the walk: rows, `+ Add`, the section.
-        TableThreeHeaders => app.editor.table.selected().map(|s| s.ordinal(app.editor.table_len())),
+        TableThreeHeaders => {
+            app.editor.table.selected().map(|s| s.ordinal(0, app.editor.table_len()))
+        }
         ResponseWide => app.session.response.view().map(|v| v.cursor),
         ManageEnvs | ManageSpaces => app.manage.list.cursor_in(app.manage_items(app.manage.tab)),
         VarList => Some(app.varmanager.left_cursor),

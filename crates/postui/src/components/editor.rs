@@ -1,6 +1,7 @@
 use super::line_input::LineInput;
 use super::table_editor::{
-    Col, RowNote, Stop, TableEditorState, TableOutcome, TableOwner, content_lines, table_height,
+    Col, EditAt, RowNote, Stop, TOGGLE_W, TableEditorState, TableOutcome, TableOwner, TableSpec,
+    content_lines, table_height,
 };
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
@@ -38,15 +39,35 @@ pub enum EditorTab {
     Headers,
     Body,
     Vars,
+    /// The request's `[checks]` (checks tabs spec 2026-11-16): the status
+    /// and time-limit fields over the list of jq checks.
+    Checks,
 }
 
 /// Left-to-right tab-strip order, and the order `EditorTabCycle` walks:
-/// Headers → Params → Vars → Body. The tab slot numbers
+/// Headers → Params → Vars → Body → Checks. The tab slot numbers
 /// ([`EditorTab::index`], bindable as `editor_tab_N`) follow this same
 /// order, so the number you bind always matches the tab's on-screen
 /// position.
-const DRAW_ORDER: [EditorTab; 4] =
-    [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Body];
+const DRAW_ORDER: [EditorTab; 5] =
+    [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Body, EditorTab::Checks];
+
+/// What the Body tab's label ends with while the body's variables are on,
+/// as a counted tab's ends with its count (checks tabs spec 2026-11-16,
+/// W3).
+const BODY_VARS: &str = " · vars";
+
+/// The Checks tab's fields, in walk order (one for each of the table's
+/// heads), each with its label and its hover hint: the status codes, then
+/// the two time limits in `Measure::ALL`'s order.
+pub const CHECK_FIELDS: [(&str, &str); TableSpec::CHECKS.heads] = [
+    ("status", "Edit the status codes that pass"),
+    ("first byte", "Edit the first-byte limit, in milliseconds"),
+    ("total", "Edit the total-time limit, in milliseconds"),
+];
+
+/// The most columns a Checks field's well takes.
+const CHECK_FIELD_W: u16 = 40;
 
 impl EditorTab {
     /// How many tabs the strip draws (`{N}gt`'s range; plan M4a).
@@ -79,6 +100,7 @@ impl EditorTab {
             EditorTab::Headers => "Headers",
             EditorTab::Body => "Body",
             EditorTab::Vars => "Vars",
+            EditorTab::Checks => "Checks",
         }
     }
 
@@ -89,6 +111,17 @@ impl EditorTab {
             EditorTab::Params => Some("add param"),
             EditorTab::Headers => Some("add header"),
             EditorTab::Vars => Some("add variable"),
+            EditorTab::Checks => Some("add check"),
+            EditorTab::Body => None,
+        }
+    }
+
+    /// What the tab's table lists ([`TableSpec`]): its words and its
+    /// shape, for every table path. `None` on Body, which has no table.
+    pub fn table_spec(self) -> Option<&'static TableSpec> {
+        match self {
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars => Some(&TableSpec::ROWS),
+            EditorTab::Checks => Some(&TableSpec::CHECKS),
             EditorTab::Body => None,
         }
     }
@@ -112,6 +145,9 @@ pub enum Caret {
     },
     /// The table's cursor on `+ Add`, which every table has.
     Add,
+    /// The table's cursor on head `k`: one of the Checks tab's fields,
+    /// which are always there.
+    Head(usize),
     /// The table's cursor on row `index` of the section under the table
     /// (task #56): undo puts it back there, as it was ("undo restores
     /// exactly"), found by `name` on the Vars tab (the referenced
@@ -195,11 +231,25 @@ pub struct Editor {
     /// The view the bar shows and edits, by name; `None` (or a name no
     /// view has) is the scratch. File content, as a plain edit (A4).
     pub jq_current: Option<String>,
-    /// The request's `[checks]`, which `postui suite` and `run` evaluate.
-    /// The editor shows and edits none of them; it carries them so every
-    /// save, undo step, duplicate and replace keeps them (suite checks spec
-    /// R10; showing them is #302).
-    pub checks: Checks,
+    /// The request's status check (`[checks]`, checks tabs spec
+    /// 2026-11-16): the codes that pass, edited by the Checks tab's first
+    /// field. Empty is no status check. File content, like the rest of the
+    /// checks below; [`Self::checks`] puts them together.
+    pub check_status: Vec<u16>,
+    /// The request's time limits in milliseconds, first byte then total
+    /// (`Measure::ALL`'s order): the Checks tab's other two fields.
+    pub check_limits: [Option<u32>; 2],
+    /// The request's jq checks, in order, edited by the Checks tab's
+    /// table. Each row's name is the check's text; its value is unused and
+    /// stays empty. A map so the table's every path (add, delete, copy,
+    /// put, undo's caret) is the other tabs'; a check listed twice would
+    /// be one key, and the read hands over none (`model::Checks`).
+    pub check_rows: IndexMap<String, Entry>,
+    /// Whether each jq check compiles, by its text, for the error colour
+    /// (spec Q6): remembered so a frame compiles only a text it hasn't
+    /// seen. An answer depends on the text alone, so none goes stale;
+    /// the draw drops the texts no row holds any more.
+    check_compiles: std::collections::HashMap<String, bool>,
     /// The id the next view gets, a new one or one `load` numbers: past
     /// every id this editor (and any it replaced, [`Self::fresh`]) ever
     /// handed out or took in (a load, a snapshot), so an id never names two views
@@ -424,7 +474,10 @@ impl Default for Editor {
             jq_enabled: true,
             jq_views: Vec::new(),
             jq_current: None,
-            checks: Checks::default(),
+            check_status: Vec::new(),
+            check_limits: [None; 2],
+            check_rows: IndexMap::new(),
+            check_compiles: Default::default(),
             next_view_id: 1,
             env_tls: None,
             params: IndexMap::new(),
@@ -465,26 +518,110 @@ impl Default for Editor {
     }
 }
 
+/// The table's state, a tab's map and its spec ([`Editor::table_parts`]).
+pub type TableParts<'a> =
+    (&'a mut TableEditorState, &'a mut IndexMap<String, Entry>, &'static TableSpec);
+
 impl Editor {
-    /// The key/value table behind `tab`; `None` for Body, which has none.
+    /// The table behind `tab`; `None` for Body, which has none.
     pub fn table_map(&self, tab: EditorTab) -> Option<&IndexMap<String, Entry>> {
         match tab {
             EditorTab::Params => Some(&self.params),
             EditorTab::Headers => Some(&self.headers),
             EditorTab::Vars => Some(&self.variables),
+            EditorTab::Checks => Some(&self.check_rows),
             EditorTab::Body => None,
         }
     }
 
-    /// `table_map`, mutably. It borrows the whole editor, so a caller that
-    /// also needs `self.table` at once keeps its own field-wise match.
+    /// `table_map`, mutably. A caller that also needs `self.table` at once
+    /// takes [`Self::table_parts`].
     pub fn table_map_mut(&mut self, tab: EditorTab) -> Option<&mut IndexMap<String, Entry>> {
-        match tab {
-            EditorTab::Params => Some(&mut self.params),
-            EditorTab::Headers => Some(&mut self.headers),
-            EditorTab::Vars => Some(&mut self.variables),
-            EditorTab::Body => None,
+        self.parts_of(tab).map(|(_, map, _)| map)
+    }
+
+    /// The request's checks as the file holds them, from the Checks tab's
+    /// fields and rows: what a save writes and a send judges by.
+    pub fn checks(&self) -> Checks {
+        Checks {
+            status: self.check_status.clone(),
+            max_ttfb_ms: self.check_limits[0],
+            max_elapsed_ms: self.check_limits[1],
+            jq: self.check_rows.keys().cloned().collect(),
         }
+    }
+
+    /// Takes `checks` in, as a load or an undo step hands them over.
+    fn set_checks(&mut self, checks: &Checks) {
+        self.check_status = checks.status.clone();
+        self.check_limits = [checks.max_ttfb_ms, checks.max_elapsed_ms];
+        let row = |f: &String| (f.clone(), Entry { value: String::new(), enabled: true });
+        self.check_rows = checks.jq.iter().map(row).collect();
+    }
+
+    /// What the Checks tab's field `k` shows and opens with: the status
+    /// codes as `200, 201`, or a limit's milliseconds; empty when unset.
+    pub fn check_field_text(&self, k: usize) -> String {
+        match k {
+            0 => self.check_status.iter().map(u16::to_string).collect::<Vec<_>>().join(", "),
+            _ => self
+                .check_limits
+                .get(k - 1)
+                .copied()
+                .flatten()
+                .map_or_else(String::new, |ms| ms.to_string()),
+        }
+    }
+
+    /// Field `k` closed holding `text` (spec Q5): a value the file can
+    /// hold is taken, empty for no such check; any other is refused, the
+    /// field keeps what it had, and the refusal comes back for a toast.
+    fn commit_check_field(&mut self, k: usize, text: &str) -> Option<String> {
+        let taken = match k {
+            0 => Checks::parse_status(text).map(|codes| self.check_status = codes),
+            _ => Checks::parse_limit(text).map(|limit| {
+                if let Some(slot) = self.check_limits.get_mut(k - 1) {
+                    *slot = limit;
+                }
+            }),
+        };
+        let why = taken.err()?;
+        let kept = postui_core::checks::brief(&self.check_field_text(k));
+        Some(if kept.is_empty() { why } else { format!("{why} — kept '{kept}'") })
+    }
+
+    /// Does what a table call's outcome asks of the editor, which holds
+    /// the Checks tab's fields: writes a closed field's text
+    /// ([`Self::commit_check_field`]), its refusal joining the outcome's
+    /// warning, then opens the field a Tab walk reached. The table's keys,
+    /// its commit and its click end here.
+    fn finish_table(&mut self, mut outcome: TableOutcome) -> TableOutcome {
+        if let Some((k, text)) = outcome.head_commit.take() {
+            outcome.warning = self.commit_check_field(k, &text).or(outcome.warning);
+        }
+        if let Some(k) = outcome.open_head.take() {
+            self.table.begin_head(k, &self.check_field_text(k));
+        }
+        outcome
+    }
+
+    /// The table's open input, named as its field: a cell, or a field of
+    /// the Checks tab.
+    pub fn table_field(&self) -> Option<crate::keyroute::FieldId> {
+        use crate::keyroute::FieldId;
+        Some(match self.table.editing.as_ref()?.at {
+            EditAt::Head(k) => FieldId::CheckField(k),
+            EditAt::Cell(row, col) => FieldId::TableCell { row, col: usize::from(col.index()) },
+        })
+    }
+
+    /// Whether the caret's input takes `{{variables}}`: the one question
+    /// every place that offers or draws them asks (checks tabs spec
+    /// 2026-11-16). The URL line and the body do; a table tab's inputs by
+    /// its [`TableSpec`], so the Checks tab's fields and checks don't.
+    pub fn caret_takes_vars(&self) -> bool {
+        self.sub_focus != SubFocus::Content
+            || self.active_tab.table_spec().is_none_or(|spec| spec.vars)
     }
 
     /// Whether a plain printable key typed right now lands in one of the
@@ -540,11 +677,12 @@ impl Editor {
     /// limbo. A selection already there is kept.
     fn enter_content(&mut self) {
         self.sub_focus = SubFocus::Content;
-        if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers | EditorTab::Vars)
+        if let Some(spec) = self.active_tab.table_spec()
             && self.table.selected().is_none()
         {
+            // The first stop: the Checks tab's status field.
             let len = self.table_len();
-            self.table.set_selected(Some(Stop::of_row(0, len)));
+            self.table.set_selected(Some(Stop::at(0, spec.heads, len)));
         }
     }
 
@@ -597,7 +735,7 @@ impl Editor {
         self.jq_enabled = req.jq_enabled;
         self.jq_views = req.jq_views.clone();
         self.jq_current = req.jq_current.clone();
-        self.checks = req.checks.clone();
+        self.set_checks(&req.checks);
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -652,7 +790,7 @@ impl Editor {
         self.jq_current = req.jq_current.clone();
         let past = self.jq_views.iter().map(|v| v.id + 1).max().unwrap_or(0);
         self.next_view_id = self.next_view_id.max(past);
-        self.checks = req.checks.clone();
+        self.set_checks(&req.checks);
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -661,7 +799,10 @@ impl Editor {
             None => "",
         });
         self.table.editing = None;
-        let on_table = matches!(caret, Caret::Cell { .. } | Caret::Add | Caret::Section { .. });
+        let on_table = matches!(
+            caret,
+            Caret::Cell { .. } | Caret::Add | Caret::Head(_) | Caret::Section { .. }
+        );
         if !on_table {
             self.table.set_selected(None);
         }
@@ -726,6 +867,7 @@ impl Editor {
                 // ("undo restores exactly"; task #121 put this before R8's
                 // "never the ghost row", mine (approved)).
                 Some(Stop::Add) => Caret::Add,
+                Some(Stop::Head(k)) => Caret::Head(k),
                 // A referenced row is found again by its variable's name: the
                 // list is rebuilt in first-seen order, so an undo that drops
                 // an earlier `{{token}}` shifts the index.
@@ -775,6 +917,7 @@ impl Editor {
                 self.body.set_viewport_offset(0, row.saturating_sub(half));
             }
             Caret::Add => self.table.set_selected(Some(Stop::Add)),
+            Caret::Head(k) => self.table.set_selected(Some(Stop::Head(*k))),
             Caret::Cell { row, key } => {
                 // The same row by key (indices shift under undo). A row the
                 // swap removed, or a stale index past the rows (no key),
@@ -841,7 +984,7 @@ impl Editor {
             jq_enabled: self.jq_enabled,
             jq_views: self.jq_views.clone(),
             jq_current: self.jq_current.clone(),
-            checks: self.checks.clone(),
+            checks: self.checks(),
             params: self.params.clone(),
             headers: self.headers.clone(),
             variables: self.variables.clone(),
@@ -960,7 +1103,7 @@ impl Editor {
         hovered.or_else(|| match cursor? {
             Stop::Row(i) => table_row(i),
             Stop::Section(j) => client_owned_header(self.computed.rows.get(j)?.unsent),
-            Stop::Add => None,
+            Stop::Add | Stop::Head(_) => None,
         })
     }
 
@@ -1008,7 +1151,8 @@ impl Editor {
                 && self.variables.is_empty()
                 && self.body_text().is_empty()
                 && self.jq.is_empty()
-                && self.jq_views.is_empty())
+                && self.jq_views.is_empty()
+                && self.check_count() == 0)
     }
 
     /// A blank editor that keeps this one's view-id counter, for replacing
@@ -1219,9 +1363,13 @@ impl Editor {
     /// in, for the caret-resting tooltip (spec §7 — a keyboard user gets the
     /// same value readout a hover gives). Covers the fields a caret can
     /// rest in: the URL line, the body editor's current line, and a table
-    /// cell under edit (#135). `None` anywhere else, and whenever the caret
-    /// is outside every token.
+    /// cell under edit (#135). `None` anywhere else, whenever the caret
+    /// is outside every token, and in an input that takes no variables
+    /// ([`Self::caret_takes_vars`]), where `{{x}}` is only text.
     pub fn caret_token(&self) -> Option<String> {
+        if !self.caret_takes_vars() {
+            return None;
+        }
         let (text, byte_off) = match self.sub_focus {
             SubFocus::Url if self.url_open => (self.url.text().to_string(), self.url.cursor_byte()),
             SubFocus::Content if self.active_tab == EditorTab::Body => {
@@ -1739,16 +1887,30 @@ impl Editor {
         !self.body_tab_disabled() && !self.body_text().is_empty()
     }
 
-    /// A tab's label in the strip: its name, and its entry count when it
-    /// has entries.
-    fn tab_label_text(&self, t: EditorTab) -> String {
+    /// How many checks the editor holds: a status field that is set, each
+    /// limit, each jq check.
+    fn check_count(&self) -> usize {
+        usize::from(!self.check_status.is_empty())
+            + self.check_limits.iter().flatten().count()
+            + self.check_rows.len()
+    }
+
+    /// A tab's label in the strip: its name, and with `counts` its entry
+    /// count when it has entries ([`Self::check_count`] on the Checks
+    /// tab). The Body tab has no count; while the body's variables are on
+    /// its label carries [`BODY_VARS`], with or without `counts`.
+    fn tab_label_text(&self, t: EditorTab, counts: bool) -> String {
         let count = match t {
-            EditorTab::Params => self.params.len(),
-            EditorTab::Headers => self.headers.len(),
-            EditorTab::Vars => self.variables.len(),
+            EditorTab::Body if self.substitute_body => return format!("{}{BODY_VARS}", t.label()),
             EditorTab::Body => 0,
+            EditorTab::Checks => self.check_count(),
+            _ => self.table_map(t).map_or(0, IndexMap::len),
         };
-        if count > 0 { format!("{} · {count}", t.label()) } else { t.label().to_string() }
+        if counts && count > 0 {
+            format!("{} · {count}", t.label())
+        } else {
+            t.label().to_string()
+        }
     }
 
     /// The tab content's scroll state, as of the last draw. `None` before a
@@ -2927,10 +3089,7 @@ impl Component for Editor {
             // the Body tab edtui does, except for the two keys that are the
             // only keyboard route back out of the buffer.
             SubFocus::Content => {
-                if matches!(
-                    self.active_tab,
-                    EditorTab::Params | EditorTab::Headers | EditorTab::Vars
-                ) {
+                if let Some(spec) = self.active_tab.table_spec() {
                     // An open cell's keys never move the cursor, so the
                     // section (a scan of every field on Vars) is counted
                     // only on the closed table.
@@ -2952,18 +3111,37 @@ impl Component for Editor {
                     {
                         return Some(Action::OverrideAutoHeader(j));
                     }
-                    let map = match self.active_tab {
-                        EditorTab::Params => &mut self.params,
-                        EditorTab::Headers => &mut self.headers,
-                        EditorTab::Vars => &mut self.variables,
-                        EditorTab::Body => unreachable!(),
-                    };
-                    let outcome = self.table.handle_key_with_tail(ev, map, tail);
+                    // The Checks tab's fields are the table's heads, whose
+                    // own keys are the caller's: Enter opens the one under
+                    // the cursor, and ↑ on the first climbs out to the URL
+                    // line as it does from a table's first row (the walk
+                    // keeps ↑ there, having nothing above it).
+                    if plain
+                        && self.table.editing.is_none()
+                        && let Some(Stop::Head(k)) = self.table.selected()
+                    {
+                        match ev.code {
+                            KeyCode::Enter => {
+                                self.table.begin_head(k, &self.check_field_text(k));
+                                return Some(Action::Render);
+                            }
+                            KeyCode::Up if k == 0 => {
+                                self.table.set_selected(None);
+                                self.select_url();
+                                return Some(Action::Render);
+                            }
+                            _ => {}
+                        }
+                    }
+                    let (table, map, _) = self.table_parts()?;
+                    let outcome = table.handle_key_walk(ev, map, spec, tail);
+                    let outcome = self.finish_table(outcome);
                     if outcome.consumed {
                         if let Some(i) = outcome.request_delete {
                             return Some(Action::DeleteTableRow(i));
                         }
                         if ev.code == KeyCode::Char('{')
+                            && spec.vars
                             && self
                                 .table
                                 .editing
@@ -3202,14 +3380,16 @@ impl Component for Editor {
         let content_constraint = match self.active_tab {
             _ if self.table_collapsed => Constraint::Length(0),
             EditorTab::Body => Constraint::Min(0),
-            EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars | EditorTab::Checks => {
                 // Capped to what's left after the fixed address bar and tab
                 // bar rows, never the other way around: those two must never
                 // be squeezed to make room for a table that wants more
                 // height than the pane has. What doesn't fit scrolls
-                // (`draw_table_tab`).
+                // (`draw_table_tab`). The Checks tab's fields are a line
+                // each above its table.
                 let available = inner.height.saturating_sub(CHROME_HEIGHT);
-                let wanted = u16::try_from(self.table_content_lines()).unwrap_or(u16::MAX);
+                let lines = self.field_lines() + self.table_content_lines();
+                let wanted = u16::try_from(lines).unwrap_or(u16::MAX);
                 Constraint::Length(wanted.min(available))
             }
         };
@@ -3692,13 +3872,12 @@ impl Editor {
     /// with [`Self::table_index_of`] to re-resolve a row across a commit
     /// that may have collapsed rows (and shifted every later index down).
     pub fn table_key_at(&self, i: usize) -> Option<String> {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
-            EditorTab::Body => return None,
-        };
-        map.get_index(i).map(|(k, _)| k.clone())
+        self.active_map()?.get_index(i).map(|(k, _)| k.clone())
+    }
+
+    /// The active tab's table; `None` on Body, which has none.
+    fn active_map(&self) -> Option<&IndexMap<String, Entry>> {
+        self.table_map(self.active_tab)
     }
 
     /// The key and value of the active tab's table row `i` — what the
@@ -3706,25 +3885,13 @@ impl Editor {
     /// (`{{tokens}}` included). `None` out of range, or on Body, which has
     /// no table.
     pub fn table_row_at(&self, i: usize) -> Option<(&str, &str)> {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
-            EditorTab::Body => return None,
-        };
-        map.get_index(i).map(|(k, e)| (k.as_str(), e.value.as_str()))
+        self.active_map()?.get_index(i).map(|(k, e)| (k.as_str(), e.value.as_str()))
     }
 
     /// Row `i`'s enabled flag on the active table tab. `true` out of range
     /// or on Body — callers only ask about real rows.
     pub fn table_row_enabled(&self, i: usize) -> bool {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
-            EditorTab::Body => return true,
-        };
-        map.get_index(i).is_none_or(|(_, e)| e.enabled)
+        self.active_map().and_then(|map| map.get_index(i)).is_none_or(|(_, e)| e.enabled)
     }
 
     /// How many rows the active tab's table has (the ghost row's index) —
@@ -3735,12 +3902,7 @@ impl Editor {
     /// height; the ghost row is [`table_height`]'s own constant, not a row
     /// counted here.
     pub fn table_len(&self) -> usize {
-        match self.active_tab {
-            EditorTab::Params => self.params.len(),
-            EditorTab::Headers => self.headers.len(),
-            EditorTab::Vars => self.variables.len(),
-            EditorTab::Body => 0,
-        }
+        self.active_map().map_or(0, IndexMap::len)
     }
 
     /// What a list verb means on the active table (piece 4 spec §5.3), on
@@ -3806,20 +3968,33 @@ impl Editor {
         match self.table.selected()? {
             Stop::Row(i) if i < self.table_len() => Some(CursorRow::Main(i)),
             Stop::Section(_) => self.auto_row_cursor().map(CursorRow::Auto),
-            Stop::Row(_) | Stop::Add => None,
+            Stop::Row(_) | Stop::Add | Stop::Head(_) => None,
         }
     }
 
     /// Where `key` sits in the active tab's table now. `None` once the row
     /// is gone (a duplicate-key commit collapsed it away).
     pub fn table_index_of(&self, key: &str) -> Option<usize> {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
+        self.active_map()?.get_index_of(key)
+    }
+
+    /// The table's state, the active tab's map and its spec, borrowed
+    /// apart for a call into the table; `None` on Body, which has none.
+    pub fn table_parts(&mut self) -> Option<TableParts<'_>> {
+        self.parts_of(self.active_tab)
+    }
+
+    /// [`Self::table_parts`] for `tab`'s table.
+    fn parts_of(&mut self, tab: EditorTab) -> Option<TableParts<'_>> {
+        let spec = tab.table_spec()?;
+        let map = match tab {
+            EditorTab::Params => &mut self.params,
+            EditorTab::Headers => &mut self.headers,
+            EditorTab::Vars => &mut self.variables,
+            EditorTab::Checks => &mut self.check_rows,
             EditorTab::Body => return None,
         };
-        map.get_index_of(key)
+        Some((&mut self.table, map, spec))
     }
 
     /// Starts a new row on the active tab's table: focuses the table and
@@ -3827,50 +4002,42 @@ impl Editor {
     /// "+ Add …". A no-op on the Body tab. Any prior edit must already be
     /// committed (see `App`'s `Action::TableAddRow` arm).
     pub fn begin_add_row(&mut self) {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
-            EditorTab::Body => return,
-        };
+        let Some((table, map, _)) = self.table_parts() else { return };
+        table.begin_add(map);
         self.sub_focus = SubFocus::Content;
-        self.table.begin_add(map);
     }
 
     /// Whether the live table edit sits on the ghost row — a new row is
     /// mid-add, so "add row" is already underway (the footer hides its
     /// add chip). Editing an existing row doesn't count.
     pub fn adding_row(&self) -> bool {
-        let map = match self.active_tab {
-            EditorTab::Params => &self.params,
-            EditorTab::Headers => &self.headers,
-            EditorTab::Vars => &self.variables,
-            EditorTab::Body => return false,
-        };
-        self.table.editing.as_ref().is_some_and(|e| e.row == map.len())
+        self.table.editing_ghost(self.table_len())
     }
 
     /// Commits any in-progress table cell edit into the active tab's map —
     /// the click-away / focus-loss path. Its warning is the caller's to
-    /// surface.
+    /// surface. An open field of the Checks tab is such an edit: its text
+    /// is written, or refused with the warning ([`Self::finish_table`]).
     pub fn commit_table(&mut self) -> TableOutcome {
-        match self.active_tab {
-            EditorTab::Params => self.table.commit(&mut self.params),
-            EditorTab::Headers => self.table.commit(&mut self.headers),
-            EditorTab::Vars => self.table.commit(&mut self.variables),
-            EditorTab::Body => TableOutcome::default(),
-        }
+        let Some((table, map, spec)) = self.table_parts() else { return TableOutcome::default() };
+        let outcome = table.commit_as(map, spec);
+        self.finish_table(outcome)
     }
 
     /// Begins editing one cell of the active tab's table in place,
     /// committing whatever was being edited before it.
     pub fn click_table_cell(&mut self, row: usize, col: Col) -> TableOutcome {
-        match self.active_tab {
-            EditorTab::Params => self.table.click_cell(row, col, &mut self.params),
-            EditorTab::Headers => self.table.click_cell(row, col, &mut self.headers),
-            EditorTab::Vars => self.table.click_cell(row, col, &mut self.variables),
-            EditorTab::Body => TableOutcome::default(),
-        }
+        let Some((table, map, spec)) = self.table_parts() else { return TableOutcome::default() };
+        let outcome = table.click_cell_as(row, col, map, spec);
+        self.finish_table(outcome)
+    }
+
+    /// Opens the Checks tab's field `k`, committing whatever was being
+    /// edited before it: a click on the field.
+    pub fn click_check_field(&mut self, k: usize) -> TableOutcome {
+        let outcome = self.commit_table();
+        self.table.begin_head(k, &self.check_field_text(k));
+        outcome
     }
 
     fn draw_tab_bar(
@@ -3885,21 +4052,29 @@ impl Editor {
         // Params/Headers carry their entry count inside the tab label; Body
         // carries the live JSON-validity badge, colored from the semantic
         // tokens so it also reads without the glyph.
-        let tab_strip: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = tabs
-            .iter()
-            .map(|t| {
-                let label = self.tab_label_text(*t);
-                let badge = match t {
-                    EditorTab::Body if self.body_badge_present() => Some(if self.body_is_valid() {
-                        ("✓", theme.success)
-                    } else {
-                        ("✗", theme.error)
-                    }),
-                    _ => None,
-                };
-                (label, badge)
-            })
-            .collect();
+        type Labels = Vec<(String, Option<(&'static str, ratatui::style::Color)>)>;
+        let body_badge =
+            self.body_badge_present().then(|| crate::paint::verdict(self.body_is_valid(), theme));
+        let labels = |counts: bool| -> Labels {
+            let badge = |t: &EditorTab| body_badge.filter(|_| *t == EditorTab::Body);
+            tabs.iter().map(|t| (self.tab_label_text(*t, counts), badge(t))).collect()
+        };
+        // The row must end before the split chips, with room kept for the
+        // Body tab's `vars` and its badge whether or not it has them. When
+        // it doesn't, every tab drops its count: the one compact form
+        // (checks tabs spec 2026-11-16, W1). So the form follows the room
+        // and the counts, which are what it drops, and never the selected
+        // tab (W2). Measuring fixed counts instead would hide counts that
+        // fit.
+        let control_x = area.right().saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
+        let vars_room = if self.substitute_body { 0 } else { crate::ui::cells(BODY_VARS) as u16 };
+        let badge_room = if body_badge.is_some() { 0 } else { crate::paint::TabStrip::BADGE_W };
+        let fits = |labels: &Labels| {
+            let end = crate::paint::TabStrip::spans(labels).last().map_or(0, |(x, w)| x + w);
+            area.x + end + vars_room + badge_room <= control_x
+        };
+        let full = labels(true);
+        let tab_strip = if fits(&full) { full } else { labels(false) };
         let active = self.active_tab.draw_position();
         let hovered = tabs
             .iter()
@@ -3917,8 +4092,8 @@ impl Editor {
             ratio: self.split.ratio,
         };
         // The pane-collapse progress doubles as the tabs' fade: hiding the
-        // editor fades the tab labels (underline, badge, and vars indicator
-        // with them) out entirely — settled hidden, the strip isn't painted
+        // editor fades the tab labels (underline and badge with them) out
+        // entirely — settled hidden, the strip isn't painted
         // at all, and the `› show` toggle is the row's only surviving
         // control. Hidden tabs also take no clicks, so registration is
         // gated on the settled flag, not the fade.
@@ -3955,17 +4130,6 @@ impl Editor {
                     hits.register(*rect, crate::hit::Hit::EditorTab(i));
                 }
             }
-
-            // The "vars" indicator sits right after the tab blocks, on the
-            // labels row.
-            let last_rect = rects[tabs.len() - 1];
-            if self.substitute_body {
-                let x = last_rect.x + last_rect.width + 2;
-                frame.render_widget(
-                    Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
-                    Rect::new(x, area.y, 5, 1),
-                );
-            }
             if fade_t > 0.0 {
                 // Mid-slide: blend the whole strip toward the page it sits
                 // on. The toggle is painted after this, so it never fades.
@@ -3985,7 +4149,6 @@ impl Editor {
             Some(crate::hit::Hit::SplitStop(s)) => Some(*s),
             _ => None,
         };
-        let control_x = area.right().saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
         let rects = crate::paint::SplitControl { state: split, hovered }
             .paint(buf, control_x, area.y, theme);
         for (rect, stop) in rects {
@@ -4114,8 +4277,9 @@ impl Editor {
         self.last_body_area = None;
         self.table.viewport = 0;
         match self.active_tab {
-            EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars | EditorTab::Checks => {
                 if !self.table_collapsed {
+                    let area = self.draw_check_fields(frame, area, ctx, focused, hits);
                     self.draw_table_tab(frame, area, ctx, focused, hits);
                 }
             }
@@ -4367,8 +4531,103 @@ impl Editor {
         match self.active_tab {
             EditorTab::Headers => self.computed.rows.len(),
             EditorTab::Vars => refs.len(),
-            EditorTab::Params | EditorTab::Body => 0,
+            EditorTab::Params | EditorTab::Body | EditorTab::Checks => 0,
         }
+    }
+
+    /// The Checks table's notes, one per row: a check that doesn't compile
+    /// is marked for the error colour (spec Q6). Empty on any other tab.
+    /// Each text is compiled once and remembered (`check_compiles`). The
+    /// compile runs on the UI thread, as the jq bar's does
+    /// (`Response::apply_jq`): a filter nested deep enough to overflow the
+    /// compiler's stack is #282.
+    fn check_notes(&mut self) -> Vec<Option<RowNote>> {
+        if self.active_tab != EditorTab::Checks {
+            return Vec::new();
+        }
+        let (rows, known) = (&self.check_rows, &mut self.check_compiles);
+        known.retain(|text, _| rows.contains_key(text));
+        rows.keys()
+            .map(|text| {
+                let ok = known.get(text).copied().unwrap_or_else(|| {
+                    *known.entry(text.clone()).or_insert(postui_core::jq::check(text).is_ok())
+                });
+                (!ok).then_some(RowNote::Error)
+            })
+            .collect()
+    }
+
+    /// The lines the active tab's fields take above its table: one for
+    /// each of the table's heads, so three on the Checks tab and none
+    /// elsewhere.
+    fn field_lines(&self) -> usize {
+        self.active_tab.table_spec().map_or(0, |spec| spec.heads)
+    }
+
+    /// Draws the Checks tab's fields at the top of `area`, a line each,
+    /// label then well, and answers what is left of `area` under them for
+    /// the table. They don't scroll with the table: the split's floor
+    /// ([`CONTENT_MIN_HEIGHT`]) leaves it two lines under them. A window
+    /// too short for the floor draws the fields that fit and may leave the
+    /// table none, as it leaves the body no text (#129). On any other tab
+    /// there are none, and `area` comes back whole. `focused`: the tab's
+    /// content holds the keyboard, so the field under the cursor is lit.
+    ///
+    /// A field at rest shows its value ([`Self::check_field_text`]); the
+    /// open one is the table's edit slot, drawn here in its well. Each
+    /// registers [`crate::hit::Hit::CheckField`] over its well.
+    fn draw_check_fields(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        focused: bool,
+        hits: &mut crate::hit::HitMap,
+    ) -> Rect {
+        use crate::hit::Hit;
+        use crate::paint::{ControlState, PropertyRow, WELL_PAD, Well};
+        let shown = (self.field_lines() as u16).min(area.height);
+        let theme = ctx.theme;
+        let open = self.table.editing.as_ref();
+        let labels = CHECK_FIELDS.map(|(label, _)| label);
+        for (k, label) in labels.into_iter().enumerate().take(usize::from(shown)) {
+            let hit = Hit::CheckField(k);
+            let hovered = ctx.hovered == Some(&hit);
+            // Indented to the table's name column.
+            let pad = TOGGLE_W.min(area.width);
+            let row =
+                Rect { x: area.x + pad, y: area.y + k as u16, width: area.width - pad, height: 1 };
+            let slot = PropertyRow {
+                label,
+                label_w: crate::paint::label_column(&labels),
+                hovered,
+                disabled: false,
+                trailing: &[],
+            }
+            .paint(frame.buffer_mut(), hits, row, theme);
+            let well = Rect { width: slot.rect.width.min(CHECK_FIELD_W), ..slot.rect };
+            if well.width <= WELL_PAD * 2 {
+                continue;
+            }
+            let inner = well.width - WELL_PAD * 2;
+            let live = open.filter(|e| e.at == EditAt::Head(k)).map(|e| &e.input);
+            let content: Line<'static> = match live {
+                Some(input) => input.draw_line_windowed(true, theme, inner),
+                None => LineInput::new(&self.check_field_text(k))
+                    .draw_line_at_rest(theme, theme.text, inner),
+            };
+            let on_cursor = focused && self.table.selected() == Some(Stop::Head(k));
+            let state = if live.is_some() || on_cursor {
+                ControlState::Focused
+            } else if hovered {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            };
+            Well { content, state }.paint(frame.buffer_mut(), well, theme);
+            hits.register(well, hit);
+        }
+        Rect { y: area.y + shown, height: area.height - shown, ..area }
     }
 
     /// Every line a table tab's content has, for a section of
@@ -4443,8 +4702,10 @@ impl Editor {
             anims: ctx.anims,
             now: ctx.now,
         };
+        let check_notes = self.check_notes();
         let var_notes: Vec<Option<RowNote>>;
         let (map, add_label, notes): (_, _, &[Option<RowNote>]) = match self.active_tab {
+            EditorTab::Checks => (&self.check_rows, "+ Add check", &check_notes),
             EditorTab::Headers => {
                 // A row naming a header the client sets itself is kept but
                 // never sent (spec 2026-10-18 R3a), so it is struck in red.
@@ -4460,9 +4721,11 @@ impl Editor {
             }
             _ => (&self.params, "+ Add param", &[]),
         };
-        let owner = TableOwner::Request;
-        self.table
-            .draw(frame, area, map, &table_ctx, add_label, hits, notes, &self.vars, skip, owner);
+        let (owner, spec) =
+            (TableOwner::Request, self.active_tab.table_spec().unwrap_or(&TableSpec::ROWS));
+        self.table.draw(
+            frame, area, map, &table_ctx, add_label, hits, notes, &self.vars, skip, owner, spec,
+        );
 
         // The section starts on the line after the table's closing edge;
         // `top` is how far down the view its divider lands, and
@@ -5011,8 +5274,8 @@ mod tests {
         let mut app = App::new_for_test();
         app.update(Action::CycleMethod);
         assert_eq!(app.editor.method, Method::Post);
-        app.update(Action::EditorTabSelect(3));
-        assert_eq!(app.editor.active_tab, EditorTab::Body);
+        app.update(Action::EditorTabSelect(4));
+        assert_eq!(app.editor.active_tab, EditorTab::Checks);
         app.update(Action::EditorTabCycle(1));
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "cycle wraps");
     }
@@ -5023,7 +5286,7 @@ mod tests {
         app.update(Action::SetMethod(postui_core::model::Method::Post));
         assert_eq!(app.editor.active_tab, EditorTab::Headers);
         app.update(Action::EditorTabCycle(-1));
-        assert_eq!(app.editor.active_tab, EditorTab::Body, "backward wraps to last tab");
+        assert_eq!(app.editor.active_tab, EditorTab::Checks, "backward wraps to last tab");
     }
 
     #[test]
@@ -6520,7 +6783,7 @@ mod tests {
         assert_eq!(e.active_tab, tab, "the tab strip did not cycle");
         e.handle_key(key(KeyCode::Enter));
         let edit = e.table.editing.as_ref().expect("the value cell opened");
-        assert_eq!(edit.col, super::super::table_editor::Col::Value);
+        assert_eq!(edit.cell().unwrap().1, super::super::table_editor::Col::Value);
     }
 
     /// Up at the table's top clamp climbs out to the URL line rather than
@@ -6966,32 +7229,61 @@ mod tests {
     /// in stop order, the boundary at the top then at the bottom.
     #[test]
     fn the_tab_row_fits_beside_the_split_control_at_the_main_minimum() {
-        // The widest everyday tab row: single-digit counts on the three
-        // counted tabs, the Body badge, and the "vars" indicator (S5's
-        // main-column minimum is sized for it).
+        // The widest everyday tab row: single-digit counts on the four
+        // counted tabs, and the Body tab's `vars` and badge. With the
+        // fifth tab it no longer fits at the main-column minimum, so every
+        // tab drops its count there (checks tabs spec 2026-11-16, W1), and
+        // all five still end before the split chips.
         let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
         for i in 0..9 {
             let entry = || Entry { value: "1".into(), enabled: true };
             e.params.insert(format!("p{i}"), entry());
             e.headers.insert(format!("h{i}"), entry());
             e.variables.insert(format!("v{i}"), entry());
+            e.check_rows.insert(format!(".c{i}"), entry());
         }
         e.set_body_text("{}");
         e.substitute_body = true;
-        let hits = draw_editor_sized(&mut e, crate::layout::MAIN_MIN_COLS, 20);
-        let tabs_end = (0..DRAW_ORDER.len())
-            .filter_map(|i| hits.rect_of(&Hit::EditorTab(i)))
-            .map(|r| r.x + r.width)
-            .max()
-            .expect("tabs drawn");
-        // "vars " sits two cells after the last tab.
-        let vars_end = tabs_end + 2 + 5;
-        let [first, ..] = control_rects(&hits);
-        assert!(
-            vars_end < first.x,
-            "tabs and vars end at {vars_end}, the control starts at {}",
-            first.x
-        );
+        let tab_rects = |e: &mut Editor, width: u16| {
+            let hits = draw_editor_sized(e, width, 20);
+            let tabs: Vec<Rect> =
+                (0..DRAW_ORDER.len()).map(|i| hits.rect_of(&Hit::EditorTab(i)).unwrap()).collect();
+            let [first, ..] = control_rects(&hits);
+            (tabs, first.x)
+        };
+        let (tabs, control_x) = tab_rects(&mut e, crate::layout::MAIN_MIN_COLS);
+        let end = tabs[4].right();
+        assert!(end < control_x, "the row ends at {end}, the control starts at {control_x}");
+        // A tab is its label and a cell either side: `Checks`, or with
+        // room `Checks · 9`.
+        assert_eq!(tabs[4].width, 8, "no count at the minimum");
+        assert_eq!(tab_rects(&mut e, 120).0[4].width, 12, "the count with room");
+        // W3: `vars` is inside the Body tab, in both forms: the label, two
+        // cells for the badge, and a cell either side.
+        assert_eq!(tabs[3].width, 15, "`Body · vars ✓` at the minimum");
+        assert!(draw_editor(&mut e).0.contains("Body · vars ✓"));
+        // W2: the form follows the room, never the selected tab.
+        for tab in DRAW_ORDER {
+            e.active_tab = tab;
+            assert_eq!(tab_rects(&mut e, crate::layout::MAIN_MIN_COLS).0, tabs, "{tab:?}");
+        }
+        // Nor does it follow the Body tab's own parts, its `vars` and its
+        // badge: without one the Body tab is that much narrower and every
+        // other tab keeps its form, at any width.
+        for width in crate::layout::MAIN_MIN_COLS..=120 {
+            let with = tab_rects(&mut e, width).0;
+            for (vars, body, narrower) in [(false, "{}", 7), (true, "", 2), (false, "", 9)] {
+                e.substitute_body = vars;
+                e.set_body_text(body);
+                let without = tab_rects(&mut e, width).0;
+                assert_eq!(without[3].width + narrower, with[3].width, "at {width}");
+                for i in [0, 1, 2, 4] {
+                    assert_eq!(without[i].width, with[i].width, "tab {i} at {width}");
+                }
+            }
+            e.substitute_body = true;
+            e.set_body_text("{}");
+        }
     }
 
     #[test]
