@@ -29042,6 +29042,33 @@ async fn a_send_ends_the_ai_request() {
     assert!(app.session.response.jq_bar().ai_asking.is_none());
 }
 
+/// Esc, and a quit (the app dropped, before the runtime would drop the
+/// task), kill the running command itself (#314; `ai::tests` pins that a
+/// kill reaches what `sh` forked).
+#[tokio::test]
+async fn cancelling_or_quitting_kills_the_ai_command() {
+    for quit in [false, true] {
+        let mut app = App::new_for_test();
+        ready_response(&mut app, JQ_BODY);
+        stub_ai(&mut app, "sleep 30; echo .x");
+        app.update(Action::RunJqDescribe("x".into()));
+        let run = std::sync::Arc::clone(&app.ai_task.as_ref().unwrap().run);
+        for _ in 0..2000 {
+            if run.is_running() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(run.is_running(), "quit {quit}: the command started");
+        if quit {
+            drop(app);
+        } else {
+            app.update(Action::CancelJqDescribe);
+        }
+        assert!(run.is_over(), "quit {quit}: the command is killed");
+    }
+}
+
 /// A big response that sat in the cache past `Session::KEEP_WARM` newer big
 /// ones comes back without its tree; the switch restarts the background
 /// parse (inline here), and once the tree lands the filter the editor

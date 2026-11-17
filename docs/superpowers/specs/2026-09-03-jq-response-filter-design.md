@@ -312,6 +312,16 @@ generation and a request counter. The bar shows the spinner and `asking…`;
 while a request is pending `Esc` in the bar cancels it (kills the child)
 instead of blurring, and a stale reply is dropped.
 
+2026-11-17 (#314, mine): the command runs in a process group of its own,
+and ending a request kills the whole group (SIGKILL), so it reaches what
+`sh` forked and what the command itself started, not only `sh`. Every way
+a request ends early kills it: Esc, a new request, its view leaving the
+screen, and quitting the app, which kills it before the runtime is shut
+down (a quit doesn't wait for the runtime to drop its tasks). Its cost: a
+command outside the terminal's foreground group no longer gets the
+terminal's own SIGHUP when the window closes under the app, and one that
+reads the terminal is stopped (SIGTTIN) until the request ends.
+
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the
 first pair (backticks are never jq, so prose around a quoted filter goes

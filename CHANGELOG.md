@@ -43,6 +43,12 @@ change the project file format.
 - The mark that a body's variables are on is part of the Body tab's label
   (`Body · vars`).
 
+### Fixed
+
+- Cancelling "Describe a filter…", or quitting while it runs, stops the AI
+  command. Before, only the shell that started it was stopped, so the
+  command could go on running, and spending, with its reply thrown away.
+
 ## [0.4.1] - 2026-11-13
 
 Small improvements for variables and the project's default headers.

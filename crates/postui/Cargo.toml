@@ -46,8 +46,9 @@ regex = "1"
 # unix, crossterm's own `poll`/`read` consume bytes from fd 0 into its
 # internal parser, which would swallow our OSC/DA1 replies before we could
 # see them. Version pinned to match crossterm's existing transitive `rustix`
-# dependency so `cargo tree` shows a single copy.
-rustix = { version = "1.1", features = ["event"] }
+# dependency so `cargo tree` shows a single copy. `process`: kill(2) on the
+# AI command's process group (ai.rs).
+rustix = { version = "1.1", features = ["event", "process"] }
 
 [features]
 # Exposes test-only helpers (e.g. `Clipboard::new_for_test`,

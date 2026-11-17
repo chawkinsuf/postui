@@ -1,8 +1,10 @@
 //! The "describe a filter" shell-out: a configurable command (default
 //! `claude -p`) that reads the whole prompt on stdin and prints a reply.
 
+use rustix::process::{Pid, Signal};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::SystemTime;
 use tokio::io::AsyncWriteExt as _;
 
@@ -89,25 +91,89 @@ impl CommandOutput {
     }
 }
 
-/// Runs `sh -c cmd` with `stdin` piped in. `Err` only when the command
-/// could not be started or waited on.
-pub async fn run_command(cmd: String, stdin: String) -> Result<CommandOutput, String> {
-    let mut child = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+/// One run of the AI command, shared by the task that runs it
+/// (`run_command`) and the app, which ends it with `kill` from the UI
+/// thread: on a cancel, and when the app quits, since a quit doesn't wait
+/// for the task to be dropped.
+#[derive(Default)]
+pub struct CommandRun(Mutex<RunState>);
+
+#[derive(Default)]
+enum RunState {
+    #[default]
+    NotStarted,
+    /// The pid of `sh`, which is also its process group's id.
+    Running(Pid),
+    /// Killed, or waited on.
+    Over,
+}
+
+impl CommandRun {
+    /// Kills the command if it is running, and keeps it from starting if
+    /// it hasn't yet. The whole process group: `sh` may have forked the
+    /// command rather than exec'd it, and the command may fork too.
+    pub fn kill(&self) {
+        let mut state = self.state();
+        if let RunState::Running(pid) = *state {
+            let _ = rustix::process::kill_process_group(pid, Signal::KILL);
+        }
+        *state = RunState::Over;
+    }
+
+    /// Whether the run is killed or has been waited on.
+    pub fn is_over(&self) -> bool {
+        matches!(*self.state(), RunState::Over)
+    }
+
+    #[cfg(test)]
+    pub fn is_running(&self) -> bool {
+        matches!(*self.state(), RunState::Running(_))
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, RunState> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Runs `sh -c cmd` with `stdin` piped in, in a process group of its own
+/// (see `CommandRun::kill`). `Err` when the command could not be started
+/// or waited on, or `run` was killed before it started.
+pub async fn run_command(
+    cmd: String,
+    stdin: String,
+    run: &CommandRun,
+) -> Result<CommandOutput, String> {
+    let mut child = {
+        // Held across the spawn, so a `kill` either comes first and nothing
+        // starts, or comes after and finds the pid.
+        let mut state = run.state();
+        if matches!(*state, RunState::Over) {
+            return Err("cancelled".into());
+        }
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        if let Some(pid) = child.id().and_then(|id| Pid::from_raw(i32::try_from(id).ok()?)) {
+            *state = RunState::Running(pid);
+        }
+        child
+    };
     if let Some(mut pipe) = child.stdin.take() {
         // A child that exits early closes the pipe; that is reported by
         // wait_with_output below, not here.
         let _ = pipe.write_all(stdin.as_bytes()).await;
         drop(pipe);
     }
-    let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().await;
+    *run.state() = RunState::Over;
+    let out = out.map_err(|e| e.to_string())?;
     Ok(CommandOutput {
         success: out.status.success(),
         status: out.status.to_string(),
@@ -196,21 +262,56 @@ mod tests {
         assert_eq!(program_name("1X=1 llm"), "1X=1", "not an identifier: a program");
     }
 
+    async fn run(cmd: &str, stdin: &str) -> Result<CommandOutput, String> {
+        run_command(cmd.into(), stdin.into(), &CommandRun::default()).await
+    }
+
     #[tokio::test]
     async fn run_command_pipes_stdin_and_returns_stdout() {
-        let out = run_command("cat".into(), "hello".into()).await.unwrap();
+        let out = run("cat", "hello").await.unwrap();
         assert_eq!(out.into_reply().unwrap(), "hello");
     }
 
     #[tokio::test]
     async fn run_command_reports_the_last_stderr_line_on_failure() {
-        let out =
-            run_command("echo one >&2; echo two >&2; exit 3".into(), String::new()).await.unwrap();
+        let out = run("echo one >&2; echo two >&2; exit 3", "").await.unwrap();
         assert_eq!(out.stderr, "one\ntwo\n", "the whole stderr is kept");
         assert_eq!(out.into_reply().unwrap_err(), "two");
-        let err =
-            run_command("exit 4".into(), String::new()).await.unwrap().into_reply().unwrap_err();
+        let err = run("exit 4", "").await.unwrap().into_reply().unwrap_err();
         assert!(err.contains("4"), "{err}");
+    }
+
+    /// `sh` forks `sleep` here, since a command follows it. The run ends
+    /// only once every holder of its stdout has gone, `sleep` included.
+    #[tokio::test]
+    async fn kill_ends_what_sh_forked_too() {
+        let run = std::sync::Arc::new(CommandRun::default());
+        let task = tokio::spawn({
+            let run = std::sync::Arc::clone(&run);
+            async move { run_command("sleep 30; echo .x".into(), String::new(), &run).await }
+        });
+        while !run.is_running() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        run.kill();
+        let out = tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the run ends at the kill, not when sleep does")
+            .unwrap()
+            .unwrap();
+        assert!(!out.success);
+        assert!(run.is_over());
+    }
+
+    #[tokio::test]
+    async fn a_run_killed_before_it_starts_starts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let run = CommandRun::default();
+        run.kill();
+        let cmd = format!("touch '{}'", marker.display());
+        assert_eq!(run_command(cmd, String::new(), &run).await.unwrap_err(), "cancelled");
+        assert!(!marker.exists(), "the command never ran");
     }
 
     #[test]
