@@ -3488,12 +3488,15 @@ impl Response {
     }
 
     /// Lets go of the background jq run and the completion key lookup the
-    /// bar is waiting on, which cancels both (#315). `Session::sync_open`
-    /// calls it on the response leaving screen at a request switch and on
-    /// the one coming on. A run let go of never lands, so `jq_applied`
-    /// would name a filter that was only started: it is reset to `None`,
-    /// and `sync_jq`'s next reconcile starts the filter afresh instead of
-    /// taking it as applied.
+    /// bar is waiting on, which cancels both (#315). A run let go of never
+    /// lands, so `jq_applied` would name a filter that was only started:
+    /// it is reset to `None`, and `sync_jq`'s next reconcile starts the
+    /// filter afresh instead of taking it as applied.
+    ///
+    /// `Session::sync_open` calls it on the response leaving screen at a
+    /// request switch. It calls it on the one coming on as well, only as a
+    /// guard: only the response on screen starts runs and lookups, so a
+    /// response coming out of the cache has none to let go of.
     pub fn drop_pending_jq(&mut self) {
         if self.jq.pending.take().is_some()
             && let Some(view) = self.view.as_mut()

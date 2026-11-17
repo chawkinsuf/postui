@@ -73,14 +73,7 @@ impl Session {
         // So does the jq Tab-key mode: it is a config-level UI setting, not
         // part of any one request's response, so it rides along too.
         let jq_tab = outgoing.jq_tab();
-        // A background jq run outstanding on the response leaving screen
-        // has nowhere to deliver its result: the `JqRunFinished` it will
-        // eventually produce is matched by generation/run against whatever
-        // `Response` is on screen when it arrives, which by then is a
-        // different one (or this same one, restored, having moved on).
-        // Dropping it here resets `jq_applied` so the reconcile step
-        // re-applies the filter — as a fresh run — instead of trusting a
-        // filter that was only ever started, never finished.
+        // See `Response::drop_pending_jq`.
         outgoing.drop_pending_jq();
         // An Empty response carries nothing worth restoring; keeping the
         // cache to requests that actually have a result bounds its size to
