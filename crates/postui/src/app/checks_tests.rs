@@ -512,8 +512,7 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
     let started = Instant::now();
     app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
     let limit = app.meta().jq_limit();
-    let lines = data.check_run(checks.clone(), limit, Default::default()).run();
-    let checks = checks.clone();
+    let (lines, checks) = (data.check_run(checks.clone(), limit).run(), checks.clone());
     app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     draw(app);
     (generation, lines)
@@ -799,61 +798,6 @@ async fn a_check_that_never_ends_fails_at_the_projects_limit() {
         checks_tab(&mut app),
         "\u{2717} last(range(1e18)) > 0: stopped at the 50 ms limit\n\u{2713} .a"
     );
-}
-
-/// #308 spec B7, B8: with `jq_limit_ms` at a minute, a check job, a bar run
-/// and a completion lookup that never end, all on the blocking pool, end
-/// soon after the `App` is dropped, as it is when `main.rs`'s loop returns.
-#[tokio::test]
-async fn dropping_the_app_stops_its_jq_runs() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    postui_core::fixtures::init_project(root, Some("quit")).unwrap();
-    std::fs::write(root.join("project.toml"), "jq_limit_ms = 60000\n").unwrap();
-    postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
-        .unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, root.to_path_buf());
-    let toml = "url = \"http://x.test/\"\n[checks]\njq = ['last(range(1e18)) > 0']\n";
-    let req = HttpRequest::from_toml_str(toml).unwrap();
-    postui_core::fixtures::save_request(app.proj().root(), "main/probe", &req).unwrap();
-    app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("main/probe".into()));
-    let sent = checks(&app);
-    let slug = app.editor.slug.clone();
-    let generation = app.session.begin_send(&slug);
-    let (started, task) = (Instant::now(), tokio::spawn(async {}));
-    app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
-    let data = crate::http::ResponseData {
-        status: 200,
-        url: "http://x.test/".into(),
-        headers: vec![],
-        sent_headers: vec![],
-        body: r#"{"a":true}"#.to_string().into(),
-        ttfb: std::time::Duration::from_millis(5),
-        elapsed: std::time::Duration::from_millis(9),
-        size: 10,
-        content_type: None,
-    };
-    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks: sent });
-    app.update(Action::OpenJqBar);
-    assert!(app.paste_text("(repeat(1) | select(. == 2))."));
-    assert!(app.session.response.jq_bar().completion.pending().is_some(), "a lookup on the pool");
-    app.update(Action::JqApply("last(repeat(1))".into()));
-    assert!(app.session.response.jq_bar().pending.is_some(), "a bar run too");
-    let started = Instant::now();
-    drop(app);
-    let (mut run, mut lookup, mut judged) = (false, false, false);
-    while !(run && lookup && judged) {
-        let wait = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv());
-        match wait.await.expect("each ends within 5 s").expect("a sender is left") {
-            Action::JqRunFinished { .. } => run = true,
-            Action::JqCompleteFinished { .. } => lookup = true,
-            Action::ChecksJudged { .. } => judged = true,
-            _ => {}
-        }
-    }
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
 
 /// Outside a runtime (`App::new_for_test` in a plain test) a response's

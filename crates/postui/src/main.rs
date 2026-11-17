@@ -48,18 +48,26 @@ fn main() -> anyhow::Result<ExitCode> {
         }
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
-    tokio::runtime::Runtime::new()?.block_on(app(cli_root, debug_ai))
+    without_waiting(app(cli_root, debug_ai))?
 }
 
-/// A CLI command. Its runtime is not waited on once the command is done: a
-/// send it dropped (a cancelled suite, a request that timed out) can leave
-/// its DNS lookup on tokio's blocking pool, and dropping the runtime would
-/// wait for that lookup to return.
+/// A CLI command, run [`without_waiting`].
 fn cli_command(command: postui::cli::Command) -> anyhow::Result<ExitCode> {
+    Ok(without_waiting(postui::cli::run(command))?)
+}
+
+/// Runs `work` on a new Tokio runtime, then shuts the runtime down without
+/// waiting for what is still on it. Dropping the runtime would wait for
+/// every job on its blocking pool to return: a dropped send's DNS lookup (a
+/// cancelled suite, a request that timed out), or in the TUI a jq run, a
+/// response's checks or a body parse. Nothing reads their results once
+/// `work` is done; a `--debug-ai` log append still going is cut off (#308
+/// spec B7).
+fn without_waiting<T>(work: impl std::future::Future<Output = T>) -> std::io::Result<T> {
     let runtime = tokio::runtime::Runtime::new()?;
-    let code = runtime.block_on(postui::cli::run(command));
+    let out = runtime.block_on(work);
     runtime.shutdown_background();
-    Ok(code)
+    Ok(out)
 }
 
 /// The TUI on the project `cli_root` names (or none).
@@ -572,4 +580,24 @@ fn edit_config_externally(
     // caret warnings show up without any extra code here.
     app.update(Action::ReloadFromDisk);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// #308 spec B7: the runtime the TUI and the CLI commands run on is
+    /// left without waiting for a job still on its blocking pool.
+    #[test]
+    fn work_returns_without_waiting_for_the_blocking_pool() {
+        let started = std::time::Instant::now();
+        let out = super::without_waiting(async {
+            drop(tokio::task::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }));
+            7
+        })
+        .unwrap();
+        assert_eq!(out, 7);
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    }
 }

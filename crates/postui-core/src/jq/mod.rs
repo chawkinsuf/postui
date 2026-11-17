@@ -28,7 +28,7 @@ impl DataT for Data {
 struct Globals<'a> {
     lut: &'a Lut<Data>,
     inputs: Inputs<'a, Val>,
-    stop: &'a Stop<'a>,
+    stop: &'a Stop,
 }
 
 /// jaq calls this on every term it evaluates (`Id::run`), so a filter that
@@ -42,17 +42,14 @@ impl<'a> HasLut<'a, Data> for &'a Globals<'a> {
 }
 
 /// Whether a run is stopped (#310). [`Stop::tick`] is called on each step
-/// of the run; once the flag, or `quit`, is set it unwinds out of jaq with
-/// a [`Stopped`], which [`for_each_output`] catches. [`with_limit`] makes
+/// of the run; once the flag is set it unwinds out of jaq with a
+/// [`Stopped`], which [`for_each_output`] catches. [`with_limit`] makes
 /// the one each run has.
 #[derive(Default)]
-struct Stop<'a> {
+struct Stop {
     stopped: std::sync::atomic::AtomicBool,
     /// The limit that sets the flag, for the message.
     limit: std::time::Duration,
-    /// A flag the run's caller sets to stop it before its limit: the app's,
-    /// set as it quits (#308 spec B7).
-    quit: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 /// What a stopped run unwinds with. `resume_unwind` skips the panic hook,
@@ -61,33 +58,25 @@ struct Stop<'a> {
 /// jaq error.
 struct Stopped(std::time::Duration);
 
-impl Stop<'_> {
-    /// One step of the run: unwinds with [`Stopped`] once the flag or
-    /// `quit` is set.
+impl Stop {
+    /// One step of the run: unwinds with [`Stopped`] once the flag is set.
     fn tick(&self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        if self.stopped.load(Relaxed) || self.quit.is_some_and(|quit| quit.load(Relaxed)) {
-            // A quit stop reports as the limit's: nothing reads a run's
-            // result after a quit.
+        if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
             std::panic::resume_unwind(Box::new(Stopped(self.limit)));
         }
     }
 }
 
 /// Runs `run` with a [`Stop`] whose flag a timer thread sets once `limit`
-/// has passed, unless `run` ends first, and which `quit` stops too. The
-/// run reads a flag on each step rather than the clock, so a run whose
-/// steps are each slow still stops one step past the limit. Costs a thread
-/// for each run: a timer of its own rather than one shared by every run, so
-/// no state outlives the run. The limit is wall-clock time, so a run slowed
-/// by other work on the machine counts that time too.
-fn with_limit<T>(
-    limit: std::time::Duration,
-    quit: Option<&std::sync::atomic::AtomicBool>,
-    run: impl FnOnce(&Stop) -> T,
-) -> T {
+/// has passed, unless `run` ends first. The run reads a flag on each step
+/// rather than the clock, so a run whose steps are each slow still stops
+/// one step past the limit. Costs a thread for each run: a timer of its
+/// own rather than one shared by every run, so no state outlives the run.
+/// The limit is wall-clock time, so a run slowed by other work on the
+/// machine counts that time too.
+fn with_limit<T>(limit: std::time::Duration, run: impl FnOnce(&Stop) -> T) -> T {
     use std::sync::mpsc::{RecvTimeoutError, channel};
-    let stop = Stop { limit, quit, ..Stop::default() };
+    let stop = Stop { limit, ..Stop::default() };
     let (ended, wait) = channel::<()>();
     std::thread::scope(|scope| {
         let stop = &stop;
@@ -414,17 +403,8 @@ pub struct JqRun {
 /// as one jq program runs over all its inputs. Checked between the
 /// filter's steps, so one native step already running (a huge allocation,
 /// a sort) finishes first.
-///
-/// Once `quit` is set the run stops the same way, at its next step, and
-/// fails with the same error: the app sets it as it quits, so that no run
-/// holds the process up (#308 spec B7).
-pub fn run(
-    code: &str,
-    doc: &JqDocument,
-    limit: std::time::Duration,
-    quit: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<JqRun, JqError> {
-    run_with_cap(code, doc, OUTPUT_CAP, limit, quit)
+pub fn run(code: &str, doc: &JqDocument, limit: std::time::Duration) -> Result<JqRun, JqError> {
+    run_with_cap(code, doc, OUTPUT_CAP, limit)
 }
 
 /// [`run`], refused past `cap_bytes` of output.
@@ -433,11 +413,8 @@ fn run_with_cap(
     doc: &JqDocument,
     cap_bytes: usize,
     limit: std::time::Duration,
-    quit: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<JqRun, JqError> {
-    with_compiled(code, |filter| {
-        with_limit(limit, quit, |stop| collect(filter, doc, cap_bytes, stop))
-    })
+    with_compiled(code, |filter| with_limit(limit, |stop| collect(filter, doc, cap_bytes, stop)))
 }
 
 /// The [`JqRun`] of `filter` over `doc`, refused past `cap_bytes` of output.
@@ -614,7 +591,7 @@ fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqErr
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     const DOC: &str = r#"{"data":{"items":[{"id":1,"name":"a","status":"active"},{"id":2,"name":"b","status":"off"}],"total":2}}"#;
@@ -626,10 +603,9 @@ pub(crate) mod tests {
     /// A limit no test here reaches unless it means to.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-    /// [`super::run`] with [`LIMIT`] and no quit flag, for the tests that
-    /// don't test either.
+    /// [`super::run`] with [`LIMIT`], for the tests that don't test the limit.
     fn run(code: &str, doc: &JqDocument) -> Result<JqRun, JqError> {
-        super::run(code, doc, LIMIT, None)
+        super::run(code, doc, LIMIT)
     }
 
     /// The outputs of a run that must not fail.
@@ -791,7 +767,7 @@ pub(crate) mod tests {
     fn the_cap_ends_the_whole_run_even_with_outputs_before_it() {
         let doc = JqDocument::parse("1 2 3").unwrap();
         let code = "if . == 3 then [range(1000)] else . end";
-        let err = run_with_cap(code, &doc, 1024, LIMIT, None).unwrap_err();
+        let err = run_with_cap(code, &doc, 1024, LIMIT).unwrap_err();
         assert!(err.message().contains("too large"), "{err:?}");
     }
 
@@ -882,7 +858,7 @@ pub(crate) mod tests {
 
     #[test]
     fn output_past_the_cap_is_refused_rather_than_collected() {
-        let err = run_with_cap("[range(100000)]", &doc(), 1024, LIMIT, None).unwrap_err();
+        let err = run_with_cap("[range(100000)]", &doc(), 1024, LIMIT).unwrap_err();
         let JqError::Runtime { message } = &err else {
             panic!("expected a runtime error, got {err:?}");
         };
@@ -909,7 +885,7 @@ pub(crate) mod tests {
         ] {
             for doc in [doc(), stream.clone()] {
                 let started = std::time::Instant::now();
-                let err = super::run(code, &doc, limit, None).unwrap_err();
+                let err = super::run(code, &doc, limit).unwrap_err();
                 assert_eq!(err.message(), "stopped at the 50 ms limit", "{code}");
                 assert_eq!(err.stopped_at(), Some(limit), "{code}");
                 assert!(started.elapsed() < std::time::Duration::from_secs(5), "{code}");
@@ -925,7 +901,7 @@ pub(crate) mod tests {
         let limit = std::time::Duration::from_millis(50);
         let started = std::time::Instant::now();
         let code = "\"x\" * 200000 | until(false; explode | implode)";
-        let err = super::run(code, &doc(), limit, None).unwrap_err();
+        let err = super::run(code, &doc(), limit).unwrap_err();
         assert_eq!(err.message(), "stopped at the 50 ms limit");
         let took = started.elapsed();
         assert!(took < std::time::Duration::from_millis(1000), "{took:?}");
@@ -1003,38 +979,12 @@ pub(crate) mod tests {
         assert!(run(".a ==", &doc()).unwrap_err().incomplete());
     }
 
-    /// Sets `quit` 50 ms from now, from another thread, while `run` runs.
-    pub(crate) fn quit_soon<T>(quit: &std::sync::atomic::AtomicBool, run: impl FnOnce() -> T) -> T {
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                quit.store(true, std::sync::atomic::Ordering::Relaxed);
-            });
-            run()
-        })
-    }
-
-    /// #308 spec B7: a run stops soon after its quit flag is set, long
-    /// before its limit.
-    #[test]
-    fn a_run_stops_once_its_quit_flag_is_set() {
-        let quit = std::sync::atomic::AtomicBool::new(false);
-        let limit = std::time::Duration::from_secs(10);
-        let started = std::time::Instant::now();
-        let err = quit_soon(&quit, || {
-            super::run("last(range(1e18))", &doc(), limit, Some(&quit)).unwrap_err()
-        });
-        assert_eq!(err.stopped_at(), Some(limit));
-        let took = started.elapsed();
-        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
-    }
-
     /// #308 spec B1: the limit is the one passed in. The filter runs 100
     /// times the short limit or more, so a late timer still stops it.
     #[test]
     fn the_limit_is_the_one_passed_in() {
         let code = "last(range(10000000))";
-        let err = super::run(code, &doc(), std::time::Duration::from_millis(1), None).unwrap_err();
+        let err = super::run(code, &doc(), std::time::Duration::from_millis(1)).unwrap_err();
         assert_eq!(err.message(), "stopped at the 1 ms limit");
         assert_eq!(outputs(code, &doc()), ["9999999"]);
     }

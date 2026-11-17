@@ -142,7 +142,7 @@ pub(super) fn over(
 ) -> Vec<ShownCheck> {
     let doc = || postui_core::jq::JqDocument::parse(body);
     let limit = postui_core::project::DEFAULT_JQ_LIMIT;
-    shown(&postui_core::checks::evaluate(checks, status, timing, limit, None, doc), mask)
+    shown(&postui_core::checks::evaluate(checks, status, timing, limit, doc), mask)
 }
 
 /// Checks with `status` codes and `jq` filters run over a response with
@@ -254,7 +254,7 @@ mod tests {
             let timing = Timing { ttfb_ms: 3, elapsed_ms: 40 };
             let doc = || postui_core::jq::JqDocument::parse(body);
             let limit = postui_core::project::DEFAULT_JQ_LIMIT;
-            let outcomes = evaluate(checks, status, timing, limit, None, doc);
+            let outcomes = evaluate(checks, status, timing, limit, doc);
             let run = shown(&outcomes, &Mask::none());
             let app = lines(status, &outcomes);
             assert_eq!(passed(status, &run), core_passed(&app), "{status}");

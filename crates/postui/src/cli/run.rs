@@ -390,7 +390,7 @@ fn run_jq(
     limit: std::time::Duration,
     mask: &Mask,
 ) -> (Option<Vec<serde_json::Value>>, Option<String>) {
-    let run = match doc.and_then(|doc| jq::run(filter, &doc, limit, None)) {
+    let run = match doc.and_then(|doc| jq::run(filter, &doc, limit)) {
         Ok(run) => run,
         Err(e) => return (None, Some(e.message())),
     };
@@ -462,7 +462,7 @@ fn record(
     let doc = || parsed.get_or_init(|| jq::JqDocument::parse(text())).clone();
     let timing = Timing::of(raw.ttfb, raw.elapsed);
     let limit = s.project.meta().jq_limit();
-    let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, limit, None, doc);
+    let outcomes = postui_core::checks::evaluate(checks, raw.status, timing, limit, doc);
     report.checks = shown(&outcomes, mask);
     let mut response = ResponseReport {
         status: raw.status,
@@ -854,7 +854,7 @@ mod tests {
         let checks = Checks { max_elapsed_ms: Some(500), ..Checks::default() };
         let limit = postui_core::project::DEFAULT_JQ_LIMIT;
         let outcomes =
-            postui_core::checks::evaluate(&checks, 200, timing, limit, None, || unreachable!());
+            postui_core::checks::evaluate(&checks, 200, timing, limit, || unreachable!());
         assert_eq!(failure_lines(&shown(&outcomes, &Mask::none())).count(), 0);
     }
 }

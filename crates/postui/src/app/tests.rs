@@ -26973,13 +26973,12 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
 
     // Direct coverage of the worker itself: parses the body when handed no
     // cached document, and runs the filter against it.
-    let request = crate::components::response::JqRunRequest {
+    let action = crate::app::jq_worker(crate::components::response::JqRunRequest {
         code: ".n".into(),
         doc: None,
         body: Some(big.clone()),
         ..req2
-    };
-    let action = crate::app::jq_worker(request, &Default::default());
+    });
     let Action::JqRunFinished {
         doc: Some(_),
         result:
@@ -27046,15 +27045,14 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
 
     // The worker itself.
     let doc = postui_core::jq::JqDocument::parse(&big).unwrap();
-    let request = crate::components::response::JqCompleteRequest {
+    let action = crate::app::jq_complete_worker(crate::components::response::JqCompleteRequest {
         generation,
         seq: 5,
         input_expr: ".".into(),
         doc: Some(doc),
         body: None,
         limit: postui_core::project::DEFAULT_JQ_LIMIT,
-    };
-    let action = crate::app::jq_complete_worker(request, &Default::default());
+    });
     let Action::JqCompleteFinished { seq: 5, keys, .. } = &action else {
         panic!("{action:?}");
     };

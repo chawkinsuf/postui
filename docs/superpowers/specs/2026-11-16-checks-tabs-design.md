@@ -569,8 +569,7 @@ lines find it by its generation as above.
 
    **2026-11-17, #308.** The key is renamed `jq_limit_ms` before any
    release, and the jq bar's runs and completion's lookups stop at it
-   too, so neither keeps a thread past the limit or holds up a quit
-   longer (`2026-11-17-jq-check-limit-design.md`, section 7). Quitting
-   stops the check job's jq checks, the bar's runs and completion's
-   lookups at once, so a quit no longer waits on jq at all (same spec,
-   B7, B8).
+   too, so neither keeps a thread past the limit. Quitting doesn't wait
+   for a check job, a jq run or other background work at all: the TUI's
+   runtime is shut down without waiting, as the CLI's is
+   (`2026-11-17-jq-check-limit-design.md`, section 7, B7).

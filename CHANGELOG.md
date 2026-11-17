@@ -29,12 +29,13 @@ change the project file format.
   run --jq` and `--view` stop at the same limit with the same error, so
   such a filter no longer keeps a CPU core busy until postui quits. The jq
   bar's key completion stops there too and offers the keys it found before
-  the stop. Quitting the app stops the jq runs still going (the bar's,
-  completion's and the response's checks) at their next step. `jq_limit_ms`
-  in `project.toml` sets another limit.
+  the stop. `jq_limit_ms` in `project.toml` sets another limit.
 
 ### Changed
 
+- Quitting the app no longer waits for work still running in the
+  background, such as a jq run, a response's checks or a cancelled send's
+  DNS lookup, so it never hangs after the terminal is given back.
 - `postui suite`'s total time (`totals.elapsed_ms` and the plain total) is
   now the run's wall-clock time, not the sum of the requests' times.
 - A status code or a jq check listed twice in a request's `[checks]` counts
