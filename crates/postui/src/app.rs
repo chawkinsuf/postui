@@ -2198,7 +2198,8 @@ impl App {
 }
 
 /// An in-flight "describe a filter" request: the command task, and the
-/// flag its separate prompt-building job reads.
+/// command's run, which its separate prompt-building job reads too.
+/// Dropping it ends the request: on a cancel, and when the app quits.
 pub struct AiTask {
     /// Matched against `JqAiFinished::request`.
     pub request: u64,
@@ -2207,18 +2208,19 @@ pub struct AiTask {
     generation: u64,
     /// When it was made, for the bar's spinner.
     started: Instant,
-    /// The command task, for tests to await. `cancel` aborts it, which
-    /// kills the command.
+    /// The command task, for tests to await.
     pub handle: tokio::task::JoinHandle<()>,
-    /// Set by `cancel`: the prompt-building job, which is not part of the
-    /// task so a prompt still reaches the `--debug-ai` log, skips the
-    /// whole-body walk when nothing will read its result.
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Killed on drop. Once it is over, the prompt-building job, which is
+    /// not part of the task so a prompt still reaches the `--debug-ai`
+    /// log, skips the whole-body walk when nothing will read its result.
+    run: std::sync::Arc<crate::ai::CommandRun>,
 }
 
-impl AiTask {
-    fn cancel(self) {
-        self.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+impl Drop for AiTask {
+    fn drop(&mut self) {
+        // Here, not left to the task's own drop: a quit shuts the runtime
+        // down without waiting for its tasks to be dropped.
+        self.run.kill();
         self.handle.abort();
     }
 }
@@ -6491,7 +6493,7 @@ impl App {
                 let cmd = self.ui_settings.ai_cmd.clone();
                 let log = self.ai_log.clone();
                 let tx = self.tx.clone();
-                let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let run = std::sync::Arc::new(crate::ai::CommandRun::default());
                 // The outline walks the whole body and the log is file I/O:
                 // both on the blocking pool, so a large response or a slow
                 // disk never stalls the UI thread. This job is queued here
@@ -6502,9 +6504,9 @@ impl App {
                     let cmd = cmd.clone();
                     let log = log.clone();
                     let tx = tx.clone();
-                    let cancelled = std::sync::Arc::clone(&cancelled);
+                    let run = std::sync::Arc::clone(&run);
                     handle.spawn_blocking(move || {
-                        if log.is_none() && cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        if log.is_none() && run.is_over() {
                             return None;
                         }
                         let when = std::time::SystemTime::now();
@@ -6529,13 +6531,14 @@ impl App {
                         Some(stdin)
                     })
                 };
+                let task_run = std::sync::Arc::clone(&run);
                 let task = handle.spawn(async move {
                     let result = match built.await {
                         // Gated on a parsed tree, so this is a fallback for a
                         // body the tree builder and jaq disagree on.
                         Ok(None) => Err("The response is not JSON".to_string()),
                         Ok(Some(stdin)) => {
-                            let outcome = crate::ai::run_command(cmd, stdin).await;
+                            let outcome = crate::ai::run_command(cmd, stdin, &task_run).await;
                             if let Some(path) = log {
                                 let text = crate::ai::log_reply(request, &outcome);
                                 let tx = tx.clone();
@@ -6557,7 +6560,7 @@ impl App {
                     generation,
                     started: Instant::now(),
                     handle: task,
-                    cancelled,
+                    run,
                 });
                 self.dispatch(Action::FocusPane(PaneId::Response));
                 self.session.response.set_jq_focus(true);
@@ -12184,9 +12187,7 @@ impl App {
     /// log) and bumps the counter, so a reply already queued is dropped
     /// (`JqAiFinished`).
     fn cancel_ai(&mut self) {
-        if let Some(task) = self.ai_task.take() {
-            task.cancel();
-        }
+        self.ai_task = None;
         self.ai_request += 1;
     }
 

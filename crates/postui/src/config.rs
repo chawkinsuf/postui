@@ -305,9 +305,11 @@ pub struct UiSettings {
     /// Per-transition durations, tunable via the optional `[animation_ms]`
     /// table; see [`AnimDurations`].
     pub anim_ms: AnimDurations,
-    /// The shell command "Describe a filter…" runs, with the prompt piped
-    /// in on stdin: `claude -p` by default. Only its first word (the
-    /// program name) is looked up on PATH to gate the menu item.
+    /// The command "Describe a filter…" runs as `sh -c "exec env <ai_cmd>"`
+    /// (`ai::run_command`), with the prompt piped in on stdin: `claude -p`
+    /// by default. Its program (`ai::program_name`, the first word past
+    /// any leading `NAME=value` settings) is looked up on PATH to gate the
+    /// menu item.
     pub ai_cmd: String,
     /// Whether the user has already confirmed sending the response's shape
     /// to `ai_cmd` — set once via the "Always send" choice and persisted,
@@ -626,7 +628,14 @@ pub fn config_seed() -> String {
 # The spaces in one indent level, from 1 to {}.
 # indent_width = {}
 
-# The shell command \"Describe a filter…\" pipes its prompt into.
+# The command \"Describe a filter…\" pipes its prompt into. It is run as
+# exec env <ai_cmd> so Esc stops it, so it must be one command: nothing
+# after ; or && runs, Esc doesn't stop a pipeline, and a shell builtin
+# (cd, exec) at the start fails. For more than one command, use a script
+# that ends with exec and the command. Esc doesn't stop a tool that a
+# launcher such as timeout or npx starts, so name the AI tool itself.
+# NAME=value settings at the start are read by env: quote a $VAR or $(…)
+# in a value, or it is split at spaces, and use $HOME rather than ~.
 # ai_cmd = {:?}
 
 # Set once by the AI prompt's \"Always send\" choice. false asks again.

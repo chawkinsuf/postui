@@ -28819,8 +28819,9 @@ fn the_response_export_picker_reads_save_response_to_file() {
 
 // --- "Describe a filter…" via the configured AI command ---
 
+/// `script` in a shell of its own, since `ai_cmd` is one command.
 fn stub_ai(app: &mut App, script: &str) {
-    app.ui_settings.ai_cmd = script.to_string();
+    app.ui_settings.ai_cmd = format!("sh -c '{}'", script.replace('\'', r"'\''"));
     app.ui_settings.ai_confirmed = true;
 }
 
@@ -29116,6 +29117,64 @@ async fn a_send_ends_the_ai_request() {
     assert!(!app.session.in_flight.is_empty(), "the send started");
     assert!(app.ai_task.is_none());
     assert!(app.session.response.jq_bar().ai_asking.is_none());
+}
+
+/// Esc, and a quit (the app dropped, while the task may never be), kill
+/// the command itself, not only the `sh` that started it (#314).
+#[tokio::test]
+async fn cancelling_or_quitting_kills_the_ai_command() {
+    let ps = |field: &str, pid: u32| {
+        let out = std::process::Command::new("ps")
+            .args(["-o", field, "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // Gone, or a zombie that nothing has reaped yet: either way it was
+    // killed.
+    let alive = |pid: u32| {
+        let stat = ps("stat=", pid);
+        !stat.is_empty() && !stat.starts_with('Z')
+    };
+    for quit in [false, true] {
+        let mut app = App::new_for_test();
+        ready_response(&mut app, JQ_BODY);
+        app.ui_settings.ai_cmd = "sleep 30".into();
+        app.ui_settings.ai_confirmed = true;
+        app.update(Action::RunJqDescribe("x".into()));
+        // The child is `sleep` itself once `sh` has exec'd it (macOS's
+        // `ps` gives the path, `/bin/sleep`).
+        let mut pid = None;
+        for _ in 0..2000 {
+            pid = app
+                .ai_task
+                .as_ref()
+                .and_then(|task| task.run.pid())
+                .filter(|&pid| ps("comm=", pid).rsplit('/').next() == Some("sleep"));
+            if pid.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let pid = pid.unwrap_or_else(|| panic!("quit {quit}: the command started as sleep"));
+        // Held as the task holds it when a quit leaves the task undropped,
+        // so the command's `kill_on_drop` can't end it here.
+        let _run = std::sync::Arc::clone(&app.ai_task.as_ref().unwrap().run);
+        if quit {
+            drop(app);
+        } else {
+            app.update(Action::CancelJqDescribe);
+        }
+        let mut gone = false;
+        for _ in 0..2000 {
+            gone = !alive(pid);
+            if gone {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(gone, "quit {quit}: the command is killed");
+    }
 }
 
 /// A big response that sat in the cache past `Session::KEEP_WARM` newer big
