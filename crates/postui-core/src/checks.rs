@@ -232,7 +232,7 @@ pub fn evaluate(
     let doc = doc();
     for filter in &checks.jq {
         let run = match &doc {
-            Ok(doc) => jq::run(filter, doc, limit),
+            Ok(doc) => jq::run(filter, doc, limit, None),
             Err(e) => jq::check(filter).and(Err(e.clone())),
         };
         let (got, error) = match run {

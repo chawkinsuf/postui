@@ -41,42 +41,72 @@ impl<'a> HasLut<'a, Data> for &'a Globals<'a> {
     }
 }
 
-/// Whether a run is stopped (#310). [`Stop::tick`] is called on each step
-/// of the run; once the flag is set it unwinds out of jaq with a
-/// [`Stopped`], which [`for_each_output`] catches. [`with_limit`] makes
-/// the one each run has.
+/// Whether a run is stopped (#310) or cancelled (#315). [`Stop::tick`] is
+/// called on each step of the run; once either flag is set it unwinds out
+/// of jaq with a [`Stopped`], which [`for_each_output`] catches.
+/// [`with_limit`] makes the one each run has.
 #[derive(Default)]
 struct Stop {
     stopped: std::sync::atomic::AtomicBool,
     /// The limit that sets the flag, for the message.
     limit: std::time::Duration,
+    /// The caller's switch, when it gave one. Apart from `stopped`, which
+    /// only this run's timer sets: the switch is the caller's and outlives
+    /// the run.
+    cancel: Option<Cancel>,
 }
 
-/// What a stopped run unwinds with. `resume_unwind` skips the panic hook,
-/// so nothing is printed (the app's hook would print on the TUI's screen),
-/// and a filter's `try`, `?` and `//` can't catch it, since it is not a
-/// jaq error.
-struct Stopped(std::time::Duration);
+/// What a stopped or cancelled run unwinds with: the run's error.
+/// `resume_unwind` skips the panic hook, so nothing is printed (the app's
+/// hook would print on the TUI's screen), and a filter's `try`, `?` and
+/// `//` can't catch it, since it is not a jaq error.
+struct Stopped(JqError);
 
 impl Stop {
-    /// One step of the run: unwinds with [`Stopped`] once the flag is set.
+    /// One step of the run: unwinds with [`Stopped`] once a flag is set.
+    /// The switch is a second load on every step; measured no slower than
+    /// the timer's flag alone (#315 spec section 8).
     fn tick(&self) {
         if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
-            std::panic::resume_unwind(Box::new(Stopped(self.limit)));
+            std::panic::resume_unwind(Box::new(Stopped(JqError::Stopped { limit: self.limit })));
+        }
+        if self.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+            std::panic::resume_unwind(Box::new(Stopped(JqError::Cancelled)));
         }
     }
 }
 
+/// A switch that ends a jq run before its limit, for a caller that may stop
+/// wanting the run while it goes (#315: the jq bar's pool runs and
+/// completion's lookups). Clones share the switch; a run given one stops at
+/// its next step once any clone is cancelled, with [`JqError::Cancelled`].
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancel {
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Runs `run` with a [`Stop`] whose flag a timer thread sets once `limit`
-/// has passed, unless `run` ends first. The run reads a flag on each step
-/// rather than the clock, so a run whose steps are each slow still stops
-/// one step past the limit. Costs a thread for each run: a timer of its
-/// own rather than one shared by every run, so no state outlives the run.
-/// The limit is wall-clock time, so a run slowed by other work on the
-/// machine counts that time too.
-fn with_limit<T>(limit: std::time::Duration, run: impl FnOnce(&Stop) -> T) -> T {
+/// has passed, unless `run` ends first, and that also reads `cancel`. The
+/// run reads a flag on each step rather than the clock, so a run whose
+/// steps are each slow still stops one step past the limit. Costs a thread
+/// for each run: a timer of its own rather than one shared by every run,
+/// so no state outlives the run. The limit is wall-clock time, so a run
+/// slowed by other work on the machine counts that time too.
+fn with_limit<T>(
+    limit: std::time::Duration,
+    cancel: Option<&Cancel>,
+    run: impl FnOnce(&Stop) -> T,
+) -> T {
     use std::sync::mpsc::{RecvTimeoutError, channel};
-    let stop = Stop { limit, ..Stop::default() };
+    let stop = Stop { limit, cancel: cancel.cloned(), ..Stop::default() };
     let (ended, wait) = channel::<()>();
     std::thread::scope(|scope| {
         let stop = &stop;
@@ -148,6 +178,8 @@ pub enum JqError {
     Runtime { message: String },
     /// The run was stopped at `limit` (#310, #308).
     Stopped { limit: std::time::Duration },
+    /// The run's [`Cancel`] was set (#315).
+    Cancelled,
 }
 
 impl JqError {
@@ -156,13 +188,14 @@ impl JqError {
             JqError::Syntax { message, .. } | JqError::Runtime { message } => message.clone(),
             JqError::Unknown { name, arity, .. } => format!("unknown function {name}/{arity}"),
             JqError::Stopped { limit } => format!("stopped at the {} ms limit", limit.as_millis()),
+            JqError::Cancelled => "cancelled".into(),
         }
     }
 
     pub fn span(&self) -> Option<Range<usize>> {
         match self {
             JqError::Syntax { span, .. } | JqError::Unknown { span, .. } => span.clone(),
-            JqError::Runtime { .. } | JqError::Stopped { .. } => None,
+            JqError::Runtime { .. } | JqError::Stopped { .. } | JqError::Cancelled => None,
         }
     }
 
@@ -403,8 +436,16 @@ pub struct JqRun {
 /// as one jq program runs over all its inputs. Checked between the
 /// filter's steps, so one native step already running (a huge allocation,
 /// a sort) finishes first.
-pub fn run(code: &str, doc: &JqDocument, limit: std::time::Duration) -> Result<JqRun, JqError> {
-    run_with_cap(code, doc, OUTPUT_CAP, limit)
+///
+/// `cancel`, when given, ends the run the same way, with
+/// [`JqError::Cancelled`] (#315).
+pub fn run(
+    code: &str,
+    doc: &JqDocument,
+    limit: std::time::Duration,
+    cancel: Option<&Cancel>,
+) -> Result<JqRun, JqError> {
+    run_with_cap(code, doc, OUTPUT_CAP, limit, cancel)
 }
 
 /// [`run`], refused past `cap_bytes` of output.
@@ -413,8 +454,11 @@ fn run_with_cap(
     doc: &JqDocument,
     cap_bytes: usize,
     limit: std::time::Duration,
+    cancel: Option<&Cancel>,
 ) -> Result<JqRun, JqError> {
-    with_compiled(code, |filter| with_limit(limit, |stop| collect(filter, doc, cap_bytes, stop)))
+    with_compiled(code, |filter| {
+        with_limit(limit, cancel, |stop| collect(filter, doc, cap_bytes, stop))
+    })
 }
 
 /// The [`JqRun`] of `filter` over `doc`, refused past `cap_bytes` of output.
@@ -470,8 +514,9 @@ fn collect(
 /// with the next value: [`run`] and completion both do that, so one odd
 /// line in a stream hides neither the results nor the keys of the rest.
 ///
-/// A run whose `stop` is set ends whole with its error (#310): the unwind
-/// from [`Stop::tick`] is caught here, and any other panic goes on.
+/// A run whose `stop` is set or cancelled ends whole with its error (#310,
+/// #315): the unwind from [`Stop::tick`] is caught here, and any other
+/// panic goes on.
 fn for_each_output(
     filter: &jaq_core::Filter<Data>,
     doc: &JqDocument,
@@ -504,7 +549,7 @@ fn for_each_output(
     // whole run's, as the output cap's is.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|payload| {
         match payload.downcast::<Stopped>() {
-            Ok(stopped) => Err(JqError::Stopped { limit: stopped.0 }),
+            Ok(stopped) => Err(stopped.0),
             Err(other) => std::panic::resume_unwind(other),
         }
     })
@@ -605,7 +650,7 @@ mod tests {
 
     /// [`super::run`] with [`LIMIT`], for the tests that don't test the limit.
     fn run(code: &str, doc: &JqDocument) -> Result<JqRun, JqError> {
-        super::run(code, doc, LIMIT)
+        super::run(code, doc, LIMIT, None)
     }
 
     /// The outputs of a run that must not fail.
@@ -767,7 +812,7 @@ mod tests {
     fn the_cap_ends_the_whole_run_even_with_outputs_before_it() {
         let doc = JqDocument::parse("1 2 3").unwrap();
         let code = "if . == 3 then [range(1000)] else . end";
-        let err = run_with_cap(code, &doc, 1024, LIMIT).unwrap_err();
+        let err = run_with_cap(code, &doc, 1024, LIMIT, None).unwrap_err();
         assert!(err.message().contains("too large"), "{err:?}");
     }
 
@@ -858,7 +903,7 @@ mod tests {
 
     #[test]
     fn output_past_the_cap_is_refused_rather_than_collected() {
-        let err = run_with_cap("[range(100000)]", &doc(), 1024, LIMIT).unwrap_err();
+        let err = run_with_cap("[range(100000)]", &doc(), 1024, LIMIT, None).unwrap_err();
         let JqError::Runtime { message } = &err else {
             panic!("expected a runtime error, got {err:?}");
         };
@@ -885,7 +930,7 @@ mod tests {
         ] {
             for doc in [doc(), stream.clone()] {
                 let started = std::time::Instant::now();
-                let err = super::run(code, &doc, limit).unwrap_err();
+                let err = super::run(code, &doc, limit, None).unwrap_err();
                 assert_eq!(err.message(), "stopped at the 50 ms limit", "{code}");
                 assert_eq!(err.stopped_at(), Some(limit), "{code}");
                 assert!(started.elapsed() < std::time::Duration::from_secs(5), "{code}");
@@ -901,7 +946,7 @@ mod tests {
         let limit = std::time::Duration::from_millis(50);
         let started = std::time::Instant::now();
         let code = "\"x\" * 200000 | until(false; explode | implode)";
-        let err = super::run(code, &doc(), limit).unwrap_err();
+        let err = super::run(code, &doc(), limit, None).unwrap_err();
         assert_eq!(err.message(), "stopped at the 50 ms limit");
         let took = started.elapsed();
         assert!(took < std::time::Duration::from_millis(1000), "{took:?}");
@@ -984,9 +1029,37 @@ mod tests {
     #[test]
     fn the_limit_is_the_one_passed_in() {
         let code = "last(range(10000000))";
-        let err = super::run(code, &doc(), std::time::Duration::from_millis(1)).unwrap_err();
+        let err = super::run(code, &doc(), std::time::Duration::from_millis(1), None).unwrap_err();
         assert_eq!(err.message(), "stopped at the 1 ms limit");
         assert_eq!(outputs(code, &doc()), ["9999999"]);
+    }
+
+    /// #315: a run whose [`Cancel`] is set from another thread while it goes
+    /// ends at once with `Cancelled`, well before its limit, whatever shape
+    /// its loop has; one cancelled before it starts doesn't run.
+    #[test]
+    fn a_cancelled_run_ends_before_its_limit() {
+        for code in
+            ["last(range(1e18))", "[repeat(1)]", "def f: f; f", "try until(false; .) catch 1"]
+        {
+            let cancel = Cancel::default();
+            let started = std::time::Instant::now();
+            let err = std::thread::scope(|scope| {
+                let run = scope.spawn(|| super::run(code, &doc(), LIMIT, Some(&cancel)));
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                cancel.cancel();
+                run.join().unwrap().unwrap_err()
+            });
+            assert_eq!(err, JqError::Cancelled, "{code}");
+            assert_eq!(err.stopped_at(), None, "{code}: not a stop at a limit");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "{code}");
+        }
+        let cancel = Cancel::default();
+        cancel.cancel();
+        assert_eq!(super::run(".", &doc(), LIMIT, Some(&cancel)), Err(JqError::Cancelled));
+        // A switch nobody sets changes nothing.
+        let run = super::run(".data.total", &doc(), LIMIT, Some(&Cancel::default()));
+        assert_eq!(run.unwrap().outputs, ["2"]);
     }
 
     #[test]

@@ -390,7 +390,7 @@ fn run_jq(
     limit: std::time::Duration,
     mask: &Mask,
 ) -> (Option<Vec<serde_json::Value>>, Option<String>) {
-    let run = match doc.and_then(|doc| jq::run(filter, &doc, limit)) {
+    let run = match doc.and_then(|doc| jq::run(filter, &doc, limit, None)) {
         Ok(run) => run,
         Err(e) => return (None, Some(e.message())),
     };
