@@ -26992,6 +26992,37 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     assert_eq!(tree.line_count(), 1, "the output tree is built by the worker, not on attach");
 }
 
+/// #313: a big body's parse landing while Headers is up, with no filter
+/// on, leaves the selection made there during the wait, through the
+/// update's jq reconcile too, whether the parse made a tree or not.
+#[test]
+fn a_big_bodys_parse_landing_keeps_a_selection_on_headers() {
+    use crate::components::response::{SYNC_PRETTY_BYTES, ViewMode};
+    let big = format!(r#"{{"pad": "{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+    for parsed in [true, false] {
+        let mut app = App::new_for_test();
+        ready_response(&mut app, &big);
+        app.update(Action::ResponseViewMode(ViewMode::Headers));
+        render_once(&mut app);
+        let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
+        app.handle_mouse(left_down(area.x + 1, area.y));
+        app.handle_mouse(dragged(area.x + 5, area.y));
+        app.handle_mouse(left_up(area.x + 5, area.y));
+        let selected = app.session.response.selected_text();
+        assert!(selected.is_some(), "a selection to keep");
+
+        let tree = if parsed { crate::components::json_tree::JsonTree::parse(&big) } else { None };
+        app.update(Action::PrettyParsed {
+            generation: app.session.send_generation,
+            tree: tree.map(Box::new),
+        });
+        render_once(&mut app);
+        let view = app.session.response.view().unwrap();
+        assert_eq!(view.mode, ViewMode::Headers, "parsed {parsed}");
+        assert_eq!(app.session.response.selected_text(), selected, "parsed {parsed}");
+    }
+}
+
 #[test]
 fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
     let mut app = App::new_for_test();

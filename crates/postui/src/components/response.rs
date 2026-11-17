@@ -3057,11 +3057,13 @@ impl Response {
             return false;
         }
         view.parsing = false;
-        view.clear_sel();
+        // Only the Tree tab is about the tree. On another tab the user's
+        // place (cursor, column, selection, matches) is on lines this
+        // doesn't change, so it is left alone (#313).
+        let on_tree = view.mode == ViewMode::Pretty;
         match tree {
             Some(tree) => {
                 view.set_body_tree(Some(tree));
-                view.cursor_moved();
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
                 // until its output lands rather than showing the full
@@ -3071,22 +3073,32 @@ impl Response {
                 // nothing to run against yet (`apply_jq` bails out); now
                 // that the body tree exists, forget what was "applied" so
                 // the app's reconcile step re-runs the pending filter.
-                view.jq_applied = None;
+                // With no filter on there is nothing to re-run, and
+                // applying no filter again would reset the tab on screen,
+                // whichever it is (#313).
+                if filter_on {
+                    view.jq_applied = None;
+                }
                 // Already on the Tree tab (watching the spinner): the tree
                 // it was waiting for is now the view's content.
-                if view.mode == ViewMode::Pretty {
+                if on_tree {
+                    view.clear_sel();
+                    view.cursor_moved();
                     view.cursor = 0;
                     view.scroll = 0;
                     view.recompute_matches();
                 }
             }
             // Not JSON after all: the Tree tab disappears, exactly as it
-            // never appears for a small non-JSON body — and with it the
-            // jq bar a filter typed against the spinner had focused.
-            None => {
+            // never appears for a small non-JSON body. On it, the view
+            // moves to Raw, and the jq bar a filter typed against the
+            // spinner had focused goes with the tab. On another tab
+            // the tab just leaves the strip.
+            None if on_tree => {
                 view.set_mode(ViewMode::Raw);
                 self.jq.blur();
             }
+            None => {}
         }
         true
     }
@@ -8105,6 +8117,69 @@ mod tests {
         let out = render(&mut r);
         assert!(!out.contains("parsing"), "no spinner left behind: {out}");
         assert!(!out.contains("Tree"), "and no Tree tab to click: {out}");
+    }
+
+    /// What a tab the user is reading holds of theirs: the cursor, its
+    /// column, the scroll, the selection and the search's matches.
+    fn where_the_user_is(r: &Pane) -> impl PartialEq + std::fmt::Debug + use<> {
+        let v = r.view().unwrap();
+        let matches = v.search.as_ref().map(|s| (s.matches.clone(), s.current));
+        (v.mode, v.cursor, v.scroll, v.at_col, v.sel, r.selected_text(), matches)
+    }
+
+    /// A big body, switched to `mode` while its parse runs, with the
+    /// user's place on it: searched for "Bearer" on Headers ("aaa" on
+    /// Raw), which puts the cursor on a line and column with matches, or
+    /// with a few cells selected on the first line.
+    fn reading_mid_parse(body: &str, generation: u64, mode: ViewMode, select: bool) -> Pane {
+        let mut r = ready_gen(body, generation);
+        r.set_view_mode(mode);
+        let (area, _) = render_buf(&mut r);
+        if select {
+            assert!(r.begin_selection_at(area.x + 1, area.y));
+            assert!(r.drag_selection_to(area.x + 4, area.y));
+            assert!(r.selected_text().is_some(), "{mode:?}: a selection to keep");
+        } else {
+            let query = if mode == ViewMode::Headers { "Bearer" } else { "aaa" };
+            search_for(&mut r, SearchSyntax::Literal, query);
+            let v = r.view().unwrap();
+            assert!(v.at_col.is_some_and(|(_, c)| c > 0), "{mode:?}: off column 0");
+            assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
+        }
+        r
+    }
+
+    /// #313: a parse that lands while another tab is up is about the Tree
+    /// tab only. That tab's lines didn't change, so the user's place on
+    /// it stays as they left it.
+    #[test]
+    fn a_tree_landing_on_another_tab_leaves_that_tab_alone() {
+        let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
+        for mode in [ViewMode::Raw, ViewMode::Headers] {
+            for select in [false, true] {
+                let mut r = reading_mid_parse(&body, 7, mode, select);
+                let before = where_the_user_is(&r);
+                assert!(r.attach_tree(7, JsonTree::parse(&body)));
+                assert!(r.view().unwrap().tree.is_some(), "the tree waits on its tab");
+                assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}");
+            }
+        }
+    }
+
+    /// #313: a parse that says "not JSON" while another tab is up takes the
+    /// Tree tab away and nothing else: the user stays where they are.
+    #[test]
+    fn a_failed_parse_on_another_tab_only_drops_the_tree_tab() {
+        let body = format!("{{\"a\": \"aaa{}", "x".repeat(SYNC_PRETTY_BYTES));
+        for mode in [ViewMode::Raw, ViewMode::Headers] {
+            for select in [false, true] {
+                let mut r = reading_mid_parse(&body, 3, mode, select);
+                let before = where_the_user_is(&r);
+                assert!(r.attach_tree(3, None));
+                assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}");
+                assert!(!r.tab_modes().unwrap().contains(&ViewMode::Pretty), "no Tree tab");
+            }
+        }
     }
 
     #[test]
