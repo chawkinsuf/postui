@@ -297,7 +297,8 @@ pub struct JqCompletion {
     /// kept. The caret moving off its context, or the bar blurring or
     /// closing (which keeps the text and this cache for a reopen), leaves
     /// it running, since its keys are cached when it lands; the cost is a
-    /// core busy until it ends or reaches the limit (#315 spec C2).
+    /// core busy until it ends or reaches the limit (#315 spec C2). A
+    /// request switch cancels it ([`Response::drop_pending_jq`]).
     pending: Option<(JqWait, String)>,
     seq: u64,
 }
@@ -3488,10 +3489,10 @@ impl Response {
     }
 
     /// Lets go of the background jq run and the completion key lookup the
-    /// bar is waiting on, which cancels both (#315). A run let go of never
-    /// lands, so `jq_applied` would name a filter that was only started:
-    /// it is reset to `None`, and `sync_jq`'s next reconcile starts the
-    /// filter afresh instead of taking it as applied.
+    /// bar is waiting on, which cancels both (#315). The run's result is
+    /// then dropped on arrival, so `jq_applied` would name a filter that
+    /// was only started: it is reset to `None`, and `sync_jq`'s next
+    /// reconcile starts the filter afresh instead of taking it as applied.
     ///
     /// `Session::sync_open` calls it on the response leaving screen at a
     /// request switch. It calls it on the one coming on as well, only as a

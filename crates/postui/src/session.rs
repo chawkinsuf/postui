@@ -95,6 +95,7 @@ impl Session {
         }
         self.warm.retain(|s| s != open);
         self.response = self.cache.remove(open).unwrap_or_default();
+        // A guard; see `Response::drop_pending_jq`.
         self.response.drop_pending_jq();
         self.response.collapsed = collapsed;
         self.response.set_jq_tab(jq_tab);
