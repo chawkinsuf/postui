@@ -60,7 +60,7 @@ change the project file format.
   switching the filter off, keeps the selection and sideways scroll, which
   it used to clear.
 - A large response opened again after visiting three other large ones keeps
-  a selection made on Raw, Headers or Checks.
+  a selection made on Raw or Headers.
 
 ## [0.4.1] - 2026-11-13
 

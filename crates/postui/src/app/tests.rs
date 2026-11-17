@@ -29157,47 +29157,77 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
     assert_eq!(view.view_text(), "1", "the filter ran against the fresh tree");
 }
 
-/// #317: a big response shed from the cache keeps a selection on Raw,
-/// Headers or Checks all the way back: the switch to it, the re-parse
-/// landing and its filter re-running. On the Tree tab, whose lines went
-/// with the tree, the view starts over.
+/// #317: a big response shed from the cache keeps its selection, cursor
+/// and scroll on Raw, Headers or Checks all the way back: the switch to
+/// it, the re-parse landing and its filter re-running. On the Tree tab,
+/// whose lines went with the tree, the view starts over.
 #[test]
 fn a_shed_response_keeps_a_selection_on_another_tab_through_its_return() {
     use crate::components::json_tree::JsonTree;
     use crate::components::response::{CheckState, SYNC_PRETTY_BYTES, ViewMode};
     use crate::session::KEEP_WARM;
-    let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+    // Every tab has more lines than the pane shows, each wider than it, so
+    // the place can move down and right.
+    let rows = 60;
+    let wide = "x".repeat(300);
+    let pad = "x".repeat(SYNC_PRETTY_BYTES);
+    let keys: String = (0..rows).map(|k| format!("\"k{k}\": \"{wide}\",\n")).collect();
+    let big = |n: usize| format!("{{\"pad\": \"{pad}\",\n{keys}\"n\": {n}}}");
+    let headers: Vec<(String, String)> =
+        (0..rows).map(|k| (format!("h{k}"), wide.clone())).collect();
+    let checks =
+        CheckState::Judged((0..rows).map(|k| (true, format!(".k{k} == \"{wide}\""))).collect());
     for filter in [false, true] {
         for mode in [ViewMode::Raw, ViewMode::Headers, ViewMode::Checks, ViewMode::Pretty] {
             let case = format!("{mode:?}, filter {filter}");
             let mut app = App::new_for_test_with_anims(false);
-            app.editor.jq = "{n}".into();
+            app.editor.jq = "del(.pad)".into();
             app.editor.jq_enabled = filter;
             let mut kept = None;
             for i in 1..=KEEP_WARM + 1 {
                 app.editor.slug = Some(format!("big{i}"));
                 app.update(Action::Render);
                 app.session.send_generation = i as u64;
-                ready_response(&mut app, &big(i));
-                app.session.response.set_checks(CheckState::Judged(vec![(true, ".n".into())]));
+                let body = big(i);
+                app.session.response.set_state(
+                    ResponseState::Ready(Box::new(crate::http::ResponseData {
+                        status: 200,
+                        url: "https://x.test/a".into(),
+                        headers: headers.clone(),
+                        sent_headers: vec![],
+                        size: body.len(),
+                        body: body.clone().into(),
+                        ttfb: std::time::Duration::from_millis(1),
+                        elapsed: std::time::Duration::from_millis(1),
+                        content_type: Some("application/json".into()),
+                    })),
+                    i as u64,
+                );
+                app.session.response.set_checks(checks.clone());
                 app.update(Action::PrettyParsed {
                     generation: i as u64,
-                    tree: JsonTree::parse(&big(i)).map(Box::new),
+                    tree: JsonTree::parse(&body).map(Box::new),
                 });
                 app.update(Action::ResponseViewMode(mode));
                 if i > 1 {
                     continue;
                 }
                 render_once(&mut app);
+                app.focus = PaneId::Response;
+                for _ in 0..rows - 10 {
+                    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                }
+                app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                render_once(&mut app);
                 let r = &mut app.session.response;
                 let area = r.view().unwrap().last_area.expect("the response was drawn");
-                // The tree's first line is its `{`; a key is on the next.
-                let y = area.y + u16::from(mode == ViewMode::Pretty);
-                assert!(r.begin_selection_at(area.x + 1, y), "{case}");
-                assert!(r.drag_selection_to(area.x + 4, y), "{case}");
+                assert!(r.begin_selection_at(area.x + 1, area.y), "{case}");
+                assert!(r.drag_selection_to(area.x + 4, area.y), "{case}");
                 let v = r.view().unwrap();
-                kept = Some((r.selected_text(), v.cursor, v.scroll, v.h_scroll));
-                assert!(kept.as_ref().unwrap().0.is_some(), "{case}: a selection to keep");
+                let place = (r.selected_text(), v.cursor, v.scroll, v.h_scroll);
+                let moved = place.0.is_some() && place.1 > 0 && place.2 > 0 && place.3 > 0;
+                assert!(moved, "{case}: a selection and a place to keep: {place:?}");
+                kept = Some(place);
             }
             // Leaving the last one pushes big1 past `KEEP_WARM`: it sheds.
             app.editor.slug = Some("elsewhere".into());
