@@ -564,7 +564,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         // the body: they dispatch `CopyTarget::ResponseView` and
         // `PromptSaveView`, where the palette's own copy/save commands
         // always take the body. So they say what the open tab holds
-        // rather than borrowing those palette lines.
+        // rather than borrowing those palette lines. While the checks are
+        // judged the Checks tab holds `checking…`, and these act on that
+        // line, the one the tab shows (checks tabs spec, section 7, A7).
         Hit::CopyBodyButton if ctx.checks => text("Copy the check results"),
         Hit::SaveBodyButton if ctx.checks => text("Save the check results to a file"),
         Hit::ResponseEditorButton if ctx.checks => text("Open the check results in your editor"),

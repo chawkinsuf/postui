@@ -503,7 +503,13 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
     };
     let slug = app.editor.slug.clone();
     let generation = app.session.begin_send(&slug);
-    let (started, task) = (Instant::now(), tokio::spawn(async {}));
+    // A send's task, on the test's runtime or, in a plain test, on one of
+    // its own that is gone once the task is made.
+    let task = match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime.spawn(async {}),
+        Err(_) => tokio::runtime::Builder::new_current_thread().build().unwrap().spawn(async {}),
+    };
+    let started = Instant::now();
     app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
     let (lines, checks) = (data.check_lines(checks), checks.clone());
     app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
@@ -745,6 +751,23 @@ async fn a_large_bodys_tree_lands_before_its_checks_run() {
     assert!(app.session.response.view().unwrap().tree.is_some(), "built as it arrived");
     assert_eq!(next_job(&mut app).await, (Job::Lines(generation), true));
     assert_eq!(checks_tab(&mut app), as_shown(&lines));
+}
+
+/// Outside a runtime (`App::new_for_test` in a plain test) a response's
+/// check job runs inline: for a small body, and after a large body's Tree
+/// parse.
+#[test]
+fn without_a_runtime_the_checks_are_judged_inline() {
+    use crate::components::response::SYNC_PRETTY_BYTES;
+    let mut app = checks_app(FOUR, KeyProfile::Arrows);
+    let sent = checks(&app);
+    let big = format!(r#"{{"a":true,"b":1,"pad":"{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+    for body in [r#"{"a":true,"b":1}"#.to_string(), big] {
+        let (_, lines) = send_arrives(&mut app, 200, &body, &sent);
+        let view = app.session.response.view().unwrap();
+        assert!(view.tree.is_some() && !view.parsing, "the Tree is there");
+        assert_eq!(checks_tab(&mut app), as_shown(&lines));
+    }
 }
 
 /// Section 7, A8: a check that has not ended holds up no Tree. The job's

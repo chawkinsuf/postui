@@ -2491,8 +2491,8 @@ impl App {
     /// parse runs inline and its result is dispatched immediately.
     /// `then`, the response's check job, starts once the parse has sent
     /// its result, whatever the parse gave: the Tree never waits for the
-    /// checks, and the checks' jq document is built after the parse's
-    /// document is gone (checks tabs spec 2026-11-16, section 7).
+    /// checks, and the checks' jq document is built after this parse's
+    /// document is gone (checks tabs spec 2026-11-16, section 7, detail 3).
     fn spawn_pretty_parse(
         &mut self,
         generation: u64,
@@ -2519,12 +2519,16 @@ impl App {
         });
     }
 
-    /// Starts a response's check job on its own. Unlike
-    /// `spawn_pretty_parse`, no inline run for a caller without a runtime:
-    /// a response is delivered only for a send in flight, and
-    /// `Action::Send` spawns that the same way.
-    fn spawn_check_job(&self, generation: u64, job: CheckJob) {
-        tokio::spawn(check_job(self.tx.clone(), generation, job));
+    /// Starts a response's check job on its own. Outside a tokio runtime
+    /// (`App::new_for_test`) the run is inline and its lines are
+    /// dispatched at once, as `spawn_jq_run` does.
+    fn spawn_check_job(&mut self, generation: u64, (checks, run): CheckJob) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            let lines = run(&checks);
+            self.dispatch(Action::ChecksJudged { generation, lines });
+            return;
+        }
+        tokio::spawn(check_job(self.tx.clone(), generation, (checks, run)));
     }
 
     /// Hands a background-pool jq run to the runtime. `App::new_for_test`
@@ -5484,7 +5488,11 @@ impl App {
                 let state = CheckState::on_arrival(&data, &checks);
                 // jq checks read the body, so they are judged after the
                 // response is delivered, off this thread, and for a big
-                // body after its Tree parse (section 7).
+                // body after its Tree parse (section 7). Nothing ends the
+                // job: a re-send starts another, and this one's lines are
+                // dropped when it ends. A check that never ends keeps its
+                // thread, as on main after Esc and a re-send, until #310's
+                // time limit (section 7, detail 4).
                 let job = (state == CheckState::Judging)
                     .then(|| -> CheckJob { (checks, Box::new(data.check_run())) });
                 if !self.session.arrived(generation, data, state) {
