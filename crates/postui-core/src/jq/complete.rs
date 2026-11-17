@@ -25,10 +25,10 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 /// never an error: a half-typed filter is normal here. In a stream, a
 /// runtime error ends only that value's run and the next value goes on.
 /// The run stops at `limit` like any jq run (#308), with the keys it had.
-pub fn keys_at(input_expr: &str, doc: &JqDocument, limit: std::time::Duration) -> Vec<String> {
+pub fn keys_at(input_expr: &str, doc: &JqDocument, limit: std::time::Duration) -> Keys {
     let mut keys: Vec<String> = Vec::new();
     let mut outputs = 0;
-    let _ = with_compiled(input_expr, |filter| {
+    let ended = with_compiled(input_expr, |filter| {
         with_limit(limit, |stop| {
             for_each_output(filter, doc, stop, |item| {
                 if let Ok(Val::Obj(map)) = &item {
@@ -50,7 +50,16 @@ pub fn keys_at(input_expr: &str, doc: &JqDocument, limit: std::time::Duration) -
             })
         })
     });
-    keys
+    Keys { keys, stopped_at: ended.err().and_then(|e| e.stopped_at()) }
+}
+
+/// What [`keys_at`] found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keys {
+    pub keys: Vec<String>,
+    /// The limit the lookup was stopped at, when it was: `keys` are then
+    /// the ones found before the stop.
+    pub stopped_at: Option<std::time::Duration>,
 }
 
 /// What is being completed at the end of the bar text.
@@ -601,17 +610,20 @@ mod tests {
 
     /// [`super::keys_at`] with a limit no test here reaches.
     fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
-        super::keys_at(input_expr, doc, std::time::Duration::from_secs(60))
+        let found = super::keys_at(input_expr, doc, std::time::Duration::from_secs(60));
+        assert_eq!(found.stopped_at, None, "{input_expr}");
+        found.keys
     }
 
     /// #308 spec B2: a lookup that never ends stops at its limit, with the
-    /// keys it found before.
+    /// keys it found before, and says it was stopped.
     #[test]
     fn a_lookup_that_never_ends_stops_at_its_limit_with_the_keys_found() {
         let limit = std::time::Duration::from_millis(50);
         let started = std::time::Instant::now();
         let code = "{a: 1}, (repeat(1) | select(. == 2))";
-        assert_eq!(super::keys_at(code, &doc(), limit), vec!["a"]);
+        let found = super::keys_at(code, &doc(), limit);
+        assert_eq!(found, super::Keys { keys: vec!["a".into()], stopped_at: Some(limit) });
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 

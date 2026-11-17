@@ -70,9 +70,10 @@ impl Stop {
 /// Runs `run` with a [`Stop`] whose flag a timer thread sets once `limit`
 /// has passed, unless `run` ends first. The run reads a flag on each step
 /// rather than the clock, so a run whose steps are each slow still stops
-/// one step past the limit. Costs a thread for each run. The limit is
-/// wall-clock time, so a run slowed by other work on the machine counts
-/// that time too.
+/// one step past the limit. Costs a thread for each run: a timer of its
+/// own rather than one shared by every run, so no state outlives the run.
+/// The limit is wall-clock time, so a run slowed by other work on the
+/// machine counts that time too.
 fn with_limit<T>(limit: std::time::Duration, run: impl FnOnce(&Stop) -> T) -> T {
     use std::sync::mpsc::{RecvTimeoutError, channel};
     let stop = Stop { limit, ..Stop::default() };
@@ -145,6 +146,8 @@ pub enum JqError {
     /// A runtime error from jaq (`cannot index number with "foo"`), a body
     /// that is not JSON, or output past the cap.
     Runtime { message: String },
+    /// The run was stopped at `limit` (#310, #308).
+    Stopped { limit: std::time::Duration },
 }
 
 impl JqError {
@@ -152,13 +155,22 @@ impl JqError {
         match self {
             JqError::Syntax { message, .. } | JqError::Runtime { message } => message.clone(),
             JqError::Unknown { name, arity, .. } => format!("unknown function {name}/{arity}"),
+            JqError::Stopped { limit } => format!("stopped at the {} ms limit", limit.as_millis()),
         }
     }
 
     pub fn span(&self) -> Option<Range<usize>> {
         match self {
             JqError::Syntax { span, .. } | JqError::Unknown { span, .. } => span.clone(),
-            JqError::Runtime { .. } => None,
+            JqError::Runtime { .. } | JqError::Stopped { .. } => None,
+        }
+    }
+
+    /// The limit the run was stopped at, when this is that stop.
+    pub fn stopped_at(&self) -> Option<std::time::Duration> {
+        match self {
+            JqError::Stopped { limit } => Some(*limit),
+            _ => None,
         }
     }
 
@@ -492,9 +504,7 @@ fn for_each_output(
     // whole run's, as the output cap's is.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|payload| {
         match payload.downcast::<Stopped>() {
-            Ok(stopped) => Err(JqError::Runtime {
-                message: format!("stopped at the {} ms limit", stopped.0.as_millis()),
-            }),
+            Ok(stopped) => Err(JqError::Stopped { limit: stopped.0 }),
             Err(other) => std::panic::resume_unwind(other),
         }
     })
@@ -877,6 +887,7 @@ mod tests {
                 let started = std::time::Instant::now();
                 let err = super::run(code, &doc, limit).unwrap_err();
                 assert_eq!(err.message(), "stopped at the 50 ms limit", "{code}");
+                assert_eq!(err.stopped_at(), Some(limit), "{code}");
                 assert!(started.elapsed() < std::time::Duration::from_secs(5), "{code}");
             }
         }

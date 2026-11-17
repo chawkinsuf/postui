@@ -26980,13 +26980,9 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
         ..req2
     });
     let Action::JqRunFinished {
+        doc: Some(_),
         result:
-            Ok(crate::components::response::JqRunOutput {
-                doc: Some(_),
-                outputs,
-                tree: Some(tree),
-                error: None,
-            }),
+            Ok(crate::components::response::JqRunOutput { outputs, tree: Some(tree), error: None }),
         ..
     } = &action
     else {
@@ -27042,7 +27038,7 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
         generation: generation + 1,
         seq: 1,
         input_expr: ".".into(),
-        keys: vec!["zzz".into()],
+        keys: postui_core::jq::complete::Keys { keys: vec!["zzz".into()], stopped_at: None },
         doc: None,
     }));
     assert_eq!(app.session.response.jq_ghost(), Some("pad"));
@@ -27060,7 +27056,8 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
     let Action::JqCompleteFinished { seq: 5, keys, .. } = &action else {
         panic!("{action:?}");
     };
-    assert_eq!(keys, &["pad".to_string(), "n".to_string()]);
+    assert_eq!(keys.keys, ["pad".to_string(), "n".to_string()]);
+    assert_eq!(keys.stopped_at, None);
 }
 
 /// #308 spec B1, B6: with the project's `jq_limit_ms` at 50, a filter that

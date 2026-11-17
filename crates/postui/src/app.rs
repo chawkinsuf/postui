@@ -2237,32 +2237,23 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 /// call it without a runtime, and so `App::spawn_jq_run` can run it inline
 /// when there is no runtime to spawn onto.
 ///
-/// The run stops at the request's limit (#308). An error that fails the
-/// whole run (that limit, the output cap) comes back as a run with no
-/// outputs and that error, beside the parse this worker made, so the parse
-/// still reaches the view (#308 spec B6). An error with no outputs is the
-/// failed run of `Response::land_jq_result`'s first arm (#229 R6), which
-/// shows what an `Err` shows: the error, the last result kept behind it.
+/// The run stops at the request's limit (#308). The parse this worker
+/// made comes back beside the result, failed or not, so the next run needn't
+/// read the body again (#308 spec B6).
 pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Action {
     use crate::components::response::{JqRunOutput, JqRunRequest};
-    use postui_core::jq::{JqDocument, JqRun, run as jq_run};
+    use postui_core::jq::{JqDocument, JqError, run as jq_run};
     let JqRunRequest { generation, run, code, doc, body, limit } = req;
-    let result = (|| {
-        let (doc, fresh) = match (doc, body) {
-            (Some(d), _) => (d, None),
-            (None, Some(b)) => {
-                let d = JqDocument::parse(&b)?;
-                (d.clone(), Some(d))
-            }
-            (None, None) => {
-                return Err(postui_core::jq::JqError::Runtime { message: "no document".into() });
-            }
-        };
-        let run = jq_run(&code, &doc, limit)
-            .unwrap_or_else(|e| JqRun { outputs: Vec::new(), error: Some(e) });
-        Ok(JqRunOutput::from_run(fresh, run))
-    })();
-    Action::JqRunFinished { generation, run, result }
+    let (parsed, fresh) = match (doc, body) {
+        (Some(d), _) => (Ok(d), None),
+        (None, Some(b)) => match JqDocument::parse(&b) {
+            Ok(d) => (Ok(d.clone()), Some(d)),
+            Err(e) => (Err(e), None),
+        },
+        (None, None) => (Err(JqError::Runtime { message: "no document".into() }), None),
+    };
+    let result = parsed.and_then(|d| jq_run(&code, &d, limit)).map(JqRunOutput::from_run);
+    Action::JqRunFinished { generation, run, doc: fresh, result }
 }
 
 /// The blocking-pool half of a completion key fetch, stopped at the
@@ -2533,6 +2524,7 @@ impl App {
                     Action::JqRunFinished {
                         generation,
                         run,
+                        doc: None,
                         result: Err(postui_core::jq::JqError::Runtime {
                             message: "filter worker panicked".into(),
                         }),
@@ -2560,7 +2552,7 @@ impl App {
                     generation,
                     seq,
                     input_expr: expr,
-                    keys: Vec::new(),
+                    keys: Default::default(),
                     doc: None,
                 });
             let _ = tx.send(action);
@@ -6384,8 +6376,8 @@ impl App {
                 self.land_jq_in_scratch(&text, cursor);
                 true
             }
-            Action::JqRunFinished { generation, run, result } => {
-                self.session.response.attach_jq_result(generation, run, result)
+            Action::JqRunFinished { generation, run, doc, result } => {
+                self.session.response.attach_jq_result(generation, run, doc, result)
             }
             Action::JqCompleteFinished { generation, seq, input_expr, keys, doc } => {
                 self.session.response.attach_jq_completion(generation, seq, input_expr, keys, doc)

@@ -299,25 +299,35 @@ most that long for a run still going.
 - `jq::run(code, doc, limit)` is the one way to run a filter: #310's
   `run_limited` is folded into it, and `run_with_cap(code, doc, cap,
   limit)` takes the limit too. No unlimited run is left.
-- `complete::keys_at(expr, doc, limit)` runs with the limit; the keys it
-  had when stopped are its result, as for any error part-way.
+- A stopped run fails with `JqError::Stopped { limit }`, whose message is
+  `stopped at the <N> ms limit`. `complete::keys_at(expr, doc, limit)`
+  runs with the limit and returns `Keys { keys, stopped_at }`: the keys it
+  had when stopped, and the limit if it was.
 - The app: `App::sync_jq` passes the open project's limit
   (`meta().jq_limit()`) to `apply_jq` and `refresh_jq_completion`, which
   use it inline and put it in `JqRunRequest` and `JqCompleteRequest`;
   `jq_worker` / `jq_complete_worker` run with it. What the bar remembers
-  having applied (`jq_applied`) and the keys completion cached are keyed on
-  the limit as well as the filter, so after the app reloads `project.toml`
-  with another limit the same filter runs again, and a run or lookup still
-  going at the old limit is superseded. (Review round 1, 2026-11-17: the
-  limit was first held on `Response` and keyed nothing, so a filter stopped
-  at the old limit stayed stopped until edited or re-sent.) A run stopped
-  by a slow moment is remembered like any result until the filter, the
-  response or the limit changes: running it again on every update would
-  keep a core busy, the problem this section fixes.
-- `jq_worker` (B6): an error that fails the whole run (the limit, the
-  output cap) comes back as a `JqRunOutput` with no outputs, the error and
-  the parse when the worker made one, which `land_jq_result` shows as it
-  showed the `Err`. A body that isn't JSON is still an `Err`.
+  having applied (`jq_applied`) and the keys completion cached carry the
+  limit their run or lookup was stopped at, if it was. A stopped one is
+  remembered like any result, since running it again on every update would
+  keep a core busy, the problem this section fixes; once the app reloads
+  `project.toml` with another limit it runs again under that one. A filter
+  or lookup that ended, the empty filter and one that doesn't compile are
+  left alone under another limit. A run or lookup still going is awaited
+  and judged when it lands.
+  (Review round 1, 2026-11-17: the limit was first held on `Response` and
+  keyed nothing, so a filter stopped at the old limit stayed stopped until
+  edited or re-sent. Round 1 then keyed every memo on the limit; review
+  round 2, 2026-11-17, found that re-ran finished filters and reset the
+  view, its selection and sideways scroll included, for any filter or none,
+  on a limit change. Only a stop's limit is kept now, and a run going at
+  the old limit is no longer superseded, which would have left two runs
+  busy, since nothing cancels the first.)
+- `jq_worker` (B6): the parse the worker made comes back beside the
+  result in `Action::JqRunFinished { doc, result }`, failed or not, and
+  `attach_jq_result` keeps it; the result is the run's own `Result`.
+  (Review round 2, 2026-11-17: a whole-run error was first handed back as
+  an empty run carrying the error, to carry the parse.)
 - `run --jq`: `run_jq` takes the session's project limit.
 
 **Tests.**
@@ -327,14 +337,14 @@ most that long for a run still going.
 | B1 | `jq`: `run` with a 50 ms limit stops the never-ending filters of section 4 (the L1 tests, now over `run`). |
 | B1 | response (`components/response.rs`): a never-ending filter applied inline with the bar's limit at 50 ms shows `stopped at the 50 ms limit` as the bar's error, the earlier result kept; over the pool path, the request carries the limit. |
 | B1 | app (`tests.rs`): with `jq_limit_ms = 50` in `project.toml`, a never-ending filter typed in the bar ends with that error. |
-| B2 | `complete`: `keys_at` over a never-ending expression with a 50 ms limit returns in well under 5 s, with the keys found before the stop. |
+| B2 | `complete`: `keys_at` over a never-ending expression with a 50 ms limit returns in well under 5 s, with the keys found before the stop and the limit it stopped at. |
 | B3 | `cli_run` (integration): `jq_limit_ms = 50` and `--jq 'last(range(1e18))'`: exits 1 with `stopped at the 50 ms limit`. |
 | B5 | `meta`, `project`, `project_tests.rs`, `checks_tests.rs`, `cli_run`: the existing tests under the new name. |
-| B1, B2 | response: the same filter, and the same completion lookup, under another limit runs again and supersedes the one going; app: a raised `jq_limit_ms` read from `project.toml` runs the stopped filter again. |
-| B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error; response: that run with no outputs lands as an `Err` does. |
+| B1, B2 | response: a filter, and a completion lookup, stopped at one limit runs again under another; one that ended, the empty filter and one that doesn't compile don't, and the view keeps its sideways scroll; one going is awaited; app: a raised `jq_limit_ms` read from `project.toml` runs the stopped filter again. |
+| B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error; response: a failed pool run's parse is kept, and the failure shows as any does. |
 | quit | TUI in tmux: a never-ending filter in the bar shows the error about 1 s later, and quitting right after typing it ends the process within the limit. |
 
 **`mine` choices, for veto:** B2's keys found before the stop; B4; B6;
-the bar's memo and completion's cache keyed on the limit (a run stopped
+the bar's memo and completion's cache carry a stop's limit (a run stopped
 by a slow moment stays until the filter, response or limit changes); no
 cancel of a run the bar moved past.
