@@ -235,9 +235,9 @@ struct JqRanFor {
 }
 
 impl JqRanFor {
-    /// For `code`, not stopped (yet).
-    fn new(code: String) -> Self {
-        Self { code, stopped_at: None }
+    /// For `code`, stopped at `stopped_at` if it was.
+    fn new(code: String, stopped_at: Option<Duration>) -> Self {
+        Self { code, stopped_at }
     }
 
     /// Whether this stands for `code` under `limit`: one that ended stands
@@ -3547,11 +3547,11 @@ impl Response {
         }
         // A run still going is awaited, at whatever limit it started with,
         // and judged when it lands: nothing cancels it, so starting another
-        // would leave two busy.
+        // would leave two busy. A lowered limit applies once it lands.
         if view.jq_applied.as_ref().is_some_and(|a| a.stands_for(code, limit)) {
             return None;
         }
-        let applied = Some(JqRanFor::new(code.to_string()));
+        let applied = Some(JqRanFor::new(code.to_string(), None));
         // A new filter supersedes the run in flight, whether or not it
         // starts one of its own: an error or a cleared bar must not be
         // overwritten by the earlier filter's result.
@@ -3723,7 +3723,7 @@ impl Response {
             let doc = view.jq_doc.clone()?;
             let found = complete::keys_at(&expr, &doc, limit);
             c.cached_keys = found.keys;
-            c.cached_expr = Some(JqRanFor { code: expr, stopped_at: found.stopped_at });
+            c.cached_expr = Some(JqRanFor::new(expr, found.stopped_at));
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
             c.fall_back_to_closer(&text);
             return None;
@@ -3775,7 +3775,7 @@ impl Response {
         }
         let c = &mut self.jq.completion;
         c.cached_keys = keys.keys;
-        c.cached_expr = Some(JqRanFor { code: input_expr, stopped_at: keys.stopped_at });
+        c.cached_expr = Some(JqRanFor::new(input_expr, keys.stopped_at));
         if let Some(ctx) = &c.ctx
             && ctx.input_expr.as_deref() == c.cached_expr.as_ref().map(|e| e.code.as_str())
         {

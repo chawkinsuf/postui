@@ -9,9 +9,8 @@ use crate::components::table_editor::Stop;
 use crate::config::KeyProfile;
 use crate::keyroute::FieldId;
 
-/// An app on a project whose `project.toml` is `toml`, the Project tab
-/// open in `profile`.
-pub(super) fn project_app(toml: &str, profile: KeyProfile) -> App {
+/// An app on a new project whose `project.toml` is `toml`.
+pub(super) fn app_with_project_toml(toml: &str) -> App {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     postui_core::fixtures::init_project(root, Some("matrix")).unwrap();
@@ -22,6 +21,13 @@ pub(super) fn project_app(toml: &str, profile: KeyProfile) -> App {
     let mut app = App::with_root(tx, root.to_path_buf());
     app._test_rx = Some(rx);
     app._test_dir = Some(dir);
+    app
+}
+
+/// An app on a project whose `project.toml` is `toml`, the Project tab
+/// open in `profile`.
+pub(super) fn project_app(toml: &str, profile: KeyProfile) -> App {
+    let mut app = app_with_project_toml(toml);
     use_persisted_profile(&mut app, profile);
     app.update(Action::OpenManage { tab: Some(ManageTab::Project) });
     draw(&mut app);

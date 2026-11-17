@@ -759,16 +759,7 @@ async fn a_large_bodys_tree_lands_before_its_checks_run() {
 /// line, with the request's other check judged after it.
 #[tokio::test]
 async fn a_check_that_never_ends_fails_at_the_projects_limit() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    postui_core::fixtures::init_project(root, Some("limit")).unwrap();
-    std::fs::write(root.join("project.toml"), "jq_limit_ms = 50\n").unwrap();
-    postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
-        .unwrap();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, root.to_path_buf());
-    app._test_rx = Some(rx);
-    app._test_dir = Some(dir);
+    let mut app = super::project_tests::app_with_project_toml("jq_limit_ms = 50\n");
     let toml = "url = \"http://x.test/\"\n[checks]\njq = ['last(range(1e18)) > 0', '.a']\n";
     let req = HttpRequest::from_toml_str(toml).unwrap();
     postui_core::fixtures::save_request(app.proj().root(), "main/probe", &req).unwrap();

@@ -27066,17 +27066,8 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
 /// view, so the next run needs no body.
 #[test]
 fn a_bar_filter_that_never_ends_stops_at_the_projects_limit() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    postui_core::fixtures::init_project(root, Some("limit")).unwrap();
-    std::fs::write(root.join("project.toml"), "jq_limit_ms = 50\n").unwrap();
-    postui_core::fixtures::save_local_state(root, &postui_core::project::LocalState::default())
-        .unwrap();
-    let project = root.to_path_buf();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, root.to_path_buf());
-    app._test_rx = Some(rx);
-    app._test_dir = Some(dir);
+    let mut app = super::project_tests::app_with_project_toml("jq_limit_ms = 50\n");
+    let project = app.root().to_path_buf();
     let limit = std::time::Duration::from_millis(50);
     assert_eq!(app.meta().jq_limit(), limit);
     let big = format!(

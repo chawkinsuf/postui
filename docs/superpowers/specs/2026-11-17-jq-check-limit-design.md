@@ -155,7 +155,8 @@ place).
 **What it ends from #312's section 7, detail 4:** a check job that holds
 a never-ending check now ends within the limit for each of its checks, so
 re-sends leave at most that long a job each, and a quit waits at most
-that long for a running job.
+that long for a running job. (2026-11-17, #308: a quit no longer waits
+for it at all; section 7, B7.)
 
 **Contract changes:** `checks::evaluate` gains a parameter;
 `ResponseData::check_run`, `check_lines` and `CheckState::on_arrival`
@@ -351,6 +352,9 @@ the app quits can be lost or cut short.
   the CLI commands through one function that makes the runtime, blocks on
   the work and shuts the runtime down with `shutdown_background()`, after
   the TUI has given the terminal back. Nothing in jq knows about quitting.
+  (Review round 5, 2026-11-17, mine: a panic in the work is caught for
+  that shutdown and then goes on, since dropping the runtime as it
+  unwound waited for the pool.)
   (The first design, after review round 2, passed `quit:
   Option<&AtomicBool>` to `jq::run`, `run_with_cap`, `complete::keys_at`
   and `checks::evaluate`, read by `Stop` beside its timer's flag, and the
@@ -371,7 +375,7 @@ the app quits can be lost or cut short.
 | B1, B2 | response: a filter, and a completion lookup, stopped at one limit runs again under another; one that ended, the empty filter and one that doesn't compile don't, and the view keeps its sideways scroll; one going is awaited; app: a raised `jq_limit_ms` read from `project.toml` runs the stopped filter again. |
 | B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error; response: a failed pool run's parse is kept, and the failure shows as any does. |
 | quit | TUI in tmux: a never-ending filter in the bar shows the error about 1 s later, and quitting right after typing it ends the process within the limit. |
-| B7 | `main.rs`: the function the TUI and the CLI commands run through returns soon after its work ends while a blocking job that sleeps for a minute is still on the pool. (Replaces the quit flag's tests in `jq`, `complete`, `checks` and `checks_tests.rs`.) |
+| B7 | `main.rs`: the function the TUI and the CLI commands run through returns soon after its work ends, or unwinds soon after it panics, while a blocking job the test holds is still on the pool. (Replaces the quit flag's tests in `jq`, `complete`, `checks` and `checks_tests.rs`.) |
 | B7 | TUI in tmux: `jq_limit_ms = 60000`, a never-ending filter typed in the bar, quit at once: the process exits within about a second. |
 
 **`mine` choices, for veto:** B2's keys found before the stop; B4; B6;
