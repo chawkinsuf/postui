@@ -45,15 +45,6 @@ pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 /// the user cancels with Esc when they've waited long enough.
 const LONG_WAIT_WARNING_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The marks a Checks line and the tab's badge lead with: passed, failed.
-const PASS_MARK: &str = "✓";
-const FAIL_MARK: &str = "✗";
-
-/// The mark for `passed`, and its colour.
-fn check_mark(passed: bool, theme: &Theme) -> (&'static str, Color) {
-    if passed { (PASS_MARK, theme.success) } else { (FAIL_MARK, theme.error) }
-}
-
 /// Columns moved per ←/→ key press or horizontal wheel notch.
 pub(crate) const H_SCROLL_STEP: i16 = 4;
 
@@ -757,10 +748,13 @@ pub struct ReadyView {
     /// with (secrets masked — the real values live in `ResponseData`).
     header_lines: Vec<String>,
     header_rows: Vec<HeaderRow>,
-    /// The Checks tab's lines, each with whether it passed: `✓` or `✗`,
-    /// then what `postui run -v` lists for the check, from the lines the
-    /// response carries (`ResponseData::checks`). Empty when it carries
-    /// none, and so has no such tab (spec P1, P2).
+    /// The Checks tab's lines as the response carries them
+    /// (`ResponseData::checks`): whether each passed, and what `postui
+    /// run -v` lists for it. Empty when it carries none, and so has no
+    /// such tab (spec P1). The mark is not stored: the tab's text leads
+    /// each line with it ([`Self::check_texts`]) and the paint colours
+    /// it, both from the verdict. So the tab's text is made on each read,
+    /// a copy of its few lines, where Headers' is borrowed.
     check_lines: Vec<(bool, String)>,
     pub cursor: usize,
     pub scroll: usize,
@@ -1045,13 +1039,6 @@ impl ReadyView {
             data.sent_headers.iter().map(|h| (h.display_name.as_str(), h.display.as_str())),
         ));
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
-        let check_lines = data
-            .checks
-            .iter()
-            .map(|(passed, line)| {
-                (*passed, format!("{} {line}", if *passed { PASS_MARK } else { FAIL_MARK }))
-            })
-            .collect();
         let mut view = Self {
             mode,
             body_mode: mode,
@@ -1064,7 +1051,7 @@ impl ReadyView {
             raw: Arc::new(RawBody::split(&data.body)),
             header_lines,
             header_rows,
-            check_lines,
+            check_lines: data.checks.clone(),
             cursor: 0,
             scroll: 0,
             h_scroll: 0,
@@ -1180,13 +1167,17 @@ impl ReadyView {
             }
             ViewMode::Raw => self.raw.lines.get(line).cloned(),
             ViewMode::Headers => self.header_lines.get(line).cloned(),
-            ViewMode::Checks => self.check_line(line),
+            ViewMode::Checks => self.check_texts().nth(line),
         }
     }
 
-    /// Line `i` of the Checks tab, as text.
-    fn check_line(&self, i: usize) -> Option<String> {
-        self.check_lines.get(i).map(|(_, line)| line.clone())
+    /// The Checks tab's lines as text (spec P2): each check's mark, then
+    /// its line. What search, copy, save and `$EDITOR` act on.
+    fn check_texts(&self) -> impl Iterator<Item = String> + '_ {
+        let text = |(passed, line): &(bool, String)| {
+            format!("{} {line}", crate::paint::verdict_mark(*passed))
+        };
+        self.check_lines.iter().map(text)
     }
 
     /// How many lines the current view shows right now (collapse included).
@@ -1241,9 +1232,7 @@ impl ReadyView {
                 })
                 .max()
                 .unwrap_or(0),
-            ViewMode::Checks => {
-                self.check_lines.iter().map(|(_, l)| crate::ui::cells(l)).max().unwrap_or(0)
-            }
+            ViewMode::Checks => self.check_texts().map(|l| crate::ui::cells(&l)).max().unwrap_or(0),
         };
         self.content_width = Some((key.0, key.1, key.2, w));
         w
@@ -1291,9 +1280,7 @@ impl ReadyView {
             }
             ViewMode::Raw => Cow::Borrowed(&self.raw.lines[..]),
             ViewMode::Headers => Cow::Borrowed(&self.header_lines),
-            ViewMode::Checks => {
-                Cow::Owned(self.check_lines.iter().map(|(_, line)| line.clone()).collect())
-            }
+            ViewMode::Checks => Cow::Owned(self.check_texts().collect()),
         }
     }
 
@@ -2432,7 +2419,7 @@ impl ReadyView {
         match self.mode {
             ViewMode::Raw => self.raw.lines.get(i).cloned(),
             ViewMode::Headers => self.header_lines.get(i).cloned(),
-            ViewMode::Checks => self.check_line(i),
+            ViewMode::Checks => self.check_texts().nth(i),
             ViewMode::Pretty => {
                 let tree = self.active_tree()?;
                 let line = tree.visible_line(i)?;
@@ -2615,7 +2602,7 @@ impl ReadyView {
             }
             ViewMode::Raw => self.raw.lines.get(row).cloned().into_iter().collect(),
             ViewMode::Headers => self.header_lines.get(row).cloned().into_iter().collect(),
-            ViewMode::Checks => self.check_line(row).into_iter().collect(),
+            ViewMode::Checks => self.check_texts().nth(row).into_iter().collect(),
         }
     }
 
@@ -5096,7 +5083,7 @@ fn response_tab_defs(view: &ReadyView, bar: &JqBar, theme: &Theme) -> (TabLabels
             // The response's verdict, as `run` and `suite` give it (P3).
             ViewMode::Checks => {
                 let passed = postui_core::checks::passed(&view.check_lines);
-                ("Checks".to_string(), Some(check_mark(passed, theme)))
+                ("Checks".to_string(), Some(crate::paint::verdict(passed, theme)))
             }
         })
         .collect();
@@ -5368,12 +5355,14 @@ fn body_lines(
             }
         }
         ViewMode::Checks => {
-            // The mark in its verdict's colour, then the line as it is.
+            // The line as `check_texts` gives it, its mark in the verdict's
+            // colour.
             for (i, (passed, line)) in view.check_lines.iter().enumerate().take(end).skip(start) {
-                let (mark, colour) = check_mark(*passed, t);
-                let rest = &line[mark.len()..];
-                let pieces =
-                    vec![(mark.to_string(), Style::default().fg(colour)), (rest.to_string(), text)];
+                let (mark, colour) = crate::paint::verdict(*passed, t);
+                let pieces = vec![
+                    (mark.to_string(), Style::default().fg(colour)),
+                    (format!(" {line}"), text),
+                ];
                 push(i, i, pieces, Vec::new(), true, (0, view.h_scroll));
             }
         }
@@ -7080,7 +7069,7 @@ mod tests {
         let mark = |row: u16| {
             (body.x..body.right())
                 .map(|x| &buf[(x, body.y + row)])
-                .find(|c| [PASS_MARK, FAIL_MARK].contains(&c.symbol()))
+                .find(|c| ["✓", "✗"].contains(&c.symbol()))
         };
         let colours: Vec<_> = (0..3).map(|row| mark(row).unwrap().fg).collect();
         assert_eq!(colours, [t.error, t.success, t.error]);

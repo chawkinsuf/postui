@@ -57,10 +57,14 @@ const DRAW_ORDER: [EditorTab; 5] =
 /// W3).
 const BODY_VARS: &str = " · vars";
 
-/// The Checks tab's three fields, in walk order (the table's heads), each
-/// with its label: the status codes, then the two time limits in
-/// `Measure::ALL`'s order.
-const CHECK_FIELDS: [&str; 3] = ["status", "first byte", "total"];
+/// The Checks tab's fields, in walk order (one for each of the table's
+/// heads), each with its label and its hover hint: the status codes, then
+/// the two time limits in `Measure::ALL`'s order.
+pub const CHECK_FIELDS: [(&str, &str); TableSpec::CHECKS.heads] = [
+    ("status", "Edit the status codes that pass"),
+    ("first byte", "Edit the first-byte limit, in milliseconds"),
+    ("total", "Edit the total-time limit, in milliseconds"),
+];
 
 /// The most columns a Checks field's well takes.
 const CHECK_FIELD_W: u16 = 40;
@@ -4049,9 +4053,8 @@ impl Editor {
         // carries the live JSON-validity badge, colored from the semantic
         // tokens so it also reads without the glyph.
         type Labels = Vec<(String, Option<(&'static str, ratatui::style::Color)>)>;
-        let body_badge = self
-            .body_badge_present()
-            .then(|| if self.body_is_valid() { ("✓", theme.success) } else { ("✗", theme.error) });
+        let body_badge =
+            self.body_badge_present().then(|| crate::paint::verdict(self.body_is_valid(), theme));
         let labels = |counts: bool| -> Labels {
             let badge = |t: &EditorTab| body_badge.filter(|_| *t == EditorTab::Body);
             tabs.iter().map(|t| (self.tab_label_text(*t, counts), badge(t))).collect()
@@ -4586,7 +4589,8 @@ impl Editor {
         let shown = (self.field_lines() as u16).min(area.height);
         let theme = ctx.theme;
         let open = self.table.editing.as_ref();
-        for (k, label) in CHECK_FIELDS.into_iter().enumerate().take(usize::from(shown)) {
+        let labels = CHECK_FIELDS.map(|(label, _)| label);
+        for (k, label) in labels.into_iter().enumerate().take(usize::from(shown)) {
             let hit = Hit::CheckField(k);
             let hovered = ctx.hovered == Some(&hit);
             // Indented to the table's name column.
@@ -4595,7 +4599,7 @@ impl Editor {
                 Rect { x: area.x + pad, y: area.y + k as u16, width: area.width - pad, height: 1 };
             let slot = PropertyRow {
                 label,
-                label_w: crate::paint::label_column(&CHECK_FIELDS),
+                label_w: crate::paint::label_column(&labels),
                 hovered,
                 disabled: false,
                 trailing: &[],

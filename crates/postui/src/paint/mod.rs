@@ -257,6 +257,16 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bol
     end
 }
 
+/// The mark for a verdict: `✓` for good, `✗` for bad.
+pub fn verdict_mark(good: bool) -> &'static str {
+    if good { "✓" } else { "✗" }
+}
+
+/// [`verdict_mark`] with its colour: a tab's badge, a check line's mark.
+pub fn verdict(good: bool, theme: &Theme) -> (&'static str, Color) {
+    (verdict_mark(good), if good { theme.success } else { theme.error })
+}
+
 /// A plain (unbracketed) clickable text action painted on `surface`:
 /// accent fg at rest; inverted (accent fill, `on_accent` fg, bold) while
 /// `hovered == Some(&hit)`. The response toolbar's icons, its search

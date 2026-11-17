@@ -1507,26 +1507,10 @@ impl App {
             _ => false,
         };
         use crate::components::response::ViewMode;
-        let checks = match hit {
-            Hit::CopyBodyButton
-            | Hit::SaveBodyButton
-            | Hit::ResponseEditorButton
-            | Hit::ResponseSearchButton => {
-                self.session.response.view().is_some_and(|v| v.mode == ViewMode::Checks)
-            }
-            // A row's pills and chips on the request's Checks tab.
-            Hit::TableCopy(_)
-            | Hit::TableDelete(_)
-            | Hit::FooterChip(
-                Action::CopyToClipboard(CopyTarget::TableRow(_))
-                | Action::DeleteTableRow(_)
-                | Action::TableAddRow,
-            ) => self.editor.active_tab == EditorTab::Checks,
-            _ => false,
-        };
         crate::hint::HintCtx {
             on,
-            checks,
+            checks: self.session.response.view().is_some_and(|v| v.mode == ViewMode::Checks),
+            table: self.editor.active_tab.table_spec(),
             remove_scope: self.modals.value_popup_remove_scope(),
             manage_tab: (self.screen == Screen::Manage).then_some(self.manage.tab),
             // The Manager's `[Rename]`/`[Delete]` act on whatever the
@@ -4923,7 +4907,7 @@ impl App {
                     // The register is invisible, so silence would read as a
                     // dead key: say what it holds.
                     crate::yank::Register::Row { tab, .. } => {
-                        let held = tab.table_spec().unwrap_or(&TableSpec::ROWS).yanked();
+                        let held = tab.table_spec().unwrap_or(&TableSpec::ROWS).yanked;
                         self.toasts.push(
                             format!("nothing to put here: the register holds {held}"),
                             ToastKind::Warning,
@@ -4981,7 +4965,7 @@ impl App {
                         return true;
                     }
                 };
-                // The yanked row's table, for its words and its shape.
+                // The yanked row's table, for its words and what a row is.
                 let spec = tab.table_spec().unwrap_or(&TableSpec::ROWS);
                 // A header is not a param: the register stays on its tab.
                 if tab != self.editor.active_tab {
@@ -4991,15 +4975,16 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                // A check is its text, and the list holds each once: a put
-                // of one still in the list adds none, as a repeat typed into
-                // `+ Add check` adds none, and a count puts the one.
-                if spec.one_column && self.editor.table_index_of(&key).is_some() {
+                // No second row is made of a name-only row (`-copy` would
+                // be another row): a put of one still in the list adds
+                // none, as its name typed into `+ Add` adds none, and a
+                // count puts the one.
+                if spec.name_only && self.editor.table_index_of(&key).is_some() {
                     self.toasts.push(spec.taken(&key), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
-                let count = if spec.one_column { 1 } else { count };
+                let count = if spec.name_only { 1 } else { count };
                 // Each copy goes under the one before, so the run reads in
                 // the order it was made; the cursor ends on the first, as
                 // vim's `3p` leaves it. One action is one editor change.
@@ -8464,7 +8449,8 @@ impl App {
             || self.focus != PaneId::Editor
             || self.editor.caret_takes_vars();
         if !takes {
-            self.toasts.push("a check takes no variables", ToastKind::Warning);
+            let noun = self.editor.active_tab.table_spec().map_or("row", |spec| spec.noun);
+            self.toasts.push(format!("a {noun} takes no variables"), ToastKind::Warning);
             self.last_action_failed = true;
         }
         !takes
@@ -11403,9 +11389,9 @@ impl App {
     /// table (Task 17, spec §5): duplicate, delete, and extract its value to
     /// a variable. `None` for the Body tab (no table there) or a row index
     /// past the map's end (the ghost row, or one that vanished under a
-    /// commit the caller already resolved past). A one-column row's menu
-    /// is its delete alone: a check is its text, which the list holds
-    /// once, so there is no duplicate to make and no value to extract.
+    /// commit the caller already resolved past). A name-only row's menu
+    /// is its delete alone: no second row is made of one, and it has no
+    /// value to extract.
     fn table_row_context_menu(&self, i: usize) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
         let spec = self.editor.active_tab.table_spec()?;
@@ -11419,7 +11405,7 @@ impl App {
             return None;
         }
         let delete = MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i));
-        if spec.one_column {
+        if spec.name_only {
             return Some(vec![delete]);
         }
         Some(vec![
@@ -12136,9 +12122,9 @@ impl App {
             // so a whole-header copy never reads `: value`.
             CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => {
                 let (key, value) = self.editor.table_row_at(*i)?;
-                // A one-column row is its name: that is what its copy takes.
+                // A name-only row's copy takes its name.
                 let spec = self.editor.active_tab.table_spec()?;
-                if spec.one_column {
+                if spec.name_only {
                     return Some((key.to_string(), format!("Copied {}", spec.noun)));
                 }
                 Some(header_copy(key, value, key))

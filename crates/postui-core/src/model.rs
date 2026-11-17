@@ -392,15 +392,17 @@ fn limit_of<V: TryInto<u32>>(v: V) -> Option<u32> {
     v.try_into().ok().filter(|ms| *ms > 0)
 }
 
-/// `jq = [...]` with a filter listed twice read once, the first kept: the
-/// app's list holds each check once (checks tabs spec 2026-11-16). The
-/// read is the one `run` and `suite` use, so they list the check once
-/// too.
+/// `jq = [...]` as the app's list holds it (checks tabs spec 2026-11-16):
+/// each filter without the whitespace around it, and one listed twice
+/// read once, the first kept. The read is the one `run` and `suite` use,
+/// so they list the check once too. The app's save writes the whole file
+/// from the request it holds ([`HttpRequest::to_toml_string`]), so it
+/// writes the list this way, as it writes no comment back; neither a
+/// repeat nor the whitespace changed a verdict.
 fn filters<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    let mut filters = Vec::<String>::deserialize(d)?;
     let mut seen = std::collections::HashSet::new();
-    filters.retain(|f| seen.insert(f.clone()));
-    Ok(filters)
+    let filters = Vec::<String>::deserialize(d)?.into_iter().map(|f| f.trim().to_string());
+    Ok(filters.filter(|f| seen.insert(f.clone())).collect())
 }
 
 /// `status = 200` or `status = [200, 201]`, each a code from 100 to 599; any
@@ -1045,11 +1047,12 @@ mod tests {
     }
 
     /// Checks tabs spec 2026-11-16: a status code or a filter listed twice
-    /// reads once, the first kept, so nothing downstream sees a repeat.
+    /// reads once, the first kept, so nothing downstream sees a repeat. A
+    /// filter reads without the whitespace around it.
     #[test]
     fn a_repeated_check_reads_once() {
         let read = HttpRequest::from_toml_str(
-            "url = \"u\"\n[checks]\nstatus = [200, 201, 200]\njq = ['.a', '.b', '.a']\n",
+            "url = \"u\"\n[checks]\nstatus = [200, 201, 200]\njq = ['.a', ' .b', '.a ']\n",
         )
         .unwrap();
         assert_eq!(read.checks.status, [200, 201]);

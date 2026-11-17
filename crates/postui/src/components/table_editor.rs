@@ -20,19 +20,31 @@ pub enum Col {
 }
 
 /// What a table lists, handed to its keys, its commit, its click and its
-/// draw: the one spot a table's words and shape come from (checks tabs
-/// spec 2026-11-16).
+/// draw: the one spot a table's words and what its rows are come from
+/// (checks tabs spec 2026-11-16). The words are written out, so no
+/// message is picked by asking which table this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableSpec {
-    /// What a row is called in a message: `row`, or `check`.
+    /// What a row is called in a message or a hint: `row`, or `check`.
     pub noun: &'static str,
     /// The header line's label over the name column.
     pub name_header: &'static str,
+    /// What the register holds after a row's yank, as a message says it.
+    pub yanked: &'static str,
+    /// The warning for a row's name blanked; `{}` is the name it keeps.
+    pub blank: &'static str,
+    /// The warning for a row renamed onto another row's name, which
+    /// leaves the one row; `{}` is that name.
+    pub merged: &'static str,
     /// How many heads the caller draws above the rows ([`Stop::Head`]).
     pub heads: usize,
-    /// A row is its name alone: no value cell, no on/off toggle. The
-    /// cursor's column stays on the name.
-    pub one_column: bool,
+    /// A row is its name alone, one line of text: it has no value and no
+    /// on/off switch. So the table draws one column and the cursor's
+    /// column stays on the name; the name is kept without the whitespace
+    /// around it and quoted cut short ([`Self::quoted`]); a copy takes the
+    /// name; and no second row is made of one (a put, a duplicate), since
+    /// under another name it would be another row.
+    pub name_only: bool,
     /// Whether the table's inputs take `{{variables}}`: their tokens are
     /// tinted and hover-tipped, and the app offers its pickers there.
     pub vars: bool,
@@ -41,22 +53,34 @@ pub struct TableSpec {
 impl TableSpec {
     /// A table of name and value rows with no head: a request's params,
     /// headers and variables.
-    pub const ROWS: TableSpec =
-        TableSpec { noun: "row", name_header: "NAME", heads: 0, one_column: false, vars: true };
+    pub const ROWS: TableSpec = TableSpec {
+        noun: "row",
+        name_header: "NAME",
+        yanked: "a table row",
+        blank: "a row needs a name — kept '{}'",
+        merged: "duplicate key '{}' replaced the existing value",
+        heads: 0,
+        name_only: false,
+        vars: true,
+    };
     /// The Project tab's default headers, under its Name row.
     pub const PROJECT: TableSpec = TableSpec { heads: 1, ..Self::ROWS };
     /// A request's jq checks, under the status and time-limit fields.
-    pub const CHECKS: TableSpec =
-        TableSpec { noun: "check", name_header: "CHECK", heads: 3, one_column: true, vars: false };
+    pub const CHECKS: TableSpec = TableSpec {
+        noun: "check",
+        name_header: "CHECK",
+        yanked: "a check",
+        blank: "a check can't be empty — kept '{}'",
+        merged: "'{}' already exists — the two checks are now one",
+        heads: 3,
+        name_only: true,
+        vars: false,
+    };
 
-    /// `key` as a message quotes it: a check on one line, cut short.
+    /// `key` as a message quotes it: a name-only row's on one line, cut
+    /// short, since it is free text of any length.
     pub fn quoted(&self, key: &str) -> String {
-        if self.one_column { postui_core::checks::brief(key) } else { key.to_string() }
-    }
-
-    /// A yanked row, as a message says what the register holds.
-    pub fn yanked(&self) -> String {
-        if self.one_column { format!("a {}", self.noun) } else { "a table row".to_string() }
+        if self.name_only { postui_core::checks::brief(key) } else { key.to_string() }
     }
 
     /// The warning for a `+ Add` name that is already a row's.
@@ -64,25 +88,9 @@ impl TableSpec {
         format!("'{}' already exists \u{2014} no {} added", self.quoted(typed), self.noun)
     }
 
-    /// The warning for a row's name blanked, which keeps the name `kept`.
-    fn blank(&self, kept: &str) -> String {
-        let kept = self.quoted(kept);
-        if self.one_column {
-            format!("a {} can't be empty — kept '{kept}'", self.noun)
-        } else {
-            format!("a row needs a name — kept '{kept}'")
-        }
-    }
-
-    /// The warning for a row renamed onto another row's name `key`, which
-    /// leaves the one row.
-    fn merged(&self, key: &str) -> String {
-        let key = self.quoted(key);
-        if self.one_column {
-            format!("'{key}' already exists — the two {}s are now one", self.noun)
-        } else {
-            format!("duplicate key '{key}' replaced the existing value")
-        }
+    /// `words` ([`Self::blank`], [`Self::merged`]) about the row `key`.
+    fn about(&self, words: &str, key: &str) -> String {
+        words.replacen("{}", &self.quoted(key), 1)
     }
 }
 
@@ -822,7 +830,9 @@ impl TableEditorState {
         input: &LineInput,
         spec: &TableSpec,
     ) -> Committed {
-        let typed = input.text().to_string();
+        // A name-only row's name is kept without the whitespace around it,
+        // so the same text typed with a space after it is the same row.
+        let typed = if spec.name_only { input.text().trim() } else { input.text() }.to_string();
         if let Some((key, e)) = map.get_index_mut(at) {
             let (row, warning) = match col {
                 Col::Value => {
@@ -874,7 +884,7 @@ impl TableEditorState {
             return (idx, None);
         }
         if new_key.trim().is_empty() {
-            return (idx, Some(spec.blank(&orig)));
+            return (idx, Some(spec.about(spec.blank, &orig)));
         }
         if let Some(other_idx) = map.get_index_of(&new_key) {
             map.shift_remove_index(idx);
@@ -882,7 +892,7 @@ impl TableEditorState {
             if let Some((_, e)) = map.get_index_mut(adjusted) {
                 e.value = entry.value;
             }
-            return (adjusted, Some(spec.merged(&new_key)));
+            return (adjusted, Some(spec.about(spec.merged, &new_key)));
         }
         map.shift_remove_index(idx);
         map.shift_insert(idx, new_key, entry);
@@ -1070,8 +1080,8 @@ impl TableEditorState {
                 if matches!(self.selected, None | Some(Stop::Head(_))) {
                     return TableOutcome::not_consumed();
                 }
-                // A one-column row has the one cell to be on.
-                if has_cells && !spec.one_column {
+                // A name-only row has the one cell to be on.
+                if has_cells && !spec.name_only {
                     self.col = if ev.code == KeyCode::Left { Col::Key } else { Col::Value };
                 }
                 TableOutcome::consumed()
@@ -1099,8 +1109,8 @@ impl TableEditorState {
                 let Some(Stop::Row(i)) = self.selected else {
                     return TableOutcome::not_consumed();
                 };
-                // A one-column row has no switch to turn.
-                if !spec.one_column && Self::toggle_row(map, i) {
+                // A name-only row has no switch to turn.
+                if !spec.name_only && Self::toggle_row(map, i) {
                     TableOutcome::consumed()
                 } else {
                     TableOutcome::not_consumed()
@@ -1269,7 +1279,7 @@ impl TableEditorState {
     /// off either end — past the ghost row, or back off the first cell —
     /// commits and leaves editing. Back off the first cell of a table with
     /// heads, the walk asks the caller to open the last head
-    /// ([`TableOutcome::open_head`]). A one-column row's only cell is its
+    /// ([`TableOutcome::open_head`]). A name-only row's only cell is its
     /// name, so the walk goes from name to name; there, a commit that
     /// warned (a blanked name, one merged into another row, a taken
     /// `+ Add` name) ends the walk on the row it names, as Enter does.
@@ -1283,11 +1293,11 @@ impl TableEditorState {
     ) -> TableOutcome {
         let Committed { row, here, warning } = self.commit_cell(map, at, input, spec);
         let mut outcome = TableOutcome::maybe_warn(warning);
-        if spec.one_column && outcome.warning.is_some() {
+        if spec.name_only && outcome.warning.is_some() {
             self.exit_editing(row.unwrap_or(here), map);
         } else if forward {
             match (row, at.1) {
-                (Some(r), Col::Key) if !spec.one_column => self.start_edit(r, Col::Value, map),
+                (Some(r), Col::Key) if !spec.name_only => self.start_edit(r, Col::Value, map),
                 // Out of a row's last cell. `r` is a real row, so the next
                 // row is at most the ghost, whose name opens.
                 (Some(r), _) => self.start_edit(r + 1, Col::Key, map),
@@ -1298,7 +1308,7 @@ impl TableEditorState {
             // Step back from where the caret was (`here`), not from the
             // existing row a taken `+ Add` name matched, which forward Tab
             // opens (task #111).
-            let back = if spec.one_column { Col::Key } else { Col::Value };
+            let back = if spec.name_only { Col::Key } else { Col::Value };
             match at.1 {
                 Col::Value => self.start_edit(here, Col::Key, map),
                 _ if here > 0 => self.start_edit(here - 1, back, map),
@@ -1335,9 +1345,9 @@ impl TableEditorState {
     /// styling reads back only its own; the `{{token}}` spans register as
     /// they do anywhere.
     ///
-    /// `spec` is the table's shape: a one-column table draws its rows'
-    /// names across the whole width, with no value column and no toggle,
-    /// and a table whose inputs take no variables tints no token.
+    /// `spec` says what the rows are: name-only rows draw their names
+    /// across the whole width, with no value column and no toggle, and a
+    /// table whose inputs take no variables tints no token.
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
     pub fn draw(
         &self,
@@ -1368,7 +1378,7 @@ impl TableEditorState {
             let cols = columns(area.x, area.width);
             fill(buf, Rect::new(area.x, y, area.width, 1), theme.panel);
             text(buf, cols.name_x, y, spec.name_header, theme.text_muted, theme.panel, true);
-            if !spec.one_column {
+            if !spec.name_only {
                 text(buf, cols.value_x, y, "VALUE", theme.text_muted, theme.panel, true);
                 if cols.divider_x < area.right() {
                     text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, theme.panel, false);
@@ -1541,7 +1551,7 @@ impl TableEditorState {
         use crate::ui::clip;
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
-        let one = spec.one_column;
+        let one = spec.name_only;
         let open = self.editing.as_ref().and_then(CellEdit::cell);
         let editing_col = open.filter(|(row, _)| *row == i).map(|(_, col)| col);
         // The keyboard cursor lights its row only while the pane actually
@@ -1559,7 +1569,7 @@ impl TableEditorState {
         let show_actions = real && (lit || cursor) && area.width >= TOGGLE_W + ACTIONS_W;
         let value_right =
             if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
-        // A one-column row is its name across the whole row: no value
+        // A name-only row is its name across the whole row: no value
         // cell (a width of 0 draws and registers none), no divider.
         let (name_x, name_w, value_x, value_w) = cols_span(&cols, value_right, one);
         let unsent = matches!(note, Some(RowNote::Unsent(_)));
@@ -1659,7 +1669,7 @@ impl TableEditorState {
         }
         // The toggle owns the left gutter on every real row; the actions
         // are revealed by hover or the cursor. Both paint (and register)
-        // last so they win over the cells underneath. A one-column row has
+        // last so they win over the cells underneath. A name-only row has
         // no toggle: its gutter is padding.
         if real && !one && area.width >= TOGGLE_W {
             let (x, on) = (area.x, entry.enabled);
@@ -1730,10 +1740,10 @@ fn paint_cell_tokens(
 /// the area's right edge on a row showing its actions. The registered
 /// width has to be the drawn width: a cell under edit windows its text to
 /// it, and the click that places the caret reads the width back off the
-/// hit rect. A `one_column` row has the name cell alone, out to
+/// hit rect. A `name_only` row has the name cell alone, out to
 /// `value_right`, and a value cell of no width.
-fn cols_span(cols: &Columns, value_right: u16, one_column: bool) -> (u16, u16, u16, u16) {
-    if one_column {
+fn cols_span(cols: &Columns, value_right: u16, name_only: bool) -> (u16, u16, u16, u16) {
+    if name_only {
         return (cols.name_x, value_right.saturating_sub(cols.name_x), cols.value_x, 0);
     }
     let name_w = cols.divider_x.saturating_sub(cols.name_x);
@@ -1867,12 +1877,12 @@ mod tests {
         assert_eq!(out.open_head, Some(0));
     }
 
-    /// Checks tabs spec 2026-11-16: three heads over one-column rows. The
+    /// Checks tabs spec 2026-11-16: three heads over name-only rows. The
     /// move keys walk heads, rows and `+ Add` as one list; an open head
     /// takes an open cell's keys and hands its text back; a row has the
     /// one cell, no switch.
     #[test]
-    fn three_heads_walk_and_edit_over_one_column_rows() {
+    fn three_heads_walk_and_edit_over_name_only_rows() {
         let spec = TableSpec::CHECKS;
         let mut map = map_of(&[(".a", ""), (".b", "")]);
         let mut t = TableEditorState::default();
@@ -1890,7 +1900,7 @@ mod tests {
         press(&mut t, &mut map, KeyCode::Home);
         assert_eq!(t.selected, Some(Stop::Head(0)));
         // A head's own keys are the caller's; ←/→ and Space do nothing on
-        // one, or on a one-column row.
+        // one, or on a name-only row.
         for c in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Delete] {
             assert!(!press(&mut t, &mut map, c).consumed, "{c:?} on a head");
         }
@@ -1943,9 +1953,10 @@ mod tests {
 
     /// The Checks table's words: its three warnings say "check", and
     /// quote one on a single short line. A Tab or Shift-Tab that drew one
-    /// ends on the row it names, as Enter does, and opens nothing.
+    /// ends on the row it names, as Enter does, and opens nothing. The
+    /// whitespace typed around a check is no part of it.
     #[test]
-    fn a_one_column_tables_warnings_are_worded_for_its_noun() {
+    fn the_checks_tables_warnings_are_in_its_own_words() {
         let spec = TableSpec::CHECKS;
         let mut map = map_of(&[(".a", ""), (".b\n  | not", ""), (".c", "")]);
         let mut t = TableEditorState::default();
@@ -1958,10 +1969,13 @@ mod tests {
         };
         let on = |warning: &str, row| (warning.to_string(), Some(Stop::Row(row)));
         let (tab, back) = (key(KeyCode::Tab), shift_tab());
-        assert_eq!(retype(3, ".a", tab), on("'.a' already exists \u{2014} no check added", 0));
+        assert_eq!(retype(3, ".a ", tab), on("'.a' already exists \u{2014} no check added", 0));
         assert_eq!(retype(1, " ", back), on("a check can't be empty — kept '.b | not'", 1));
         // The last check retyped as the first: the two merge on the first.
-        assert_eq!(retype(2, ".a", tab), on("'.a' already exists — the two checks are now one", 0));
+        assert_eq!(
+            retype(2, " .a", tab),
+            on("'.a' already exists — the two checks are now one", 0)
+        );
         assert_eq!(retype(0, ".b\n  | not", back).1, Some(Stop::Row(0)));
         assert_eq!(map.len(), 1);
     }
@@ -3336,11 +3350,11 @@ mod tests {
         terminal
     }
 
-    /// Checks tabs spec 2026-11-16: a one-column table draws a row's name
+    /// Checks tabs spec 2026-11-16: a name-only row is drawn as its name
     /// across the row, with no value cell, divider or toggle, tints no
     /// `{{token}}`, and draws an `Error` row in the error colour, unstruck.
     #[test]
-    fn a_one_column_table_draws_names_alone() {
+    fn name_only_rows_draw_their_names_alone() {
         let theme = Theme::dark();
         let long = ".items | map(select(.price > 100)) | length == 4";
         let map = map_of(&[(long, ""), (".a ==", ""), ("{{x}} == 1", "")]);

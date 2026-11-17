@@ -87,7 +87,8 @@ the code. How each lands:
 summaries, led by `status N, expected below 400` when the 400 rule
 failed the response; `passed`: every line passed). The CLI's
 `ShownCheck` calls them. `model.rs`:
-the read drops a repeated status code or jq filter, keeping the first;
+the read takes a jq filter without the whitespace around it and drops a
+repeated status code or filter, keeping the first;
 `Checks::parse_status` and `parse_limit` read a field's text by the
 read's own limits, so the app's refusal and the file's are one rule.
 
@@ -106,12 +107,17 @@ never ends keeps the response from showing: that limit is #310 (answer
 1 above).
 
 **The response tab.** `ViewMode::Checks`, offered when the response's
-`checks` is not empty. Its lines are built once in `ReadyView::new`
-from them, and join every place `ViewMode::Headers` supplies
-plain lines (line count, search corpus, copy, save, `$EDITOR`, width).
-It has none of the Headers tab's header copy pills or keys. The tab's
-badge is `checks::passed`. The response side reads nothing from the
-editor.
+`checks` is not empty. The view keeps those lines as they come, each a
+verdict and a text, and nothing made from them. The tab's text is each
+line led by its mark (`ReadyView::check_texts`): that joins every place
+`ViewMode::Headers` supplies plain lines (line count, search corpus,
+copy, save, `$EDITOR`, width). The paint draws the same line with the
+mark in the verdict's colour, and the tab's badge is `checks::passed`
+over the same verdicts; the mark and its colour are `paint::verdict`,
+the Body tab's badge too. So the tab's text is made on each read, a
+copy of its few lines, where Headers' is borrowed (#309 review rounds 3
+to 5). It has none of the Headers tab's header copy pills or keys. The
+response side reads nothing from the editor.
 
 **The shared table (`table_editor.rs`).** Contract changes:
 
@@ -133,11 +139,23 @@ editor.
   click-away, save, send, tab switch, the undo bracket, paste, vim's
   field session, the mouse) meets a head as it meets a cell.
 - `TableSpec`: what a table lists, handed to the walk, the commit, the
-  click and the draw: its row noun for messages, its head count,
-  whether a row is one column (no value cell, no toggle), and whether
-  its inputs take variables. `EditorTab::table_spec` is the one spot the
-  Checks table's shape and the table's own messages come from; the
-  words the app sets by the tab are listed in section 4.
+  click and the draw. Each thing the checks list differs in has one
+  home there (#309 review round 5):
+  - its words, written out as data: the noun (`check`), the header
+    (`CHECK`), what a yank holds (`a check`), and the two warnings whose
+    sentence differs (a blanked name, a name merged into another row);
+  - `heads`, the three fields;
+  - `name_only`, what a row is: its name alone, one line of text with
+    no value and no on/off switch. What follows from that reads this
+    one fact: one column drawn and walked, the name kept without the
+    whitespace around it and quoted cut short, a copy that takes the
+    name, and no second row made of one (a put of a check still in the
+    list, a row menu without Duplicate or Extract value);
+  - `vars`, whether its inputs take variables.
+
+  `EditorTab::table_spec` gives a tab its spec. No caller asks which
+  tab is up to pick a check's words or rules; the words the app sets by
+  the tab are the other tabs' own, listed in section 4.
 
 **The editor.** `EditorTab::Checks`. The status codes and the limits
 are `Editor::check_status` and `check_limits`; the jq checks live in
@@ -209,16 +227,20 @@ text menu don't offer it), token colour and hover tips
 (`paint_cell_tokens`), the caret's tooltip and its keys
 (`Editor::caret_token`), the footer's `vars` chip.
 
-**Words** (`TableSpec`): every message that names or quotes a row
-(#309 review round 4): the table's three warnings, the delete toasts,
-the copy toast, the put's three warnings (a repeat, a row yanked on
-another tab, a row put in the sidebar). The spec's shape, not the tab,
-decides what a copy takes, what the row menu offers and what a put
-adds. A field's refusal quotes what was typed cut short, as a check is
-quoted. Beside it, by the tab, where the other tabs' own fixed labels
-already are: the row menu's noun, `+ Add check`, the footer's add chip
-(`EditorTab::add_row_label`) and row chips (`TableCursor::Checks`), the
-pills' and chips' hints (`HintCtx::checks`).
+**Words** (`TableSpec`): every message and hint that names or quotes a
+row (#309 review rounds 4 and 5): the table's three warnings, the
+delete toasts, the copy toast, the put's three warnings (a repeat, a
+row yanked on another tab, a row put in the sidebar), and the hints of
+a row's pills and chips, which read the spec through `HintCtx::table`
+(`Copy this check`, `Delete this check`, `Add a check`; `row` on the
+other tabs). A field's refusal quotes what was typed cut short, as a
+check is quoted, and a field's label and hint are one table
+(`CHECK_FIELDS`, as long as the spec's `heads`). Beside it, by the tab,
+where the other tabs' own fixed labels already are: the row menu's
+noun (`param`, `header`, `variable`; the spec's for a check),
+`+ Add check`, the footer's add chip (`EditorTab::add_row_label`) and
+row chips (`TableCursor::Checks`). The response's toolbar hints name
+the check results by `HintCtx::checks`, the Checks view being up.
 
 ## 5. Tests
 
@@ -290,3 +312,16 @@ pills' and chips' hints (`HintCtx::checks`).
     count. Measuring a fixed count for each tab instead would hide
     counts that fit on every main column narrower than the widest row
     (round 4).
+18. A check's text is kept without the whitespace around it, typed (the
+    table's commit) or read from the file, so `.ok` typed with a space
+    after it is the check `.ok` and adds no second one. The jq bar runs
+    its filter trimmed in the same way. A hand-written filter with
+    whitespace around it is written back without it at the next save
+    (round 5).
+19. The read's dropped repeat (choice 6) and 18 change the file at the
+    app's next save of that request. A save already writes the whole
+    file from what the app holds, so it writes no comment back either,
+    and neither a repeat nor the whitespace changed a verdict (round 5).
+20. The add chip's hint is `Add a check`, from the table's noun; on the
+    Params, Headers and Vars tabs the same hint now reads `Add a row`,
+    where it was the palette's line for the command (round 5).

@@ -170,7 +170,8 @@ edits the checks, on a Checks tab of the request and one of the response
 checks tab in the response panel that tells you if the last request met
 the checks", you). R10's "shows none" no longer holds; the rules are in
 `2026-11-16-checks-tabs-design.md`. The read also drops a repeated status
-code or jq filter (mine).
+code or jq filter, and takes a filter without the whitespace around it
+(mine).
 
 ### 2.6 Docs (mine)
 

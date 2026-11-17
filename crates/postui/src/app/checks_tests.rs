@@ -281,20 +281,21 @@ fn a_check_answers_the_keys_a_headers_row_does() {
     }
 }
 
-/// The table's own refusals, and a counted delete, say "check".
+/// The table's own refusals, and a counted delete, say "check". A check
+/// typed with whitespace around it is the check without it.
 #[test]
 fn every_message_on_the_tab_says_check() {
     let mut app = checks_app(FOUR, KeyProfile::Vim);
     let last = |app: &App| app.toasts.last_message().unwrap_or_default().to_string();
     feed(&mut app, "a");
-    retype(&mut app, ".b");
+    retype(&mut app, ".b ");
     assert_eq!(last(&app), "'.b' already exists \u{2014} no check added");
     app.editor.table.set_selected(Some(Stop::Row(0)));
     feed(&mut app, "i");
     retype(&mut app, "  ");
     assert_eq!(last(&app), "a check can't be empty — kept '.a'");
     feed(&mut app, "i");
-    retype(&mut app, ".b");
+    retype(&mut app, " .b");
     assert_eq!(last(&app), "'.b' already exists — the two checks are now one");
     feed(&mut app, "u");
     feed(&mut app, "2dd");
