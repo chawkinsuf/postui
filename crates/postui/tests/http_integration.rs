@@ -240,8 +240,7 @@ async fn drain_until_settled(
 
 /// Checks tabs spec 2026-11-16, section 7: a send hands the response over
 /// as it arrives. With a jq check its Checks tab says `checking…` until
-/// the lines follow; with none that reads the body it arrives judged and
-/// nothing follows.
+/// the lines follow; with none that reads the body it arrives judged.
 #[tokio::test]
 async fn a_response_arrives_before_its_jq_checks_are_judged() {
     use postui::components::response::ViewMode;
@@ -276,17 +275,20 @@ async fn a_response_arrives_before_its_jq_checks_are_judged() {
         app.update(Action::ForceSend);
         drain_until_settled(&mut app, &mut rx).await;
         assert_eq!(checks_tab(&mut app).as_deref(), Some(on_arrival), "{slug}");
-        let wait = Duration::from_millis(if judged.is_some() { 5000 } else { 300 });
-        let next = tokio::time::timeout(wait, rx.recv()).await;
-        match judged {
-            Some(lines) => {
-                let action = next.expect("the lines follow").unwrap();
-                assert!(matches!(action, Action::ChecksJudged { .. }), "{action:?}");
-                app.update(action);
-                assert_eq!(checks_tab(&mut app).as_deref(), Some(lines));
+        let Some(lines) = judged else { continue };
+        // The lines follow, among whatever else the app sends itself.
+        loop {
+            let action = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("timed out waiting for the check lines")
+                .expect("channel closed before the check lines arrived");
+            let landed = matches!(action, Action::ChecksJudged { .. });
+            app.update(action);
+            if landed {
+                break;
             }
-            None => assert!(next.is_err(), "nothing follows: {next:?}"),
         }
+        assert_eq!(checks_tab(&mut app).as_deref(), Some(lines));
     }
 }
 

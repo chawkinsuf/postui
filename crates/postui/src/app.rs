@@ -5348,25 +5348,14 @@ impl App {
                 // by these, once (checks tabs spec 2026-11-16, P5).
                 let checks = self.editor.checks();
                 let task = tokio::spawn(async move {
-                    use crate::components::response::CheckState;
-                    let data = match crate::http::send(&client, &prepared).await {
-                        Ok(data) => data,
-                        Err(error) => {
-                            let _ = tx.send(Action::RequestFailed { generation, error });
-                            return;
+                    // The response is handed over as it arrives, with those
+                    // checks for `ResponseArrived` to judge it by (section 7).
+                    let _ = tx.send(match crate::http::send(&client, &prepared).await {
+                        Ok(data) => {
+                            Action::ResponseArrived { generation, data: Box::new(data), checks }
                         }
-                    };
-                    // The response is handed over as it arrives (section 7).
-                    // Checks still to be judged run after it, over a copy,
-                    // and send their lines when they end.
-                    let state = CheckState::on_arrival(&data, &checks);
-                    let job = (state == CheckState::Judging).then(|| data.clone());
-                    let data = Box::new(data);
-                    let _ = tx.send(Action::ResponseArrived { generation, data, checks: state });
-                    if let Some(read) = job {
-                        let lines = read.judge(checks).await;
-                        let _ = tx.send(Action::ChecksJudged { generation, lines });
-                    }
+                        Err(error) => Action::RequestFailed { generation, error },
+                    });
                 });
                 self.session.in_flight.push(crate::session::InFlight {
                     started: Instant::now(),
@@ -5452,18 +5441,27 @@ impl App {
                 // `PrettyParsed`. The clone happens before delivery so the
                 // response itself still moves into the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
-                let delivered = self.session.arrived(generation, data);
-                if delivered {
-                    self.session.checks_arrived(generation, checks);
-                }
-                if delivered && let Some(body) = big {
+                let state = crate::components::response::CheckState::on_arrival(&data, &checks);
+                let Some(response) = self.session.arrived(generation, data, state) else {
+                    return false;
+                };
+                let run = response.check_run();
+                if let Some(body) = big {
                     self.spawn_pretty_parse(generation, body);
                 }
-                delivered
+                // jq checks read the body, so they are judged after the
+                // response is delivered, off this thread (section 7).
+                if let Some(run) = run {
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        let lines = crate::http::judge(checks, run).await;
+                        let _ = tx.send(Action::ChecksJudged { generation, lines });
+                    });
+                }
+                true
             }
             Action::ChecksJudged { generation, lines } => {
-                use crate::components::response::CheckState;
-                self.session.checks_arrived(generation, CheckState::Judged(lines))
+                self.session.checks_judged(generation, lines)
             }
             Action::PrettyParsed { generation, tree } => {
                 self.session.tree_arrived(generation, tree.map(|t| *t))

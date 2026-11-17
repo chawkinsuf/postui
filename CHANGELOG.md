@@ -19,8 +19,8 @@ change the project file format.
   that pass, the first-byte and total time limits, and the jq checks. The
   response has a Checks tab, when the request had checks at the send, with
   a line for each check and `✓` or `✗` on the tab for the response as a
-  whole. The response shows as soon as it arrives, and the tab says
-  `checking…` until its jq checks have run.
+  whole. The response shows as soon as it arrives. Until its jq checks
+  have run, the tab's mark is a dim `…` and its one line reads `checking…`.
 - `editor_tab_5` can be bound to open the request's Checks tab.
 
 ### Changed

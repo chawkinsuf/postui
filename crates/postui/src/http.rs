@@ -44,34 +44,45 @@ pub async fn run_checks<T: Send + 'static>(
     tokio::task::spawn_blocking(move || run(&checks)).await
 }
 
-impl ResponseData {
-    /// The response judged by `checks`, as lines; a request with no checks
-    /// has none (spec P1).
-    pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
-        use postui_core::checks::{Timing, evaluate, lines};
-        if checks.is_empty() {
-            return Vec::new();
-        }
-        let timing = Timing::of(self.ttfb, self.elapsed);
-        let doc = || postui_core::jq::JqDocument::parse(&self.body);
-        lines(self.status, &evaluate(checks, self.status, timing, doc))
+/// A response with `status` that took `timing`, judged by `checks`, as
+/// lines; a request with no checks has none (spec P1). `doc` reads the
+/// body, called as `evaluate` calls it: once, and only for a jq check.
+pub fn check_lines(
+    checks: &postui_core::model::Checks,
+    status: u16,
+    timing: postui_core::checks::Timing,
+    doc: impl FnOnce() -> Result<postui_core::jq::JqDocument, postui_core::jq::JqError>,
+) -> Vec<(bool, String)> {
+    use postui_core::checks::{evaluate, lines};
+    if checks.is_empty() {
+        return Vec::new();
     }
-
-    /// [`Self::check_lines`] through [`run_checks`], for the send's task
-    /// to await once the response is handed over (checks tabs spec
-    /// 2026-11-16, section 7). A jq check has no time limit yet: that is
-    /// #310.
-    pub async fn judge(self, checks: postui_core::model::Checks) -> Vec<(bool, String)> {
-        lines_or_failure(run_checks(checks, move |checks| self.check_lines(checks)).await)
-    }
+    lines(status, &evaluate(checks, status, timing, doc))
 }
 
-/// A check run's lines, or for a run that panicked one failed line that
-/// says so.
-fn lines_or_failure(
-    run: Result<Vec<(bool, String)>, tokio::task::JoinError>,
+/// `run` through [`run_checks`], for the app's one check job per response
+/// (checks tabs spec 2026-11-16, section 7): its lines, or for a run that
+/// panicked one failed line that says so. A jq check has no time limit
+/// yet: that is #310.
+pub async fn judge(
+    checks: postui_core::model::Checks,
+    run: impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + 'static,
 ) -> Vec<(bool, String)> {
+    let run = run_checks(checks, run).await;
     run.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))])
+}
+
+impl ResponseData {
+    /// [`check_lines`] over this response.
+    pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
+        let timing = self.timing();
+        check_lines(checks, self.status, timing, || postui_core::jq::JqDocument::parse(&self.body))
+    }
+
+    /// The response's two times as its checks judge them.
+    pub fn timing(&self) -> postui_core::checks::Timing {
+        postui_core::checks::Timing::of(self.ttfb, self.elapsed)
+    }
 }
 
 /// Builds the client used for all requests. Deliberately no timeout of any
@@ -438,13 +449,17 @@ mod tests {
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
         assert_eq!(data.status, 500);
-        assert!(data.clone().judge(Checks::default()).await.is_empty());
+        let judged = |checks: Checks| {
+            let data = data.clone();
+            judge(checks, move |checks| data.check_lines(checks))
+        };
+        assert!(judged(Checks::default()).await.is_empty());
         let checks = Checks {
             max_elapsed_ms: Some(60_000),
             jq: vec![".ok".into(), ".items | length == 4".into()],
             ..Checks::default()
         };
-        let lines = data.clone().judge(checks).await;
+        let lines = judged(checks).await;
         let said: Vec<(bool, &str)> = lines.iter().map(|l| (l.0, l.1.as_str())).collect();
         assert_eq!(said[0], (false, "status 500, expected below 400"));
         assert!(said[1].0 && said[1].1.ends_with(", limit 60000 ms"), "{said:?}");
@@ -452,11 +467,11 @@ mod tests {
         assert!(!passed(&lines));
         // A status check that names the code, over the same reply.
         let named = Checks { status: vec![500], jq: vec![".ok".into()], ..Checks::default() };
-        let lines = data.judge(named).await;
+        let lines = judged(named).await;
         assert!(passed(&lines), "{lines:?}");
         // A jq run that panics gives one failed line.
         let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
-        let lines = lines_or_failure(run_checks(jq, |_| panic!("a check panicked")).await);
+        let lines = judge(jq, |_| panic!("a check panicked")).await;
         let [(false, line)] = &lines[..] else { panic!("{lines:?}") };
         assert!(line.starts_with("the checks did not run: "), "{line}");
     }

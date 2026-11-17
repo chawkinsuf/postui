@@ -900,7 +900,8 @@ impl CheckState {
     /// The tab's one line while the checks are judged.
     const CHECKING: &str = "checking\u{2026}";
     /// What the tab's label carries meanwhile, where the verdict's mark
-    /// will go and as wide.
+    /// will go and as wide: one cell by the app's measure (`ui::cells`),
+    /// which is what `ui::ellipsize` takes the `…` of a cut label for.
     const CHECKING_MARK: &str = "\u{2026}";
 
     /// How `data`'s checks stand as it arrives. Checks that read no body
@@ -919,13 +920,22 @@ impl CheckState {
         }
     }
 
-    /// The tab's rows, each a verdict and a text; [`Self::CHECKING`] has
-    /// no verdict.
-    fn rows(&self) -> Vec<(Option<bool>, &str)> {
+    /// How many rows the tab has.
+    fn len(&self) -> usize {
         match self {
-            Self::None => Vec::new(),
-            Self::Judging => vec![(None, Self::CHECKING)],
-            Self::Judged(lines) => lines.iter().map(|(p, l)| (Some(*p), l.as_str())).collect(),
+            Self::None => 0,
+            Self::Judging => 1,
+            Self::Judged(lines) => lines.len(),
+        }
+    }
+
+    /// Row `i` of the tab, a verdict and a text; [`Self::CHECKING`] has no
+    /// verdict.
+    fn row(&self, i: usize) -> Option<(Option<bool>, &str)> {
+        match self {
+            Self::None => None,
+            Self::Judging => (i == 0).then_some((None, Self::CHECKING)),
+            Self::Judged(lines) => lines.get(i).map(|(passed, line)| (Some(*passed), &line[..])),
         }
     }
 
@@ -1224,7 +1234,7 @@ impl ReadyView {
             }
             ViewMode::Raw => self.raw.lines.get(line).cloned(),
             ViewMode::Headers => self.header_lines.get(line).cloned(),
-            ViewMode::Checks => self.check_texts().nth(line),
+            ViewMode::Checks => self.check_text(line),
         }
     }
 
@@ -1232,9 +1242,14 @@ impl ReadyView {
     /// its line; the line that says they are being judged has no mark.
     /// What search, copy, save and `$EDITOR` act on.
     fn check_texts(&self) -> impl Iterator<Item = String> + '_ {
-        self.checks.rows().into_iter().map(|(verdict, line)| match verdict {
-            Some(passed) => format!("{} {line}", crate::paint::verdict_mark(passed)),
-            None => line.to_string(),
+        (0..self.checks.len()).filter_map(|line| self.check_text(line))
+    }
+
+    /// Line `line` of the Checks tab as text.
+    fn check_text(&self, line: usize) -> Option<String> {
+        self.checks.row(line).map(|(verdict, text)| match verdict {
+            Some(passed) => format!("{} {text}", crate::paint::verdict_mark(passed)),
+            None => text.to_string(),
         })
     }
 
@@ -1244,7 +1259,7 @@ impl ReadyView {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_len()),
             ViewMode::Raw => self.raw.lines.len(),
             ViewMode::Headers => self.header_lines.len(),
-            ViewMode::Checks => self.checks.rows().len(),
+            ViewMode::Checks => self.checks.len(),
         }
     }
 
@@ -2484,7 +2499,7 @@ impl ReadyView {
         match self.mode {
             ViewMode::Raw => self.raw.lines.get(i).cloned(),
             ViewMode::Headers => self.header_lines.get(i).cloned(),
-            ViewMode::Checks => self.check_texts().nth(i),
+            ViewMode::Checks => self.check_text(i),
             ViewMode::Pretty => {
                 let tree = self.active_tree()?;
                 let line = tree.visible_line(i)?;
@@ -2667,7 +2682,7 @@ impl ReadyView {
             }
             ViewMode::Raw => self.raw.lines.get(row).cloned().into_iter().collect(),
             ViewMode::Headers => self.header_lines.get(row).cloned().into_iter().collect(),
-            ViewMode::Checks => self.check_texts().nth(row).into_iter().collect(),
+            ViewMode::Checks => self.check_text(row).into_iter().collect(),
         }
     }
 
@@ -3056,6 +3071,26 @@ impl Response {
     /// belong to.
     pub fn is_from(&self, generation: u64) -> bool {
         self.view.as_ref().is_some_and(|v| v.generation == generation)
+    }
+
+    /// While the response's checks are being judged, the run that judges
+    /// them, for the blocking pool. It shares the view's body and rebuilds
+    /// it when it runs, so nothing is copied here.
+    pub fn check_run(
+        &self,
+    ) -> Option<impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<>>
+    {
+        let (ResponseState::Ready(data), Some(view)) = (&self.state, &self.view) else {
+            return None;
+        };
+        if view.checks != CheckState::Judging {
+            return None;
+        }
+        let (status, timing, body) = (data.status, data.timing(), view.raw_body());
+        Some(move |checks: &postui_core::model::Checks| {
+            let doc = move || JqDocument::parse(&body.join());
+            crate::http::check_lines(checks, status, timing, doc)
+        })
     }
 
     /// Sets how the response's checks stand: as it arrives, and when its
@@ -5450,8 +5485,10 @@ fn body_lines(
             // The line as `check_texts` gives it: its mark in the verdict's
             // colour, or with no verdict yet the whole line muted, as a
             // Headers note is.
-            let rows = view.checks.rows();
-            for (i, (verdict, line)) in rows.into_iter().enumerate().take(end).skip(start) {
+            for i in start..end {
+                let Some((verdict, line)) = view.checks.row(i) else {
+                    break;
+                };
                 let pieces = match verdict {
                     Some(passed) => {
                         let (mark, colour) = crate::paint::verdict(passed, t);
@@ -7226,9 +7263,13 @@ mod tests {
         // The first `…` in reading order is the label's.
         let mark = buf.content().iter().find(|c| c.symbol() == "\u{2026}");
         assert_eq!(mark.unwrap().fg, t.text_muted, "a dim mark on the label");
+        // The run its check job is given judges it as its own body does.
+        let run = r.check_run().expect("a run while its checks are judged");
+        assert_eq!(run(&jq_checks(&[".ok"])), lines);
         // The lines land: the verdict takes the mark's place and the tab
         // keeps its cells.
         r.set_checks(CheckState::Judged(lines));
+        assert!(r.check_run().is_none(), "judged once");
         assert!(render(&mut r).contains("Checks \u{2717}"));
         assert_eq!(render_hits(&mut r).rect_of(&tab).unwrap(), waiting, "nothing on the row moves");
         assert_eq!(r.view().unwrap().view_text(), "✗ status 500, expected below 400\n✓ .ok");
@@ -7240,6 +7281,7 @@ mod tests {
         };
         let (quick, lines) = arrived(200, body, &quick);
         assert_eq!(quick.view().unwrap().checks, CheckState::Judged(lines));
+        assert!(quick.check_run().is_none(), "nothing left to run");
         let none = arrived(500, body, &Default::default()).0;
         assert_eq!(none.view().unwrap().checks, CheckState::None);
     }

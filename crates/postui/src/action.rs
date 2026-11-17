@@ -662,10 +662,9 @@ pub enum Action {
     ResponseArrived {
         generation: u64,
         data: Box<crate::http::ResponseData>,
-        /// How the response's checks stand as it arrives: none, judged,
-        /// or (a jq check has to read the body) being judged, with
-        /// `ChecksJudged` to follow.
-        checks: crate::components::response::CheckState,
+        /// The request's checks as they were at the send. With a jq check
+        /// among them the response's lines follow as `ChecksJudged`.
+        checks: postui_core::model::Checks,
     },
     /// The jq checks of the response of `generation` finished: its Checks
     /// tab's lines, for whichever response slot that send made (on screen

@@ -486,10 +486,10 @@ fn a_multi_line_check_from_a_file_is_written_back_as_read() {
 
 /// A send of the open request that brings a response with `body`, handed
 /// over as the send's task hands it: tracked in flight, then
-/// `ResponseArrived` with its checks as they stand on arrival. Answers
-/// the send's generation and the lines `checks` give, for `ChecksJudged`.
+/// `ResponseArrived` with the checks it was sent with. Answers the send's
+/// generation and the lines `checks` give, for the test to land as
+/// `ChecksJudged`.
 fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64, Lines) {
-    use crate::components::response::CheckState;
     let data = crate::http::ResponseData {
         status,
         url: "http://x.test/".into(),
@@ -505,8 +505,8 @@ fn send_arrives(app: &mut App, status: u16, body: &str, checks: &Checks) -> (u64
     let generation = app.session.begin_send(&slug);
     let (started, task) = (Instant::now(), tokio::spawn(async {}));
     app.session.in_flight.push(crate::session::InFlight { started, generation, slug, task });
-    let (state, lines) = (CheckState::on_arrival(&data, checks), data.check_lines(checks));
-    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks: state });
+    let (lines, checks) = (data.check_lines(checks), checks.clone());
+    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     draw(app);
     (generation, lines)
 }
@@ -627,7 +627,8 @@ async fn a_response_shows_at_once_and_its_checks_tab_fills_in_after() {
 /// Section 7, A5: the lines are their own response's. They land on it
 /// while another request is on screen and leave that one's response alone;
 /// once a new send has replaced the response (in flight, arrived or
-/// failed) they are dropped, and a deleted request's land on nothing shown.
+/// failed) they are dropped. A deleted request's land on its response
+/// where the session keeps it, and an undo of the delete shows them.
 #[tokio::test]
 async fn check_lines_land_on_their_own_response_or_nowhere() {
     use crate::components::response::ViewMode;
@@ -653,7 +654,7 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     assert!(!app.update(Action::ChecksJudged { generation: stale, lines: lines.clone() }));
     app.update(Action::ResponseViewMode(ViewMode::Checks));
     assert_eq!(shown(&app), "checking\u{2026}", "the old result never lands on the new response");
-    // A send in flight, a failed one and a cancelled one hold no response.
+    // A send in flight and a failed one hold no response.
     let slug = app.editor.slug.clone();
     let third = app.session.begin_send(&slug);
     assert!(!app.update(Action::ChecksJudged { generation: second, lines: lines.clone() }));
@@ -663,11 +664,16 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     app.update(Action::RequestFailed { generation: third, error: "refused".into() });
     assert!(!app.update(Action::ChecksJudged { generation: third, lines: lines.clone() }));
     assert!(matches!(app.session.response.state(), ResponseState::Failed(_)));
-    // The request deleted while its checks run.
+    // The request deleted while its checks run: the session keeps a
+    // deleted request's response, and the lines land on it there.
     let (last, _) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
     app.update(Action::DeleteRequest("main/probe".into()));
-    assert_ne!(app.editor.slug.as_deref(), Some("main/probe"));
-    let before = shown(&app);
-    app.update(Action::ChecksJudged { generation: last, lines });
-    assert_eq!(shown(&app), before, "nothing lands on the request now open");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
+    assert!(app.update(Action::ChecksJudged { generation: last, lines }));
+    assert_eq!(shown(&app), "theirs", "nothing lands on the request now open");
+    assert!(!response_modes(&app).contains(&ViewMode::Checks));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/probe"), "the delete undone");
+    app.update(Action::ResponseViewMode(ViewMode::Checks));
+    assert_eq!(shown(&app), judged, "its response is back with its lines");
 }
