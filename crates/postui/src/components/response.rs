@@ -905,15 +905,15 @@ impl CheckState {
     const CHECKING_MARK: &str = "\u{2026}";
 
     /// How `data`'s checks stand as it arrives. Checks that read no body
-    /// are judged here; with a jq check among them they are all judged
-    /// together, after the response is shown.
+    /// (`http::reads_body`) are judged here; with one that does among them
+    /// they are all judged together, after the response is shown.
     pub fn on_arrival(
         data: &crate::http::ResponseData,
         checks: &postui_core::model::Checks,
     ) -> Self {
         if checks.is_empty() {
             Self::None
-        } else if checks.jq.is_empty() {
+        } else if !crate::http::reads_body(checks) {
             Self::Judged(data.check_lines(checks))
         } else {
             Self::Judging

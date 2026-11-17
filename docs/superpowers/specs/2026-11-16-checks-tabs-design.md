@@ -395,7 +395,7 @@ to them. What changes:
   ran it over its own copy of the response, made before the response
   was handed over, and before round 2 the job rebuilt the body from
   the view's lines). For a body past the sync-pretty limit the job is
-  the Tree's background parse (`App::spawn_pretty_parse`): it sends
+  the Tree's background parse (`App::spawn_response_jobs`): it sends
   `PrettyParsed` first and then runs the checks, whatever the parse
   gave (detail 3). Nothing tracks the job, so nothing cancels it: a
   new send of the request leaves the earlier job running, and its
@@ -508,9 +508,10 @@ lines find it by its generation as above.
    What is in memory, counted from the code. The check job and the
    Tree parse share the response's body (`ResponseData::body`, an
    `Arc`), where on `main` the parse had a copy. The parse holds
-   serde's document of the body while it builds the Tree (its lines'
-   text, about the body's size, and a 24-byte record a line), and drops
-   it once the Tree is built. The check job then builds jaq's document,
+   serde's document of the body while it builds the Tree, and drops it
+   once the Tree is built. The Tree is not a parsed document: it is its
+   lines' text, about the body's size, and a 24-byte record a line. The
+   check job then builds jaq's document,
    lets go of the body once jaq has read it, and keeps the document
    until its last check ends. So:
 

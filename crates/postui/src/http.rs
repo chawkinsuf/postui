@@ -40,10 +40,16 @@ pub async fn run_checks<T: Send + 'static>(
     checks: postui_core::model::Checks,
     run: impl FnOnce(&postui_core::model::Checks) -> T + Send + 'static,
 ) -> Result<T, tokio::task::JoinError> {
-    if checks.jq.is_empty() {
+    if !reads_body(&checks) {
         return Ok(run(&checks));
     }
     tokio::task::spawn_blocking(move || run(&checks)).await
+}
+
+/// Whether `checks` read the body: a jq check does. The app and the suite
+/// judge such checks on the blocking pool.
+pub fn reads_body(checks: &postui_core::model::Checks) -> bool {
+    !checks.jq.is_empty()
 }
 
 /// `run` through [`run_checks`], the hop the suite's checks take too, for
