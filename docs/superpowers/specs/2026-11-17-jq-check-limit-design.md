@@ -89,9 +89,9 @@ late. An endless array grows for the limit's length, then is freed.
 | L2 | The limit is 1 second by default. | you ("Yes I already confirmed 1 second.") |
 | L3 | The limit is per check: each jq check gets the whole limit, not a budget shared by the request's checks. | mine (approved) |
 | L4 | The time counts from the check's run, after the body is read: reading the body into jq's document is not counted, and is done once for all of a request's checks. | you (1 second "counted after the body is read") |
-| L5 | The limit is a project setting, `jq_check_limit_ms` in `project.toml`, in whole milliseconds; absent means 1000. It has no control in the app's Settings tab. | you ("Might as well make it configurable on a project level I think. Could be only in config for now."); that this means `project.toml`: mine, to confirm (Q1) |
+| L5 | The limit is a project setting, `jq_check_limit_ms` in `project.toml`, in whole milliseconds; absent means 1000. It has no control in the app's Settings tab. | you ("Might as well make it configurable on a project level I think. Could be only in config for now."); that this means `project.toml`, with no Settings-tab control: mine (approved) (Q1: A, 2026-11-17) |
 | L6 | The run is stopped in-process: postui's `lut()` hook checks a deadline, and `range` is replaced by one that checks it; past it the run unwinds, frees its thread and memory, and the check fails. | mine (approved) ("C and in process") |
-| L7 | A stopped check fails with the line `<filter>: stopped at the <N> ms limit`, the same in `run`'s `check failed:` line, `run -v`, `suite`'s rows, both JSONs' `failure`, and the app's Checks tab. | mine |
+| L7 | A stopped check fails with the line `<filter>: stopped at the <N> ms limit`, the same in `run`'s `check failed:` line, `run -v`, `suite`'s rows, both JSONs' `failure`, and the app's Checks tab; `<N>` is the limit in use. The key is named in the docs, not the line. | mine (approved) (Q2: A, 2026-11-17) |
 | L8 | The request's other checks still run, each with its own limit; a request with a stopped check fails as one with any failed check does, and the suite goes on to the next request. | you (ticket: "the rest of the request's checks, and the rest of the suite, go on") |
 | L9 | A bad `jq_check_limit_ms` (0, negative, a fraction, a string, above 4294967295) is a bad `project.toml`, as any bad value there is today: `run`, `suite` and `check` refuse with the file named; the app can't open the project; an outside edit while the app is open keeps the last good value with the "could not read project.toml" warning. | mine (existing rule, "parse errors never default") |
 | L10 | Nothing else changes: the jq bar, saved views, completion and `run --jq` run without a limit (#308 has the bar). | mine (ticket scope) |
@@ -141,8 +141,11 @@ place).
 - The app (`app.rs`, `Action::ResponseArrived`): read from
   `self.project` when the response arrives, so an outside edit to the
   key applies from the next response; passed into
-  `ResponseData::check_run(limit)` (`http.rs`), which `check_lines` uses
-  too. With no project open, the default.
+  `ResponseData::check_run(checks, limit)` (`http.rs`, the
+  `http::ChecksRun` that #311's tidy made, run by `http::run_checks`),
+  and into `CheckState::on_arrival(data, checks, limit)`, which judges
+  checks that read no body through `ResponseData::check_lines(checks,
+  limit)`. With no project open, the default.
 
 **What it ends from #312's section 7, detail 4:** a check job that holds
 a never-ending check now ends within the limit for each of its checks, so
@@ -150,8 +153,16 @@ re-sends leave at most that long a job each, and a quit waits at most
 that long for a running job.
 
 **Contract changes:** `checks::evaluate` gains a parameter;
-`ResponseData::check_run` and `check_lines` gain one; `jq::run_limited` is
-new; `ProjectMeta` gains a field (a `project.toml` key). No enum changes.
+`ResponseData::check_run`, `check_lines` and `CheckState::on_arrival`
+gain one; `jq::run_limited` is new; `ProjectMeta` gains a field (a
+`project.toml` key) and `project::DEFAULT_JQ_CHECK_LIMIT` is new. No enum
+changes.
+
+Amended 2026-11-17 while building (mine): after merging `main`, the app's
+check job is #311's `http::ChecksRun`, so the limit goes into
+`check_run`/`check_lines` as planned and also into `on_arrival`, its one
+other caller of `check_lines`. `run`'s `record` takes the limit as an
+eighth argument.
 
 **Docs:** the skill's `reference.md` lists `jq_check_limit_ms` under
 `project.toml` and says in the `[checks]` paragraph that a jq check is
@@ -163,11 +174,12 @@ and the suite checks spec get a dated #310 paragraph.
 | Rule | Test |
 |---|---|
 | L1, L6 | `jq`: `run_limited` with a 50 ms limit stops `last(range(1e18))`, `[range(1e10)]`, `[repeat(1)]`, `def f: f; f`, `until(false; .)`, and `try (last(range(1e18))) catch true`, each with the error `stopped at the 50 ms limit`, well under 5 s. |
-| L6 | `jq`: postui's `range` gives what jaq's did: `[range(5)]`, `[range(2; 8)]`, `[range(0; 10; 3)]`, `[range(5; 0; -2)]`, `[limit(3; range(0; 1; 0))]`, `[range(0.5; 3)]`, `range(1; "a")` errors; over `run` and `run_limited` alike. |
+| L6 | `jq`: postui's `range` gives what jaq's did: `[range(5)]`, `[range(2; 8)]`, `[range(0; 10; 3)]`, `[range(5; 0; -2)]`, `[limit(3; range(0; 1; 0))]`, `[range(0.5; 3)]`, `range(0; 3; "a")` gives 0 then an error (amended while building: `range(1; "a")` never ends, since a number is below every string); over `run` and `run_limited` alike. |
 | L6 | `jq`: a filter that ends gives the same `JqRun` from `run` and from `run_limited` (the existing fixtures). |
 | L10 | `jq`: `run` has no limit (a filter of about 100 ms with a deadline of 1 ms in `run_limited` is stopped, through `run` it ends). |
 | L2, L4, L5 | `meta`: absent key gives 1000 ms; `jq_check_limit_ms = 2500` gives 2.5 s; L9's bad values fail to parse. |
 | L9 | `project`: opening a project whose `project.toml` holds `jq_check_limit_ms = 0` is refused naming `project.toml`. |
+| §3 | app (`project_tests.rs`): a change on the Project tab keeps `jq_check_limit_ms` in the file. |
 | L3, L7, L8 | `checks`: a request with a status check, a never-ending filter, a second never-ending filter and `.ok`: the status line, two `<filter>: stopped at the 50 ms limit` lines, and `.ok` passed, in order. |
 | L4 | `checks`: the body's read is outside the limit (a `doc` closure that sleeps 100 ms, a 50 ms limit, a filter that ends: it passes). |
 | L1, L7, L8 | `cli_run` (integration): a project with `jq_check_limit_ms = 50` and a request with `last(range(1e18)) > 0`: `run` exits 1 with `check failed: last(range(1e18)) > 0: stopped at the 50 ms limit`, and its JSON's `failure` says the same. |
@@ -177,16 +189,15 @@ and the suite checks spec get a dated #310 paragraph.
 
 ## 5. `mine` choices, for veto
 
-- L5's reading: the setting lives in `project.toml` (shared with the
-  team and with `run`/`suite`), not the user's own `config.toml` (which
-  `run` and `suite` would also have to read). Asked as Q1.
+Answered 2026-11-17 ("A for both", the user's pick of the recommended
+options, so mine (approved)): Q1, the setting lives in `project.toml`
+(shared with the team and with `run`/`suite`), not the user's own
+`config.toml`; Q2, L7's line is `stopped at the 1000 ms limit` without
+the key's name, which the docs give. Still open for veto:
+
 - The key's name, `jq_check_limit_ms`, top level in `project.toml`, in
   milliseconds like `max_ttfb_ms`. Not a project-level `[checks]` table,
   which would read as checks for every request.
-- L7's wording, `stopped at the 1000 ms limit`, without the key's name
-  (the docs name it). Naming it,
-  `stopped at the 1000 ms limit (jq_check_limit_ms)`, would tell a reader
-  where to change it, at 20 more characters.
 - No "no limit" value (the user: every check has a maximum); the largest
   is about 49 days.
 - L9: a bad value fails `project.toml` like any other bad value, rather
