@@ -5,6 +5,7 @@ use rustix::process::{Pid, Signal};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -108,6 +109,17 @@ enum RunState {
     Over,
 }
 
+impl RunState {
+    /// The run is over, and its group leaves `HANGUP_GROUP`.
+    fn end(&mut self) {
+        if let RunState::Running(pid) = *self {
+            let raw = pid.as_raw_pid();
+            let _ = HANGUP_GROUP.compare_exchange(raw, 0, Ordering::Relaxed, Ordering::Relaxed);
+        }
+        *self = RunState::Over;
+    }
+}
+
 impl CommandRun {
     /// Kills the command if it is running, and keeps it from starting if
     /// it hasn't yet. The whole process group: `sh` may have forked the
@@ -117,7 +129,7 @@ impl CommandRun {
         if let RunState::Running(pid) = *state {
             let _ = rustix::process::kill_process_group(pid, Signal::KILL);
         }
-        *state = RunState::Over;
+        state.end();
     }
 
     /// Whether the run is killed or has been waited on.
@@ -168,6 +180,7 @@ pub async fn run_command(
             return Err("cancelled".into());
         }
         *state = RunState::Running(pid);
+        HANGUP_GROUP.store(pid.as_raw_pid(), Ordering::Relaxed);
     }
     if let Some(mut pipe) = child.stdin.take() {
         // A child that exits early closes the pipe; that is reported by
@@ -191,11 +204,11 @@ pub async fn run_command(
             match child.try_wait() {
                 Ok(None) => {}
                 Ok(Some(status)) => {
-                    *state = RunState::Over;
+                    state.end();
                     break Ok(status);
                 }
                 Err(e) => {
-                    *state = RunState::Over;
+                    state.end();
                     break Err(e);
                 }
             }
@@ -210,6 +223,48 @@ pub async fn run_command(
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
+}
+
+/// The process group of the AI command running now, or 0: what the hangup
+/// handler kills. Kept here as well as in the run because a signal handler
+/// can't take the run's lock. One at a time: a new request ends the last
+/// one first.
+static HANGUP_GROUP: AtomicI32 = AtomicI32::new(0);
+
+/// Installs the hangup (SIGHUP) handler, when the hangup has its default
+/// action: a hangup that is ignored (`nohup`) stays ignored. The terminal
+/// sends its hangup only to its foreground group, and the AI command runs
+/// in a group of its own (`run_command`), so the app passes it on.
+pub fn catch_hangup() {
+    // SAFETY: plain sigaction(2) calls on zeroed structs; `on_hangup` only
+    // makes async-signal-safe calls.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) != 0
+            || old.sa_sigaction != libc::SIG_DFL
+        {
+            return;
+        }
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_hangup as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGHUP, &action, std::ptr::null_mut());
+    }
+}
+
+/// Kills the AI command's group, then puts the hangup's default action
+/// back and raises it again: SIGHUP stays blocked until this returns, and
+/// then ends the app as it would have with no handler. Only an atomic load,
+/// kill(2), signal(2) and raise(3), which are async-signal-safe.
+extern "C" fn on_hangup(_: libc::c_int) {
+    if let Some(group) = Pid::from_raw(HANGUP_GROUP.load(Ordering::Relaxed)) {
+        let _ = rustix::process::kill_process_group(group, Signal::KILL);
+    }
+    // SAFETY: both are on POSIX's async-signal-safe list.
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_DFL);
+        libc::raise(libc::SIGHUP);
+    }
 }
 
 /// Where `--debug-ai` writes: `ai.log` in the app's state directory
@@ -346,6 +401,153 @@ mod tests {
         let cmd = format!("touch '{}'", marker.display());
         assert_eq!(run_command(cmd, String::new(), &run).await.unwrap_err(), "cancelled");
         assert!(!marker.exists(), "the command never ran");
+    }
+
+    /// What the hangup tests run, in a process of their own since a hangup
+    /// ends the process it reaches: this test binary run again with
+    /// `POSTUI_HANGUP_CHILD` set (`hangup_child_process`). Without it, this
+    /// test does nothing.
+    #[test]
+    fn hangup_child() {
+        let Ok(mode) = std::env::var("POSTUI_HANGUP_CHILD") else {
+            return;
+        };
+        // The pipe to the parent test, on an fd every process this one
+        // starts inherits (`dup2` leaves close-on-exec off), so the parent
+        // reads to its end only once they have all ended.
+        assert_eq!(unsafe { libc::dup2(1, 9) }, 9);
+        if mode == "ignored" {
+            unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+            catch_hangup();
+            assert_eq!(unsafe { libc::raise(libc::SIGHUP) }, 0);
+            println!("survived");
+            return;
+        }
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        if mode == "slot" {
+            let group = || HANGUP_GROUP.load(Ordering::Relaxed);
+            runtime.block_on(run("true", "")).unwrap();
+            assert_eq!(group(), 0, "a run that ended leaves the slot");
+            let run = std::sync::Arc::new(CommandRun::default());
+            let task = runtime.spawn({
+                let run = std::sync::Arc::clone(&run);
+                async move { run_command("sleep 30".into(), String::new(), &run).await }
+            });
+            wait_until_running(&run);
+            assert_ne!(group(), 0, "a running command is in the slot");
+            run.kill();
+            assert_eq!(group(), 0, "a killed run leaves the slot");
+            runtime.block_on(task).unwrap().unwrap();
+            println!("checked");
+            return;
+        }
+        catch_hangup();
+        let _task = (mode == "run").then(|| {
+            let run = std::sync::Arc::new(CommandRun::default());
+            let task = runtime.spawn({
+                let run = std::sync::Arc::clone(&run);
+                // `sh` forks `sleep`, since a command follows it.
+                async move { run_command("sleep 30; echo .x".into(), String::new(), &run).await }
+            });
+            wait_until_running(&run);
+            task
+        });
+        println!("ready");
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    fn wait_until_running(run: &CommandRun) {
+        for _ in 0..2000 {
+            if run.is_running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(run.is_running(), "the command started");
+    }
+
+    /// The child's stdout, a line at a time; the channel closes at its end.
+    fn hangup_child_process(
+        mode: &str,
+    ) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+        use std::io::BufRead as _;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["ai::tests::hangup_child", "--exact", "--nocapture", "--test-threads=1"])
+            .env("POSTUI_HANGUP_CHILD", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        (child, rx)
+    }
+
+    /// Sends the child a hangup once it is ready, and checks that it and
+    /// everything it started end (its stdout reaches its end) and that
+    /// the hangup is what ended it.
+    fn hang_up_on(mode: &str) {
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::sync::mpsc::RecvTimeoutError;
+        let (mut child, lines) = hangup_child_process(mode);
+        loop {
+            let line = lines.recv_timeout(Duration::from_secs(20)).expect("the child got ready");
+            // The harness's `test … ... ` goes before it on the line.
+            if line.ends_with("ready") {
+                break;
+            }
+        }
+        rustix::process::kill_process(Pid::from_child(&child), Signal::HUP).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match lines.recv_timeout(left) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    panic!("something the child started outlived the hangup");
+                }
+            }
+        }
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGHUP), "{status}");
+    }
+
+    #[test]
+    fn a_hangup_kills_the_running_command_and_ends_the_app_as_a_hangup() {
+        hang_up_on("run");
+    }
+
+    #[test]
+    fn a_hangup_with_no_command_running_ends_the_app_as_a_hangup() {
+        hang_up_on("idle");
+    }
+
+    #[test]
+    fn an_ignored_hangup_stays_ignored() {
+        let (mut child, lines) = hangup_child_process("ignored");
+        let status = child.wait().unwrap();
+        assert!(status.success(), "{status}");
+        assert!(lines.iter().any(|line| line.ends_with("survived")));
+    }
+
+    /// In a process of its own, since every run in this one shares the slot.
+    #[test]
+    fn the_hangup_slot_holds_the_running_command_only() {
+        let (mut child, lines) = hangup_child_process("slot");
+        let status = child.wait().unwrap();
+        assert!(status.success(), "{status}");
+        assert!(lines.iter().any(|line| line.ends_with("checked")));
     }
 
     #[test]

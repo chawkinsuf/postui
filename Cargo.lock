@@ -2101,6 +2101,7 @@ dependencies = [
  "edtui",
  "futures",
  "indexmap",
+ "libc",
  "postui",
  "postui-core",
  "ratatui",
