@@ -1315,6 +1315,9 @@ pub enum Action {
     JqRunFinished {
         generation: u64,
         run: u64,
+        /// The document the worker parsed when the view had none cached,
+        /// whether or not the run then failed.
+        doc: Option<postui_core::jq::JqDocument>,
         result: Result<crate::components::response::JqRunOutput, postui_core::jq::JqError>,
     },
     /// A background completion key fetch finished for the response of
@@ -1323,7 +1326,7 @@ pub enum Action {
         generation: u64,
         seq: u64,
         input_expr: String,
-        keys: Vec<String>,
+        keys: postui_core::jq::complete::Keys,
         /// The document the worker parsed when the view had none cached.
         doc: Option<postui_core::jq::JqDocument>,
     },

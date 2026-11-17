@@ -2236,40 +2236,38 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 /// their tree (the slow part on a big output). Free-standing so tests can
 /// call it without a runtime, and so `App::spawn_jq_run` can run it inline
 /// when there is no runtime to spawn onto.
-pub(crate) fn jq_worker(
-    generation: u64,
-    run: u64,
-    code: String,
-    doc: Option<postui_core::jq::JqDocument>,
-    body: Option<String>,
-) -> Action {
-    use postui_core::jq::{JqDocument, run as jq_run};
-    let result = (|| {
-        let (doc, fresh) = match (doc, body) {
-            (Some(d), _) => (d, None),
-            (None, Some(b)) => {
-                let d = JqDocument::parse(&b)?;
-                (d.clone(), Some(d))
-            }
-            (None, None) => {
-                return Err(postui_core::jq::JqError::Runtime { message: "no document".into() });
-            }
-        };
-        jq_run(&code, &doc)
-            .map(|run| crate::components::response::JqRunOutput::from_run(fresh, run))
-    })();
-    Action::JqRunFinished { generation, run, result }
+///
+/// The run stops at the request's limit (#308). The parse this worker
+/// made comes back beside the result, failed or not, so the next run needn't
+/// read the body again (#308 spec B6).
+pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Action {
+    use crate::components::response::{JqRunOutput, JqRunRequest};
+    use postui_core::jq::{JqDocument, JqError, run as jq_run};
+    let JqRunRequest { generation, run, code, doc, body, limit } = req;
+    let (parsed, fresh) = match (doc, body) {
+        (Some(d), _) => (Ok(d), None),
+        (None, Some(b)) => match JqDocument::parse(&b) {
+            Ok(d) => (Ok(d.clone()), Some(d)),
+            Err(e) => (Err(e), None),
+        },
+        (None, None) => (Err(JqError::Runtime { message: "no document".into() }), None),
+    };
+    let result = parsed.and_then(|d| jq_run(&code, &d, limit)).map(JqRunOutput::from_run);
+    Action::JqRunFinished { generation, run, doc: fresh, result }
 }
 
-/// The blocking-pool half of a completion key fetch. Free-standing for
-/// the same reasons as [`jq_worker`].
-pub(crate) fn jq_complete_worker(
-    generation: u64,
-    seq: u64,
-    input_expr: String,
-    doc: Option<postui_core::jq::JqDocument>,
-    body: Option<String>,
-) -> Action {
+/// The blocking-pool half of a completion key fetch, stopped at the
+/// request's limit (#308). Free-standing for the same reasons as
+/// [`jq_worker`].
+pub(crate) fn jq_complete_worker(req: crate::components::response::JqCompleteRequest) -> Action {
+    let crate::components::response::JqCompleteRequest {
+        generation,
+        seq,
+        input_expr,
+        doc,
+        body,
+        limit,
+    } = req;
     let (doc, fresh) = match (doc, body) {
         (Some(d), _) => (Some(d), None),
         (None, Some(b)) => {
@@ -2280,7 +2278,7 @@ pub(crate) fn jq_complete_worker(
     };
     let keys = doc
         .as_ref()
-        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d))
+        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d, limit))
         .unwrap_or_default();
     Action::JqCompleteFinished { generation, seq, input_expr, keys, doc: fresh }
 }
@@ -2348,14 +2346,13 @@ impl App {
         // Every run and key fetch goes to the blocking pool (see
         // `JQ_SYNC_BYTES`): a filter's cost is unbounded whatever the
         // body's size, and the UI thread must stay free to take the Esc.
-        if let Some(req) =
-            self.session.response.apply_jq(&code, crate::components::response::JQ_SYNC_BYTES)
-        {
+        // Each stops at the project's limit (#308).
+        use crate::components::response::JQ_SYNC_BYTES;
+        let limit = self.meta().jq_limit();
+        if let Some(req) = self.session.response.apply_jq(&code, JQ_SYNC_BYTES, limit) {
             self.spawn_jq_run(req);
         }
-        if let Some(req) =
-            self.session.response.refresh_jq_completion(crate::components::response::JQ_SYNC_BYTES)
-        {
+        if let Some(req) = self.session.response.refresh_jq_completion(JQ_SYNC_BYTES, limit) {
             self.spawn_jq_complete(req);
         }
     }
@@ -2515,24 +2512,24 @@ impl App {
     /// inline and dispatch its result immediately instead of spawning.
     fn spawn_jq_run(&mut self, req: crate::components::response::JqRunRequest) {
         if tokio::runtime::Handle::try_current().is_err() {
-            let action = jq_worker(req.generation, req.run, req.code, req.doc, req.body);
+            let action = jq_worker(req);
             self.dispatch(action);
             return;
         }
         let tx = self.tx.clone();
         let (generation, run) = (req.generation, req.run);
         tokio::spawn(async move {
-            let action = tokio::task::spawn_blocking(move || {
-                jq_worker(req.generation, req.run, req.code, req.doc, req.body)
-            })
-            .await
-            .unwrap_or_else(|_| Action::JqRunFinished {
-                generation,
-                run,
-                result: Err(postui_core::jq::JqError::Runtime {
-                    message: "filter worker panicked".into(),
-                }),
-            });
+            let action =
+                tokio::task::spawn_blocking(move || jq_worker(req)).await.unwrap_or_else(|_| {
+                    Action::JqRunFinished {
+                        generation,
+                        run,
+                        doc: None,
+                        result: Err(postui_core::jq::JqError::Runtime {
+                            message: "filter worker panicked".into(),
+                        }),
+                    }
+                });
             let _ = tx.send(action);
         });
     }
@@ -2541,8 +2538,7 @@ impl App {
     /// dispatched immediately) outside one, like [`Self::spawn_jq_run`].
     fn spawn_jq_complete(&mut self, req: crate::components::response::JqCompleteRequest) {
         if tokio::runtime::Handle::try_current().is_err() {
-            let action =
-                jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc, req.body);
+            let action = jq_complete_worker(req);
             self.dispatch(action);
             return;
         }
@@ -2550,17 +2546,15 @@ impl App {
         let (generation, seq) = (req.generation, req.seq);
         let expr = req.input_expr.clone();
         tokio::spawn(async move {
-            let action = tokio::task::spawn_blocking(move || {
-                jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc, req.body)
-            })
-            .await
-            .unwrap_or_else(|_| Action::JqCompleteFinished {
-                generation,
-                seq,
-                input_expr: expr,
-                keys: Vec::new(),
-                doc: None,
-            });
+            let action = tokio::task::spawn_blocking(move || jq_complete_worker(req))
+                .await
+                .unwrap_or_else(|_| Action::JqCompleteFinished {
+                    generation,
+                    seq,
+                    input_expr: expr,
+                    keys: Default::default(),
+                    doc: None,
+                });
             let _ = tx.send(action);
         });
     }
@@ -5470,7 +5464,7 @@ impl App {
                 // job early: a re-send starts another, and this one's lines
                 // are dropped when it ends. Each jq check is stopped at the
                 // project's time limit (#310).
-                let limit = self.meta().jq_check_limit();
+                let limit = self.meta().jq_limit();
                 let (state, job) = CheckState::on_arrival(&data, checks, limit);
                 if !self.session.arrived(generation, data, state) {
                     return false;
@@ -6382,8 +6376,8 @@ impl App {
                 self.land_jq_in_scratch(&text, cursor);
                 true
             }
-            Action::JqRunFinished { generation, run, result } => {
-                self.session.response.attach_jq_result(generation, run, result)
+            Action::JqRunFinished { generation, run, doc, result } => {
+                self.session.response.attach_jq_result(generation, run, doc, result)
             }
             Action::JqCompleteFinished { generation, seq, input_expr, keys, doc } => {
                 self.session.response.attach_jq_completion(generation, seq, input_expr, keys, doc)

@@ -276,7 +276,7 @@ pub async fn suite(
         total: n,
     };
     watch.begin(&plan);
-    let limit = s.project.meta().jq_check_limit();
+    let limit = s.project.meta().jq_limit();
 
     // What `run` would warn of for each request, in suite order: requests
     // are prepared in that order, whatever order they finish in.

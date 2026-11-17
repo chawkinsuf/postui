@@ -226,12 +226,36 @@ impl JqMenu {
     }
 }
 
+/// The code a jq run, or a key lookup, was for, and the limit it was
+/// stopped at, if it was (#308). A stopped one is kept like any result, so
+/// it isn't run again on every update.
+struct JqRanFor {
+    code: String,
+    stopped_at: Option<Duration>,
+}
+
+impl JqRanFor {
+    /// For `code`, stopped at `stopped_at` if it was.
+    fn new(code: String, stopped_at: Option<Duration>) -> Self {
+        Self { code, stopped_at }
+    }
+
+    /// Whether this stands for `code` under `limit`: one that ended stands
+    /// under any limit, one stopped at a limit only under that limit. A
+    /// lower limit runs it again too, so the error shown names the limit in
+    /// force.
+    fn stands_for(&self, code: &str, limit: Duration) -> bool {
+        self.code == code && self.stopped_at.is_none_or(|l| l == limit)
+    }
+}
+
 /// The bar's completion state: the candidates for the caret's position
 /// and the keys they were built from. See the completion spec.
 #[derive(Default)]
 pub struct JqCompletion {
-    /// The context expression `cached_keys` were fetched for.
-    cached_expr: Option<String>,
+    /// The context expression `cached_keys` were fetched for. A stopped
+    /// fetch's keys are those found before the stop.
+    cached_expr: Option<JqRanFor>,
     cached_keys: Vec<String>,
     /// What the caret is typing; `None` when nothing is offered there.
     ctx: Option<Context>,
@@ -254,6 +278,11 @@ pub struct JqCompletion {
 impl JqCompletion {
     pub fn pending(&self) -> Option<u64> {
         self.pending.as_ref().map(|(s, _)| *s)
+    }
+
+    /// Whether the cached keys are for `expr` and still stand under `limit`.
+    fn cached_for(&self, expr: &str, limit: Duration) -> bool {
+        self.cached_expr.as_ref().is_some_and(|c| c.stands_for(expr, limit))
     }
 
     fn step(&mut self, forward: bool) {
@@ -654,39 +683,41 @@ fn all_null(outputs: &[String]) -> bool {
 
 /// Work the app must hand to the blocking pool: a jq run too big to run
 /// inline. `doc` is the cached parse when there is one; otherwise `body` is
-/// the raw text for the worker to parse before running the filter.
+/// the raw text for the worker to parse before running the filter. The run
+/// stops at `limit`, the bar's.
 pub struct JqRunRequest {
     pub generation: u64,
     pub run: u64,
     pub code: String,
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
+    pub limit: Duration,
 }
 
 /// A completion key fetch for the blocking pool: run `input_expr` against
 /// `doc` (`complete::keys_at`) and hand the keys back as
 /// `Action::JqCompleteFinished`. As with [`JqRunRequest`], `body` is the
 /// raw text to parse first when no document is cached yet; the parse
-/// comes back with the keys so the view can keep it.
+/// comes back with the keys so the view can keep it. The lookup stops at
+/// `limit`, the bar's.
 pub struct JqCompleteRequest {
     pub generation: u64,
     pub seq: u64,
     pub input_expr: String,
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
+    pub limit: Duration,
 }
 
-/// What a jq run hands back: the document it parsed (when it had to), the
-/// filter's outputs as jq would print them, the error of a value whose run
-/// failed (`JqRun::error`, beside the other values' outputs), and those
-/// outputs already flattened into a tree. The tree is built where the run
-/// ran — on the blocking pool for a big body — because flattening a multi-megabyte
-/// output takes several times longer than the filter itself, and doing it
-/// on the UI thread froze the app for exactly the stretch the bar's
-/// spinner is meant to cover.
+/// What a jq run hands back: the filter's outputs as jq would print them,
+/// the error of a value whose run failed (`JqRun::error`, beside the other
+/// values' outputs), and those outputs already flattened into a tree. The
+/// tree is built where the run ran — on the blocking pool for a big body —
+/// because flattening a multi-megabyte output takes several times longer
+/// than the filter itself, and doing it on the UI thread froze the app for
+/// exactly the stretch the bar's spinner is meant to cover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JqRunOutput {
-    pub doc: Option<JqDocument>,
     pub outputs: Vec<String>,
     /// `None` when an output is not JSON (jq's `@text`-style strings) —
     /// reported as an error on attach. Boxed because it rides in
@@ -698,15 +729,15 @@ pub struct JqRunOutput {
 
 impl JqRunOutput {
     /// Flattens the run's outputs into the tree on the calling thread.
-    pub fn from_run(doc: Option<JqDocument>, run: JqRun) -> Self {
+    pub fn from_run(run: JqRun) -> Self {
         let tree = JsonTree::parse_many(&run.outputs).map(Box::new);
-        Self { doc, outputs: run.outputs, tree, error: run.error }
+        Self { outputs: run.outputs, tree, error: run.error }
     }
 
     /// A run with no error.
     #[cfg(test)]
-    pub fn from_outputs(doc: Option<JqDocument>, outputs: Vec<String>) -> Self {
-        Self::from_run(doc, JqRun { outputs, error: None })
+    pub fn from_outputs(outputs: Vec<String>) -> Self {
+        Self::from_run(JqRun { outputs, error: None })
     }
 }
 
@@ -850,7 +881,7 @@ pub struct ReadyView {
     jq_tree: Option<JsonTree>,
     /// The code `jq_tree` (or `Response::jq`'s error) reflects — `None`
     /// before any filter has run, `Some("")` for an explicitly cleared one.
-    jq_applied: Option<String>,
+    jq_applied: Option<JqRanFor>,
     /// The code `jq_tree` is the output of — what the structural verbs
     /// compose onto, since the tree on screen is what the user clicked.
     /// `None` while the body tree shows (no filter, or a filter with
@@ -3486,8 +3517,14 @@ impl Response {
     /// nothing to do (already applied, or nothing to filter yet) or that
     /// the run finished inline; `Some` is work the app must complete with
     /// [`Response::attach_jq_result`]. Any new filter supersedes a run
-    /// still in flight.
-    pub fn apply_jq(&mut self, code: &str, sync_limit: usize) -> Option<JqRunRequest> {
+    /// still in flight. The run stops at `limit`, the project's
+    /// `jq_limit_ms` (#308); a filter stopped at another limit runs again.
+    pub fn apply_jq(
+        &mut self,
+        code: &str,
+        sync_limit: usize,
+        limit: Duration,
+    ) -> Option<JqRunRequest> {
         let Some(view) = self.view.as_mut() else {
             // No ready view at all: jq is disabled, not merely stale —
             // nothing left over from a previous response should linger.
@@ -3508,9 +3545,13 @@ impl Response {
             self.jq.pending = None;
             return None;
         }
-        if view.jq_applied.as_deref() == Some(code) {
+        // A run still going is awaited, at whatever limit it started with,
+        // and judged when it lands: nothing cancels it, so starting another
+        // would leave two busy. A lowered limit applies once it lands.
+        if view.jq_applied.as_ref().is_some_and(|a| a.stands_for(code, limit)) {
             return None;
         }
+        let applied = Some(JqRanFor::new(code.to_string(), None));
         // A new filter supersedes the run in flight, whether or not it
         // starts one of its own: an error or a cleared bar must not be
         // overwritten by the earlier filter's result.
@@ -3521,7 +3562,7 @@ impl Response {
             view.set_jq_tree(None);
             view.jq_tree_code = None;
             view.jq_outputs = 1;
-            view.jq_applied = Some(code.to_string());
+            view.jq_applied = applied;
             self.jq.error = None;
             self.jq.stale = false;
             self.jq.note = None;
@@ -3537,7 +3578,7 @@ impl Response {
             self.jq.error = Some(e);
             self.jq.stale = true;
             self.jq.note = None;
-            view.jq_applied = Some(code.to_string());
+            view.jq_applied = applied;
             return None;
         }
         // Body parse still running: nothing to filter yet; reconcile
@@ -3551,18 +3592,17 @@ impl Response {
                     self.jq.error = Some(e);
                     self.jq.stale = true;
                     self.jq.note = None;
-                    view.jq_applied = Some(code.to_string());
+                    view.jq_applied = applied;
                     return None;
                 }
             }
         }
-        view.jq_applied = Some(code.to_string());
+        view.jq_applied = applied;
         if body_len <= sync_limit {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
             // back, just the outputs.
-            let result =
-                postui_core::jq::run(code_trim, &doc).map(|run| JqRunOutput::from_run(None, run));
+            let result = postui_core::jq::run(code_trim, &doc, limit).map(JqRunOutput::from_run);
             self.land_jq_result(result);
             return None;
         }
@@ -3578,6 +3618,7 @@ impl Response {
             code: code_trim.to_string(),
             doc,
             body,
+            limit,
         })
     }
 
@@ -3617,8 +3658,13 @@ impl Response {
     /// after every `apply_jq` in the app's reconcile. Keys for a new
     /// context are fetched inline for a body under `sync_limit`, else
     /// the returned request goes to the blocking pool and the ghost
-    /// stays empty until `attach_jq_completion` lands it.
-    pub fn refresh_jq_completion(&mut self, sync_limit: usize) -> Option<JqCompleteRequest> {
+    /// stays empty until `attach_jq_completion` lands it. The lookup stops
+    /// at `limit`, as [`Self::apply_jq`]'s run does.
+    pub fn refresh_jq_completion(
+        &mut self,
+        sync_limit: usize,
+        limit: Duration,
+    ) -> Option<JqCompleteRequest> {
         let bar = &mut self.jq;
         let focused = bar.focused;
         let at_end = bar.caret_at_end();
@@ -3653,7 +3699,7 @@ impl Response {
                 ctx.input_expr.clone().unwrap_or_else(|| ".".into())
             }
         };
-        if c.cached_expr.as_deref() == Some(expr.as_str()) {
+        if c.cached_for(&expr, limit) {
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
             c.fall_back_to_closer(&text);
             return None;
@@ -3675,8 +3721,9 @@ impl Response {
                 view.jq_doc = JqDocument::parse(&view.raw.join()).ok();
             }
             let doc = view.jq_doc.clone()?;
-            c.cached_keys = complete::keys_at(&expr, &doc);
-            c.cached_expr = Some(expr);
+            let found = complete::keys_at(&expr, &doc, limit);
+            c.cached_keys = found.keys;
+            c.cached_expr = Some(JqRanFor::new(expr, found.stopped_at));
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
             c.fall_back_to_closer(&text);
             return None;
@@ -3691,6 +3738,7 @@ impl Response {
             input_expr: expr,
             doc,
             body,
+            limit,
         })
     }
 
@@ -3707,13 +3755,14 @@ impl Response {
         generation: u64,
         seq: u64,
         input_expr: String,
-        keys: Vec<String>,
+        keys: complete::Keys,
         doc: Option<JqDocument>,
     ) -> bool {
         let c = &mut self.jq.completion;
         if c.pending() != Some(seq) {
             return false;
         }
+        c.pending = None;
         match self.view.as_mut() {
             Some(view) if view.generation == generation => {
                 // The fetch had to parse the body: keep the document so
@@ -3722,17 +3771,13 @@ impl Response {
                     view.jq_doc = doc;
                 }
             }
-            _ => {
-                self.jq.completion.pending = None;
-                return false;
-            }
+            _ => return false,
         }
         let c = &mut self.jq.completion;
-        c.pending = None;
-        c.cached_keys = keys;
-        c.cached_expr = Some(input_expr);
+        c.cached_keys = keys.keys;
+        c.cached_expr = Some(JqRanFor::new(input_expr, keys.stopped_at));
         if let Some(ctx) = &c.ctx
-            && ctx.input_expr.as_deref() == c.cached_expr.as_deref()
+            && ctx.input_expr.as_deref() == c.cached_expr.as_ref().map(|e| e.code.as_str())
         {
             c.candidates = complete::candidates(ctx, &c.cached_keys);
             let text = self.jq.input.text().to_string();
@@ -3779,6 +3824,7 @@ impl Response {
         &mut self,
         generation: u64,
         run: u64,
+        doc: Option<JqDocument>,
         result: Result<JqRunOutput, JqError>,
     ) -> bool {
         let Some(view) = self.view.as_mut() else {
@@ -3787,14 +3833,12 @@ impl Response {
         if view.generation != generation {
             return false;
         }
-        // Adopt the parsed document even from a superseded run: the parse
-        // itself is still good for this view, and caching it here means
-        // the next `apply_jq` doesn't have to ask the worker to re-parse a
-        // body that may be huge, on every keystroke.
-        if let Ok(JqRunOutput { doc: Some(doc), .. }) = &result
-            && view.jq_doc.is_none()
-        {
-            view.jq_doc = Some(doc.clone());
+        // Adopt the parsed document even from a superseded or failed run:
+        // the parse itself is still good for this view, and caching it
+        // here means the next `apply_jq` doesn't have to ask the worker to
+        // re-parse a body that may be huge, on every keystroke.
+        if doc.is_some() && view.jq_doc.is_none() {
+            view.jq_doc = doc;
         }
         if self.jq.pending != Some(run) {
             return false;
@@ -3812,10 +3856,7 @@ impl Response {
         self.jq.pending = None;
         view.awaiting_filter = false;
         match result {
-            Ok(JqRunOutput { doc, outputs, tree, error }) => {
-                if let Some(doc) = doc {
-                    view.jq_doc = Some(doc);
-                }
+            Ok(JqRunOutput { outputs, tree, error }) => {
                 let nothing = outputs.is_empty() || all_null(&outputs);
                 match tree {
                     // A value's error and nothing else worth showing (no
@@ -3855,7 +3896,7 @@ impl Response {
                     Some(tree) => {
                         view.jq_outputs = outputs.len();
                         view.set_jq_tree(Some(*tree));
-                        view.jq_tree_code = view.jq_applied.clone();
+                        view.jq_tree_code = view.jq_applied.as_ref().map(|a| a.code.clone());
                         self.jq.error = error;
                         self.jq.stale = false;
                         self.jq.note = None;
@@ -3874,6 +3915,9 @@ impl Response {
                 }
             }
             Err(e) => {
+                if let Some(applied) = view.jq_applied.as_mut() {
+                    applied.stopped_at = e.stopped_at();
+                }
                 self.jq.error = Some(e);
                 self.jq.stale = true;
                 self.jq.note = None;
@@ -6233,6 +6277,14 @@ mod tests {
     use ratatui::crossterm::event::KeyModifiers;
     use std::time::Duration;
 
+    /// The jq limit the bar's tests run with: the project default.
+    const LIMIT: Duration = postui_core::project::DEFAULT_JQ_LIMIT;
+
+    /// The keys of a completion lookup that ended (not stopped).
+    fn found(keys: &[&str]) -> complete::Keys {
+        complete::Keys { keys: keys.iter().map(|k| k.to_string()).collect(), stopped_at: None }
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -7140,7 +7192,7 @@ mod tests {
     fn arrived(status: u16, body: &str, checks: &postui_core::model::Checks) -> (Pane, Lines) {
         let mut d = data(body);
         d.status = status;
-        let limit = postui_core::project::DEFAULT_JQ_CHECK_LIMIT;
+        let limit = postui_core::project::DEFAULT_JQ_LIMIT;
         let lines = d.check_run(checks.clone(), limit).run();
         let (state, _) = CheckState::on_arrival(&d, checks.clone(), limit);
         let mut r = Pane::default();
@@ -10388,7 +10440,7 @@ mod tests {
     fn applying_a_filter_swaps_the_filtered_tree_into_the_pretty_view() {
         let mut r = ready(ITEMS);
         assert!(
-            r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES).is_none(),
+            r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES, LIMIT).is_none(),
             "small bodies run inline"
         );
         let view = r.view().unwrap();
@@ -10396,7 +10448,7 @@ mod tests {
         assert_eq!(view.visible_len(), 1);
         assert_eq!(r.jq_output_count(), 1);
         assert!(r.jq_bar().error.is_none());
-        r.apply_jq("", SYNC_PRETTY_BYTES);
+        r.apply_jq("", SYNC_PRETTY_BYTES, LIMIT);
         assert!(
             r.view().unwrap().view_text().starts_with("{"),
             "an empty filter shows the body again"
@@ -10408,8 +10460,11 @@ mod tests {
     fn type_jq(r: &mut Response, text: &str) {
         r.set_jq_focus(true);
         r.jq_bar_mut().input = LineInput::new(text);
-        r.apply_jq(text, SYNC_PRETTY_BYTES);
-        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(), "small bodies fetch inline");
+        r.apply_jq(text, SYNC_PRETTY_BYTES, LIMIT);
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
+            "small bodies fetch inline"
+        );
     }
 
     #[test]
@@ -10440,9 +10495,9 @@ mod tests {
         let type_jq_unfocusable = |r: &mut Response, text: &str| {
             r.jq_bar_mut().focused = true;
             r.jq_bar_mut().input = LineInput::new(text);
-            r.apply_jq(text, SYNC_PRETTY_BYTES);
+            r.apply_jq(text, SYNC_PRETTY_BYTES, LIMIT);
             assert!(
-                r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+                r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
                 "small bodies fetch inline"
             );
         };
@@ -10481,7 +10536,7 @@ mod tests {
         type_jq(&mut r, ".data.items | map({s");
         assert_eq!(r.jq_ghost(), Some("tatus"), "`{{status}}` is `{{status: .status}}`");
         bar_key(&mut r, key(KeyCode::Right));
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_text(), ".data.items | map({status");
         assert_eq!(r.jq_ghost(), Some("}"), "the key is complete: the closer");
         type_jq(&mut r, ".data.items | map({status, i");
@@ -10511,11 +10566,11 @@ mod tests {
         type_jq(&mut r, ".data.items | map({s: .status");
         assert_eq!(r.jq_ghost(), Some("}"));
         bar_key(&mut r, key(KeyCode::Right));
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_text(), ".data.items | map({s: .status}");
         assert_eq!(r.jq_ghost(), Some(")"), "the next unclosed opener is offered");
         bar_key(&mut r, key(KeyCode::Right));
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_text(), ".data.items | map({s: .status})");
         assert_eq!(r.jq_ghost(), None);
     }
@@ -10538,7 +10593,7 @@ mod tests {
             ".data.items | map({s: .status}",
             "Right accepts a closer ghost in menu mode"
         );
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_ghost(), Some(")"));
         bar_key(&mut r, key(KeyCode::End));
         assert_eq!(r.jq_text(), ".data.items | map({s: .status})", "End too");
@@ -10578,11 +10633,11 @@ mod tests {
         r.attach_tree(7, crate::components::json_tree::JsonTree::parse(&body));
         assert!(r.set_jq_focus(true));
         r.jq_bar_mut().input = LineInput::new("map(.a");
-        r.apply_jq("map(.a", 0);
-        let req = r.refresh_jq_completion(0).expect("big body: keys come from the pool");
+        r.apply_jq("map(.a", 0, LIMIT);
+        let req = r.refresh_jq_completion(0, LIMIT).expect("big body: keys come from the pool");
         assert_eq!(r.jq_ghost(), None, "nothing offered until the keys land");
         let landed =
-            r.attach_jq_completion(7, req.seq, req.input_expr.clone(), vec!["a".into()], None);
+            r.attach_jq_completion(7, req.seq, req.input_expr.clone(), found(&["a"]), None);
         assert!(landed, "the ghost changed");
         assert_eq!(r.jq_ghost(), Some(")"), "`a` extends nothing: the closer");
     }
@@ -10594,17 +10649,17 @@ mod tests {
         type_jq(&mut r, ".data.");
         assert!(r.jq_ghost().is_some());
         r.jq_bar_mut().input.set_cursor(3);
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_ghost(), None, "caret mid-text");
         r.jq_bar_mut().input.set_cursor(6);
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_ghost(), Some("items"));
         r.jq_bar_mut().input.select_all();
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_ghost(), None, "a selection hides it");
         r.jq_bar_mut().input.clear_selection();
         r.set_jq_focus(false);
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_ghost(), None, "unfocused");
     }
 
@@ -10618,7 +10673,7 @@ mod tests {
         // a big body — the request path is exercised in the app tests;
         // here the observable is the ghost narrowing.
         r.jq_bar_mut().input = LineInput::new(".data.items[] | .st");
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_ghost(), Some("atus"));
     }
 
@@ -10632,32 +10687,26 @@ mod tests {
         r.jq_bar_mut().input = LineInput::new(".");
         // The first filter run parses the document on the pool; feed it
         // back as the app would.
-        let req = r.apply_jq(".", SYNC_PRETTY_BYTES).expect("background run");
+        let req = r.apply_jq(".", SYNC_PRETTY_BYTES, LIMIT).expect("background run");
         let doc = postui_core::jq::JqDocument::parse(&big).unwrap();
-        let out = JqRunOutput::from_outputs(Some(doc.clone()), vec![big.clone()]);
-        r.attach_jq_result(3, req.run, Ok(out));
+        let out = JqRunOutput::from_outputs(vec![big.clone()]);
+        r.attach_jq_result(3, req.run, Some(doc.clone()), Ok(out));
         let creq = r
-            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("a big body fetches keys on the pool");
         assert_eq!((creq.generation, creq.input_expr.as_str()), (3, "."));
         assert_eq!(r.jq_ghost(), None, "nothing until the fetch lands");
         assert!(
-            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
             "the same context is not fetched twice while pending"
         );
         // (A stale generation is `an_attach_for_a_gone_generation_still_
         // clears_its_pending_fetch`: it drops the keys *and* the fetch.)
         assert!(
-            !r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()], None),
+            !r.attach_jq_completion(3, creq.seq + 9, ".".into(), found(&["pad"]), None),
             "stale sequence"
         );
-        assert!(r.attach_jq_completion(
-            3,
-            creq.seq,
-            ".".into(),
-            vec!["pad".into(), "n".into()],
-            None
-        ));
+        assert!(r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad", "n"]), None));
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
 
@@ -10671,10 +10720,10 @@ mod tests {
         r.attach_tree(generation, crate::components::json_tree::JsonTree::parse(body));
         r.set_jq_focus(true);
         r.jq_bar_mut().input = LineInput::new(text);
-        let req = r.apply_jq(text, SYNC_PRETTY_BYTES).expect("background run");
+        let req = r.apply_jq(text, SYNC_PRETTY_BYTES, LIMIT).expect("background run");
         let doc = postui_core::jq::JqDocument::parse(body).unwrap();
-        let out = JqRunOutput::from_outputs(Some(doc), vec![body.to_string()]);
-        r.attach_jq_result(generation, req.run, Ok(out));
+        let out = JqRunOutput::from_outputs(vec![body.to_string()]);
+        r.attach_jq_result(generation, req.run, Some(doc), Ok(out));
         r
     }
 
@@ -10691,7 +10740,10 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("data"));
         r.set_state(ResponseState::Ready(Box::new(data(r#"{"other":{"x":1}}"#))), 1);
         r.set_jq_focus(true);
-        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(), "small bodies fetch inline");
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
+            "small bodies fetch inline"
+        );
         assert_eq!(
             r.jq_ghost(),
             Some("other"),
@@ -10704,7 +10756,7 @@ mod tests {
         let big = big_body("pad");
         let mut r = big_body_bar(&big, 3, ".");
         let creq = r
-            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("a big body fetches keys on the pool");
         assert!(r.jq_bar().completion.pending().is_some());
 
@@ -10716,16 +10768,16 @@ mod tests {
         );
         r.attach_tree(4, crate::components::json_tree::JsonTree::parse(&next));
         r.set_jq_focus(true);
-        let req = r.apply_jq(".", SYNC_PRETTY_BYTES).expect("background run");
+        let req = r.apply_jq(".", SYNC_PRETTY_BYTES, LIMIT).expect("background run");
         let doc = postui_core::jq::JqDocument::parse(&next).unwrap();
-        let out = JqRunOutput::from_outputs(Some(doc), vec![next.clone()]);
-        r.attach_jq_result(4, req.run, Ok(out));
+        let out = JqRunOutput::from_outputs(vec![next.clone()]);
+        r.attach_jq_result(4, req.run, Some(doc), Ok(out));
         let creq2 = r
-            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("the new body's keys are fetched afresh");
         assert_eq!(creq2.generation, 4);
         assert!(creq2.seq > creq.seq, "a new sequence number");
-        assert!(r.attach_jq_completion(4, creq2.seq, ".".into(), vec!["other".into()], None));
+        assert!(r.attach_jq_completion(4, creq2.seq, ".".into(), found(&["other"]), None));
         assert_eq!(r.jq_ghost(), Some("other"));
     }
 
@@ -10734,14 +10786,14 @@ mod tests {
         let big = big_body("pad");
         let mut r = big_body_bar(&big, 3, ".");
         let creq = r
-            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("a big body fetches keys on the pool");
         // The view moved on under the in-flight fetch. (A new response
         // landing clears `pending` itself; this pins the attach side of
         // the rule on its own.)
         r.view.as_mut().unwrap().generation = 4;
         assert!(
-            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into()], None),
+            !r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad"]), None),
             "keys for a view that is gone are dropped"
         );
         assert_eq!(r.jq_ghost(), None);
@@ -10750,7 +10802,7 @@ mod tests {
             "and the fetch is not left pending forever"
         );
         assert!(
-            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_some(),
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_some(),
             "so the expression can be fetched again"
         );
     }
@@ -10760,18 +10812,12 @@ mod tests {
         let big = big_body("pad");
         let mut r = big_body_bar(&big, 3, ".");
         let creq = r
-            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("a big body fetches keys on the pool");
-        assert!(!r.attach_jq_completion(
-            3,
-            creq.seq + 9,
-            ".".into(),
-            vec!["superseded".into()],
-            None
-        ));
+        assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), found(&["superseded"]), None));
         assert_eq!(r.jq_ghost(), None, "a superseded fetch shows nothing");
         assert!(
-            r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()], None),
+            r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad", "n"]), None),
             "the fetch that is still wanted lands"
         );
         assert_eq!(r.jq_ghost(), Some("pad"), "not the superseded keys");
@@ -10782,20 +10828,20 @@ mod tests {
         let big = big_body("pad");
         let mut r = big_body_bar(&big, 3, ".");
         let creq = r
-            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("a big body fetches keys on the pool");
         // The caret leaves the end of the text while the fetch is in flight.
         r.jq_bar_mut().input.set_cursor(0);
-        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none());
+        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
         assert!(
-            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()], None),
+            !r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad", "n"]), None),
             "nothing is offered at the caret, so the ghost does not change"
         );
         assert_eq!(r.jq_ghost(), None);
         // Back at the end: the keys were cached, so no second fetch.
         r.jq_bar_mut().input.set_cursor(1);
         assert!(
-            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
             "the fetched keys are cached, not fetched again"
         );
         assert_eq!(r.jq_ghost(), Some("pad"));
@@ -10810,8 +10856,8 @@ mod tests {
     fn bar_key(r: &mut Pane, ev: KeyEvent) {
         r.handle_key(ev);
         let text = r.jq_text().to_string();
-        r.apply_jq(&text, SYNC_PRETTY_BYTES);
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.apply_jq(&text, SYNC_PRETTY_BYTES, LIMIT);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
     }
 
     #[test]
@@ -11262,12 +11308,12 @@ mod tests {
     #[test]
     fn a_run_that_leaves_the_tree_unchanged_keeps_the_content_width_cache() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".data.nope", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.nope", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_bar().note, Some("null"));
         render(&mut r);
         let cached = r.view().unwrap().content_width;
         assert!(cached.is_some(), "the frame measured the width");
-        r.apply_jq(".data.other", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.other", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.jq_bar().note, Some("null"));
         assert_eq!(
             r.view().unwrap().content_width,
@@ -11299,13 +11345,13 @@ mod tests {
     #[test]
     fn a_new_jq_run_invalidates_the_content_width_cache_even_at_the_same_line_count() {
         let mut r = ready(ITEMS);
-        r.apply_jq("\"short\"", SYNC_PRETTY_BYTES);
+        r.apply_jq("\"short\"", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().visible_len(), 1);
         r.set_scroll_h(10_000);
         let short_scroll = r.view().unwrap().h_scroll;
 
         let long_literal = format!("\"{}\"", "x".repeat(200));
-        r.apply_jq(&long_literal, SYNC_PRETTY_BYTES);
+        r.apply_jq(&long_literal, SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(
             r.view().unwrap().visible_len(),
             1,
@@ -11322,7 +11368,7 @@ mod tests {
     #[test]
     fn multiple_outputs_render_as_separate_documents_and_are_counted() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".data.items[] | .id", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items[] | .id", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().view_text(), "1\n2", "one after another, as jq prints");
         assert_eq!(r.jq_output_count(), 2);
     }
@@ -11330,14 +11376,115 @@ mod tests {
     #[test]
     fn a_bad_filter_keeps_the_previous_tree_and_marks_the_bar_stale() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
-        r.apply_jq(".data.items )", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES, LIMIT);
+        r.apply_jq(".data.items )", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().view_text(), "2", "last good output stays");
         assert!(r.jq_bar().stale);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
         assert!(err.span().is_some());
-        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES, LIMIT);
         assert!(!r.jq_bar().stale && r.jq_bar().error.is_none());
+    }
+
+    /// #308 spec B1, B2: a filter that never ends stops at the bar's limit
+    /// and fails as any filter does: the error under the bar, the last
+    /// result kept behind it. Over the pool, the run and the key lookup
+    /// carry the limit.
+    #[test]
+    fn a_filter_that_never_ends_stops_at_the_bars_limit() {
+        let limit = Duration::from_millis(50);
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES, limit);
+        let started = Instant::now();
+        r.apply_jq("last(repeat(1))", SYNC_PRETTY_BYTES, limit);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(r.view().unwrap().view_text(), "2", "the last good output stays");
+        assert!(r.jq_bar().stale);
+        let error = r.jq_bar().error.as_ref().map(JqError::message);
+        assert_eq!(error.as_deref(), Some("stopped at the 50 ms limit"));
+        let req =
+            r.apply_jq("last(range(1e18))", 0, limit).expect("over the sync limit: background");
+        assert_eq!(req.limit, limit);
+        assert!(r.set_jq_focus(true));
+        r.jq_bar_mut().input = LineInput::new("map(.a");
+        let req = r.refresh_jq_completion(0, limit).expect("over the sync limit: background");
+        assert_eq!(req.limit, limit);
+    }
+
+    /// #308 spec B6: a pool run that failed whole still hands back the
+    /// worker's parse of the body, which the view keeps, so the next run
+    /// needn't read the body again. The failure shows as any does.
+    #[test]
+    fn a_failed_pool_runs_parsed_document_is_still_adopted() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES, LIMIT);
+        // As if the inline run's parse had never been kept.
+        r.view.as_mut().unwrap().jq_doc = None;
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
+        assert!(req.doc.is_none() && req.body.is_some());
+        let doc = JqDocument::parse(ITEMS).unwrap();
+        let stop = JqError::Stopped { limit: LIMIT };
+        assert!(r.attach_jq_result(req.generation, req.run, Some(doc), Err(stop.clone())));
+        assert_eq!(r.view().unwrap().view_text(), "2", "the last good output stays");
+        assert!(r.jq_bar().stale);
+        assert_eq!(r.jq_bar().error, Some(stop));
+        let next = r.apply_jq(".data.total", 0, LIMIT).expect("background run");
+        assert!(next.doc.is_some() && next.body.is_none(), "the parse was kept");
+    }
+
+    /// #308: a filter stopped at one limit runs again under another. One
+    /// that ended, the empty filter and one that doesn't compile stay as
+    /// they are under another limit, view and all. A run still going is
+    /// awaited, and runs again only if it lands stopped at another limit.
+    #[test]
+    fn only_a_stopped_filter_runs_again_under_another_limit() {
+        let ms = Duration::from_millis;
+        let mut r = ready(ITEMS);
+        r.apply_jq("last(repeat(1))", SYNC_PRETTY_BYTES, ms(50));
+        assert!(r.apply_jq("last(repeat(1))", SYNC_PRETTY_BYTES, ms(50)).is_none());
+        r.apply_jq("last(repeat(1))", SYNC_PRETTY_BYTES, ms(60));
+        let error = r.jq_bar().error.as_ref().map(JqError::message);
+        assert_eq!(error.as_deref(), Some("stopped at the 60 ms limit"));
+
+        for code in [".data", "", ".data )"] {
+            let mut r = ready(ITEMS);
+            r.apply_jq(code, SYNC_PRETTY_BYTES, ms(50));
+            r.view.as_mut().unwrap().h_scroll = 5;
+            // Over the sync limit, a run would come back as a request.
+            assert!(r.apply_jq(code, 0, ms(60)).is_none(), "{code:?}");
+            assert_eq!(r.view().unwrap().h_scroll, 5, "{code:?}: the view is left alone");
+        }
+
+        let mut r = ready(ITEMS);
+        let old = r.apply_jq(".data", 0, ms(50)).expect("background run");
+        assert!(r.apply_jq(".data", 0, ms(60)).is_none(), "the run going is awaited");
+        let stopped = Err(JqError::Stopped { limit: ms(50) });
+        assert!(r.attach_jq_result(old.generation, old.run, None, stopped));
+        let new = r.apply_jq(".data", 0, ms(60)).expect("stopped at another limit: runs again");
+        assert_eq!(new.limit, ms(60));
+        let stopped = Err(JqError::Stopped { limit: ms(60) });
+        assert!(r.attach_jq_result(new.generation, new.run, None, stopped));
+        assert!(r.apply_jq(".data", 0, ms(60)).is_none(), "stopped at this limit: kept");
+    }
+
+    /// #308: completion keys from a lookup stopped at one limit are looked
+    /// up again under another; keys from one that ended stand under any.
+    #[test]
+    fn only_stopped_completion_keys_are_looked_up_again_under_another_limit() {
+        let ms = Duration::from_millis;
+        let mut r = ready(ITEMS);
+        assert!(r.set_jq_focus(true));
+        r.jq_bar_mut().input = LineInput::new(".data.");
+        let req = r.refresh_jq_completion(0, ms(50)).expect("background lookup");
+        assert!(r.refresh_jq_completion(0, ms(60)).is_none(), "the lookup going is awaited");
+        let stopped = complete::Keys { keys: vec!["items".into()], stopped_at: Some(ms(50)) };
+        r.attach_jq_completion(req.generation, req.seq, req.input_expr, stopped, None);
+        assert!(r.refresh_jq_completion(0, ms(50)).is_none(), "stopped at this limit: kept");
+        let req = r.refresh_jq_completion(0, ms(60)).expect("stopped at another: looked up again");
+        assert_eq!(req.limit, ms(60));
+        let ended = found(&["items", "total"]);
+        r.attach_jq_completion(req.generation, req.seq, req.input_expr, ended, None);
+        assert!(r.refresh_jq_completion(0, ms(70)).is_none(), "ended: kept under any limit");
     }
 
     /// A superseded background run (an older run counter than the view's
@@ -11347,19 +11494,21 @@ mod tests {
     #[test]
     fn a_superseded_runs_parsed_document_is_still_adopted() {
         let mut r = ready(ITEMS);
-        let req1 = r.apply_jq(".data.items | length", 0).expect("over the sync limit → background");
+        let req1 =
+            r.apply_jq(".data.items | length", 0, LIMIT).expect("over the sync limit → background");
         assert!(req1.doc.is_none() && req1.body.is_some());
-        let _req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
+        let _req2 = r.apply_jq(".data.items[0].id", 0, LIMIT).unwrap();
         let doc = JqDocument::parse(ITEMS).unwrap();
         assert!(
             !r.attach_jq_result(
                 req1.generation,
                 req1.run,
-                Ok(JqRunOutput::from_outputs(Some(doc), vec!["2".into()]))
+                Some(doc),
+                Ok(JqRunOutput::from_outputs(vec!["2".into()]))
             ),
             "superseded run is still dropped as a result"
         );
-        let req3 = r.apply_jq(".data.items[1].id", 0).expect("still over the sync limit");
+        let req3 = r.apply_jq(".data.items[1].id", 0, LIMIT).expect("still over the sync limit");
         assert!(req3.doc.is_some(), "the superseded run's doc was adopted");
         assert!(req3.body.is_none(), "no need to re-parse the body");
     }
@@ -11367,7 +11516,7 @@ mod tests {
     #[test]
     fn a_runtime_error_is_reported_the_same_way_without_a_span() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".data.items[0].id | .x", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items[0].id | .x", SYNC_PRETTY_BYTES, LIMIT);
         let err = r.jq_bar().error.clone().expect("runtime error recorded");
         assert!(err.span().is_none());
         assert!(
@@ -11383,7 +11532,7 @@ mod tests {
     #[test]
     fn a_run_that_fails_on_one_value_shows_the_others_outputs_with_the_error() {
         let mut r = ready(PART_FAILING);
-        r.apply_jq(".items[]", SYNC_PRETTY_BYTES);
+        r.apply_jq(".items[]", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().view_text(), "1\n2", "the other values' outputs show");
         assert_eq!(r.jq_output_count(), 2);
         assert!(!r.jq_bar().stale, "the tree is this filter's output");
@@ -11391,7 +11540,7 @@ mod tests {
         assert!(err.message().contains("iterable"), "{err:?}");
         assert_eq!(r.jq_bar().note, None);
         // The next good run clears the error.
-        r.apply_jq(".items?", SYNC_PRETTY_BYTES);
+        r.apply_jq(".items?", SYNC_PRETTY_BYTES, LIMIT);
         assert!(r.jq_bar().error.is_none() && !r.jq_bar().stale);
     }
 
@@ -11400,12 +11549,12 @@ mod tests {
     #[test]
     fn a_background_run_that_fails_on_one_value_lands_its_error_with_the_outputs() {
         let mut r = ready(PART_FAILING);
-        let req = r.apply_jq(".items[]", 0).expect("over the sync limit: background");
-        let action = crate::app::jq_worker(req.generation, req.run, req.code, req.doc, req.body);
-        let crate::action::Action::JqRunFinished { generation, run, result } = action else {
+        let req = r.apply_jq(".items[]", 0, LIMIT).expect("over the sync limit: background");
+        let action = crate::app::jq_worker(req);
+        let crate::action::Action::JqRunFinished { generation, run, doc, result } = action else {
             panic!("the worker answers with its run: {action:?}");
         };
-        assert!(r.attach_jq_result(generation, run, result));
+        assert!(r.attach_jq_result(generation, run, doc, result));
         assert_eq!(r.view().unwrap().view_text(), "1\n2");
         assert!(!r.jq_bar().stale);
         assert!(r.jq_bar().error.is_some(), "the error survives the worker and the action");
@@ -11415,18 +11564,18 @@ mod tests {
     fn a_value_error_with_nothing_else_to_show_is_a_failed_run() {
         let body = "{\"items\":[null]}\n{\"done\":true}\n";
         let mut r = ready(body);
-        r.apply_jq(".items | length", SYNC_PRETTY_BYTES);
+        r.apply_jq(".items | length", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().view_text(), "1\n0");
         // Only a null besides the error: the previous tree stays.
-        r.apply_jq(".items[]", SYNC_PRETTY_BYTES);
+        r.apply_jq(".items[]", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().view_text(), "1\n0", "last good output stays");
         assert!(r.jq_bar().stale);
         assert!(r.jq_bar().error.is_some() && r.jq_bar().note.is_none());
         // Back to a good run, so the next one has a fresh tree to keep.
-        r.apply_jq(".items | length", SYNC_PRETTY_BYTES);
+        r.apply_jq(".items | length", SYNC_PRETTY_BYTES, LIMIT);
         // No output at all besides the error: the same. The first value
         // has no `done` (dropped), the second's is `true`.
-        r.apply_jq(".done | select(.) | .x", SYNC_PRETTY_BYTES);
+        r.apply_jq(".done | select(.) | .x", SYNC_PRETTY_BYTES, LIMIT);
         assert_eq!(r.view().unwrap().view_text(), "1\n0");
         assert!(r.jq_bar().stale && r.jq_bar().error.is_some());
     }
@@ -11439,7 +11588,7 @@ mod tests {
         let mut r = ready(ITEMS);
         let code = " é";
         r.set_jq_text(code);
-        r.apply_jq(code, SYNC_PRETTY_BYTES);
+        r.apply_jq(code, SYNC_PRETTY_BYTES, LIMIT);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
         assert!(err.span().is_some(), "trimmed code still has a span");
         // Must not panic despite the leading whitespace + multibyte char
@@ -11460,7 +11609,7 @@ mod tests {
             let mut r = ready(ITEMS);
             r.open_jq();
             r.set_jq_text(code);
-            r.apply_jq(code, SYNC_PRETTY_BYTES);
+            r.apply_jq(code, SYNC_PRETTY_BYTES, LIMIT);
             let err = r.jq_bar().error.clone().expect("syntax error recorded");
             let span = err.span().expect("the error has a span");
             let (text_x, underlined, _) = jq_bar_underline(&mut r);
@@ -11481,7 +11630,7 @@ mod tests {
         r.open_jq();
         let code = format!("{}.a )", ".a | ".repeat(20));
         r.set_jq_text(&code);
-        r.apply_jq(&code, SYNC_PRETTY_BYTES);
+        r.apply_jq(&code, SYNC_PRETTY_BYTES, LIMIT);
         let span = r.jq_bar().error.clone().and_then(|e| e.span()).expect("a span");
         assert_eq!(&code[span], ")");
         let (_, underlined, row) = jq_bar_underline(&mut r);
@@ -11496,7 +11645,7 @@ mod tests {
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_text(".a )");
-        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES, LIMIT);
         assert!(r.jq_bar().error.as_ref().is_some_and(|e| e.span().is_some()));
         r.jq_bar_mut().ai_asking = Some(std::time::Instant::now());
         let (_, underlined, _) = jq_bar_underline(&mut r);
@@ -11533,13 +11682,13 @@ mod tests {
     #[test]
     fn a_stale_error_is_cleared_when_the_body_becomes_non_json_and_the_bar_shrinks() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES, LIMIT);
         let err = r.jq_bar().error.clone().expect("syntax error recorded");
         assert!(err.span().is_some());
         // A re-send lands a non-JSON body: jq has nothing to run against.
         r.set_state(ResponseState::Ready(Box::new(data("plain text"))), 1);
         assert!(!r.jq_available());
-        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES, LIMIT);
         assert!(
             r.jq_bar().error.is_none(),
             "non-JSON response disables jq silently, no stale error"
@@ -11557,10 +11706,11 @@ mod tests {
     #[test]
     fn big_bodies_hand_the_run_to_the_caller_and_accept_only_the_latest_result() {
         let mut r = ready(ITEMS);
-        let req = r.apply_jq(".data.items | length", 0).expect("over the sync limit → background");
+        let req =
+            r.apply_jq(".data.items | length", 0, LIMIT).expect("over the sync limit → background");
         assert_eq!(req.code, ".data.items | length");
         assert!(r.jq_bar().pending.is_some());
-        let req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
+        let req2 = r.apply_jq(".data.items[0].id", 0, LIMIT).unwrap();
         assert!(
             req.doc.is_none() && req.body.is_some(),
             "no cached document yet: the worker parses the body"
@@ -11569,14 +11719,16 @@ mod tests {
             !r.attach_jq_result(
                 req.generation,
                 req.run,
-                Ok(JqRunOutput::from_outputs(None, vec!["2".into()]))
+                None,
+                Ok(JqRunOutput::from_outputs(vec!["2".into()]))
             ),
             "superseded run is dropped"
         );
         assert!(r.attach_jq_result(
             req2.generation,
             req2.run,
-            Ok(JqRunOutput::from_outputs(None, vec!["1".into()]))
+            None,
+            Ok(JqRunOutput::from_outputs(vec!["1".into()]))
         ));
         assert_eq!(r.view().unwrap().view_text(), "1");
         assert!(r.jq_bar().pending.is_none());
@@ -11584,7 +11736,8 @@ mod tests {
             !r.attach_jq_result(
                 req2.generation + 1,
                 req2.run,
-                Ok(JqRunOutput::from_outputs(None, vec!["9".into()]))
+                None,
+                Ok(JqRunOutput::from_outputs(vec!["9".into()]))
             ),
             "wrong generation is dropped"
         );
@@ -11596,43 +11749,44 @@ mod tests {
             r.attach_jq_result(
                 req.generation,
                 req.run,
-                Ok(JqRunOutput::from_outputs(None, vec!["2".into()])),
+                None,
+                Ok(JqRunOutput::from_outputs(vec!["2".into()])),
             )
         };
         // A syntax error typed before the valid prefix's run returns.
         let mut r = ready(ITEMS);
-        let req = r.apply_jq(".data", 0).expect("background run");
-        assert!(r.apply_jq(".data )", 0).is_none());
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
+        assert!(r.apply_jq(".data )", 0, LIMIT).is_none());
         assert!(r.jq_bar().error.is_some());
         assert!(!late(&mut r, &req), "the earlier filter's result is dropped");
         assert!(r.jq_bar().error.is_some(), "the syntax error stays");
         assert!(r.jq_tree_code().is_none(), "and the body tree with it");
         // The bar cleared before the run returns.
         let mut r = ready(ITEMS);
-        let req = r.apply_jq(".data", 0).expect("background run");
-        assert!(r.apply_jq("", 0).is_none());
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
+        assert!(r.apply_jq("", 0, LIMIT).is_none());
         assert!(!late(&mut r, &req), "the earlier filter's result is dropped");
         assert!(r.jq_tree_code().is_none(), "the body tree stays");
         assert!(r.jq_bar().note.is_none());
         // A stash forgets the run; the reconcile on its return starts afresh.
         let mut r = ready(ITEMS);
-        let req = r.apply_jq(".data", 0).expect("background run");
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
         r.drop_pending_jq();
         assert!(!late(&mut r, &req), "the forgotten run's result is dropped");
-        assert!(r.apply_jq(".data", 0).is_some(), "the filter runs again");
+        assert!(r.apply_jq(".data", 0, LIMIT).is_some(), "the filter runs again");
         // The editor writing back the filter already applied moves nothing on.
         let mut r = ready(ITEMS);
-        let req = r.apply_jq(".data", 0).expect("background run");
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
         r.set_jq_text(".data");
-        assert!(r.apply_jq(".data", 0).is_none(), "already applied");
+        assert!(r.apply_jq(".data", 0, LIMIT).is_none(), "already applied");
         assert!(late(&mut r, &req), "its run still lands");
         // A new response waits on no run, and its own first run is not
         // mistaken for the old view's (same run id, other generation).
         let mut r = ready(ITEMS);
-        let old = r.apply_jq(".data", 0).expect("background run");
+        let old = r.apply_jq(".data", 0, LIMIT).expect("background run");
         r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9);
         assert!(r.jq_bar().pending.is_none());
-        let new = r.apply_jq(".data.items", 0).expect("background run");
+        let new = r.apply_jq(".data.items", 0, LIMIT).expect("background run");
         assert_eq!(new.run, old.run, "run ids restart with the view");
         assert!(!late(&mut r, &old), "the old view's result is dropped");
         assert!(r.jq_bar().pending.is_some(), "the new run is still awaited");
@@ -11906,7 +12060,7 @@ mod tests {
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_text(".data");
-        let req = r.apply_jq(".data", 0).expect("background run");
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
         let since = r.jq.pending_since;
         // The spinner takes over the chip's caret; both are one cell, so
         // the text keeps its column. A spinner past the grace period is
@@ -11932,7 +12086,8 @@ mod tests {
             r.attach_jq_result(
                 req.generation,
                 req.run,
-                Ok(JqRunOutput::from_outputs(None, vec!["{}".into()]))
+                None,
+                Ok(JqRunOutput::from_outputs(vec!["{}".into()]))
             ),
             "the run lands"
         );
@@ -11955,12 +12110,13 @@ mod tests {
             out.contains("filtering") && !out.contains("\"pad\""),
             "the full tree is held back, the wait is named: {out}"
         );
-        let req = r.apply_jq(".data", 0).expect("background run");
+        let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
         assert!(render(&mut r).contains("filtering"), "still held while the run is out");
         assert!(r.attach_jq_result(
             req.generation,
             req.run,
-            Ok(JqRunOutput::from_outputs(None, vec![r#"{"n": 1}"#.into()]))
+            None,
+            Ok(JqRunOutput::from_outputs(vec![r#"{"n": 1}"#.into()]))
         ));
         let out = render(&mut r);
         assert!(
@@ -11968,10 +12124,11 @@ mod tests {
             "the filtered tree is what appears: {out}"
         );
         // A failing filter gives the full tree back with its error.
-        let req = r.apply_jq(".data | error", 0).expect("background run");
+        let req = r.apply_jq(".data | error", 0, LIMIT).expect("background run");
         r.attach_jq_result(
             req.generation,
             req.run,
+            None,
             Err(JqError::Runtime { message: "boom".into() }),
         );
         assert!(!r.view().unwrap().awaiting_filter);
@@ -11985,9 +12142,12 @@ mod tests {
     #[test]
     fn applying_the_same_code_twice_is_a_no_op() {
         let mut r = ready(ITEMS);
-        r.apply_jq(".data", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data", SYNC_PRETTY_BYTES, LIMIT);
         let before = r.view().unwrap().view_text();
-        assert!(r.apply_jq(".data", 0).is_none(), "already applied: no background run either");
+        assert!(
+            r.apply_jq(".data", 0, LIMIT).is_none(),
+            "already applied: no background run either"
+        );
         assert_eq!(r.view().unwrap().view_text(), before);
     }
 
@@ -12128,7 +12288,7 @@ mod tests {
         let mut r = ready("plain text");
         assert!(!r.jq_available());
         assert!(!r.set_jq_focus(true));
-        assert!(r.apply_jq(".a", SYNC_PRETTY_BYTES).is_none());
+        assert!(r.apply_jq(".a", SYNC_PRETTY_BYTES, LIMIT).is_none());
         assert!(r.jq_bar().error.is_none(), "nothing runs on a non-JSON body");
     }
 
@@ -12138,7 +12298,7 @@ mod tests {
         let theme = Theme::dark();
         let (tabs, _) = response_tab_defs(r.view().unwrap(), r.jq_bar(), &theme);
         assert_eq!(tabs[0].1, None);
-        r.apply_jq(".data", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data", SYNC_PRETTY_BYTES, LIMIT);
         let (tabs, _) = response_tab_defs(r.view().unwrap(), r.jq_bar(), &theme);
         assert_eq!(tabs[0].1.map(|(c, _)| c), Some(crate::glyph::FILTER));
     }
@@ -12162,7 +12322,7 @@ mod tests {
 
         // A filter that collapses the whole body down to one short line —
         // far shorter than the old scroll position.
-        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES, LIMIT);
 
         let view = r.view().unwrap();
         assert_eq!(view.visible_len(), 1, "filtered down to a single line");
@@ -12919,7 +13079,7 @@ mod tests {
         type_jq(&mut r, ".data.items | sort_by(.id");
         let theme = Theme::dark();
         r.jq_bar_mut().input.set_cursor(3);
-        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT);
         let (_, color) = error_row(&mut r, "unclosed (");
         assert_eq!(color, theme.error, "caret mid-text: the filter as it stands is broken");
         r.jq_bar_mut().input.set_cursor(".data.items | sort_by(.id".len());

@@ -2,6 +2,10 @@
 
 Branch `jq-check-limit`, from `main` at `a207b70` (#312 merged).
 
+Amended 2026-11-17 by #308 (section 7): the key is now `jq_limit_ms`,
+`run_limited` is folded into `jq::run`, and every jq run stops at the
+limit. Sections 1 to 6 keep #310's record under its names.
+
 ## 1. The problem and what was found
 
 A jq check in a request's `[checks]` runs as long as its filter takes.
@@ -89,12 +93,12 @@ late. An endless array grows for the limit's length, then is freed.
 | L2 | The limit is 1 second by default. | you ("Yes I already confirmed 1 second.") |
 | L3 | The limit is per check: each jq check gets the whole limit, not a budget shared by the request's checks. | mine (approved) |
 | L4 | The time counts from the check's run, after the body is read: reading the body into jq's document is not counted, and is done once for all of a request's checks. | you (1 second "counted after the body is read") |
-| L5 | The limit is a project setting, `jq_check_limit_ms` in `project.toml`, in whole milliseconds; absent means 1000. It has no control in the app's Settings tab. | you ("Might as well make it configurable on a project level I think. Could be only in config for now."); that this means `project.toml`, with no Settings-tab control: mine (approved) (Q1: A, 2026-11-17) |
+| L5 | The limit is a project setting, `jq_check_limit_ms` in `project.toml`, in whole milliseconds; absent means 1000. It has no control in the app's Settings tab. (2026-11-17, #308: renamed `jq_limit_ms` before any release, since it now sets every jq run; section 7, B5.) | you ("Might as well make it configurable on a project level I think. Could be only in config for now."); that this means `project.toml`, with no Settings-tab control: mine (approved) (Q1: A, 2026-11-17) |
 | L6 | The run is stopped in-process: postui's `lut()` hook checks a deadline, and `range` is replaced by one that checks it; past it the run unwinds, frees its thread and memory, and the check fails. | mine (approved) ("C and in process") |
 | L7 | A stopped check fails with the line `<filter>: stopped at the <N> ms limit`, the same in `run`'s `check failed:` line, `run -v`, `suite`'s rows, both JSONs' `failure`, and the app's Checks tab; `<N>` is the limit in use. The key is named in the docs, not the line. | mine (approved) (Q2: A, 2026-11-17) |
 | L8 | The request's other checks still run, each with its own limit; a request with a stopped check fails as one with any failed check does, and the suite goes on to the next request. | you (ticket: "the rest of the request's checks, and the rest of the suite, go on") |
 | L9 | A bad `jq_check_limit_ms` (0, negative, a fraction, a string, above 4294967295) is a bad `project.toml`, as any bad value there is today: `run`, `suite` and `check` refuse with the file named; the app can't open the project; an outside edit while the app is open keeps the last good value with the "could not read project.toml" warning. | mine (existing rule, "parse errors never default") |
-| L10 | Nothing else changes: the jq bar, saved views, completion and `run --jq` run without a limit (#308 has the bar). | mine (ticket scope) |
+| L10 | Nothing else changes: the jq bar, saved views, completion and `run --jq` run without a limit (#308 has the bar). (2026-11-17, #308: replaced; they stop at the same limit, section 7, B1 to B3.) | mine (ticket scope) |
 
 ## 3. Design
 
@@ -151,7 +155,8 @@ place).
 **What it ends from #312's section 7, detail 4:** a check job that holds
 a never-ending check now ends within the limit for each of its checks, so
 re-sends leave at most that long a job each, and a quit waits at most
-that long for a running job.
+that long for a running job. (2026-11-17, #308: a quit no longer waits
+for it at all; section 7, B7.)
 
 **Contract changes:** `checks::evaluate` gains a parameter;
 `ResponseData::check_run`, `check_lines` and `CheckState::on_arrival`
@@ -259,3 +264,121 @@ One sequence, TDD:
 4. Docs: `reference.md`; dated paragraphs in the checks tabs and suite
    checks specs.
 5. Suite, clippy, fmt; the TUI check in tmux.
+
+## 7. #308: every jq run stops at the limit (2026-11-17)
+
+Branch `jq-bar-limit`, from `main` at `e616555` (#310 merged, not
+released).
+
+**The problem.** A filter in the jq bar that never ends (`[limit(1;
+repeat(1) | select(. == 2))]`) keeps a blocking-pool thread busy until
+postui quits, and quitting waits for it: Tokio's `Runtime` drop waits on
+every blocking task, so the process stays after the terminal is restored.
+A saved view with such a filter starts one more run on every response of
+its request. The bar moving on only forgets the run's number
+(`Response::apply_jq`, `drop_pending_jq` clear `JqBar::pending`); the run
+itself (`App::spawn_jq_run` → `jq_worker` → `jq::run`) had a `Stop`
+nothing set. Completion's key lookup (`jq_complete_worker` →
+`complete::keys_at`) and `postui run --jq` (`cli/run.rs`, `run_jq`) were
+the same.
+
+| # | Rule | Source |
+|---|---|---|
+| B1 | The jq bar's run (a typed filter, the scratch or a saved view's) stops at the project's limit. The bar shows `stopped at the <N> ms limit` as its error, with the last result kept behind it as for any filter that fails. | mine (approved) (#308 Q1: A) |
+| B2 | Completion's key lookup stops at the limit too, and offers the keys it found before the stop. | mine (approved) (#308 Q1: A); the keys found before: mine |
+| B3 | `postui run --jq` (and `--view`) stops at the limit: the stop is the filter's error, printed and in the JSON's `jq.error`, and the run exits 1 as for any failed filter. | mine (approved) (#308 Q1: A) |
+| B4 | One limit per run, counted from after the filter compiles and the body is read, as for a check (L4). | mine |
+| B5 | The key is `jq_limit_ms` (was `jq_check_limit_ms`), renamed with no alias since it was never released; `ProjectMeta::jq_limit()` and `project::DEFAULT_JQ_LIMIT` likewise. | mine (approved) (#308 Q2: A) |
+| B6 | A bar run the worker parsed the body for, then stopped (or failed whole), still hands back the parse, so the next run doesn't read the body again. It shows as before: the error, the last result behind it. | mine |
+| B7 | Quitting doesn't wait for background work at all: the TUI's Tokio runtime is shut down with `shutdown_background()`, as the CLI commands' already is, so a jq run, a check job, a body parse or a DNS lookup still going ends with the process, whatever `jq_limit_ms` is. Runs typed past still run to the limit while the app runs. (2026-11-17, after the review round 4 question; replaces the first B7, below.) ~~Quitting stops every jq run the app has going: the app sets one flag as it quits, and each bar run and completion lookup reads it beside its limit and stops.~~ | mine (approved) (#308 round 4 question: A; the first B7 was round 2's A) |
+| B8 | ~~The response's check job reads the same flag, so a quit doesn't wait on its jq checks either.~~ (2026-11-17: removed with the flag; B7 covers the check job.) | ~~mine~~ |
+
+There is no cancel: a run the bar has moved past still runs until it ends
+or reaches the limit (option B on the ticket, not taken). ~~A quit waits at
+most that long for a run still going.~~ (2026-11-17: replaced by B7 and
+B8; option C, Tokio's `shutdown_timeout`, and option D, a separate bar
+limit, were not taken.)
+
+**2026-11-17, after review round 4: B7 and B8 replaced.** The first B7
+and B8 (one quit flag the app set as it was dropped, read by every jq run
+beside its limit) are replaced by the B7 above: quitting doesn't wait for
+background work at all, and the flag is removed. Decided: mine (approved),
+the user's answer "A" to the round 4 question (ticket comment 1435). The
+round 2 pick rested on a wrong cost: its option C (don't wait at quit) was
+set against the flag with "a project file write still running at quit is
+cut off", but project files are written on the UI thread, done before the
+loop returns; the only file the TUI writes in the background is the
+`--debug-ai` log. The flag also couldn't stop one long native jq step (a
+`sort` over a big body) or a cancelled send's DNS lookup, and not waiting
+covers both. Its cost: with `--debug-ai` on, a log line being written as
+the app quits can be lost or cut short.
+
+**Design.**
+
+- `jq::run(code, doc, limit)` is the one way to run a filter: #310's
+  `run_limited` is folded into it, and `run_with_cap(code, doc, cap,
+  limit)` takes the limit too. No unlimited run is left.
+- A stopped run fails with `JqError::Stopped { limit }`, whose message is
+  `stopped at the <N> ms limit`. `complete::keys_at(expr, doc, limit)`
+  runs with the limit and returns `Keys { keys, stopped_at }`: the keys it
+  had when stopped, and the limit if it was.
+- The app: `App::sync_jq` passes the open project's limit
+  (`meta().jq_limit()`) to `apply_jq` and `refresh_jq_completion`, which
+  use it inline and put it in `JqRunRequest` and `JqCompleteRequest`;
+  `jq_worker` / `jq_complete_worker` run with it. What the bar remembers
+  having applied (`jq_applied`) and the keys completion cached carry the
+  limit their run or lookup was stopped at, if it was. A stopped one is
+  remembered like any result, since running it again on every update would
+  keep a core busy, the problem this section fixes; once the app reloads
+  `project.toml` with another limit it runs again under that one. A filter
+  or lookup that ended, the empty filter and one that doesn't compile are
+  left alone under another limit. A run or lookup still going is awaited
+  and judged when it lands.
+  (Review round 1, 2026-11-17: the limit was first held on `Response` and
+  keyed nothing, so a filter stopped at the old limit stayed stopped until
+  edited or re-sent. Round 1 then keyed every memo on the limit; review
+  round 2, 2026-11-17, found that re-ran finished filters and reset the
+  view, its selection and sideways scroll included, for any filter or none,
+  on a limit change. Only a stop's limit is kept now, and a run going at
+  the old limit is no longer superseded, which would have left two runs
+  busy, since nothing cancels the first.)
+- `jq_worker` (B6): the parse the worker made comes back beside the
+  result in `Action::JqRunFinished { doc, result }`, failed or not, and
+  `attach_jq_result` keeps it; the result is the run's own `Result`.
+  (Review round 2, 2026-11-17: a whole-run error was first handed back as
+  an empty run carrying the error, to carry the parse.)
+- `run --jq`: `run_jq` takes the session's project limit.
+- Quit (B7; 2026-11-17, after review round 4): `main.rs` runs the TUI and
+  the CLI commands through one function that makes the runtime, blocks on
+  the work and shuts the runtime down with `shutdown_background()`, after
+  the TUI has given the terminal back. Nothing in jq knows about quitting.
+  (Review round 5, 2026-11-17, mine: a panic in the work is caught for
+  that shutdown and then goes on, since dropping the runtime as it
+  unwound waited for the pool.)
+  (The first design, after review round 2, passed `quit:
+  Option<&AtomicBool>` to `jq::run`, `run_with_cap`, `complete::keys_at`
+  and `checks::evaluate`, read by `Stop` beside its timer's flag, and the
+  app owned it as `JqQuit`, set on drop and handed to `jq_worker`,
+  `jq_complete_worker` and the check job. All of it is removed.) No handle
+  per run (option B, not taken).
+
+**Tests.**
+
+| Rule | Test |
+|---|---|
+| B1 | `jq`: `run` with a 50 ms limit stops the never-ending filters of section 4 (the L1 tests, now over `run`). |
+| B1 | response (`components/response.rs`): a never-ending filter applied inline with the bar's limit at 50 ms shows `stopped at the 50 ms limit` as the bar's error, the earlier result kept; over the pool path, the request carries the limit. |
+| B1 | app (`tests.rs`): with `jq_limit_ms = 50` in `project.toml`, a never-ending filter typed in the bar ends with that error. |
+| B2 | `complete`: `keys_at` over a never-ending expression with a 50 ms limit returns in well under 5 s, with the keys found before the stop and the limit it stopped at. |
+| B3 | `cli_run` (integration): `jq_limit_ms = 50` and `--jq 'last(range(1e18))'`: exits 1 with `stopped at the 50 ms limit`. |
+| B5 | `meta`, `project`, `project_tests.rs`, `checks_tests.rs`, `cli_run`: the existing tests under the new name. |
+| B1, B2 | response: a filter, and a completion lookup, stopped at one limit runs again under another; one that ended, the empty filter and one that doesn't compile don't, and the view keeps its sideways scroll; one going is awaited; app: a raised `jq_limit_ms` read from `project.toml` runs the stopped filter again. |
+| B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error; response: a failed pool run's parse is kept, and the failure shows as any does. |
+| quit | TUI in tmux: a never-ending filter in the bar shows the error about 1 s later, and quitting right after typing it ends the process within the limit. |
+| B7 | `main.rs`: the function the TUI and the CLI commands run through returns soon after its work ends, or unwinds soon after it panics, while a blocking job the test holds is still on the pool. (Replaces the quit flag's tests in `jq`, `complete`, `checks` and `checks_tests.rs`.) |
+| B7 | TUI in tmux: `jq_limit_ms = 60000`, a never-ending filter typed in the bar, quit at once: the process exits within about a second. |
+
+**`mine` choices, for veto:** B2's keys found before the stop; B4; B6;
+the bar's memo and completion's cache carry a stop's limit (a run stopped
+by a slow moment stays until the filter, response or limit changes); no
+cancel of a run the bar moved past.

@@ -33,22 +33,26 @@ pub struct ProjectMeta {
     /// Per-environment settings, keyed by slug: `[environment.<slug>]`.
     #[serde(default)]
     pub environment: IndexMap<String, ItemSettings>,
-    /// How long each jq check in a request's `[checks]` may run, in
-    /// milliseconds (#310): [`Self::jq_check_limit`]. Nothing writes it.
+    /// How long each jq run may take, in milliseconds: a request's jq
+    /// checks (#310), the jq bar, completion and `run --jq` (#308):
+    /// [`Self::jq_limit`]. Nothing writes it. One key for all of them, so a
+    /// filter stops in the bar where it would as a check (#308 spec B1); the
+    /// cost is that raising it for a slow check also lets a bar run that
+    /// never ends last that long. The TUI's quit doesn't wait for it (#308
+    /// spec B7).
     #[serde(default)]
-    pub jq_check_limit_ms: Option<std::num::NonZeroU32>,
+    pub jq_limit_ms: Option<std::num::NonZeroU32>,
 }
 
-/// A jq check's limit when `project.toml` sets none (#310 spec L2).
-pub const DEFAULT_JQ_CHECK_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+/// A jq run's limit when `project.toml` sets none (#310 spec L2).
+pub const DEFAULT_JQ_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl ProjectMeta {
-    /// How long each jq check may run: `jq_check_limit_ms`, else
-    /// [`DEFAULT_JQ_CHECK_LIMIT`].
-    pub fn jq_check_limit(&self) -> std::time::Duration {
-        self.jq_check_limit_ms.map_or(DEFAULT_JQ_CHECK_LIMIT, |ms| {
-            std::time::Duration::from_millis(u64::from(ms.get()))
-        })
+    /// How long each jq run may take: `jq_limit_ms`, else
+    /// [`DEFAULT_JQ_LIMIT`].
+    pub fn jq_limit(&self) -> std::time::Duration {
+        self.jq_limit_ms
+            .map_or(DEFAULT_JQ_LIMIT, |ms| std::time::Duration::from_millis(u64::from(ms.get())))
     }
 }
 
@@ -439,25 +443,32 @@ mod tests {
         toml::from_str(text)
     }
 
-    /// #310 spec L2, L5: a jq check's limit is `jq_check_limit_ms`, 1000 ms
+    /// #310 spec L2, L5, B5: a jq run's limit is `jq_limit_ms`, 1000 ms
     /// when the key is absent.
     #[test]
-    fn the_jq_check_limit_is_the_key_or_one_second() {
+    fn the_jq_limit_is_the_key_or_one_second() {
         let ms = std::time::Duration::from_millis;
-        assert_eq!(meta("").unwrap().jq_check_limit(), ms(1000));
-        assert_eq!(meta("name = \"x\"").unwrap().jq_check_limit(), ms(1000));
-        assert_eq!(meta("jq_check_limit_ms = 2500").unwrap().jq_check_limit(), ms(2500));
-        assert_eq!(meta("jq_check_limit_ms = 1").unwrap().jq_check_limit(), ms(1));
-        let max = meta("jq_check_limit_ms = 4294967295").unwrap().jq_check_limit();
+        assert_eq!(meta("").unwrap().jq_limit(), ms(1000));
+        assert_eq!(meta("name = \"x\"").unwrap().jq_limit(), ms(1000));
+        assert_eq!(meta("jq_limit_ms = 2500").unwrap().jq_limit(), ms(2500));
+        assert_eq!(meta("jq_limit_ms = 1").unwrap().jq_limit(), ms(1));
+        let max = meta("jq_limit_ms = 4294967295").unwrap().jq_limit();
         assert_eq!(max, ms(u64::from(u32::MAX)));
     }
 
     /// #310 spec L9: a bad value is a bad `project.toml`, never the default.
     #[test]
-    fn a_bad_jq_check_limit_does_not_parse() {
+    fn a_bad_jq_limit_does_not_parse() {
         for bad in ["0", "-1", "1.5", "\"1000\"", "4294967296", "true"] {
-            let text = format!("jq_check_limit_ms = {bad}");
+            let text = format!("jq_limit_ms = {bad}");
             assert!(meta(&text).is_err(), "{text}");
         }
+    }
+
+    /// #308 spec B5: the name #310 merged with was never released, so it
+    /// has no alias; like any unknown key it is refused.
+    #[test]
+    fn the_old_name_is_not_read() {
+        assert!(meta("jq_check_limit_ms = 50").is_err());
     }
 }

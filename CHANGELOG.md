@@ -25,10 +25,17 @@ change the project file format.
 - Each jq check in a request's `[checks]` is stopped after 1 second and
   fails with `stopped at the 1000 ms limit`, in `postui run`, `postui
   suite` and the app alike, so a filter that never ends no longer hangs
-  them. `jq_check_limit_ms` in `project.toml` sets another limit.
+  them. A filter in the response's jq bar (a saved view's too), `postui
+  run --jq` and `--view` stop at the same limit with the same error, so
+  such a filter no longer keeps a CPU core busy until postui quits. The jq
+  bar's key completion stops there too and offers the keys it found before
+  the stop. `jq_limit_ms` in `project.toml` sets another limit.
 
 ### Changed
 
+- Quitting the app no longer waits for work still running in the
+  background, such as a jq run, a response's checks or a cancelled send's
+  DNS lookup, so it never hangs after the terminal is given back.
 - `postui suite`'s total time (`totals.elapsed_ms` and the plain total) is
   now the run's wall-clock time, not the sum of the requests' times.
 - A status code or a jq check listed twice in a request's `[checks]` counts
