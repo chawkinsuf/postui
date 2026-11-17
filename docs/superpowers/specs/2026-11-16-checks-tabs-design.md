@@ -576,9 +576,11 @@ lines find it by its generation as above.
 
 ## 8. Saying what goes in the boxes (#319, 2026-11-17)
 
-Status: **proposed**, waiting on the ticket's questions 1 to 3. Rows
-marked `Q1`, `Q2`, `Q3` hold the recommended answer and change with the
-user's pick.
+Status: **approved** 2026-11-17 (ticket comment 1465). The user's
+answers: 1: A (every text input that has hover text shows it when
+selected; mine (approved)); 2: A (status ranges become their own task;
+mine (approved)); 3: "how about 'first byte (ms)' and 'last byte (ms)'"
+(you), replacing both proposed options. The rows below carry them.
 
 Scope: board task #319, the user's notes after using the request's
 Checks tab. In their words:
@@ -633,20 +635,19 @@ Variable Manager's fields, the jq bar, the body) is a surface with none.
 | # | Rule | Source |
 |---|---|---|
 | H1 | An empty field draws, in the muted colour inside its well, what empty means: `any code below 400` for status, `no limit` for a time limit. Open and empty, the same words show with the caret on their first character, as a dialog's `(not set)` does. | mine |
-| H2 | The two time-limit fields are labelled `first byte limit (ms)` and `total time limit (ms)`: the words the response's Checks tab and `run`/`suite` already use (`first byte 812 ms, limit 500 ms`), with what the number is. | Q3: mine (recommended) |
+| H2 | The two time-limit fields are labelled `first byte (ms)` and `last byte (ms)`. "Last byte" is the total time: from the send until the response has fully arrived (`Response::elapsed`), the limit the file calls `max_elapsed_ms`. The response's Checks tab and `run`/`suite` keep their words (`first byte 812 ms, limit 500 ms`, `total 900 ms, …`). | you: "how about 'first byte (ms)' and 'last byte (ms)'" (Q3) |
 | H3 | The list of jq checks says it is jq: its header reads `JQ CHECK`, its add row `+ Add jq check`, the footer's add chip `add jq check`. A new check's empty input shows, muted, `a jq filter that must give true`. | mine |
-| H4 | The footer's centre line shows the text of the input under the keyboard cursor, closed or open, on every text input that has hover text (the list above, with a jq check row and `+ Add jq check` added; those two show it on hover too). | you: "show the hover text for an input when it is selected"; which inputs: Q1; the jq rows: mine |
+| H4 | The footer's centre line shows the text of the input under the keyboard cursor, closed or open, on every text input that has hover text (the list above, with a jq check row and `+ Add jq check` added; those two show it on hover too). | you: "show the hover text for an input when it is selected"; which inputs: mine (approved) (Q1: A); the jq rows: mine |
 | H5 | Which of the two shows: the latest one used. A key hands the footer's line to the keyboard cursor's input; moving the pointer hands it back to what is under the pointer. | mine |
 | H6 | The keyboard's text follows the `hover_hints` setting, as the pointer's does: one switch for the footer's explanations. | mine |
-| H7 | The Checks texts say what goes in, so they serve both: status `Codes that pass, e.g. 200, 201; empty: below 400`; first byte `Most ms until the headers arrive; empty: no limit`; total `Most ms for the whole response; empty: no limit`; a jq check `A jq filter on the body that must give true`. | mine |
-| H8 | Status ranges (`< 400`, `200-299`) are not in this task: they are their own task, with the file format question. H1's `any code below 400` covers the user's example, which is already what an empty field does. | Q2: mine (recommended) |
+| H7 | The Checks texts say what goes in, so they serve both: status `Codes that pass, e.g. 200, 201; empty: below 400`; first byte `Most ms until the response starts to arrive; empty: no limit`; last byte `Most ms until the response has fully arrived; empty: no limit`; a jq check `A jq filter on the body that must give true`. The two limit texts were reworded on 2026-11-17 to match H2's labels. | mine |
+| H8 | Status ranges (`< 400`, `200-299`) are not in this task: they are their own task, with the file format question. H1's `any code below 400` covers the user's example, which is already what an empty field does. | mine (approved) (Q2: A) |
 
 ### Not in this task
 
 Hover text for inputs that have none today (URL, table cells, dialog
 fields and so on); the keyboard cursor's text for buttons and toggles
-(dialog buttons, Settings check boxes); status ranges (H8, unless Q2
-says otherwise); renaming "first byte" in the response's lines or in
+(dialog buttons, Settings check boxes); status ranges (H8); renaming "first byte" in the response's lines or in
 `run`/`suite`; any change to the response's Checks tab.
 
 ### The design
