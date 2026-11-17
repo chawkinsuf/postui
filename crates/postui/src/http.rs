@@ -33,18 +33,36 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
-/// Runs `run`, a run of a request's checks, off the async loop when
-/// `off_loop`: when a jq filter has to read the body ([`reads_body`]),
-/// over a large one it would otherwise stall the loop. `Err` when the run
-/// panicked.
-pub async fn run_checks<T: Send + 'static>(
-    off_loop: bool,
-    run: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, tokio::task::JoinError> {
-    if !off_loop {
-        return Ok(run());
+/// A run of a request's checks, holding them, and whether they read the
+/// body ([`reads_body`]), asked of them as the run is made.
+pub struct ChecksRun<T> {
+    reads_body: bool,
+    job: Box<dyn FnOnce() -> T + Send>,
+}
+
+impl<T> ChecksRun<T> {
+    /// `run` over `checks`.
+    pub fn new(
+        checks: postui_core::model::Checks,
+        run: impl FnOnce(&postui_core::model::Checks) -> T + Send + 'static,
+    ) -> Self {
+        Self { reads_body: reads_body(&checks), job: Box::new(move || run(&checks)) }
     }
-    tokio::task::spawn_blocking(run).await
+
+    /// Runs it on this thread.
+    pub fn run(self) -> T {
+        (self.job)()
+    }
+}
+
+/// Runs `run`, off the async loop when its checks read the body: over a
+/// large one a jq filter would otherwise stall the loop. `Err` when the
+/// run panicked.
+pub async fn run_checks<T: Send + 'static>(run: ChecksRun<T>) -> Result<T, tokio::task::JoinError> {
+    if !run.reads_body {
+        return Ok(run.run());
+    }
+    tokio::task::spawn_blocking(move || run.run()).await
 }
 
 /// Whether `checks` read the body: a jq check does. The app and the suite
@@ -56,13 +74,9 @@ pub fn reads_body(checks: &postui_core::model::Checks) -> bool {
 /// `run` through [`run_checks`], the hop the suite's checks take too, for
 /// the app's one check job per response (checks tabs spec 2026-11-16,
 /// section 7): its lines, or for a run that panicked one failed line that
-/// says so. The app makes the job only for checks that read the body
-/// (`CheckState::on_arrival`), so the run goes off the loop. A jq check
-/// has no time limit yet: that is #310.
-pub async fn judge(
-    run: impl FnOnce() -> Vec<(bool, String)> + Send + 'static,
-) -> Vec<(bool, String)> {
-    let run = run_checks(true, run).await;
+/// says so. A jq check has no time limit yet: that is #310.
+pub async fn judge(run: ChecksRun<Vec<(bool, String)>>) -> Vec<(bool, String)> {
+    let run = run_checks(run).await;
     run.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))])
 }
 
@@ -70,24 +84,28 @@ impl ResponseData {
     /// The response judged by `checks`, as lines; a request with no checks
     /// has none (spec P1).
     pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
-        self.check_run(checks.clone())()
+        self.judging()(checks)
     }
 
-    /// [`Self::check_lines`] as a run for [`judge`]. It shares the body
-    /// and lets go of it once jq has read it.
-    pub fn check_run(
+    /// [`Self::check_lines`] over `checks` as a run for [`judge`].
+    pub fn check_run(&self, checks: postui_core::model::Checks) -> ChecksRun<Vec<(bool, String)>> {
+        ChecksRun::new(checks, self.judging())
+    }
+
+    /// The judging [`Self::check_lines`] and [`Self::check_run`] do. It
+    /// shares the body and lets go of it once jq has read it.
+    fn judging(
         &self,
-        checks: postui_core::model::Checks,
-    ) -> impl FnOnce() -> Vec<(bool, String)> + Send + use<> {
+    ) -> impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<> {
         use postui_core::checks::{Timing, evaluate, lines};
         let (status, body) = (self.status, self.body.clone());
         let timing = Timing::of(self.ttfb, self.elapsed);
-        move || {
+        move |checks| {
             if checks.is_empty() {
                 return Vec::new();
             }
             let doc = move || postui_core::jq::JqDocument::parse(&body);
-            lines(status, &evaluate(&checks, status, timing, doc))
+            lines(status, &evaluate(checks, status, timing, doc))
         }
     }
 }
@@ -477,9 +495,26 @@ mod tests {
         let lines = judged(named).await;
         assert!(passed(&lines), "{lines:?}");
         // A jq run that panics gives one failed line.
-        let lines = judge(|| panic!("a check panicked")).await;
+        let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
+        let lines = judge(ChecksRun::new(jq, |_| panic!("a check panicked"))).await;
         let [(false, line)] = &lines[..] else { panic!("{lines:?}") };
         assert!(line.starts_with("the checks did not run: "), "{line}");
+    }
+
+    /// Checks with a jq filter run off the async loop's thread; checks
+    /// that read no body run on it.
+    #[tokio::test]
+    async fn only_checks_that_read_the_body_leave_the_loop() {
+        use postui_core::model::Checks;
+        let here = std::thread::current().id();
+        let thread_of = |checks: Checks| {
+            let run = ChecksRun::new(checks, |_| std::thread::current().id());
+            async { run_checks(run).await.unwrap() }
+        };
+        let status = Checks { status: vec![200], ..Checks::default() };
+        assert_eq!(thread_of(status).await, here);
+        let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
+        assert_ne!(thread_of(jq).await, here);
     }
 
     #[tokio::test]

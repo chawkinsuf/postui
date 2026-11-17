@@ -2231,9 +2231,9 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 }
 
 /// A response's one check job (checks tabs spec 2026-11-16, section 7):
-/// the run that judges the checks it was sent with
+/// the run that judges it by the checks it was sent with
 /// (`ResponseData::check_run`).
-type CheckJob = Box<dyn FnOnce() -> Vec<(bool, String)> + Send>;
+type CheckJob = crate::http::ChecksRun<Vec<(bool, String)>>;
 
 /// The blocking-pool half of a background jq run: parse the body if the
 /// view has no cached document yet, run, and flatten the outputs into
@@ -2496,7 +2496,7 @@ impl App {
                 self.dispatch(Action::PrettyParsed { generation, tree });
             }
             if let Some(run) = checks {
-                self.dispatch(Action::ChecksJudged { generation, lines: run() });
+                self.dispatch(Action::ChecksJudged { generation, lines: run.run() });
             }
             return;
         }
@@ -5476,8 +5476,7 @@ impl App {
                 // dropped when it ends. A check that never ends keeps its
                 // thread, as on main after Esc and a re-send, until #310's
                 // time limit (section 7, detail 4).
-                let job = (state == CheckState::Judging)
-                    .then(|| -> CheckJob { Box::new(data.check_run(checks)) });
+                let job = (state == CheckState::Judging).then(|| data.check_run(checks));
                 if !self.session.arrived(generation, data, state) {
                     return false;
                 }
