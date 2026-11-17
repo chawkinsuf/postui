@@ -11,7 +11,7 @@ use crate::text::graphemes::{
 use crate::theme::Theme;
 use crate::vim::engine::SearchMemory;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
-use postui_core::jq::{JqDocument, JqError, JqRun};
+use postui_core::jq::{Cancel, JqDocument, JqError, JqRun};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -249,6 +249,30 @@ impl JqRanFor {
     }
 }
 
+/// A pool run, or key lookup, the bar is waiting on: its id, and the switch
+/// its worker reads (#315). Only the waited-on one's result is accepted, so
+/// once the bar lets go of it (the wait cleared or replaced, or the
+/// response dropped) the result would be dropped on arrival: dropping this
+/// cancels the run there and then.
+pub struct JqWait {
+    id: u64,
+    cancel: Cancel,
+}
+
+impl JqWait {
+    /// A wait on `id`, and the switch to hand its worker.
+    fn new(id: u64) -> (Self, Cancel) {
+        let cancel = Cancel::default();
+        (Self { id, cancel: cancel.clone() }, cancel)
+    }
+}
+
+impl Drop for JqWait {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 /// The bar's completion state: the candidates for the caret's position
 /// and the keys they were built from. See the completion spec.
 #[derive(Default)]
@@ -270,14 +294,17 @@ pub struct JqCompletion {
     index: usize,
     /// A key fetch outstanding on the blocking pool: its sequence number
     /// and the expression it is for. Only the newest fetch's result is
-    /// kept.
-    pending: Option<(u64, String)>,
+    /// kept. The caret moving off its context, or the bar blurring or
+    /// closing (which keeps the text and this cache for a reopen), leaves
+    /// it running, since its keys are cached when it lands; the cost is a
+    /// core busy until it ends or reaches the limit (#315 spec C2).
+    pending: Option<(JqWait, String)>,
     seq: u64,
 }
 
 impl JqCompletion {
     pub fn pending(&self) -> Option<u64> {
-        self.pending.as_ref().map(|(s, _)| *s)
+        self.pending.as_ref().map(|(w, _)| w.id)
     }
 
     /// Whether the cached keys are for `expr` and still stand under `limit`.
@@ -393,8 +420,9 @@ pub struct JqBar {
     pub note: Option<&'static str>,
     /// The background run the bar is waiting on (its per-view id), and the
     /// only one whose result `attach_jq_result` accepts: whatever moves the
-    /// bar on (a new filter, run or not, or a reset) clears it.
-    pub pending: Option<u64>,
+    /// bar on (a new filter, run or not, or a reset) clears it, which
+    /// cancels the run.
+    pub pending: Option<JqWait>,
     /// When `pending`'s run was started, so the bar can hold its spinner
     /// back for `JQ_SPINNER_AFTER` and then animate it.
     pending_since: Instant,
@@ -684,7 +712,8 @@ fn all_null(outputs: &[String]) -> bool {
 /// Work the app must hand to the blocking pool: a jq run too big to run
 /// inline. `doc` is the cached parse when there is one; otherwise `body` is
 /// the raw text for the worker to parse before running the filter. The run
-/// stops at `limit`, the bar's.
+/// stops at `limit`, the bar's, or once the bar lets go of it (`cancel`,
+/// see [`JqWait`]).
 pub struct JqRunRequest {
     pub generation: u64,
     pub run: u64,
@@ -692,6 +721,7 @@ pub struct JqRunRequest {
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
     pub limit: Duration,
+    pub cancel: Cancel,
 }
 
 /// A completion key fetch for the blocking pool: run `input_expr` against
@@ -699,7 +729,7 @@ pub struct JqRunRequest {
 /// `Action::JqCompleteFinished`. As with [`JqRunRequest`], `body` is the
 /// raw text to parse first when no document is cached yet; the parse
 /// comes back with the keys so the view can keep it. The lookup stops at
-/// `limit`, the bar's.
+/// `limit`, the bar's, or once the bar lets go of it (`cancel`).
 pub struct JqCompleteRequest {
     pub generation: u64,
     pub seq: u64,
@@ -707,6 +737,7 @@ pub struct JqCompleteRequest {
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
     pub limit: Duration,
+    pub cancel: Cancel,
 }
 
 /// What a jq run hands back: the filter's outputs as jq would print them,
@@ -3043,7 +3074,8 @@ impl Response {
             _ => None,
         };
         self.state = state;
-        // The new view waits on no run: the old view's is dropped on arrival.
+        // The new view waits on no run: the old view's is cancelled, and
+        // dropped if it arrives.
         self.jq.pending = None;
         // The bar's text survives a new response, but nothing derived from
         // the old document does: the cached keys are for a body that is
@@ -3563,9 +3595,10 @@ impl Response {
             self.jq.pending = None;
             return None;
         }
-        // A run still going is awaited, at whatever limit it started with,
-        // and judged when it lands: nothing cancels it, so starting another
-        // would leave two busy. A lowered limit applies once it lands.
+        // A run still going for this filter is awaited, at whatever limit
+        // it started with, and judged when it lands: a limit change alone
+        // (`project.toml` edited while it runs) doesn't let go of it. A
+        // stop at the old limit then runs again under the new one.
         if view.jq_applied.as_ref().is_some_and(|a| a.stands_for(code, limit)) {
             return None;
         }
@@ -3616,13 +3649,15 @@ impl Response {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
             // back, just the outputs.
-            let result = postui_core::jq::run(code_trim, &doc, limit).map(JqRunOutput::from_run);
+            let result =
+                postui_core::jq::run(code_trim, &doc, limit, None).map(JqRunOutput::from_run);
             self.land_jq_result(result);
             return None;
         }
         view.jq_runs += 1;
         let run = view.jq_runs;
-        self.jq.pending = Some(run);
+        let (wait, cancel) = JqWait::new(run);
+        self.jq.pending = Some(wait);
         self.jq.pending_since = Instant::now();
         let doc = view.jq_doc.clone();
         let body = doc.is_none().then(|| view.raw.join());
@@ -3633,6 +3668,7 @@ impl Response {
             doc,
             body,
             limit,
+            cancel,
         })
     }
 
@@ -3735,7 +3771,7 @@ impl Response {
                 view.jq_doc = JqDocument::parse(&view.raw.join()).ok();
             }
             let doc = view.jq_doc.clone()?;
-            let found = complete::keys_at(&expr, &doc, limit);
+            let found = complete::keys_at(&expr, &doc, limit, None);
             c.cached_keys = found.keys;
             c.cached_expr = Some(JqRanFor::new(expr, found.stopped_at));
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
@@ -3743,7 +3779,9 @@ impl Response {
             return None;
         }
         c.seq += 1;
-        c.pending = Some((c.seq, expr.clone()));
+        // Replacing the fetch outstanding, if any, cancels it.
+        let (wait, cancel) = JqWait::new(c.seq);
+        c.pending = Some((wait, expr.clone()));
         let doc = view.jq_doc.clone();
         let body = doc.is_none().then(|| view.raw.join());
         Some(JqCompleteRequest {
@@ -3753,6 +3791,7 @@ impl Response {
             doc,
             body,
             limit,
+            cancel,
         })
     }
 
@@ -3854,7 +3893,7 @@ impl Response {
         if doc.is_some() && view.jq_doc.is_none() {
             view.jq_doc = doc;
         }
-        if self.jq.pending != Some(run) {
+        if self.jq.pending.as_ref().map(|w| w.id) != Some(run) {
             return false;
         }
         self.land_jq_result(result);
@@ -10984,6 +11023,29 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
 
+    /// #315 spec C2: closing the bar keeps its text and the completion
+    /// cache, so a lookup that lands while it is closed serves the bar
+    /// reopened on the same filter.
+    #[test]
+    fn a_lookup_landing_while_the_bar_is_closed_serves_its_reopening() {
+        let big = big_body("pad");
+        let mut r = big_body_bar(&big, 3, ".");
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
+            .expect("a big body fetches keys on the pool");
+        r.close_jq();
+        assert!(r.apply_jq("", SYNC_PRETTY_BYTES, LIMIT).is_none());
+        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        assert!(!r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad", "n"]), None));
+        assert!(r.open_jq());
+        r.apply_jq(".", SYNC_PRETTY_BYTES, LIMIT);
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
+            "the keys that landed are cached, not fetched again"
+        );
+        assert_eq!(r.jq_ghost(), Some("pad"));
+    }
+
     fn shift(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
@@ -11927,6 +11989,85 @@ mod tests {
         assert_eq!(new.run, old.run, "run ids restart with the view");
         assert!(!late(&mut r, &old), "the old view's result is dropped");
         assert!(r.jq_bar().pending.is_some(), "the new run is still awaited");
+    }
+
+    /// #315: a pool run the bar lets go of is cancelled there and then,
+    /// whatever lets go of it; one the bar still waits on is not.
+    #[test]
+    fn a_run_the_bar_lets_go_of_is_cancelled() {
+        let gone = |release: &dyn Fn(&mut Pane)| {
+            let mut r = ready(ITEMS);
+            let req = r.apply_jq(".data", 0, LIMIT).expect("background run");
+            assert!(!req.cancel.is_cancelled());
+            release(&mut r);
+            req.cancel.is_cancelled()
+        };
+        assert!(gone(&|r| assert!(r.apply_jq(".data.items", 0, LIMIT).is_some())), "a new filter");
+        assert!(gone(&|r| assert!(r.apply_jq(".data )", 0, LIMIT).is_none())), "a syntax error");
+        assert!(gone(&|r| assert!(r.apply_jq("", 0, LIMIT).is_none())), "a cleared bar");
+        assert!(gone(&|r| r.drop_pending_jq()), "a request switch");
+        assert!(gone(&|r| r.shed_derived()), "a shed");
+        assert!(
+            gone(&|r| r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9)),
+            "a new response"
+        );
+        assert!(
+            gone(&|r| r.set_state(ResponseState::InFlight { started: Instant::now() }, 9)),
+            "a re-send"
+        );
+        assert!(gone(&|r| *r = Pane::default()), "the response dropped");
+        // The same filter written back, or only the limit changed: still
+        // awaited, so still running.
+        assert!(!gone(&|r| assert!(r.apply_jq(".data", 0, LIMIT).is_none())), "the same filter");
+        assert!(
+            !gone(&|r| assert!(r.apply_jq(".data", 0, LIMIT * 2).is_none())),
+            "only the limit changed"
+        );
+    }
+
+    /// #315: completion's pool lookup is cancelled once the bar lets go of
+    /// it (another lookup, a new response, a request switch, a shed, the
+    /// response dropped); the caret moving off it, or the bar blurring or
+    /// closing, doesn't, since its keys are still cached on arrival.
+    #[test]
+    fn a_lookup_the_bar_lets_go_of_is_cancelled() {
+        let gone = |release: &dyn Fn(&mut Pane)| {
+            let big = big_body("pad");
+            let mut r = big_body_bar(&big, 3, ".");
+            let creq = r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).expect("pool lookup");
+            assert!(!creq.cancel.is_cancelled());
+            release(&mut r);
+            creq.cancel.is_cancelled()
+        };
+        let another = |r: &mut Pane| {
+            r.jq_bar_mut().input = LineInput::new(".n | .");
+            assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_some());
+        };
+        assert!(gone(&another), "another lookup");
+        assert!(
+            gone(&|r| r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9)),
+            "a new response"
+        );
+        assert!(gone(&|r| r.drop_pending_jq()), "a request switch");
+        assert!(gone(&|r| r.shed_derived()), "a shed");
+        assert!(gone(&|r| *r = Pane::default()), "the response dropped");
+        let off_the_end = |r: &mut Pane| {
+            r.jq_bar_mut().input.set_cursor(0);
+            assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        };
+        assert!(!gone(&off_the_end), "the caret off the end");
+        let blur = |r: &mut Pane| {
+            r.set_jq_focus(false);
+            assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        };
+        assert!(!gone(&blur), "the bar blurred");
+        let close = |r: &mut Pane| {
+            r.close_jq();
+            assert!(!r.jq_enabled(), "the filter is switched off");
+            assert!(r.apply_jq("", SYNC_PRETTY_BYTES, LIMIT).is_none());
+            assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
+        };
+        assert!(!gone(&close), "the bar closed");
     }
 
     /// The cells of the buffer row `y`, joined.

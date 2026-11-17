@@ -27096,6 +27096,7 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
         doc: Some(doc),
         body: None,
         limit: postui_core::project::DEFAULT_JQ_LIMIT,
+        cancel: Default::default(),
     });
     let Action::JqCompleteFinished { seq: 5, keys, .. } = &action else {
         panic!("{action:?}");
@@ -27150,6 +27151,34 @@ fn a_bar_filter_that_never_ends_stops_at_the_projects_limit() {
         .expect("still a background-sized run");
     assert!(req.doc.is_some() && req.body.is_none(), "the stopped run's parse was kept");
     assert_eq!(req.limit, std::time::Duration::from_millis(60));
+}
+
+/// #315, #308 spec B6: a pool run the bar has let go of ends at once, with a
+/// filter that never ends and a limit far off, and still hands back its
+/// parse of the body.
+#[test]
+fn a_cancelled_pool_run_ends_at_once_and_hands_back_its_parse() {
+    let cancel = postui_core::jq::Cancel::default();
+    cancel.cancel();
+    let started = std::time::Instant::now();
+    let action = crate::app::jq_worker(crate::components::response::JqRunRequest {
+        generation: 1,
+        run: 1,
+        code: "last(repeat(1))".into(),
+        doc: None,
+        body: Some(r#"{"n": 7}"#.into()),
+        limit: std::time::Duration::from_secs(60),
+        cancel,
+    });
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let Action::JqRunFinished {
+        doc: Some(_),
+        result: Err(postui_core::jq::JqError::Cancelled),
+        ..
+    } = &action
+    else {
+        panic!("cancelled, with the parse: {action:?}");
+    };
 }
 
 #[test]
@@ -27213,7 +27242,8 @@ fn a_pending_background_run_is_dropped_and_reapplied_across_a_request_switch() {
     // `sync_jq`/`spawn_jq_run`, which in tests (no tokio runtime) would
     // complete it inline — and leave it outstanding, the way a real run
     // still on the blocking pool looks from here.
-    app.session
+    let req = app
+        .session
         .response
         .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES, app.meta().jq_limit())
         .expect("big body → background");
@@ -27224,6 +27254,8 @@ fn a_pending_background_run_is_dropped_and_reapplied_across_a_request_switch() {
     // mechanism `App::dispatch` drives on every request switch — without
     // ever delivering the outstanding run's `JqRunFinished`.
     assert!(app.session.sync_open(&Some("elsewhere".into())));
+    // #315: the run left behind is cancelled as the response leaves.
+    assert!(req.cancel.is_cancelled());
     assert!(app.session.sync_open(&None));
 
     // The reconcile step must not see `jq_applied == editor.jq` and

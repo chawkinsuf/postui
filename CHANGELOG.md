@@ -30,6 +30,11 @@ change the project file format.
   such a filter no longer keeps a CPU core busy until postui quits. The jq
   bar's key completion stops there too and offers the keys it found before
   the stop. `jq_limit_ms` in `project.toml` sets another limit.
+- A jq bar run the bar no longer needs (the filter was edited or cleared,
+  a new response came, another request was opened) is stopped rather than
+  left running to the limit beside the run the bar is waiting for. So is a
+  key lookup for completion once another lookup, a new response or another
+  request replaces it.
 
 ### Changed
 

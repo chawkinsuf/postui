@@ -4,7 +4,7 @@
 //! (`candidates`). Pure apart from `keys_at`; jaq's types never leave the
 //! module.
 
-use super::{JqDocument, for_each_output, with_compiled, with_limit};
+use super::{Cancel, JqDocument, for_each_output, with_compiled, with_limit};
 use jaq_json::Val;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
@@ -24,12 +24,20 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 /// compile, a runtime error part-way — yields what was collected so far,
 /// never an error: a half-typed filter is normal here. In a stream, a
 /// runtime error ends only that value's run and the next value goes on.
-/// The run stops at `limit` like any jq run (#308), with the keys it had.
-pub fn keys_at(input_expr: &str, doc: &JqDocument, limit: std::time::Duration) -> Keys {
+/// The run stops at `limit` like any jq run (#308), with the keys it had,
+/// and ends the same way once `cancel`, when given, is set (#315). A
+/// cancelled lookup's keys carry no mark: cancel only a lookup whose result
+/// you no longer want.
+pub fn keys_at(
+    input_expr: &str,
+    doc: &JqDocument,
+    limit: std::time::Duration,
+    cancel: Option<&Cancel>,
+) -> Keys {
     let mut keys: Vec<String> = Vec::new();
     let mut outputs = 0;
     let ended = with_compiled(input_expr, |filter| {
-        with_limit(limit, |stop| {
+        with_limit(limit, cancel, |stop| {
             for_each_output(filter, doc, stop, |item| {
                 if let Ok(Val::Obj(map)) = &item {
                     for (k, _) in map.iter() {
@@ -610,7 +618,7 @@ mod tests {
 
     /// [`super::keys_at`] with a limit no test here reaches.
     fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
-        let found = super::keys_at(input_expr, doc, std::time::Duration::from_secs(60));
+        let found = super::keys_at(input_expr, doc, std::time::Duration::from_secs(60), None);
         assert_eq!(found.stopped_at, None, "{input_expr}");
         found.keys
     }
@@ -622,8 +630,26 @@ mod tests {
         let limit = std::time::Duration::from_millis(50);
         let started = std::time::Instant::now();
         let code = "{a: 1}, (repeat(1) | select(. == 2))";
-        let found = super::keys_at(code, &doc(), limit);
+        let found = super::keys_at(code, &doc(), limit, None);
         assert_eq!(found, super::Keys { keys: vec!["a".into()], stopped_at: Some(limit) });
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// #315: a lookup whose [`super::Cancel`] is set while it goes ends at
+    /// once, well before its limit, and is not a stop at a limit.
+    #[test]
+    fn a_cancelled_lookup_ends_before_its_limit() {
+        let cancel = super::Cancel::default();
+        let started = std::time::Instant::now();
+        let code = "{a: 1}, (repeat(1) | select(. == 2))";
+        let limit = std::time::Duration::from_secs(60);
+        let found = std::thread::scope(|scope| {
+            let lookup = scope.spawn(|| super::keys_at(code, &doc(), limit, Some(&cancel)));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            cancel.cancel();
+            lookup.join().unwrap()
+        });
+        assert_eq!(found.stopped_at, None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
