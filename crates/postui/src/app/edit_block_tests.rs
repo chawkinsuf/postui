@@ -482,3 +482,29 @@ fn a_short_terminal_keeps_the_buttons_and_a_huge_note_draws() {
         .any(|(x, y)| app.hits.hit_at(x, y) == Some(&Hit::EditBlock(EditBlockButton::Quit)));
     assert!(quit, "Quit is still there");
 }
+
+/// Checks tabs spec section 8, H5: an input on the waiting screen is the
+/// latest one used as anywhere, so once the screen goes the footer's line
+/// is the keyboard's after a key or a paste there, the pointer's after a
+/// mouse event there.
+#[test]
+fn an_input_on_the_waiting_screen_hands_the_footer_over() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let other = other_project("Other");
+    let mut app = waiting_on(other.path());
+    let moved = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.hint_from_keys = true;
+    app.handle_mouse(moved);
+    assert!(!app.hint_from_keys, "a mouse move");
+    app.handle_key(plain('x'));
+    assert!(app.hint_from_keys, "a key");
+    app.handle_mouse(moved);
+    app.handle_paste("x");
+    assert!(app.hint_from_keys, "a paste");
+    assert!(app.edit_block.is_some(), "still waiting");
+}

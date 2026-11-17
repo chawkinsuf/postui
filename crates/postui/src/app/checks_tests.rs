@@ -564,15 +564,28 @@ fn the_tab_says_what_goes_in_each_input() {
         let buf = frame(&mut app);
         let ghost = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
         assert_eq!(text_in(&buf, ghost).trim(), "", "{profile:?}");
-        // With no other check a send judges nothing (no response Checks
-        // tab), so the empty status claims no rule; another check, a limit
-        // or a jq one, brings the below-400 rule in.
+        // With no other check the app judges nothing (no response Checks
+        // tab) while `run` and `suite` apply the below-400 rule, so the
+        // empty status names them; another check, a limit or a jq one,
+        // brings the rule into the app too. A status set and then emptied
+        // in its open input is not counted as another check.
+        let alone = "run and suite: any code below 400";
         let mut app = checks_app("url = \"http://x.test/\"\n", profile);
-        assert_eq!(well_of(&mut app, 0).0, "no status check", "{profile:?}");
+        assert_eq!(well_of(&mut app, 0).0, alone, "{profile:?}");
         app.editor.table.set_selected(Some(Stop::Head(1)));
         feed(&mut app, open(profile));
         retype(&mut app, "500");
         assert_eq!(well_of(&mut app, 0).0, "any code below 400", "{profile:?}");
+        for (k, text) in [(1, ""), (0, "200")] {
+            app.editor.table.set_selected(Some(Stop::Head(k)));
+            feed(&mut app, open(profile));
+            retype(&mut app, text);
+        }
+        assert_eq!(checks(&app).status, [200], "{profile:?}");
+        app.editor.table.set_selected(Some(Stop::Head(0)));
+        feed(&mut app, open(profile));
+        app.editor.table.editing.as_mut().expect("open").input.set_text("");
+        assert_eq!(well_of(&mut app, 0).0, alone, "{profile:?}: its own check");
         let mut app = checks_app("url = \"http://x.test/\"\n[checks]\njq = ['.a']\n", profile);
         assert_eq!(well_of(&mut app, 0).0, "any code below 400", "{profile:?}");
     }

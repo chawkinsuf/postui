@@ -11963,7 +11963,8 @@ impl App {
     pub fn handle_paste(&mut self, text: &str) -> bool {
         self.end_armed_press();
         // A paste lands where the keyboard is, so it hands the footer's
-        // line to the keyboard cursor's input, as a key does.
+        // line to the keyboard cursor's input, as a key does, one on the
+        // edit flag's waiting screen included.
         let handed = !std::mem::replace(&mut self.hint_from_keys, true);
         self.paste_text(text) || handed
     }
@@ -12713,11 +12714,12 @@ impl App {
     /// dialog is over it (`edit_block.rs`).
     pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
         self.end_armed_press();
-        if self.edit_block.is_some() && self.modals.is_empty() {
-            return self.blocked_key(ev);
-        }
-        // A key hands the footer's line to the keyboard cursor's input.
+        // A key hands the footer's line to the keyboard cursor's input, one
+        // on the edit flag's waiting screen included.
         let handed = !std::mem::replace(&mut self.hint_from_keys, true);
+        if self.edit_block.is_some() && self.modals.is_empty() {
+            return self.blocked_key(ev) || handed;
+        }
         // Where the keyboard is before this key (plan M4a Deviation 6).
         self.note_pane();
         // The field session catches up first with whatever moved the caret

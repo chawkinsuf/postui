@@ -19,8 +19,9 @@ change the project file format.
   that pass, the time limits until the first byte and until the last byte
   (the total time), and the jq checks. An empty box says what empty means
   (`no limit`; for the status `any code below 400` while another check is
-  set, `no status check` while none is), a new jq check's input says it
-  takes a jq filter that must give true, and the footer says what goes in
+  set, `run and suite: any code below 400` while none is), a new jq
+  check's input says it takes a jq filter that must give true, and the
+  footer says what goes in
   the input under the pointer or the keyboard cursor. The response has a
   Checks tab, when the request had checks at the send, with
   a line for each check and `✓` or `✗` on the tab for the response as a

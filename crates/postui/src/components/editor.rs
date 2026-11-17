@@ -64,10 +64,10 @@ pub struct CheckField {
     pub label: &'static str,
     /// What the empty well shows while another check is set.
     pub placeholder: &'static str,
-    /// What it shows while no other check is set: a send then judges
-    /// nothing, and the response has no Checks tab (P1), so the
-    /// below-400 rule shows nowhere in the app.
-    pub alone: &'static str,
+    /// What it shows instead while no other check is set, where that
+    /// differs: the app judges a request only when it has a check (P1),
+    /// while `run` and `suite` apply the below-400 rule to every request.
+    pub alone: Option<&'static str>,
     pub hint: &'static str,
 }
 
@@ -79,7 +79,7 @@ pub const CHECK_FIELDS: [CheckField; TableSpec::CHECKS.heads] = [
     CheckField {
         label: "status",
         placeholder: "any code below 400",
-        alone: "no status check",
+        alone: Some("run and suite: any code below 400"),
         // What empty means is the placeholder's to say: it depends on the
         // other checks.
         hint: "Codes that pass, e.g. 200, 201",
@@ -87,13 +87,13 @@ pub const CHECK_FIELDS: [CheckField; TableSpec::CHECKS.heads] = [
     CheckField {
         label: "first byte (ms)",
         placeholder: "no limit",
-        alone: "no limit",
+        alone: None,
         hint: "Most ms until the response starts to arrive; empty: no limit",
     },
     CheckField {
         label: "last byte (ms)",
         placeholder: "no limit",
-        alone: "no limit",
+        alone: None,
         hint: "Most ms until the response has fully arrived; empty: no limit",
     },
 ];
@@ -606,14 +606,17 @@ impl Editor {
     }
 
     /// What the Checks tab's field `k` shows while empty: its
-    /// [`CheckField::placeholder`] while the request has another check,
-    /// its [`CheckField::alone`] while it has none (section 8, H1).
+    /// [`CheckField::alone`], when it has one, while the request has no
+    /// other check, else its [`CheckField::placeholder`] (section 8, H1).
+    /// The checks counted are the committed ones ([`Self::check_count`],
+    /// the tab's count): an input still open counts once it closes.
     fn check_field_placeholder(&self, k: usize) -> &'static str {
         let field = &CHECK_FIELDS[k];
-        let other = (k != 0 && !self.check_status.is_empty())
-            || self.check_limits.iter().enumerate().any(|(i, limit)| i + 1 != k && limit.is_some())
-            || !self.check_rows.is_empty();
-        if other { field.placeholder } else { field.alone }
+        let own = || usize::from(!self.check_field_text(k).is_empty());
+        match field.alone {
+            Some(alone) if self.check_count() == own() => alone,
+            _ => field.placeholder,
+        }
     }
 
     /// Field `k` closed holding `text` (spec Q5): a value the file can

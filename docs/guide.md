@@ -56,7 +56,8 @@ Params, Vars, Body and Checks:
 - **Body** is a JSON editor that can format or minify the body, or open it in
   your `$EDITOR`.
 - **Checks** says what a good response is: the status codes that pass (left
-  empty, any code below 400 passes once another check is set), limits in
+  empty, any code below 400 passes: in `run` and `suite` always, in the app
+  once another check is set), limits in
   milliseconds on the time until the first byte and until the last byte (the
   total time, until the response has fully arrived), and jq checks that must
   each give `true`. They are judged each time the request is sent.

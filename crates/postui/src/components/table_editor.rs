@@ -1629,8 +1629,14 @@ impl TableEditorState {
         let mut key_drew = 0;
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
+            // Empty, the table's placeholder says what to type, if it has
+            // one.
             let input = &edit.input;
-            Self::paint_cell_edit(buf, cols.name_x, y, name_w, input, spec.placeholder, bg, theme);
+            let line = spec
+                .placeholder
+                .and_then(|p| input.placeholder_line(p, true, theme, name_w))
+                .unwrap_or_else(|| input.draw_line_windowed(true, theme, name_w));
+            Self::paint_cell_edit(buf, cols.name_x, y, name_w, line, bg);
         } else {
             let cell = Rect::new(cols.name_x, y, name_w, 1);
             key_drew = key_rest.paint_at_rest(buf, cell, theme, fg, name_bg);
@@ -1639,7 +1645,8 @@ impl TableEditorState {
         let mut value_drew = 0;
         if editing_col == Some(Col::Value) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
-            Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, None, bg, theme);
+            let line = edit.input.draw_line_windowed(true, theme, value_w);
+            Self::paint_cell_edit(buf, cols.value_x, y, value_w, line, bg);
         } else {
             let cell = Rect::new(cols.value_x, y, value_w, 1);
             value_drew = value_rest.paint_at_rest(buf, cell, theme, fg, value_bg);
@@ -1702,27 +1709,20 @@ impl TableEditorState {
     /// Paints a live cell edit in place: the cell lifts one step above its
     /// row — so the exact cell the keyboard sits in reads at a glance, the
     /// Variable Manager grid's rule for its own in-place edits — and the
-    /// input draws into it, windowed to the cell's own width, or, empty,
-    /// `placeholder` when there is one.
-    #[allow(clippy::too_many_arguments)]
+    /// input's `line`, drawn to the cell's own width, goes into it.
     fn paint_cell_edit(
         buf: &mut ratatui::buffer::Buffer,
         x: u16,
         y: u16,
         w: u16,
-        input: &LineInput,
-        placeholder: Option<&str>,
+        mut line: ratatui::text::Line<'static>,
         row_bg: ratatui::style::Color,
-        theme: &Theme,
     ) {
         if w == 0 {
             return;
         }
         let bg = crate::theme::lift_color(row_bg, 0.06);
         fill(buf, Rect::new(x, y, w, 1), bg);
-        let mut line = placeholder
-            .and_then(|p| input.placeholder_line(p, true, theme, w))
-            .unwrap_or_else(|| input.draw_line_windowed(true, theme, w));
         line.style = Style::default().bg(bg).patch(line.style);
         buf.set_line(x, y, &line, w);
     }

@@ -402,18 +402,6 @@ pub(crate) fn stored_in<'a>(
     scope_values.iter().find(|(l, _)| l == label).and_then(|(_, v)| v.as_deref())
 }
 
-/// The value popup's value box while `input` is empty: a muted "(not
-/// set)" (the variable form's own wording), the caret over its `(` when
-/// focused ([`LineInput::placeholder_line`]). `None` once it has text.
-fn value_placeholder_line(
-    input: &LineInput,
-    focused: bool,
-    theme: &Theme,
-    width: u16,
-) -> Option<Line<'static>> {
-    input.placeholder_line("(not set)", focused, theme, width)
-}
-
 /// The value popup's chosen Write-to label and whether that scope stores
 /// a value — the predicate behind the "✕ remove" affordance, shared by
 /// its painter, its footer chip, and the remove itself (click or alt+d).
@@ -3556,7 +3544,12 @@ impl ModalStack {
                         let w = field_w.saturating_sub(2);
                         let content = value_box
                             .then(|| {
-                                value_placeholder_line(&field.input, field_caret_live, theme, w)
+                                field.input.placeholder_line(
+                                    "(not set)",
+                                    field_caret_live,
+                                    theme,
+                                    w,
+                                )
                             })
                             .flatten()
                             .unwrap_or_else(|| {
@@ -4253,7 +4246,9 @@ mod tests {
         use ratatui::style::Modifier;
 
         let empty = LineInput::new("");
-        let focused = value_placeholder_line(&empty, true, &theme, 40).unwrap();
+        let line =
+            |input: &LineInput, focused| input.placeholder_line("(not set)", focused, &theme, 40);
+        let focused = line(&empty, true).unwrap();
         assert_eq!(focused.spans.len(), 2, "caret char + the rest");
         assert_eq!(
             focused.spans[0].content.as_ref(),
@@ -4267,7 +4262,7 @@ mod tests {
         );
         assert_eq!(focused.spans[1].content.as_ref(), "not set)");
 
-        let resting = value_placeholder_line(&empty, false, &theme, 40).unwrap();
+        let resting = line(&empty, false).unwrap();
         assert_eq!(resting.spans.len(), 1);
         assert_eq!(resting.spans[0].content.as_ref(), "(not set)");
         assert!(
@@ -4275,7 +4270,7 @@ mod tests {
             "no caret while unfocused"
         );
         let typed = LineInput::new("x");
-        assert!(value_placeholder_line(&typed, true, &theme, 40).is_none(), "text hides it");
+        assert!(line(&typed, true).is_none(), "text hides it");
     }
 
     #[test]
