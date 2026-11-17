@@ -317,11 +317,25 @@ and ending a request kills the whole group (SIGKILL), so it reaches what
 `sh` forked and what the command itself started, not only `sh`. Every way
 a request ends early kills it: Esc, a new request, its view leaving the
 screen, and quitting the app, which kills it before the runtime is shut
-down (a quit doesn't wait for the runtime to drop its tasks). Its cost,
-put to the user on #314 and open: a command outside the terminal's
-foreground group no longer gets the terminal's own SIGHUP when the window
-closes under the app, and one that reads the terminal is stopped (SIGTTIN)
-until the request ends.
+down (a quit doesn't wait for the runtime to drop its tasks). A command
+outside the terminal's foreground group has two costs, put to the user on
+#314 and answered there (comment 1444, "A for both"; both mine
+(approved)):
+
+- It no longer gets the terminal's own SIGHUP when the window closes
+  under the app (or the ssh session drops). So the app catches the
+  hangup itself: its handler kills the running command's group, then
+  puts back the hangup's default action and raises it again, so the app
+  ends as the hangup would have ended it without the handler. The cost,
+  accepted: a process-wide signal handler, a few lines of `unsafe` to
+  register it, and the running command's group id kept in an atomic the
+  handler reads, since a handler can't take the run's lock. A hangup that
+  is ignored when the app starts (`nohup`) stays ignored. With `$EDITOR`
+  open the app ends at once, as it did before the handler.
+- One that opens the terminal itself (`/dev/tty`, for a login or a
+  yes/no) is stopped (SIGTTIN) when it reads it, and the bar shows
+  `asking…` until Esc ends it. Kept as is: nothing is lost and Esc ends
+  it; the cost, accepted, is that nothing says why it waits.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the
