@@ -3447,7 +3447,11 @@ impl Response {
         view.jq_outputs = 1;
         view.raw_marks.clear();
         view.content_width = None;
-        view.clear_sel();
+        // Only the Tree tab's lines go with the tree (#317): another tab's
+        // selection is on lines the shed leaves as they are.
+        if view.mode == ViewMode::Pretty {
+            view.clear_sel();
+        }
         view.parsing = true;
         view.shed = true;
         self.jq.pending = None;
@@ -11931,6 +11935,37 @@ mod tests {
             assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none());
         };
         assert!(!gone(&close), "the bar closed");
+    }
+
+    /// #317: a shed takes only the Tree tab's lines away, so a selection
+    /// on Raw, Headers or Checks is still there when the response comes
+    /// back on screen; one on the Tree tab goes with the tree.
+    #[test]
+    fn a_shed_keeps_a_selection_on_another_tab() {
+        let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
+        let selection = |r: &Pane| {
+            let v = r.view().unwrap();
+            (v.sel, v.sel_anchor, v.line_anchor, r.selected_text())
+        };
+        for mode in [ViewMode::Raw, ViewMode::Headers, ViewMode::Checks, ViewMode::Pretty] {
+            let mut r = ready_gen(&body, 7);
+            assert!(r.attach_tree(7, JsonTree::parse(&body)));
+            r.set_checks(CheckState::Judged(vec![(true, ".a".into())]));
+            r.set_view_mode(mode);
+            assert_eq!(r.view().unwrap().mode, mode);
+            let (area, _) = render_buf(&mut r);
+            // The tree's first line is its `{`; the key is on the next.
+            let y = area.y + u16::from(mode == ViewMode::Pretty);
+            assert!(r.begin_selection_at(area.x + 1, y));
+            assert!(r.drag_selection_to(area.x + 4, y));
+            let before = selection(&r);
+            assert!(before.3.is_some(), "{mode:?}: a selection to keep");
+            assert!(r.holds_big_derived(), "{mode:?}: a body the cache sheds");
+            r.shed_derived();
+            assert!(r.take_reparse().is_some(), "{mode:?}: back on screen, parsing again");
+            let after = if mode == ViewMode::Pretty { (None, None, None, None) } else { before };
+            assert_eq!(selection(&r), after, "{mode:?}");
+        }
     }
 
     /// The cells of the buffer row `y`, joined.
