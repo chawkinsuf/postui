@@ -3428,15 +3428,6 @@ impl Response {
         self.jq_caret
     }
 
-    /// Forgets an outstanding background jq run when this response is
-    /// being stashed or restored across a request switch: the run's
-    /// `JqRunFinished` is bound for a `Response` that has moved into (or
-    /// out of) the session cache and won't be looked up again by the
-    /// generation/run it was started for, so it would otherwise arrive to
-    /// nothing and leave `jq_applied` claiming a filter that was never
-    /// actually run. Resetting `jq_applied` to `None` makes `sync_jq`'s
-    /// next reconcile re-apply the filter (a fresh run) instead of no-oping
-    /// on a filter it only ever *started*.
     /// Whether this response holds the derived state a big body is worth
     /// shedding from a cache slot: a tree or a jq document over a body past
     /// the background-parse threshold. Small bodies are never shed — their
@@ -3496,6 +3487,13 @@ impl Response {
         Some((view.generation, body))
     }
 
+    /// Lets go of the background jq run and the completion key lookup the
+    /// bar is waiting on, which cancels both (#315). `Session::sync_open`
+    /// calls it on the response leaving screen at a request switch and on
+    /// the one coming on. A run let go of never lands, so `jq_applied`
+    /// would name a filter that was only started: it is reset to `None`,
+    /// and `sync_jq`'s next reconcile starts the filter afresh instead of
+    /// taking it as applied.
     pub fn drop_pending_jq(&mut self) {
         if self.jq.pending.take().is_some()
             && let Some(view) = self.view.as_mut()
