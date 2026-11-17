@@ -414,23 +414,40 @@ mod tests {
             s.response.set_state(ResponseState::Ready(data(&body)), i as u64);
             assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
         }
+        let slugs = |names: &[&str]| -> Vec<Option<String>> {
+            names.iter().map(|n| Some(n.to_string())).collect()
+        };
+        // The cached big responses still holding a tree: exactly `warm`.
+        let warm_ok = |s: &Session, names: &[&str]| {
+            let mut big: Vec<_> = s
+                .cache
+                .iter()
+                .filter(|(_, r)| r.holds_big_derived())
+                .map(|(k, _)| k.clone())
+                .collect();
+            big.sort();
+            let mut want = slugs(names);
+            want.sort();
+            assert_eq!(s.warm.iter().cloned().collect::<Vec<_>>(), slugs(names));
+            assert_eq!(big, want, "only the warm ones keep their tree");
+        };
+        warm_ok(&s, &["big1", "big2", "big3"]);
         // Straight from the newest back to the oldest of the last few.
         open(&mut s, "big1");
         let view = s.response.view().unwrap();
         assert!(view.tree.is_some() && !view.parsing, "big1 was warm: no re-parse");
         assert_eq!(s.response.take_reparse(), None);
-        // The bound holds: the one on screen plus KEEP_WARM warm.
-        let has_tree = |s: &Session, slug: &str| {
-            s.cache[&Some(slug.to_string())].view().is_some_and(|v| v.tree.is_some())
-        };
-        for i in 2..=KEEP_WARM + 1 {
-            assert!(has_tree(&s, &format!("big{i}")), "big{i} stays warm");
-        }
+        warm_ok(&s, &["big2", "big3", "big4"]);
         open(&mut s, "elsewhere");
-        assert!(!has_tree(&s, "big2"), "pushing big1 past KEEP_WARM sheds the oldest");
-        for slug in ["big3", "big4", "big1"] {
-            assert!(has_tree(&s, slug), "{slug} stays warm");
-        }
+        warm_ok(&s, &["big3", "big4", "big1"]);
+        // From an Empty response, and from a small one, the response opened
+        // leaves `warm` too.
+        open(&mut s, "big3");
+        warm_ok(&s, &["big4", "big1"]);
+        open(&mut s, "small");
+        s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 9);
+        open(&mut s, "big4");
+        warm_ok(&s, &["big1", "big3"]);
     }
 
     #[test]
