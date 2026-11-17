@@ -104,7 +104,8 @@ late. An endless array grows for the limit's length, then is freed.
   call counter (`Cell<u32>`); `Stop::tick` counts and, every 1024 calls,
   compares the clock with the deadline, and past it calls
   `resume_unwind` with a private marker type. With no deadline it does
-  nothing. `HasLut::lut` calls `tick` first.
+  nothing. `HasLut::lut` calls `tick` first. (Replaced in review round 1,
+  see the amendment below: a flag a timer thread sets.)
 - `funs()` drops jaq-core's native `range/3` and adds postui's, which
   ticks on each value it yields. Its outputs and errors are jaq's (a
   copy of `jaq-core/src/funs.rs:55-71`).
@@ -164,6 +165,28 @@ check job is #311's `http::ChecksRun`, so the limit goes into
 other caller of `check_lines`. `run`'s `record` takes the limit as an
 eighth argument.
 
+Amended 2026-11-17, review round 1 (mine):
+
+- **The stop is a flag a timer thread sets**, not the clock read every
+  1024 steps. A run whose steps are each slow (`"x" * 1000000 |
+  until(false; explode | implode)`) went 1024 steps between two reads of
+  the clock: with a 50 ms limit it stopped after 8.6 s. Now
+  `run_limited` starts a scoped timer thread that waits on a channel for
+  the limit and sets `Stop`'s `AtomicBool` if the run hasn't ended;
+  `tick` reads the flag on every step, so a run stops one step past the
+  limit. The run's end (or unwind) drops the channel's sender, which
+  ends the wait at once. Cost: a thread per jq check, about 0.1 ms
+  (release, measured); the runs measured in section 1 stayed within
+  noise (e.g. 61.2 vs 59.6 ms, 412.0 vs 405.5 ms), and the slow-step
+  filter above, over 10 million characters with a 1 s limit, stopped at
+  1.05 s.
+- **The limit counts from the run, after the filter compiles**, not from
+  before the compile.
+- **`on_arrival` keeps its old signature**: it judges inline only checks
+  with no jq check, so no limit comes into it.
+- The app reads the limit as the response arrives, from the project as
+  the app last read it (on a reload), not from the file at that moment.
+
 **Docs:** the skill's `reference.md` lists `jq_check_limit_ms` under
 `project.toml` and says in the `[checks]` paragraph that a jq check is
 stopped at the limit; the checks tabs spec's section 7 detail 4 and A8
@@ -174,6 +197,7 @@ and the suite checks spec get a dated #310 paragraph.
 | Rule | Test |
 |---|---|
 | L1, L6 | `jq`: `run_limited` with a 50 ms limit stops `last(range(1e18))`, `[range(1e10)]`, `[repeat(1)]`, `def f: f; f`, `until(false; .)`, and `try (last(range(1e18))) catch true`, each with the error `stopped at the 50 ms limit`, well under 5 s. |
+| L1, L6 | `jq` (review round 1): `"x" * 1000000 \| until(false; explode \| implode)` with a 50 ms limit stops in under 1 s (it took 8.6 s with the clock read every 1024 steps). |
 | L6 | `jq`: postui's `range` gives what jaq's did: `[range(5)]`, `[range(2; 8)]`, `[range(0; 10; 3)]`, `[range(5; 0; -2)]`, `[limit(3; range(0; 1; 0))]`, `[range(0.5; 3)]`, `range(0; 3; "a")` gives 0 then an error (amended while building: `range(1; "a")` never ends, since a number is below every string); over `run` and `run_limited` alike. |
 | L6 | `jq`: a filter that ends gives the same `JqRun` from `run` and from `run_limited` (the existing fixtures). |
 | L10 | `jq`: `run` has no limit (a filter of about 100 ms with a deadline of 1 ms in `run_limited` is stopped, through `run` it ends). |
@@ -202,8 +226,9 @@ the key's name, which the docs give. Still open for veto:
   is about 49 days.
 - L9: a bad value fails `project.toml` like any other bad value, rather
   than falling back to 1 s with a warning.
-- The clock is read every 1024 term evaluations; measured, a stop comes
-  within about 1 ms of the limit, plus the time to free what the run
+- ~~The clock is read every 1024 term evaluations~~ (replaced in review
+  round 1): a timer thread per jq check sets a flag each step reads; a
+  stop comes one step past the limit, plus the time to free what the run
   built (up to 85 ms seen).
 - A postui older than this branch refuses a `project.toml` that has the
   key (`ProjectMeta` denies unknown keys), as it would any newer key.

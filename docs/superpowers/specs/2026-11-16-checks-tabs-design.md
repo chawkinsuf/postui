@@ -558,8 +558,9 @@ lines find it by its generation as above.
    **2026-11-17, #310.** Each jq check now ends at the project's
    `jq_check_limit_ms` (1 s by default; the user: "Yes I already
    confirmed 1 second."), stopped inside the run and failed with
-   `<filter>: stopped at the <N> ms limit`. So a job ends within the
-   limit for each of its jq checks: a re-send leaves at most that long a
-   job, and a quit waits at most that long. A huge allocation or a stack
-   overflow in one native step is still not stopped (#282). See
+   `<filter>: stopped at the <N> ms limit`. So a job ends about the
+   limit after each of its jq checks starts: a re-send leaves about that
+   long a job, and a quit waits about that long. A huge allocation in one
+   native step is still not stopped, and a filter that overflows the
+   stack still ends the process (#282). See
    `2026-11-17-jq-check-limit-design.md`.
