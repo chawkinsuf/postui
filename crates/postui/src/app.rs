@@ -2237,13 +2237,14 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 /// call it without a runtime, and so `App::spawn_jq_run` can run it inline
 /// when there is no runtime to spawn onto.
 ///
-/// The run stops at the request's limit (#308). The parse this worker
-/// made comes back beside the result, failed or not, so the next run needn't
-/// read the body again (#308 spec B6).
+/// The run stops at the request's limit (#308), or once the bar lets go of
+/// it (#315). The parse this worker made comes back beside the result,
+/// failed or cancelled or not, so the next run needn't read the body again
+/// (#308 spec B6).
 pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Action {
     use crate::components::response::{JqRunOutput, JqRunRequest};
     use postui_core::jq::{JqDocument, JqError, run as jq_run};
-    let JqRunRequest { generation, run, code, doc, body, limit } = req;
+    let JqRunRequest { generation, run, code, doc, body, limit, cancel } = req;
     let (parsed, fresh) = match (doc, body) {
         (Some(d), _) => (Ok(d), None),
         (None, Some(b)) => match JqDocument::parse(&b) {
@@ -2252,13 +2253,14 @@ pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Actio
         },
         (None, None) => (Err(JqError::Runtime { message: "no document".into() }), None),
     };
-    let result = parsed.and_then(|d| jq_run(&code, &d, limit)).map(JqRunOutput::from_run);
+    let result =
+        parsed.and_then(|d| jq_run(&code, &d, limit, Some(&cancel))).map(JqRunOutput::from_run);
     Action::JqRunFinished { generation, run, doc: fresh, result }
 }
 
 /// The blocking-pool half of a completion key fetch, stopped at the
-/// request's limit (#308). Free-standing for the same reasons as
-/// [`jq_worker`].
+/// request's limit (#308), or once the bar lets go of it (#315).
+/// Free-standing for the same reasons as [`jq_worker`].
 pub(crate) fn jq_complete_worker(req: crate::components::response::JqCompleteRequest) -> Action {
     let crate::components::response::JqCompleteRequest {
         generation,
@@ -2267,6 +2269,7 @@ pub(crate) fn jq_complete_worker(req: crate::components::response::JqCompleteReq
         doc,
         body,
         limit,
+        cancel,
     } = req;
     let (doc, fresh) = match (doc, body) {
         (Some(d), _) => (Some(d), None),
@@ -2278,7 +2281,7 @@ pub(crate) fn jq_complete_worker(req: crate::components::response::JqCompleteReq
     };
     let keys = doc
         .as_ref()
-        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d, limit))
+        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d, limit, Some(&cancel)))
         .unwrap_or_default();
     Action::JqCompleteFinished { generation, seq, input_expr, keys, doc: fresh }
 }

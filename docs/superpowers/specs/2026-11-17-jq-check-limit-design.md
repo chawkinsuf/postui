@@ -4,7 +4,8 @@ Branch `jq-check-limit`, from `main` at `a207b70` (#312 merged).
 
 Amended 2026-11-17 by #308 (section 7): the key is now `jq_limit_ms`,
 `run_limited` is folded into `jq::run`, and every jq run stops at the
-limit. Sections 1 to 6 keep #310's record under its names.
+limit. Sections 1 to 6 keep #310's record under its names. Amended again
+by #315 (section 8): the jq bar cancels a run or lookup it no longer needs.
 
 ## 1. The problem and what was found
 
@@ -294,7 +295,8 @@ the same.
 | B8 | ~~The response's check job reads the same flag, so a quit doesn't wait on its jq checks either.~~ (2026-11-17: removed with the flag; B7 covers the check job.) | ~~mine~~ |
 
 There is no cancel: a run the bar has moved past still runs until it ends
-or reaches the limit (option B on the ticket, not taken). ~~A quit waits at
+or reaches the limit (option B on the ticket, not taken). (2026-11-17:
+replaced by #315, section 8: such a run is cancelled.) ~~A quit waits at
 most that long for a run still going.~~ (2026-11-17: replaced by B7 and
 B8; option C, Tokio's `shutdown_timeout`, and option D, a separate bar
 limit, were not taken.)
@@ -360,7 +362,7 @@ the app quits can be lost or cut short.
   and `checks::evaluate`, read by `Stop` beside its timer's flag, and the
   app owned it as `JqQuit`, set on drop and handed to `jq_worker`,
   `jq_complete_worker` and the check job. All of it is removed.) No handle
-  per run (option B, not taken).
+  per run (option B, not taken; 2026-11-17: built by #315, section 8).
 
 **Tests.**
 
@@ -380,5 +382,84 @@ the app quits can be lost or cut short.
 
 **`mine` choices, for veto:** B2's keys found before the stop; B4; B6;
 the bar's memo and completion's cache carry a stop's limit (a run stopped
-by a slow moment stays until the filter, response or limit changes); no
-cancel of a run the bar moved past.
+by a slow moment stays until the filter, response or limit changes); ~~no
+cancel of a run the bar moved past~~ (2026-11-17: #315 cancels it,
+section 8).
+
+## 8. #315: cancel a run or lookup the bar no longer needs (2026-11-17)
+
+Branch `jq-cancel-runs`, from `main` at `e8cfb90` (#308 merged).
+
+**The problem.** Section 7 left a run the bar has moved past running until
+it ends or reaches the limit. Those leftover runs compete for the CPU with
+the run the bar waits for, so a filter that ends just under the limit
+alone can pass it, show `stopped at the 1000 ms limit`, and keep showing
+it, since a stop is remembered (#308 round 6: a 40 MB array,
+`group_by(.user) | map(length)`, alone 0.86 to 0.90 s, the last of 8 runs
+started 150 ms apart 0.98 to 1.43 s). The user picked filing this as its
+own task (#308 comment 1437, A: mine (approved)), then queued it.
+
+**Where it's lost.** The bar's wait (`JqBar::pending`) and completion's
+(`JqCompletion::pending`) are the only things that say a run is still
+wanted: `attach_jq_result` / `attach_jq_completion` accept only the waited
+one. Every path that lets go of a run (a new filter, run or not, a cleared
+bar, a new response, a request switch's `drop_pending_jq`, a shed, a new
+lookup, the response dropped) clears or replaces that field, and before
+this task only forgot the number; the worker's `Stop` was out of reach.
+
+| # | Rule | Source |
+|---|---|---|
+| C1 | A jq bar pool run is cancelled as soon as the bar lets go of it: the filter edited (run or not) or cleared, a new response, another request opened, the response shed or dropped. It ends at its next step. | mine (approved) (#308 comment 1437, option B's shape, filed as #315 by A) |
+| C2 | Completion's pool key lookup is cancelled the same way when a new lookup replaces it, a new response comes, or another request is opened. The caret moving off it, or the bar blurring, does not: its keys are still cached when it lands. | mine (approved), as C1; the caret rule: mine |
+| C3 | A cancelled run's result is dropped, as a superseded run's already was; its parse of the body is still handed back and kept (B6). | mine |
+| C4 | A run still going for the same filter is still awaited when only the limit changes (section 7). The reason given there, that superseding left two runs busy, no longer holds; it stays because the case needs `project.toml` edited while a run is going, and the run is judged when it lands (a stop at the old limit runs again under the new one). | mine |
+| C5 | Checks, inline runs and `run --jq` take no cancel: nothing lets go of them early. The check job of a response that is replaced still runs to its end or the limit. | mine |
+
+**Design.**
+
+- Core: `jq::Cancel`, a shared switch (`Arc<AtomicBool>`) with `cancel`
+  and `is_cancelled`. `jq::run(code, doc, limit, cancel: Option<&Cancel>)`
+  and `complete::keys_at(expr, doc, limit, cancel)` take it; `Stop` reads
+  it on each step beside the timer's flag, and a cancelled run fails whole
+  with the new `JqError::Cancelled` (message `cancelled`, no span, not a
+  stop at a limit, so nothing remembers it as one). The unwind marker
+  carries the run's error.
+- App: `JqWait { id, cancel }` is what `JqBar::pending` and
+  `JqCompletion::pending` hold; dropping it cancels the switch. So every
+  path that clears or replaces the wait cancels the run, with no list of
+  places: the release is the field's own drop. `JqRunRequest` and
+  `JqCompleteRequest` carry the worker's clone; `jq_worker` and
+  `jq_complete_worker` pass it to core.
+- Callers that nothing cancels (`checks::evaluate`, `run --jq`, the bar's
+  inline path) pass `None`.
+
+**Measured** (release build of `postui-core` on this branch, 24 cores, a
+37 MB array of 420,000 objects, `group_by(.user) | map(length)`; the
+machine was shared with other builds, load average 14 to 22, so the times
+are noisy; three rounds): alone 0.79 to 1.09 s. Runs started 150 ms apart
+with no cancel: the last of 4 took 0.94 to 1.16 s, the last of 8 1.07 to
+1.28 s. Each new run cancelling the one before, as the bar does: every
+cancelled run ended 170 to 180 ms after it started, so within about 30 ms
+of its cancel, and the last of 4 took 0.91 to 1.48 s, the last of 8 0.95
+to 2.11 s. The two slow ones (1.48, 2.11) ran when every earlier run had
+already ended, so they are the machine's load, not leftover runs; the
+third round, the quietest, gave 0.91 and 0.95 s against 0.92 to 1.02 s
+alone.
+
+**TUI check** (debug build, `jq_limit_ms = 60000`, a small JSON body, the
+process's CPU time read from `/proc` every 0.5 s): `last(repeat(1))` typed
+in the bar, then edited four times 3 s apart, each edit a new never-ending
+filter (`| 1`, then backspace and `2`, `3`, `4`). The process used one core
+and 28 threads from the first run to the end; each edit's run replaced the
+one before rather than adding a core and two threads.
+
+**Tests.**
+
+| Rule | Test |
+|---|---|
+| C1 | `jq`: a run cancelled from another thread while it goes ends with `Cancelled`, well before a 60 s limit, for loops through `range`, `repeat`, a recursive `def` and a `try`; one cancelled before it starts doesn't run; an unset switch changes nothing. |
+| C2 | `complete`: a lookup cancelled while it goes ends well before its limit, with no `stopped_at`. |
+| C1, C4 | response: a pool run's switch is set by a new filter, a syntax error, a cleared bar, `drop_pending_jq`, a shed, a new response and the response dropped; not by the same filter written back or only the limit changed. |
+| C2 | response: a pool lookup's switch is set by another lookup, a new response and `drop_pending_jq`; not by the bar blurring. |
+| C1 | app: a request switch (`Session::sync_open`) cancels the run left behind. |
+| C3 | app: `jq_worker` with a cancelled switch and a never-ending filter returns at once with `Cancelled` and the parsed document. |
