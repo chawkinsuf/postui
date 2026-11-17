@@ -627,8 +627,10 @@ pub fn config_seed() -> String {
 # indent_width = {}
 
 # The command \"Describe a filter…\" pipes its prompt into. One command,
-# which may start with NAME=value settings: no ;, & or | outside quotes
-# (a script that ends with exec and the command can hold more).
+# which may start with NAME=value settings. It is run with exec so Esc
+# stops it: nothing after ; or && runs, and Esc doesn't stop a pipeline.
+# For more than one command, use a script that ends with exec and the
+# command.
 # ai_cmd = {:?}
 
 # Set once by the AI prompt's \"Always send\" choice. false asks again.

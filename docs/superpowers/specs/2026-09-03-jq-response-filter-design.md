@@ -312,9 +312,8 @@ generation and a request counter. The bar shows the spinner and `asking…`;
 while a request is pending `Esc` in the bar cancels it (kills the child)
 instead of blurring, and a stale reply is dropped.
 
-2026-11-17 (#314): the command runs as `sh -c "exec <ai_cmd>"` (`exec`
-goes after any leading `NAME=value` assignments), so the shell becomes the
-command and the child the app kills (SIGKILL) is the
+2026-11-17 (#314): the command runs as `sh -c "exec <ai_cmd>"`, so the
+shell becomes the command and the child the app kills (SIGKILL) is the
 command itself, not a `sh` that forked it. Every way a request ends early
 kills it: Esc, a new request, its view leaving the screen, and quitting
 the app, which kills it from the UI thread before the runtime is shut
@@ -333,16 +332,18 @@ and the question of comment 1450. Its costs, accepted:
 - Helper processes the command itself forks are not killed by Esc or a
   quit.
 
-Review round 1 of the `exec` design (mine): leading `NAME=value`
-assignments stay allowed, since `exec` is put after them (`KEY=… exec
-llm`), which narrows the first cost. An `ai_cmd` with `;`, `&`, `|` or a
-line break outside quotes is refused where a missing program is: the
-context menu's item is disabled with `(ai_cmd is more than one command)`
-and opening the prompt toasts that, pointing at the script route. Without
-the refusal, `a && b` would silently run only `a`, and with a pipe the shell
-forks both sides, so a cancel would again kill only the shell. The kill stays a SIGKILL at
-once: a SIGTERM first would need a later SIGKILL for a command that
-ignores it, which a quit can't wait for.
+Review round 2 of the `exec` design (mine): the app does not parse
+`ai_cmd`. Round 1 had put `exec` after the leading assignments and
+refused lists and pipes, which took two shell scanners, and round 2 found
+inputs each of them misread. Instead the command runs as `sh -c "exec env
+<ai_cmd>"`: `env` takes the leading `NAME=value` words as its settings
+and execs the program, so `KEY=… llm` still works and is still the
+process the app kills. What a list or a pipeline does is documented, not
+refused: nothing after `;` or `&&` runs, and Esc doesn't stop a pipeline.
+A launcher (`timeout`, `npx`, `uvx`) that forks the tool is the second
+cost above; the docs say to prefer the tool itself. The kill stays a
+SIGKILL at once: a SIGTERM first would need a later SIGKILL for a command
+that ignores it, which a quit can't wait for.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the

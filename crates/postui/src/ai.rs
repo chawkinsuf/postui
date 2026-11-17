@@ -26,49 +26,13 @@ pub fn program_available(cmd: &str) -> bool {
 /// environment assignments — for toasts, menu hints, and the log, which
 /// never sees the rest of the command (a key may be in it).
 pub fn program_name(cmd: &str) -> &str {
-    shell_words(cmd).into_iter().find(|(_, word)| !is_assignment(word)).map_or("", |(_, word)| word)
+    shell_words(cmd).into_iter().find(|word| !is_assignment(word)).unwrap_or("")
 }
 
-/// The byte offset of `program_name`'s word in `cmd`, or `cmd.len()` when
-/// it has none: what comes before it is the leading assignments.
-fn program_start(cmd: &str) -> usize {
-    shell_words(cmd)
-        .into_iter()
-        .find(|(_, word)| !is_assignment(word))
-        .map_or(cmd.len(), |(start, _)| start)
-}
-
-/// Whether `cmd` is one command for the shell: no `;`, `&`, `|` or line
-/// break outside quotes (a backslash makes the next character plain).
-/// `run_command` runs `cmd` with `exec`, which only the first command of a
-/// list or pipeline would get.
-pub fn is_single_command(cmd: &str) -> bool {
-    let mut quote = None;
-    let mut chars = cmd.chars();
-    while let Some(c) = chars.next() {
-        match quote {
-            Some('\'') if c == '\'' => quote = None,
-            Some('\'') => {}
-            Some(_) if c == '"' => quote = None,
-            Some(_) if c == '\\' => {
-                chars.next();
-            }
-            Some(_) => {}
-            None if c == '\\' => {
-                chars.next();
-            }
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None if matches!(c, ';' | '&' | '|' | '\n') => return false,
-            None => {}
-        }
-    }
-    true
-}
-
-/// `cmd` split at whitespace the way a shell sees words, each with its byte
-/// offset: a quoted stretch (`"a b"`, `'a b'`) stays inside its word, so
-/// `KEY="sk abc" llm` is two words and `llm` is the program.
-fn shell_words(cmd: &str) -> Vec<(usize, &str)> {
+/// `cmd` split at whitespace the way a shell sees words: a quoted stretch
+/// (`"a b"`, `'a b'`) stays inside its word, so `KEY="sk abc" llm` is two
+/// words and `llm` is the program.
+fn shell_words(cmd: &str) -> Vec<&str> {
     let mut words = Vec::new();
     let mut start = None;
     let mut quote = None;
@@ -82,7 +46,7 @@ fn shell_words(cmd: &str) -> Vec<(usize, &str)> {
             }
             None if c.is_whitespace() => {
                 if let Some(s) = start.take() {
-                    words.push((s, &cmd[s..i]));
+                    words.push(&cmd[s..i]);
                 }
             }
             None => {
@@ -91,7 +55,7 @@ fn shell_words(cmd: &str) -> Vec<(usize, &str)> {
         }
     }
     if let Some(s) = start {
-        words.push((s, &cmd[s..]));
+        words.push(&cmd[s..]);
     }
     words
 }
@@ -177,11 +141,12 @@ impl CommandRun {
     }
 }
 
-/// Runs `cmd` through `sh -c` with `exec` put before its program (after
-/// any leading `NAME=value` assignments), with `stdin` piped in. The shell
-/// becomes the command, so `CommandRun::kill` reaches the command and not
-/// only the shell; `cmd` is therefore one command (`is_single_command`,
-/// which the app checks before a request). `Err` when the command could
+/// Runs `sh -c "exec env <cmd>"` with `stdin` piped in. The shell becomes
+/// `env`, which takes `cmd`'s leading `NAME=value` words as its settings
+/// and becomes the program in turn, so `CommandRun::kill` reaches the
+/// command and not only the shell. `cmd` is not parsed, so in a list or a
+/// pipeline only the first command gets `exec env` (the #314 paragraph of
+/// the jq-response-filter spec). `Err` when the command could
 /// not be started or waited on, or `run` was killed before it finished.
 pub async fn run_command(
     cmd: String,
@@ -191,10 +156,9 @@ pub async fn run_command(
     if run.is_over() {
         return Err("cancelled".into());
     }
-    let (assignments, command) = cmd.split_at(program_start(&cmd));
     let mut child = tokio::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("{assignments}exec {command}"))
+        .arg(format!("exec env {cmd}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -231,6 +195,7 @@ pub async fn run_command(
     };
     // Waited on only once out of the run, so `kill` never signals a pid
     // that has been reaped and may belong to another process by then.
+    // From here, dropping this future ends the command (`kill_on_drop`).
     let RunState::Running(mut child) = std::mem::replace(&mut *run.state(), RunState::Over) else {
         return Err("cancelled".into());
     };
@@ -324,32 +289,6 @@ mod tests {
         assert_eq!(program_name("1X=1 llm"), "1X=1", "not an identifier: a program");
     }
 
-    #[test]
-    fn a_single_command_has_no_list_or_pipe_outside_quotes() {
-        for one in [
-            "claude -p",
-            "KEY=\"sk abc\" llm -m x",
-            "llm -s 'a; b | c && d'",
-            "llm -s \"a; b | c\"",
-            "llm -s a\\;b",
-            "llm -s \"say \\\"hi\\\"; ok\"",
-        ] {
-            assert!(is_single_command(one), "{one}");
-        }
-        for more in [
-            "llm; echo done",
-            "llm -m x && echo done",
-            "llm || true",
-            "claude -p | jq -r .result",
-            "llm &",
-            "llm 2>&1",
-            "llm\necho done",
-            "llm -s 'quoted'; echo",
-        ] {
-            assert!(!is_single_command(more), "{more}");
-        }
-    }
-
     async fn run(cmd: &str, stdin: &str) -> Result<CommandOutput, String> {
         run_command(cmd.into(), stdin.into(), &CommandRun::default()).await
     }
@@ -362,8 +301,20 @@ mod tests {
 
     #[tokio::test]
     async fn run_command_keeps_leading_assignments() {
-        let out = run("GREETING=\"hi there\" sh -c 'echo \"$GREETING\"'", "").await.unwrap();
-        assert_eq!(out.into_reply().unwrap(), "hi there\n");
+        for cmd in [
+            "GREETING=\"hi there\" sh -c 'echo \"$GREETING\"'",
+            "GREETING=hi\\ there sh -c 'echo \"$GREETING\"'",
+            "GREETING=\"$(echo hi there)\" sh -c 'echo \"$GREETING\"'",
+        ] {
+            let out = run(cmd, "").await.unwrap();
+            assert_eq!(out.into_reply().unwrap(), "hi there\n", "{cmd}");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_command_keeps_redirections() {
+        let out = run("sh -c 'echo oops >&2' 2>&1", "").await.unwrap();
+        assert_eq!(out.into_reply().unwrap(), "oops\n");
     }
 
     /// The command reads its input only after it has printed more than a
@@ -394,7 +345,7 @@ mod tests {
     /// and leave `sleep` holding it.
     #[tokio::test]
     async fn kill_ends_the_command() {
-        for cmd in ["sleep 30", "NAP=1 sleep 30"] {
+        for cmd in ["sleep 30", "NAP=1 sleep 30", "NAP=a\\ b sleep 30"] {
             let run = std::sync::Arc::new(CommandRun::default());
             let task = tokio::spawn({
                 let run = std::sync::Arc::clone(&run);

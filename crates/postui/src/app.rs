@@ -6404,14 +6404,6 @@ impl App {
                     self.toasts.push("The response is still being parsed", ToastKind::Info);
                     return true;
                 }
-                if !crate::ai::is_single_command(&self.ui_settings.ai_cmd) {
-                    self.toasts.push(
-                        "ai_cmd is more than one command \u{2014} put it in a script that ends \
-                         with exec, and set ai_cmd to the script",
-                        ToastKind::Error,
-                    );
-                    return true;
-                }
                 if !crate::ai::program_available(&self.ui_settings.ai_cmd) {
                     self.toasts.push(
                         format!(
@@ -11276,11 +11268,7 @@ impl App {
             items.push(MenuItem::new("Collect into array", Action::JqCollect));
         }
         let program = crate::ai::program_name(&self.ui_settings.ai_cmd);
-        if !crate::ai::is_single_command(&self.ui_settings.ai_cmd) {
-            items.push(MenuItem::disabled(
-                "Describe a filter\u{2026}  (ai_cmd is more than one command)",
-            ));
-        } else if crate::ai::program_available(&self.ui_settings.ai_cmd) {
+        if crate::ai::program_available(&self.ui_settings.ai_cmd) {
             items.push(MenuItem::new("Describe a filter\u{2026}", Action::OpenJqDescribe));
         } else {
             items.push(MenuItem::disabled(format!(

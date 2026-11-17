@@ -28962,25 +28962,6 @@ fn describe_is_disabled_when_the_program_is_missing() {
     assert!(app.toasts.last_message().unwrap().contains("not found"));
 }
 
-/// The command is run with `exec`, which only the first of several
-/// commands would get.
-#[test]
-fn describe_is_disabled_when_ai_cmd_is_more_than_one_command() {
-    let mut app = App::new_for_test();
-    ready_response(&mut app, JQ_BODY);
-    app.ui_settings.ai_cmd = "sh -c 'cat' | cat".into();
-    right_click_row(&mut app, "\"items\"");
-    assert_eq!(
-        menu_action(&app, "Describe a filter\u{2026}  (ai_cmd is more than one command)"),
-        None
-    );
-    app.update(Action::Close);
-    app.update(Action::OpenJqDescribe);
-    assert!(app.modals.top().is_none(), "no prompt");
-    let toast = app.toasts.last_message().unwrap();
-    assert!(toast.contains("more than one command") && toast.contains("script"), "{toast}");
-}
-
 #[tokio::test]
 async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     let mut app = App::new_for_test();
