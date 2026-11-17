@@ -403,7 +403,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableDelete(_) | Hit::FooterChip(Action::DeleteTableRow(_)) => {
             Some(Source::Text(format!("Delete this {}", table.noun)))
         }
-        Hit::FooterChip(Action::TableAddRow) => Some(Source::Text(format!("Add a {}", table.noun))),
+        Hit::FooterChip(Action::TableAddRow) => text(table.add_hint),
         // The row toggle's chip drives the same two-state control as the
         // row's own checkbox, so it says the same thing. Handled here
         // rather than through `describe_action`, which has no `ctx`.

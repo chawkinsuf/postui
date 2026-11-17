@@ -36,6 +36,8 @@ pub struct TableSpec {
     /// The warning for a row renamed onto another row's name, which
     /// leaves the one row; `{}` is that name.
     pub merged: &'static str,
+    /// The hint of the footer's add chip.
+    pub add_hint: &'static str,
     /// How many heads the caller draws above the rows ([`Stop::Head`]).
     pub heads: usize,
     /// A row is its name alone, one line of text: it has no value and no
@@ -59,6 +61,7 @@ impl TableSpec {
         yanked: "a table row",
         blank: "a row needs a name — kept '{}'",
         merged: "duplicate key '{}' replaced the existing value",
+        add_hint: "Add a row to the active Params/Headers/Vars table",
         heads: 0,
         name_only: false,
         vars: true,
@@ -72,6 +75,7 @@ impl TableSpec {
         yanked: "a check",
         blank: "a check can't be empty — kept '{}'",
         merged: "'{}' already exists — the two checks are now one",
+        add_hint: "Add a check",
         heads: 3,
         name_only: true,
         vars: false,

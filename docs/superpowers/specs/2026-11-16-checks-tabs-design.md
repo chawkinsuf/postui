@@ -142,8 +142,9 @@ response side reads nothing from the editor.
   click and the draw. Each thing the checks list differs in has one
   home there (#309 review round 5):
   - its words, written out as data: the noun (`check`), the header
-    (`CHECK`), what a yank holds (`a check`), and the two warnings whose
-    sentence differs (a blanked name, a name merged into another row);
+    (`CHECK`), what a yank holds (`a check`), the two warnings whose
+    sentence differs (a blanked name, a name merged into another row),
+    and the add chip's hint;
   - `heads`, the three fields;
   - `name_only`, what a row is: its name alone, one line of text with
     no value and no on/off switch. What follows from that reads this
@@ -232,8 +233,10 @@ row (#309 review rounds 4 and 5): the table's three warnings, the
 delete toasts, the copy toast, the put's three warnings (a repeat, a
 row yanked on another tab, a row put in the sidebar), and the hints of
 a row's pills and chips, which read the spec through `HintCtx::table`
-(`Copy this check`, `Delete this check`, `Add a check`; `row` on the
-other tabs). A field's refusal quotes what was typed cut short, as a
+(`Copy this check`, `Delete this check`, `Add a check`). On the Params,
+Headers and Vars tabs the three hints read as on `main`; their add
+hint is `main`'s palette line, written out in the spec, since the
+palette's own line now names Checks too. A field's refusal quotes what was typed cut short, as a
 check is quoted, and a field's label and hint are one table
 (`CHECK_FIELDS`, as long as the spec's `heads`). Beside it, by the tab,
 where the other tabs' own fixed labels already are: the row menu's
@@ -322,6 +325,3 @@ the check results by `HintCtx::checks`, the Checks view being up.
     app's next save of that request. A save already writes the whole
     file from what the app holds, so it writes no comment back either,
     and neither a repeat nor the whitespace changed a verdict (round 5).
-20. The add chip's hint is `Add a check`, from the table's noun; on the
-    Params, Headers and Vars tabs the same hint now reads `Add a row`,
-    where it was the palette's line for the command (round 5).

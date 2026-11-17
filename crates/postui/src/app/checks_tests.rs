@@ -308,8 +308,16 @@ fn every_message_on_the_tab_says_check() {
     let hint = |app: &App, hit: Hit| crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit));
     assert_eq!(hint(&app, Hit::TableCopy(0)).as_deref(), Some("Copy this check"));
     assert_eq!(hint(&app, Hit::TableDelete(0)).as_deref(), Some("Delete this check"));
-    let add = Hit::FooterChip(Action::TableAddRow);
-    assert_eq!(hint(&app, add).as_deref(), Some("Add a check"));
+    let add = || Hit::FooterChip(Action::TableAddRow);
+    assert_eq!(hint(&app, add()).as_deref(), Some("Add a check"));
+    // The other tabs' add, copy and delete hints are worded as before.
+    for tab in [EditorTab::Params, EditorTab::Headers, EditorTab::Vars] {
+        app.update(Action::EditorTabSelect(tab.index()));
+        let copy = Hit::FooterChip(Action::CopyToClipboard(CopyTarget::TableRow(0)));
+        let said = [add(), copy, Hit::TableDelete(0)].map(|hit| hint(&app, hit).unwrap());
+        let rows = ["Add a row to the active Params/Headers/Vars table", "Copy this row's value"];
+        assert_eq!(said, [rows[0], rows[1], "Delete this row"], "{tab:?}");
+    }
     // A yanked check put where it can't go: another tab quotes it on one
     // short line, and the sidebar says the register holds a check.
     let key = format!(".a\n| {}", ". == 1 or ".repeat(20));
