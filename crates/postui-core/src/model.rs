@@ -354,6 +354,7 @@ impl Checks {
         let mut codes = Vec::new();
         for word in text.split([',', ' ']).filter(|w| !w.is_empty()) {
             let code = word.parse::<u16>().ok().and_then(status_code).ok_or_else(|| {
+                let word = crate::checks::brief(word);
                 format!("a check's status must be a code from 100 to 599, not {word}")
             })?;
             if !codes.contains(&code) {
@@ -373,8 +374,9 @@ impl Checks {
         text.parse::<u32>().ok().and_then(limit_of).map(Some).ok_or_else(|| {
             format!(
                 "a check's time limit must be a whole number of milliseconds from 1 to {}, \
-                 not {text}",
-                u32::MAX
+                 not {}",
+                u32::MAX,
+                crate::checks::brief(text)
             )
         })
     }
@@ -1070,6 +1072,12 @@ mod tests {
         for bad in ["0", "-1", "1.5", "500 ms", "4294967296", "soon"] {
             let err = Checks::parse_limit(bad).unwrap_err();
             assert!(err.starts_with("a check's time limit must be a whole number"), "{err}");
+        }
+        // What was typed is quoted cut short.
+        let long = "9".repeat(200);
+        for err in [Checks::parse_status(&long), Checks::parse_limit(&long).map(|_| vec![])] {
+            let err = err.unwrap_err();
+            assert!(err.ends_with('…') && err.chars().count() < 150, "{err}");
         }
     }
 

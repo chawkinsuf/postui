@@ -9,7 +9,8 @@ pub(super) use postui_core::checks::FIRST_FAILING_STATUS;
 use postui_core::checks::{Measure, Outcome};
 use serde::Serialize;
 
-/// The status check's verdict; `None` when the request has none.
+/// The status check's verdict; `None` when the request has none. Read
+/// from the masked checks, which are what a report keeps.
 pub(super) fn status_check(checks: &[ShownCheck]) -> Option<bool> {
     checks.iter().find_map(|c| match c.kind {
         Kind::Status { passed, .. } => Some(passed),
@@ -38,13 +39,18 @@ pub(super) fn passed(status: u16, checks: &[ShownCheck]) -> bool {
 pub(super) struct ShownCheck {
     #[serde(flatten)]
     kind: Kind,
-    /// Why it failed, the line after `check failed: `; `None` when it
-    /// passed. The JSON gives this line, clipped as the text is, rather
-    /// than a filter's outputs, which can be as large as the body (§2.3).
-    failure: Option<String>,
-    /// What `run -v` lists for it ([`Outcome::summary`]); not in the JSON.
-    #[serde(skip)]
-    summary: String,
+    /// What `run -v` lists for it ([`Outcome::summary`]): `Ok` what
+    /// passed, `Err` why it failed, the line after `check failed: `. The
+    /// JSON's `failure` is the `Err` line, `null` for a check that passed:
+    /// clipped as the text is, rather than a filter's outputs, which can
+    /// be as large as the body (§2.3).
+    #[serde(rename = "failure", serialize_with = "failure")]
+    line: Result<String, String>,
+}
+
+/// A check's `failure`: its line when it failed.
+fn failure<S: serde::Serializer>(line: &Result<String, String>, s: S) -> Result<S::Ok, S::Error> {
+    line.as_ref().err().serialize(s)
 }
 
 /// The JSON's three shapes (§2.3, §2.7): `{"check": "status", "expected",
@@ -80,17 +86,14 @@ fn measure_key<S: serde::Serializer>(measure: &Measure, s: S) -> Result<S::Ok, S
 
 impl ShownCheck {
     pub(super) fn passed(&self) -> bool {
-        match &self.kind {
-            Kind::Status { passed, .. } | Kind::Time { passed, .. } | Kind::Jq { passed, .. } => {
-                *passed
-            }
-        }
+        self.line.is_ok()
     }
 
     /// What `run -v` lists for the check: its failure, else what passed
     /// (`status 200`, `first byte 45 ms, limit 500 ms`, or the filter).
     pub(super) fn summary(&self) -> String {
-        self.summary.clone()
+        let (Ok(line) | Err(line)) = &self.line;
+        line.clone()
     }
 }
 
@@ -100,9 +103,8 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
         .iter()
         .map(|outcome| {
             let passed = outcome.passed();
-            // A failed check's line is its failure.
-            let summary = outcome.summary(|text| mask.apply(text));
-            let failure = (!passed).then(|| summary.clone());
+            let line = outcome.summary(|text| mask.apply(text));
+            let line = if passed { Ok(line) } else { Err(line) };
             let kind = match outcome {
                 Outcome::Status { expected, got } => {
                     Kind::Status { check: "status", expected: expected.clone(), got: *got, passed }
@@ -112,7 +114,7 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
                 }
                 Outcome::Jq { filter, .. } => Kind::Jq { check: mask.apply(filter), passed },
             };
-            ShownCheck { kind, failure, summary }
+            ShownCheck { kind, line }
         })
         .collect()
 }
@@ -120,7 +122,7 @@ pub(super) fn shown(outcomes: &[Outcome], mask: &Mask) -> Vec<ShownCheck> {
 /// A `check failed: …` line for each check of `checks` that failed, in
 /// order.
 pub(super) fn failure_lines(checks: &[ShownCheck]) -> impl Iterator<Item = String> + '_ {
-    checks.iter().filter_map(|c| c.failure.as_ref()).map(|f| format!("check failed: {f}"))
+    checks.iter().filter_map(|c| c.line.as_ref().err()).map(|f| format!("check failed: {f}"))
 }
 
 /// `checks` run over a response with `status` and `body` that took

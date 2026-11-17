@@ -309,6 +309,24 @@ fn every_message_on_the_tab_says_check() {
     assert_eq!(hint(&app, Hit::TableDelete(0)).as_deref(), Some("Delete this check"));
     let add = Hit::FooterChip(Action::TableAddRow);
     assert_eq!(hint(&app, add).as_deref(), Some("Add a check"));
+    // A yanked check put where it can't go: another tab quotes it on one
+    // short line, and the sidebar says the register holds a check.
+    let key = format!(".a\n| {}", ". == 1 or ".repeat(20));
+    let entry = postui_core::model::Entry { value: String::new(), enabled: true };
+    app.yank = crate::yank::Register::Row { tab: EditorTab::Checks, key: key.clone(), entry };
+    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    app.update(Action::PutTableRow { at: 0, count: 1 });
+    let quoted = postui_core::checks::brief(&key);
+    assert_eq!(last(&app), format!("{quoted} was yanked from another tab"));
+    app.update(Action::PutRequest { anchor: None, above: false, count: 1 });
+    assert_eq!(last(&app), "nothing to put here: the register holds a check");
+    // A refused field value is quoted short too.
+    app.update(Action::EditorTabSelect(EditorTab::Checks.index()));
+    app.editor.focus_content_from_app();
+    feed(&mut app, "i");
+    retype(&mut app, &"9".repeat(200));
+    assert!(last(&app).contains("100 to 599, not 999"), "{}", last(&app));
+    assert!(last(&app).chars().count() < 150, "{}", last(&app));
 }
 
 /// A click opens a field or a check in place, committing what was open; a

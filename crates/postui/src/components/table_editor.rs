@@ -54,6 +54,11 @@ impl TableSpec {
         if self.one_column { postui_core::checks::brief(key) } else { key.to_string() }
     }
 
+    /// A yanked row, as a message says what the register holds.
+    pub fn yanked(&self) -> String {
+        if self.one_column { format!("a {}", self.noun) } else { "a table row".to_string() }
+    }
+
     /// The warning for a `+ Add` name that is already a row's.
     pub fn taken(&self, typed: &str) -> String {
         format!("'{}' already exists \u{2014} no {} added", self.quoted(typed), self.noun)

@@ -5,7 +5,7 @@ use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::{Row, RowKey};
-use crate::components::table_editor::Stop;
+use crate::components::table_editor::{Stop, TableSpec};
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{
     VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
@@ -3248,12 +3248,7 @@ impl App {
     /// in `spec`'s word for a row. A row whose key was never filled in
     /// has no name to quote; its 1-based position is what the user was
     /// looking at, so that is what it says.
-    pub(super) fn toast_deleted_row(
-        &mut self,
-        spec: &crate::components::table_editor::TableSpec,
-        key: &str,
-        i: usize,
-    ) {
+    pub(super) fn toast_deleted_row(&mut self, spec: &TableSpec, key: &str, i: usize) {
         let noun = spec.noun;
         let what = if key.trim().is_empty() {
             format!("{noun} {}", i + 1)
@@ -4927,9 +4922,10 @@ impl App {
                     crate::yank::Register::Empty => return true,
                     // The register is invisible, so silence would read as a
                     // dead key: say what it holds.
-                    crate::yank::Register::Row { .. } => {
+                    crate::yank::Register::Row { tab, .. } => {
+                        let held = tab.table_spec().unwrap_or(&TableSpec::ROWS).yanked();
                         self.toasts.push(
-                            "nothing to put here: the register holds a table row",
+                            format!("nothing to put here: the register holds {held}"),
                             ToastKind::Warning,
                         );
                         self.last_action_failed = true;
@@ -4985,25 +4981,25 @@ impl App {
                         return true;
                     }
                 };
+                // The yanked row's table, for its words and its shape.
+                let spec = tab.table_spec().unwrap_or(&TableSpec::ROWS);
                 // A header is not a param: the register stays on its tab.
                 if tab != self.editor.active_tab {
+                    let quoted = spec.quoted(&key);
                     self.toasts
-                        .push(format!("{key} was yanked from another tab"), ToastKind::Warning);
+                        .push(format!("{quoted} was yanked from another tab"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
                 // A check is its text, and the list holds each once: a put
                 // of one still in the list adds none, as a repeat typed into
                 // `+ Add check` adds none, and a count puts the one.
-                let one = tab.table_spec().filter(|spec| spec.one_column);
-                if let Some(spec) = one
-                    && self.editor.table_index_of(&key).is_some()
-                {
+                if spec.one_column && self.editor.table_index_of(&key).is_some() {
                     self.toasts.push(spec.taken(&key), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
-                let count = if one.is_some() { 1 } else { count };
+                let count = if spec.one_column { 1 } else { count };
                 // Each copy goes under the one before, so the run reads in
                 // the order it was made; the cursor ends on the first, as
                 // vim's `3p` leaves it. One action is one editor change.
@@ -11407,23 +11403,23 @@ impl App {
     /// table (Task 17, spec §5): duplicate, delete, and extract its value to
     /// a variable. `None` for the Body tab (no table there) or a row index
     /// past the map's end (the ghost row, or one that vanished under a
-    /// commit the caller already resolved past). A check's menu is its
-    /// delete alone: a list holds a check once, so there is no duplicate
-    /// to make, and a check has no value to extract.
+    /// commit the caller already resolved past). A one-column row's menu
+    /// is its delete alone: a check is its text, which the list holds
+    /// once, so there is no duplicate to make and no value to extract.
     fn table_row_context_menu(&self, i: usize) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
+        let spec = self.editor.active_tab.table_spec()?;
         let noun = match self.editor.active_tab {
             EditorTab::Params => "param",
             EditorTab::Headers => "header",
             EditorTab::Vars => "variable",
-            EditorTab::Checks => "check",
-            EditorTab::Body => return None,
+            _ => spec.noun,
         };
         if i >= self.editor.table_len() {
             return None;
         }
         let delete = MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i));
-        if self.editor.active_tab == EditorTab::Checks {
+        if spec.one_column {
             return Some(vec![delete]);
         }
         Some(vec![
@@ -12140,9 +12136,10 @@ impl App {
             // so a whole-header copy never reads `: value`.
             CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => {
                 let (key, value) = self.editor.table_row_at(*i)?;
-                // A check is its row's name: that is what its copy takes.
-                if self.editor.active_tab == EditorTab::Checks {
-                    return Some((key.to_string(), "Copied check".to_string()));
+                // A one-column row is its name: that is what its copy takes.
+                let spec = self.editor.active_tab.table_spec()?;
+                if spec.one_column {
+                    return Some((key.to_string(), format!("Copied {}", spec.noun)));
                 }
                 Some(header_copy(key, value, key))
             }

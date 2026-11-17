@@ -18,11 +18,6 @@ pub fn passes(status: u16, status_check: Option<bool>, checks: bool) -> bool {
     status_check.unwrap_or(status < FIRST_FAILING_STATUS) && checks
 }
 
-/// The status check's verdict in `outcomes`; `None` when there is none.
-pub fn status_check(outcomes: &[Outcome]) -> Option<bool> {
-    outcomes.iter().find(|o| matches!(o, Outcome::Status { .. })).map(Outcome::passed)
-}
-
 /// [`passes`] for a response whose checks read as `lines` ([`lines`]):
 /// every line passed, the below-400 rule's among them.
 pub fn passed(lines: &[(bool, String)]) -> bool {
@@ -34,7 +29,8 @@ pub fn passed(lines: &[(bool, String)]) -> bool {
 /// the below-400 rule failed the response (no status check, a status of
 /// 400 or more), a first line says so, since no outcome does.
 pub fn lines(status: u16, outcomes: &[Outcome]) -> Vec<(bool, String)> {
-    let rule = (status_check(outcomes).is_none() && status >= FIRST_FAILING_STATUS)
+    let named = outcomes.iter().any(|o| matches!(o, Outcome::Status { .. }));
+    let rule = (!named && !passes(status, None, true))
         .then(|| (false, format!("status {status}, expected below {FIRST_FAILING_STATUS}")));
     let checks = outcomes.iter().map(|o| (o.passed(), o.summary(str::to_string)));
     rule.into_iter().chain(checks).collect()
@@ -334,7 +330,6 @@ mod tests {
         assert_eq!(lines(399, &out), [(true, ".ok".to_string())]);
         // A status check that names the code passes a 404, with no rule line.
         let out = over(&checks(&[404], &[".ok"]), 404, body);
-        assert_eq!(status_check(&out), Some(true));
         assert!(passed(404, &out));
         assert_eq!(lines(404, &out), [(true, "status 404".to_string()), (true, ".ok".to_string())]);
         let out = over(&checks(&[200], &[]), 500, body);

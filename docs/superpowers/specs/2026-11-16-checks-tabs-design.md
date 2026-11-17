@@ -151,9 +151,10 @@ it is written back as read. The fields draw above the table and don't
 scroll with it. An open field is `FieldId::CheckField` under
 `Hit::CheckField`. A field's close parses its text with core's
 `parse_status` / `parse_limit`; a refusal is a warning toast and the
-old value stays (Q5). Every call into the table that can close an
-input ends in `Editor::finish_table`, which writes a closed field and
-opens the one a Tab walk reached.
+old value stays (Q5). The table's keys, its commit and its click end
+in `Editor::finish_table`, which writes a closed field and opens the
+one a Tab walk reached. A delete drops an open input unwritten, on
+every tab, as on `main`.
 
 **Variables.** `Editor::caret_takes_vars` is the one question; it
 answers no for the Checks tab's content. Its askers are listed in
@@ -162,7 +163,8 @@ section 4.
 **The tab row.** `draw_tab_bar` lays the row out with counts; when its
 end reaches the split chips it lays it out again without them. The Body
 tab's label carries ` · vars` in both forms while the body's variables
-are on (W3), and the row is measured with it whether or not they are.
+are on (W3), and the row is measured with it, and with the Body tab's
+badge, whether or not the tab has them (#309 review round 4).
 
 Removed: `cli/checks.rs`'s own `FIRST_FAILING_STATUS`, `passed` body
 and `summary` body; `settle_view_under_head`,
@@ -207,12 +209,16 @@ text menu don't offer it), token colour and hover tips
 (`paint_cell_tokens`), the caret's tooltip and its keys
 (`Editor::caret_token`), the footer's `vars` chip.
 
-**Words** (`TableSpec`): the table's three warnings, the delete toasts,
-the put's warning. Beside it, by the tab, where the other tabs' own
-words already are: the row menu's noun and items, `+ Add check`, the
-copy toast, the footer's add chip (`EditorTab::add_row_label`) and row
-chips (`TableCursor::Checks`), the pills' and chips' hints
-(`HintCtx::checks`).
+**Words** (`TableSpec`): every message that names or quotes a row
+(#309 review round 4): the table's three warnings, the delete toasts,
+the copy toast, the put's three warnings (a repeat, a row yanked on
+another tab, a row put in the sidebar). The spec's shape, not the tab,
+decides what a copy takes, what the row menu offers and what a put
+adds. A field's refusal quotes what was typed cut short, as a check is
+quoted. Beside it, by the tab, where the other tabs' own fixed labels
+already are: the row menu's noun, `+ Add check`, the footer's add chip
+(`EditorTab::add_row_label`) and row chips (`TableCursor::Checks`), the
+pills' and chips' hints (`HintCtx::checks`).
 
 ## 5. Tests
 
@@ -276,3 +282,11 @@ chips (`TableCursor::Checks`), the pills' and chips' hints
     its 7 columns, as a tab moves when a count gains a digit.
 16. The response is handed on after its checks, with no time limit on a
     jq check until #310 sets one (answer 1).
+17. The tab row is measured with the Body tab's badge whether or not
+    the body has text, as with `vars` (15), so typing in the body never
+    changes the form. The counts are still measured as they are: they
+    are what the compact form drops (W1). So at a width the row only
+    just fits, a row added or a count gaining a digit drops every
+    count. Measuring a fixed count for each tab instead would hide
+    counts that fit on every main column narrower than the widest row
+    (round 4).

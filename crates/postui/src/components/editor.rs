@@ -582,15 +582,15 @@ impl Editor {
             }),
         };
         let why = taken.err()?;
-        let kept = self.check_field_text(k);
+        let kept = postui_core::checks::brief(&self.check_field_text(k));
         Some(if kept.is_empty() { why } else { format!("{why} — kept '{kept}'") })
     }
 
     /// Does what a table call's outcome asks of the editor, which holds
     /// the Checks tab's fields: writes a closed field's text
     /// ([`Self::commit_check_field`]), its refusal joining the outcome's
-    /// warning, then opens the field a Tab walk reached. Every call into
-    /// the table that can close a cell ends here.
+    /// warning, then opens the field a Tab walk reached. The table's keys,
+    /// its commit and its click end here.
     fn finish_table(&mut self, mut outcome: TableOutcome) -> TableOutcome {
         if let Some((k, text)) = outcome.head_commit.take() {
             outcome.warning = self.commit_check_field(k, &text).or(outcome.warning);
@@ -1148,7 +1148,7 @@ impl Editor {
                 && self.body_text().is_empty()
                 && self.jq.is_empty()
                 && self.jq_views.is_empty()
-                && self.checks().is_empty())
+                && self.check_count() == 0)
     }
 
     /// A blank editor that keeps this one's view-id counter, for replacing
@@ -1883,20 +1883,23 @@ impl Editor {
         !self.body_tab_disabled() && !self.body_text().is_empty()
     }
 
+    /// How many checks the editor holds: a status field that is set, each
+    /// limit, each jq check.
+    fn check_count(&self) -> usize {
+        usize::from(!self.check_status.is_empty())
+            + self.check_limits.iter().flatten().count()
+            + self.check_rows.len()
+    }
+
     /// A tab's label in the strip: its name, and with `counts` its entry
-    /// count when it has entries. The Checks tab counts its checks: a
-    /// status field that is set, each limit, each jq check. The Body tab
-    /// has no count; while the body's variables are on its label carries
-    /// [`BODY_VARS`], with or without `counts`.
+    /// count when it has entries ([`Self::check_count`] on the Checks
+    /// tab). The Body tab has no count; while the body's variables are on
+    /// its label carries [`BODY_VARS`], with or without `counts`.
     fn tab_label_text(&self, t: EditorTab, counts: bool) -> String {
         let count = match t {
             EditorTab::Body if self.substitute_body => return format!("{}{BODY_VARS}", t.label()),
             EditorTab::Body => 0,
-            EditorTab::Checks => {
-                usize::from(!self.check_status.is_empty())
-                    + self.check_limits.iter().flatten().count()
-                    + self.check_rows.len()
-            }
+            EditorTab::Checks => self.check_count(),
             _ => self.table_map(t).map_or(0, IndexMap::len),
         };
         if counts && count > 0 {
@@ -4054,15 +4057,18 @@ impl Editor {
             tabs.iter().map(|t| (self.tab_label_text(*t, counts), badge(t))).collect()
         };
         // The row must end before the split chips, with room kept for the
-        // Body tab's `vars` whether or not it is on. When it doesn't,
-        // every tab drops its count: the one compact form (checks tabs
-        // spec 2026-11-16, W1). The form follows the room and the labels,
-        // never the selected tab, so switching tabs moves nothing (W2).
+        // Body tab's `vars` and its badge whether or not it has them. When
+        // it doesn't, every tab drops its count: the one compact form
+        // (checks tabs spec 2026-11-16, W1). So the form follows the room
+        // and the counts, which are what it drops, and never the selected
+        // tab (W2). Measuring fixed counts instead would hide counts that
+        // fit.
         let control_x = area.right().saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
         let vars_room = if self.substitute_body { 0 } else { crate::ui::cells(BODY_VARS) as u16 };
+        let badge_room = if body_badge.is_some() { 0 } else { crate::paint::TabStrip::BADGE_W };
         let fits = |labels: &Labels| {
             let end = crate::paint::TabStrip::spans(labels).last().map_or(0, |(x, w)| x + w);
-            area.x + end + vars_room <= control_x
+            area.x + end + vars_room + badge_room <= control_x
         };
         let full = labels(true);
         let tab_strip = if fits(&full) { full } else { labels(false) };
@@ -4528,7 +4534,10 @@ impl Editor {
 
     /// The Checks table's notes, one per row: a check that doesn't compile
     /// is marked for the error colour (spec Q6). Empty on any other tab.
-    /// Each text is compiled once and remembered (`check_compiles`).
+    /// Each text is compiled once and remembered (`check_compiles`). The
+    /// compile runs on the UI thread, as the jq bar's does
+    /// (`Response::apply_jq`): a filter nested deep enough to overflow the
+    /// compiler's stack is #282.
     fn check_notes(&mut self) -> Vec<Option<RowNote>> {
         if self.active_tab != EditorTab::Checks {
             return Vec::new();
@@ -7254,17 +7263,22 @@ mod tests {
             e.active_tab = tab;
             assert_eq!(tab_rects(&mut e, crate::layout::MAIN_MIN_COLS).0, tabs, "{tab:?}");
         }
-        // Nor does it follow the body's variables: off, the Body tab is
-        // `vars` narrower and every other tab keeps its form, at any width.
+        // Nor does it follow the Body tab's own parts, its `vars` and its
+        // badge: without one the Body tab is that much narrower and every
+        // other tab keeps its form, at any width.
         for width in crate::layout::MAIN_MIN_COLS..=120 {
-            e.substitute_body = true;
-            let on = tab_rects(&mut e, width).0;
-            e.substitute_body = false;
-            let off = tab_rects(&mut e, width).0;
-            assert_eq!(off[3].width + 7, on[3].width, "at {width}");
-            for i in [0, 1, 2, 4] {
-                assert_eq!(off[i].width, on[i].width, "tab {i} at {width}");
+            let with = tab_rects(&mut e, width).0;
+            for (vars, body, narrower) in [(false, "{}", 7), (true, "", 2), (false, "", 9)] {
+                e.substitute_body = vars;
+                e.set_body_text(body);
+                let without = tab_rects(&mut e, width).0;
+                assert_eq!(without[3].width + narrower, with[3].width, "at {width}");
+                for i in [0, 1, 2, 4] {
+                    assert_eq!(without[i].width, with[i].width, "tab {i} at {width}");
+                }
             }
+            e.substitute_body = true;
+            e.set_body_text("{}");
         }
     }
 
