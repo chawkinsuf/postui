@@ -28743,8 +28743,9 @@ fn the_response_export_picker_reads_save_response_to_file() {
 
 // --- "Describe a filter…" via the configured AI command ---
 
+/// `script` in a shell of its own, since `ai_cmd` is one command.
 fn stub_ai(app: &mut App, script: &str) {
-    app.ui_settings.ai_cmd = script.to_string();
+    app.ui_settings.ai_cmd = format!("sh -c '{}'", script.replace('\'', r"'\''"));
     app.ui_settings.ai_confirmed = true;
 }
 
@@ -29043,43 +29044,54 @@ async fn a_send_ends_the_ai_request() {
 }
 
 /// Esc, and a quit (the app dropped, before the runtime would drop the
-/// task), kill the command `sh` forked, not only `sh` (#314).
+/// task), kill the command itself, not only the `sh` that started it
+/// (#314).
 #[tokio::test]
 async fn cancelling_or_quitting_kills_the_ai_command() {
-    use rustix::process::{Pid, test_kill_process};
-    let dir = tempfile::tempdir().unwrap();
+    let alive = |pid: u32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
     for quit in [false, true] {
-        let pid_file = dir.path().join(format!("sleep-{quit}"));
         let mut app = App::new_for_test();
         ready_response(&mut app, JQ_BODY);
-        stub_ai(&mut app, &format!("sleep 30 & echo $! > '{}'; wait", pid_file.display()));
+        app.ui_settings.ai_cmd = "sleep 30".into();
+        app.ui_settings.ai_confirmed = true;
         app.update(Action::RunJqDescribe("x".into()));
-        let mut forked = None;
+        // The child is `sleep` itself once `sh` has exec'd it.
+        let mut pid = None;
         for _ in 0..2000 {
-            forked = std::fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|text| text.trim().parse().ok())
-                .and_then(Pid::from_raw);
-            if forked.is_some() {
+            pid = app.ai_task.as_ref().and_then(|task| task.run.pid()).filter(|&pid| {
+                let ps = std::process::Command::new("ps")
+                    .args(["-o", "comm=", "-p", &pid.to_string()])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&ps.stdout).trim() == "sleep"
+            });
+            if pid.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        let forked = forked.unwrap_or_else(|| panic!("quit {quit}: sh forked sleep"));
+        let pid = pid.unwrap_or_else(|| panic!("quit {quit}: the command started as sleep"));
         if quit {
             drop(app);
         } else {
             app.update(Action::CancelJqDescribe);
         }
-        let mut alive = true;
+        let mut gone = false;
         for _ in 0..2000 {
-            alive = test_kill_process(forked).is_ok();
-            if !alive {
+            gone = !alive(pid);
+            if gone {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        assert!(!alive, "quit {quit}: the forked sleep is killed");
+        assert!(gone, "quit {quit}: the command is killed");
     }
 }
 

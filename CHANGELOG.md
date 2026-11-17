@@ -45,10 +45,12 @@ change the project file format.
 
 ### Fixed
 
-- Cancelling "Describe a filter…", quitting while it runs, or closing the
-  terminal under it stops the AI command. Before, only the shell that
-  started it was stopped, so the command could go on running, and
-  spending, with its reply thrown away.
+- Cancelling "Describe a filter…", or quitting while it runs, stops the AI
+  command. Before, only the shell that started it was stopped, so the
+  command could go on running, and spending, with its reply thrown away.
+  `ai_cmd` is now run as a single command: no `;`, `&&` or pipes, and no
+  leading `NAME=value` settings. A script that ends with `exec` and the
+  command can hold those.
 
 ## [0.4.1] - 2026-11-13
 

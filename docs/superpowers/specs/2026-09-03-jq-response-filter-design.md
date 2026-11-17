@@ -312,37 +312,26 @@ generation and a request counter. The bar shows the spinner and `asking…`;
 while a request is pending `Esc` in the bar cancels it (kills the child)
 instead of blurring, and a stale reply is dropped.
 
-2026-11-17 (#314, mine): the command runs in a process group of its own,
-and ending a request kills the whole group (SIGKILL), so it reaches what
-`sh` forked and what the command itself started, not only `sh`. Every way
-a request ends early kills it: Esc, a new request, its view leaving the
-screen, and quitting the app, which kills it before the runtime is shut
-down (a quit doesn't wait for the runtime to drop its tasks). A command
-outside the terminal's foreground group has two costs, put to the user on
-#314 and answered there (comment 1444, "A for both"; both mine
-(approved)):
+2026-11-17 (#314): the command runs as `sh -c "exec <ai_cmd>"`, so the
+shell becomes the command and the child the app kills (SIGKILL) is the
+command itself, not a `sh` that forked it. Every way a request ends early
+kills it: Esc, a new request, its view leaving the screen, and quitting
+the app, which kills it from the UI thread before the runtime is shut
+down (a quit doesn't wait for the runtime to drop its tasks). The command
+stays in the app's process group, so a closed terminal window, Ctrl+C and
+a SIGTERM to the group reach it as they reach the app. The user asked for
+something simpler than the process group this branch first built ("it
+seems complicated to just run an exec command. is there a simplier way?",
+you); `exec` was my proposal, and the user agreed (mine (approved)). It
+replaces the process group and the picks of #314's comments 1440 and 1444
+(a hangup handler, a command that reads the terminal stopped until Esc),
+and the question of comment 1450. Its costs, accepted:
 
-- It no longer gets the terminal's own SIGHUP when the window closes
-  under the app (or the ssh session drops). So the app catches the
-  hangup itself: its handler kills the running command's group, then
-  puts back the hangup's default action and raises it again, so the app
-  ends as the hangup would have ended it without the handler. The cost,
-  accepted: a process-wide signal handler, a few lines of `unsafe` to
-  register it, and the running command's group id kept in an atomic the
-  handler reads, since a handler can't take the run's lock. A hangup that
-  is ignored when the app starts (`nohup`) stays ignored. With `$EDITOR`
-  open the app ends at once, as it did before the handler.
-- One that opens the terminal itself (`/dev/tty`, for a login or a
-  yes/no) is stopped when it reads it (SIGTTIN) or sets its modes, such
-  as turning echo off for a password (SIGTTOU), and the bar shows
-  `asking…` until Esc ends it. Kept as is: nothing is lost and Esc ends
-  it; the cost, accepted, is that nothing says why it waits.
-
-Open on #314 (review round 2): the hangup is one of the signals that
-reach the app's group and not the command's. Ctrl+C or Ctrl+\ in the
-terminal while `$EDITOR` is open, and a SIGTERM sent to the group, end the
-app and leave the command running; so does a SIGKILL sent to the group,
-which no handler can catch.
+- `ai_cmd` must be a single command: no `;`, `&&`, `||` or pipes, and no
+  leading `NAME=value` assignments. A wrapper script that ends in
+  `exec <command>` covers those.
+- Helper processes the command itself forks are not killed by Esc or a
+  quit.
 
 Reply handling: trim; strip a surrounding ``` fence if present; take the
 first non-empty line; when it holds backticks, keep what is inside the

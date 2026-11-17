@@ -75,8 +75,6 @@ fn without_waiting<T>(work: impl std::future::Future<Output = T>) -> std::io::Re
 
 /// The TUI on the project `cli_root` names (or none).
 async fn app(cli_root: Option<std::path::PathBuf>, debug_ai: bool) -> anyhow::Result<ExitCode> {
-    // A closed terminal also ends a running "describe a filter" command.
-    postui::ai::catch_hangup();
     // If entering fails, it failed at raw mode or the alternate screen,
     // which `ratatui::restore` undoes. The hook goes in after.
     enter_terminal().inspect_err(|_| ratatui::restore()).expect("failed to initialize terminal");
