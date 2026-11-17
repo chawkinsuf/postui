@@ -780,8 +780,6 @@ pub const JQ_SPINNER_AFTER: Duration = Duration::from_millis(100);
 /// scratch whenever a new response lands, so no state leaks between requests.
 pub struct ReadyView {
     pub mode: ViewMode,
-    /// The body view (`Pretty` or `Raw`) to come back to from `Headers`.
-    body_mode: ViewMode,
     pub tree: Option<JsonTree>,
     /// The send generation this response belongs to, so a background parse
     /// can be matched to the view it was started for (and only that one).
@@ -1171,7 +1169,6 @@ impl ReadyView {
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
         let mut view = Self {
             mode,
-            body_mode: mode,
             tree,
             generation,
             parsing,
@@ -1249,24 +1246,55 @@ impl ReadyView {
         self.jq_tree.as_ref().or(self.tree.as_ref())
     }
 
-    /// Swaps the body tree in (or out). With [`ReadyView::set_jq_tree`]
-    /// and [`ReadyView::active_tree_mut`], the only writers of the trees,
-    /// so `tree_epoch` and `tree_edits` see every change (what the bracket
-    /// memo, `BracketInputs`, relies on).
+    /// Swaps the body tree in (or out). With [`ReadyView::set_jq_tree`],
+    /// [`ReadyView::drop_trees`] and [`ReadyView::active_tree_mut`], the
+    /// only writers of the trees, so `tree_epoch` and `tree_edits` see
+    /// every change (what the bracket memo, `BracketInputs`, relies on).
+    ///
+    /// Only the Tree tab shows the trees, so another tab's place is on
+    /// lines this didn't change and is left alone (#313). On the Tree tab
+    /// the view starts over: its folds are the new tree's.
     fn set_body_tree(&mut self, tree: Option<JsonTree>) {
         self.tree = tree;
         self.tree_epoch += 1;
+        if self.mode == ViewMode::Pretty {
+            self.lines_replaced();
+        }
     }
 
     /// Swaps the filtered tree in (or out), bumping the epoch only when
     /// the tree on screen actually changes — clearing an already-absent
-    /// filter tree leaves the body tree, and its width measure, as it was.
+    /// filter tree leaves the body tree, its width measure and the user's
+    /// place on it as they were.
+    ///
+    /// When it changes, only the Tree tab's place moves, as for
+    /// [`ReadyView::set_body_tree`]: the cursor keeps its line, clamped
+    /// into the lines now shown, and its wanted column; the selection,
+    /// sideways scroll and match positions go.
     fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
-        self.cursor_moved();
-        if tree.is_some() || self.jq_tree.is_some() {
-            self.tree_epoch += 1;
-        }
+        let changed = tree.is_some() || self.jq_tree.is_some();
         self.jq_tree = tree;
+        if !changed {
+            return;
+        }
+        self.tree_epoch += 1;
+        if self.mode != ViewMode::Pretty {
+            return;
+        }
+        self.cursor_moved();
+        self.clear_sel();
+        self.clamp_cursor();
+        self.follow_cursor();
+        self.h_scroll = 0;
+        self.recompute_matches();
+    }
+
+    /// Drops both trees (a shed). The filtered tree goes first, without
+    /// a swap of its own, so the Tree tab starts over once, on no lines,
+    /// rather than first searching the filtered tree it is about to drop.
+    fn drop_trees(&mut self) {
+        self.jq_tree = None;
+        self.set_body_tree(None);
     }
 
     /// The one mutable way to the tree on screen, so every fold it makes
@@ -2272,9 +2300,6 @@ impl ReadyView {
             return;
         }
         self.mode = mode;
-        if mode.is_body() {
-            self.body_mode = mode;
-        }
         self.lines_replaced();
     }
 
@@ -2958,8 +2983,8 @@ struct LineMatches {
 /// megabyte-long minified Raw line (about 10 ms a frame, measured), and
 /// the draw runs on every event. The lines walked are the mode's: Raw's
 /// and Headers' never change for the view's life, and the tree's change
-/// only through its writers: a swap (`set_body_tree`, `set_jq_tree`, which
-/// bump `tree_epoch`) or a fold (`active_tree_mut`, which bumps
+/// only through its writers: a swap (`set_body_tree`, `set_jq_tree`,
+/// `drop_trees`, which bump `tree_epoch`) or a fold (`active_tree_mut`, which bumps
 /// `tree_edits`). A new input to `bracket_pair` belongs here too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BracketInputs {
@@ -3089,11 +3114,12 @@ impl Response {
             return false;
         }
         view.parsing = false;
-        view.clear_sel();
         match tree {
             Some(tree) => {
+                // On the Tree tab (watching the spinner), the view starts
+                // over on the tree it was waiting for; another tab is left
+                // as it is (`set_body_tree`).
                 view.set_body_tree(Some(tree));
-                view.cursor_moved();
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
                 // until its output lands rather than showing the full
@@ -3104,21 +3130,17 @@ impl Response {
                 // that the body tree exists, forget what was "applied" so
                 // the app's reconcile step re-runs the pending filter.
                 view.jq_applied = None;
-                // Already on the Tree tab (watching the spinner): the tree
-                // it was waiting for is now the view's content.
-                if view.mode == ViewMode::Pretty {
-                    view.cursor = 0;
-                    view.scroll = 0;
-                    view.recompute_matches();
-                }
             }
             // Not JSON after all: the Tree tab disappears, exactly as it
-            // never appears for a small non-JSON body — and with it the
-            // jq bar a filter typed against the spinner had focused.
-            None => {
+            // never appears for a small non-JSON body. On it, the view
+            // moves to Raw, and the jq bar a filter typed against the
+            // spinner had focused goes with the tab. On another tab
+            // the tab just leaves the strip (#313).
+            None if view.mode == ViewMode::Pretty => {
                 view.set_mode(ViewMode::Raw);
                 self.jq.blur();
             }
+            None => {}
         }
         true
     }
@@ -3430,17 +3452,18 @@ impl Response {
 
     /// Drops the tree, the filtered tree, the jq document and the raw
     /// column index — everything derived from the body — while keeping the
-    /// body, headers and view settings (tab, cursor, scroll, filter). The
-    /// response reads as "parsing" again, so the Tree tab stays and shows
-    /// its spinner once the response is back on screen and
-    /// `take_reparse` has restarted the parse; `attach_tree` then clears
-    /// `jq_applied` so the filter re-runs against the fresh tree.
+    /// body, headers, tab and filter, and on a tab other than Tree the
+    /// cursor and scroll. The Tree tab, whose lines go, starts over
+    /// (`drop_trees`). The response reads as "parsing" again, so the
+    /// Tree tab stays and shows its spinner once the response is back on
+    /// screen and `take_reparse` has restarted the parse; `attach_tree`
+    /// then clears `jq_applied` so the filter re-runs against the fresh
+    /// tree.
     pub fn shed_derived(&mut self) {
         let Some(view) = self.view.as_mut() else {
             return;
         };
-        view.set_body_tree(None);
-        view.set_jq_tree(None);
+        view.drop_trees();
         view.jq_doc = None;
         view.jq_tree_code = None;
         view.jq_applied = None;
@@ -3599,11 +3622,6 @@ impl Response {
             self.jq.error = None;
             self.jq.stale = false;
             self.jq.note = None;
-            view.clear_sel();
-            view.clamp_cursor();
-            view.follow_cursor();
-            view.h_scroll = 0;
-            view.recompute_matches();
             return None;
         }
         if let Err(e) = postui_core::jq::check(code_trim) {
@@ -3921,11 +3939,6 @@ impl Response {
                         self.jq.error = None;
                         self.jq.stale = true;
                         self.jq.note = Some(if outputs.is_empty() { "no output" } else { "null" });
-                        view.clear_sel();
-                        view.clamp_cursor();
-                        view.follow_cursor();
-                        view.h_scroll = 0;
-                        view.recompute_matches();
                     }
                     // This filter's outputs, shown even when a value
                     // failed: the tree is its output, so not stale, and the
@@ -3939,11 +3952,6 @@ impl Response {
                         self.jq.error = error;
                         self.jq.stale = false;
                         self.jq.note = None;
-                        view.clear_sel();
-                        view.clamp_cursor();
-                        view.follow_cursor();
-                        view.h_scroll = 0;
-                        view.recompute_matches();
                     }
                     None => {
                         self.jq.error =
@@ -8144,6 +8152,205 @@ mod tests {
         let out = render(&mut r);
         assert!(!out.contains("parsing"), "no spinner left behind: {out}");
         assert!(!out.contains("Tree"), "and no Tree tab to click: {out}");
+    }
+
+    /// What a tab the user is reading holds of theirs: the cursor, its
+    /// column and the column it wants, both scrolls, the selection and its
+    /// anchors (a word drag's too), the clicked char and the search's
+    /// matches.
+    fn where_the_user_is(r: &Pane) -> impl PartialEq + std::fmt::Debug + use<> {
+        let v = r.view().unwrap();
+        let matches = v.search.as_ref().map(|s| (s.matches.clone(), s.current));
+        let place = (v.cursor, v.scroll, v.h_scroll, v.at_col, v.want, v.show_col, v.fold_line);
+        let anchors = (v.sel_anchor, v.sel_word_anchor, v.line_anchor, v.anchor_col);
+        let sel = (v.sel, anchors, r.selected_text());
+        (v.mode, place, sel, v.clicked, matches)
+    }
+
+    /// The tabs other than Tree, which a big body's parse can land behind.
+    const OTHER_TABS: [ViewMode; 3] = [ViewMode::Raw, ViewMode::Headers, ViewMode::Checks];
+
+    /// A big body with a judged check, switched to `mode` while its parse
+    /// runs, with the user's place on it: searched for "Bearer" on Headers
+    /// ("aaa" elsewhere), which puts the cursor on a line and column with
+    /// matches, or with a double click's word dragged on the first line;
+    /// scrolled sideways; and with a clicked char and a V anchor's column
+    /// set.
+    fn reading_mid_parse(body: &str, generation: u64, mode: ViewMode, select: bool) -> Pane {
+        let mut r = ready_gen(body, generation);
+        r.set_checks(CheckState::Judged(vec![(true, r#".a | startswith("aaa")"#.into())]));
+        r.set_view_mode(mode);
+        assert_eq!(r.view().unwrap().mode, mode);
+        let (area, _) = render_buf(&mut r);
+        if select {
+            assert!(r.select_word_at(area.x + 1, area.y));
+            assert!(r.drag_selection_to(area.x + 4, area.y));
+            assert!(r.selected_text().is_some(), "{mode:?}: a selection to keep");
+            assert!(r.view().unwrap().sel_word_anchor.is_some(), "{mode:?}: a word anchor");
+        } else {
+            let query = if mode == ViewMode::Headers { "Bearer" } else { "aaa" };
+            search_for(&mut r, SearchSyntax::Literal, query);
+            let v = r.view().unwrap();
+            assert!(v.at_col.is_some_and(|(_, c)| c > 0), "{mode:?}: off column 0");
+            assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
+        }
+        let v = r.view.as_mut().unwrap();
+        v.h_scroll = 2;
+        v.clicked = Some(Clicked { tree: None, line: 0, col: 1 });
+        v.anchor_col = 1;
+        r
+    }
+
+    /// #313: a parse that lands while another tab is up is about the Tree
+    /// tab only. That tab's lines didn't change, so the user's place on
+    /// it stays as they left it, through the reconcile that applies no
+    /// filter to the new tree too.
+    #[test]
+    fn a_tree_landing_on_another_tab_leaves_that_tab_alone() {
+        let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
+        for mode in OTHER_TABS {
+            for select in [false, true] {
+                let mut r = reading_mid_parse(&body, 7, mode, select);
+                let before = where_the_user_is(&r);
+                assert!(r.attach_tree(7, JsonTree::parse(&body)));
+                assert!(r.view().unwrap().tree.is_some(), "the tree waits on its tab");
+                assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}");
+                assert!(r.apply_jq("", 0, LIMIT).is_none());
+                assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}: no filter");
+            }
+        }
+    }
+
+    /// #313: with a filter on, the tree's landing runs it, and its output
+    /// landing while another tab is up leaves that tab alone too, whether
+    /// it is a tree or a note; so does the filter being switched off.
+    #[test]
+    fn a_filter_landing_on_another_tab_leaves_that_tab_alone() {
+        let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
+        for mode in OTHER_TABS {
+            for select in [false, true] {
+                for output in ["7", "null"] {
+                    let case = format!("{mode:?}, select {select}, {output}");
+                    let mut r = reading_mid_parse(&body, 7, mode, select);
+                    let before = where_the_user_is(&r);
+                    assert!(r.attach_tree(7, JsonTree::parse(&body)));
+                    let req = r.apply_jq(".n", 0, LIMIT).expect("a background run");
+                    let out = JqRunOutput::from_outputs(vec![output.to_string()]);
+                    assert!(r.attach_jq_result(7, req.run, None, Ok(out)), "{case}");
+                    let shown = r.view().unwrap().jq_tree.is_some();
+                    assert_eq!(shown, output == "7", "{case}: the output landed");
+                    assert_eq!(r.jq_bar().note, (output == "null").then_some("null"), "{case}");
+                    assert_eq!(where_the_user_is(&r), before, "{case}");
+                    assert!(r.apply_jq("", 0, LIMIT).is_none());
+                    assert_eq!(where_the_user_is(&r), before, "{case}: switched off");
+                }
+            }
+        }
+    }
+
+    /// #313: on the Tree tab the landed tree is new lines, so the place
+    /// starts over on it, sideways scroll included: on a first landing,
+    /// and on a tree parsed again after a shed.
+    #[test]
+    fn a_tree_landing_on_the_tree_tab_starts_it_over() {
+        // Many lines, so a place kept inside them would show.
+        let body = format!("[{}]", vec![format!("\"{}\"", "x".repeat(8000)); 40].join(","));
+        assert!(body.len() > SYNC_PRETTY_BYTES);
+        for reparse in [false, true] {
+            let mut r = ready_gen(&body, 2);
+            if reparse {
+                assert!(r.attach_tree(2, JsonTree::parse(&body)));
+                r.shed_derived();
+                assert!(r.take_reparse().is_some());
+            }
+            let v = r.view.as_mut().unwrap();
+            assert_eq!(v.mode, ViewMode::Pretty);
+            (v.cursor, v.scroll, v.h_scroll) = (20, 10, 3);
+            v.sel = Some(((20, 1), (20, 4)));
+            assert!(r.attach_tree(2, JsonTree::parse(&body)));
+            let v = r.view().unwrap();
+            assert_eq!((v.cursor, v.scroll, v.h_scroll, v.sel), (0, 0, 0, None), "{reparse}");
+        }
+    }
+
+    /// #313: a shed takes the Tree tab's lines away, so with that tab up
+    /// the place starts over at the shed, not at the parse landing again
+    /// (comment 1442, 1: A).
+    #[test]
+    fn a_shed_on_the_tree_tab_starts_it_over() {
+        let body = format!("[{}]", vec![format!("\"{}\"", "x".repeat(8000)); 40].join(","));
+        // With a filter's tree up and a search open too, both trees go.
+        for filtered in [false, true] {
+            let mut r = ready_gen(&body, 2);
+            assert!(r.attach_tree(2, JsonTree::parse(&body)));
+            if filtered {
+                let req = r.apply_jq(".", 0, LIMIT).expect("a background run");
+                let output = format!("[{}]", vec!["\"xx\""; 40].join(","));
+                let out = JqRunOutput::from_outputs(vec![output]);
+                assert!(r.attach_jq_result(2, req.run, None, Ok(out)));
+                assert!(r.view().unwrap().jq_tree.is_some(), "the filter's tree is up");
+                search_for(&mut r, SearchSyntax::Literal, "xx");
+                let v = r.view().unwrap();
+                assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
+            }
+            let v = r.view.as_mut().unwrap();
+            assert_eq!(v.mode, ViewMode::Pretty);
+            (v.cursor, v.scroll, v.h_scroll) = (20, 10, 3);
+            r.shed_derived();
+            let v = r.view().unwrap();
+            assert!(v.tree.is_none() && v.jq_tree.is_none(), "{filtered}");
+            let place = (v.cursor, v.scroll, v.h_scroll, v.sel);
+            assert_eq!(place, (0, 0, 0, None), "{filtered}");
+            assert!(v.search.as_ref().is_none_or(|s| s.matches.is_empty()), "{filtered}");
+        }
+    }
+
+    /// #313: on the Tree tab, a filter that puts no tree of its own up (a
+    /// note, or the filter switched off) leaves the body tree's lines as
+    /// they were, so the user's place on them stays.
+    #[test]
+    fn a_filter_that_leaves_the_tree_as_it_was_keeps_the_place() {
+        let body = format!("{{\"a\": \"aaa{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
+        for select in [false, true] {
+            let mut r = ready_gen(&body, 7);
+            assert!(r.attach_tree(7, JsonTree::parse(&body)));
+            assert_eq!(r.view().unwrap().mode, ViewMode::Pretty);
+            let (area, _) = render_buf(&mut r);
+            if select {
+                assert!(r.begin_selection_at(area.x + 1, area.y + 1));
+                assert!(r.drag_selection_to(area.x + 6, area.y + 1));
+                assert!(r.selected_text().is_some(), "a selection to keep");
+            } else {
+                search_for(&mut r, SearchSyntax::Literal, "aaa");
+                let v = r.view().unwrap();
+                assert!(v.search.as_ref().is_some_and(|s| !s.matches.is_empty()));
+            }
+            r.view.as_mut().unwrap().h_scroll = 2;
+            let before = where_the_user_is(&r);
+            let req = r.apply_jq(".n", 0, LIMIT).expect("a background run");
+            let out = JqRunOutput::from_outputs(vec!["null".to_string()]);
+            assert!(r.attach_jq_result(7, req.run, None, Ok(out)));
+            assert_eq!(r.jq_bar().note, Some("null"));
+            assert_eq!(where_the_user_is(&r), before, "select {select}: a note");
+            assert!(r.apply_jq("", 0, LIMIT).is_none());
+            assert_eq!(where_the_user_is(&r), before, "select {select}: switched off");
+        }
+    }
+
+    /// #313: a parse that says "not JSON" while another tab is up takes the
+    /// Tree tab away and nothing else: the user stays where they are.
+    #[test]
+    fn a_failed_parse_on_another_tab_only_drops_the_tree_tab() {
+        let body = format!("{{\"a\": \"aaa{}", "x".repeat(SYNC_PRETTY_BYTES));
+        for mode in OTHER_TABS {
+            for select in [false, true] {
+                let mut r = reading_mid_parse(&body, 3, mode, select);
+                let before = where_the_user_is(&r);
+                assert!(r.attach_tree(3, None));
+                assert_eq!(where_the_user_is(&r), before, "{mode:?}, select {select}");
+                assert!(!r.tab_modes().unwrap().contains(&ViewMode::Pretty), "no Tree tab");
+            }
+        }
     }
 
     #[test]
