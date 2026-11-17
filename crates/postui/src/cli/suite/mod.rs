@@ -158,9 +158,10 @@ impl SuiteResult {
 async fn evaluate(checks: Checks, status: u16, timing: Timing, body: Vec<u8>) -> Vec<Outcome> {
     let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
     let run = move |checks: &Checks| postui_core::checks::evaluate(checks, status, timing, doc);
-    let run = run_checks(ChecksRun::new(checks, run)).await;
     // A panic in the checks is a bug: it surfaces as it would inline.
-    run.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
+    run_checks(ChecksRun::new(checks, run))
+        .await
+        .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
 }
 
 /// What a run is about to do, for a [`Watch`]: the environment and space

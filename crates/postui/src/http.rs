@@ -33,8 +33,8 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
-/// A run of a request's checks, holding them, and whether they read the
-/// body ([`reads_body`]), asked of them as the run is made.
+/// A run of a request's checks, and whether they read the body
+/// ([`reads_body`]), asked of them as the run is made.
 pub struct ChecksRun<T> {
     reads_body: bool,
     job: Box<dyn FnOnce() -> T + Send>,

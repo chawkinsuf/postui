@@ -291,9 +291,16 @@ mod tests {
                 {"check": ".ok", "passed": true, "failure": null},
             ])
         );
+        // Each shape's fields in their order.
         assert_eq!(
-            serde_json::to_string(&out[1]).unwrap(),
-            r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"failure":"first byte 812 ms, limit 500 ms"}"#
+            serde_json::to_string(&out).unwrap(),
+            concat!(
+                r#"[{"check":"status","expected":[200],"got":200,"passed":true,"failure":null},"#,
+                r#"{"check":"max_ttfb_ms","limit":500,"got":812,"passed":false,"#,
+                r#""failure":"first byte 812 ms, limit 500 ms"},"#,
+                r#"{"check":"max_elapsed_ms","limit":2000,"got":900,"passed":true,"failure":null},"#,
+                r#"{"check":".ok","passed":true,"failure":null}]"#,
+            )
         );
         assert!(!passed(200, &out));
         assert!(!total_failed(&out));
