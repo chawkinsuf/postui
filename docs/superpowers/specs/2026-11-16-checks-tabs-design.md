@@ -68,7 +68,8 @@ change, no second compact form, no unit in a time field, nothing for
    "This doesn't sound like an issue with this ticket. Why would we let
    checks run forever even in the cli? Each jq check should have a max
    runtime or it fails." Nothing is built for it here. The limit is its
-   own task, #310, for `run`, `suite` and the app alike.
+   own task, #310, for `run`, `suite` and the app alike. (Since #312,
+   section 7, such a check keeps only the Checks tab waiting.)
 2. The `vars` mark sat after the last tab, so beside Checks. `you`: "the
    vars should be part of the body tab like the 2 is part of the checks
    tab." That is W3. The user plans to change this display later.
@@ -92,32 +93,42 @@ repeated status code or filter, keeping the first;
 `Checks::parse_status` and `parse_limit` read a field's text by the
 read's own limits, so the app's refusal and the file's are one rule.
 
-**The send.** `http::ResponseData` gains `checks`, the response's lines
-(`checks::lines`). The send's task takes the editor's checks at the
-send; after `http::send` it runs `checks::evaluate` (on the blocking
-pool when a jq check reads the body, by `http::run_checks`, the suite's
-hop too) and the response arrives with its lines. Nothing is pending,
-nothing is matched back, a cancel drops the task as before. The
-response keeps the lines and not the outcomes, which hold every output
-of a jq check whole (#309 review round 1). The costs, from the ticket's
-"How to build it" 1: the response is handed on after its checks, so it
-shows later by the time they take, and the body is read again when the
-jq bar is used on it. A jq check has no time limit yet, so one that
-never ends keeps the response from showing: that limit is #310 (answer
-1 above).
+**The send** (rewritten 2026-11-16 for #312, section 7; #309 held the
+response until its checks were judged). The send's task takes the
+editor's checks at the send and hands the response over as it arrives
+(`Action::ResponseArrived`), with how its checks stand
+(`response::CheckState`): none, the judged lines when no jq check has
+to read the body (`ResponseData::check_lines`, run in the task), or
+being judged. For the last the same task then runs the checks once
+over its copy of the response, on the blocking pool
+(`http::run_checks`, the suite's hop too), and sends the lines as
+`Action::ChecksJudged` with the send's generation.
+`Session::checks_arrived` gives them to the response that send made, on
+screen or in the session's cache, found by its view's generation as a
+background parse finds it (`tree_arrived`); when that response is gone
+they are dropped. The response keeps the lines and not the outcomes,
+which hold every output of a jq check whole (#309 review round 1). The
+costs: the body is held a second time while its checks run, as a jq bar
+run holds it, and is read again when the jq bar is used on it. A jq
+check has no time limit yet, so one that never ends leaves the tab on
+`checking…` and keeps its thread and its copy of the body: that limit
+is #310.
 
-**The response tab.** `ViewMode::Checks`, offered when the response's
-`checks` is not empty. The view keeps those lines as they come, each a
-verdict and a text, and nothing made from them. The tab's text is each
-line led by its mark (`ReadyView::check_texts`): that joins every place
-`ViewMode::Headers` supplies plain lines (line count, search corpus,
-copy, save, `$EDITOR`, width). The paint draws the same line with the
-mark in the verdict's colour, and the tab's badge is `checks::passed`
-over the same verdicts; the mark and its colour are `paint::verdict`,
-the Body tab's badge too. So the tab's text is made on each read, a
-copy of its few lines, where Headers' is borrowed (#309 review rounds 3
-to 5). It has none of the Headers tab's header copy pills or keys. The
-response side reads nothing from the editor.
+**The response tab.** `ViewMode::Checks`, offered unless the view's
+`checks` (`CheckState`) is `None`. That one field is all the view keeps
+of the checks; `CheckState::rows` reads it as the tab's rows, each a
+verdict and a text: the judged lines, or the one line `checking…`, which
+has no verdict. The tab's text is each row led by its mark
+(`ReadyView::check_texts`): that joins every place `ViewMode::Headers`
+supplies plain lines (line count, search corpus, copy, save, `$EDITOR`,
+width). The paint draws the same rows with the mark in the verdict's
+colour, and the tab's badge is `checks::passed` over the same verdicts,
+or a dim `…` of the same width while they are judged; the mark and its
+colour are `paint::verdict`, the Body tab's badge too. So the tab's
+text is made on each read, a copy of its few lines, where Headers' is
+borrowed (#309 review rounds 3 to 5). It has none of the Headers tab's
+header copy pills or keys. The response side reads nothing from the
+editor.
 
 **The shared table (`table_editor.rs`).** Contract changes:
 
@@ -306,7 +317,8 @@ the check results by `HintCtx::checks`, the Checks view being up.
     body's variables never changes the form; the Checks tab moves by
     its 7 columns, as a tab moves when a count gains a digit.
 16. The response is handed on after its checks, with no time limit on a
-    jq check until #310 sets one (answer 1).
+    jq check until #310 sets one (answer 1). Replaced by section 7
+    (#312): the response is handed on as it arrives.
 17. The tab row is measured with the Body tab's badge whether or not
     the body has text, as with `vars` (15), so typing in the body never
     changes the form. The counts are still measured as they are: they
@@ -325,3 +337,125 @@ the check results by `HintCtx::checks`, the Checks view being up.
     app's next save of that request. A save already writes the whole
     file from what the app holds, so it writes no comment back either,
     and neither a repeat nor the whitespace changed a verdict (round 5).
+
+## 7. The response first, its checks after (#312, 2026-11-16)
+
+Scope: board task #312, whose "What the user sees" list is the whole of
+it. #309 held a response back until its jq checks were judged (choice
+16), so a slow check delayed the response and a stuck one hid it. `you`:
+"Why not show the response as soon as it's ready and show the checks
+when they are ready".
+
+### Added beyond the ticket
+
+None.
+
+### Rules
+
+Sources are copied from the ticket: `you` is the user's own words,
+`mine` the ticket's call, open to veto.
+
+| # | Rule | Source |
+|---|---|---|
+| A1 | A response shows as soon as it arrives, whatever checks its request has. | you |
+| A2 | When the request sent had a jq check, the response's Checks tab is there at once. Until the checks are judged its label carries a dim `…` where the `✓` or `✗` will go, so the label keeps its width and nothing on the row moves, and the tab shows one line: `checking…`. | mine |
+| A3 | When the checks finish, the lines and the verdict take their place, all the lines together. No tab switches and no toast shows (P6). | mine |
+| A4 | A request with only a status check or time limits is judged as it arrives and never shows `checking…`. | mine |
+| A5 | The result belongs to its response. It lands there when another request is on screen and is there on the way back. A new send replaces the response, and the earlier send's result is dropped. | mine |
+| A6 | Still judged once, with the checks as they were at the send. Editing a check re-judges nothing. | P5, Q8 |
+| A7 | While the tab says `checking…`, search, copy, save and open in the editor act on that one line, as they act on whatever lines the tab shows (P7). | mine |
+| A8 | A check that never finishes leaves the Checks tab on `checking…` and the rest of the response usable. #310 gives each check a time limit. | mine |
+| A9 | Checks that crash give the one failed line they gave: `✗ the checks did not run: …`. | choice 14 |
+
+The ticket's "Not in this task" is binding: no time limit or cancel for
+a check (#310), no judging but at a send, no job per check or lines
+that fill in one at a time, no sharing of the body's read with the jq
+bar, no change to the request's Checks tab, `postui run` or `postui
+suite`.
+
+### The design
+
+The ticket's five "How to build it" choices (all `mine`) hold against
+the code. "The send" and "The response tab" in section 3 are rewritten
+to them. What changes:
+
+- **Removed:** `http::send_checked` and `ResponseData::checks`. The
+  send's task calls `http::send` and hands the response over, as before
+  #309.
+- **One job per response.** Only a request with a jq check has one. It
+  runs in the send's own task, after the response is handed over,
+  through `http::run_checks`. Once the response is delivered the
+  session no longer tracks that task, so nothing cancels the job; a
+  send cancelled before its response is delivered is aborted as before
+  and starts none.
+- **One action back,** `Action::ChecksJudged { generation, lines }`,
+  matched as a background parse is: `Session::checks_arrived` finds the
+  response whose view was made for that generation, on screen or in the
+  cache. A new send, a cancel and a project switch each leave no such
+  view, so the lines are dropped with no guard beyond the generation.
+- **One field,** `ReadyView::checks`, a `CheckState`: `None`,
+  `Judging`, `Judged(lines)`. `Action::ResponseArrived` carries the
+  state the response starts in, set in the same action that delivers
+  it, so the tab is there in the response's first frame. Nothing else
+  on the response side holds the checks.
+
+### Consumer audit
+
+Every reader of `ReadyView::checks`, and what it does in each state.
+All of them read it through `CheckState::rows` (`None`: no rows;
+`Judging`: the one row `checking…` with no verdict; `Judged`: a row a
+line) or `CheckState::verdict`.
+
+- **Presence:** `ReadyView::tab_modes` (the strip, the tab keys through
+  `Response::tab_modes`, `set_view_mode`'s refusal of a tab not
+  offered). Offered unless `None`, so it never appears or leaves after
+  the response arrived.
+- **Label:** `response_tab_defs`: the verdict's mark, or a dim `…`
+  while judging. Each is one cell, so the tab's width, and with it the
+  strip's and the toolbar's room, is the same in both.
+- **Text:** `check_texts`, behind `buffer_line` (Vim's cursor column
+  and `%`), `display_line_text` (the mouse's selection and its copy),
+  `buffer_lines_of` (a yank), `search_corpus` (search, `*`, and
+  `view_text`: copy, save, `$EDITOR`) and `content_width` (the sideways
+  scroll). While judging the one line is `checking…`, with no mark.
+- **Count:** `visible_len` (the cursor's clamp, paging, the scrollbar):
+  one while judging.
+- **Paint:** `body_lines`: `checking…` in the muted colour, as the
+  Headers tab's notes are.
+- **When the lines arrive** (`Response::set_checks`): the tab's lines
+  are other lines, so with the Checks tab up the view starts over on
+  them as a tab switch does (`ReadyView::lines_replaced`, which
+  `set_mode` now calls too): the cursor on the first line, the scroll
+  at the top, the selection and the remembered column dropped, the
+  search's matches found again. On another tab nothing visible changes.
+  Either way the cached width is forgotten: its key (mode, line count)
+  is the same for one judged line as for `checking…`.
+- **Words:** unchanged. The toolbar's hints and the copy toast say
+  "check results" whatever the state (`HintCtx::checks`,
+  `App::resolve_copy`).
+
+A response shed or stashed while its checks run keeps its view, so the
+lines find it by its generation as above.
+
+### Tests
+
+- The send (`tests/http_integration.rs`): a request with a jq check
+  sent to a local server arrives judging, then its lines land; one with
+  only a status check and a limit arrives judged.
+- Response: the three states' tab, label, text and paint; the label's
+  width is the same judging and judged; lines landing with the Checks
+  tab up reset the cursor, the selection, the search's matches and the
+  width; lines for another generation are refused.
+- Session: lines land on a cached response, a shed one included, and
+  are dropped after a new send, a cancel and a reset.
+- App: `ChecksJudged` for the open request, for a request navigated
+  away from, and for a send since replaced; copy while judging; checks
+  that crash, a body that isn't JSON, a failed send.
+
+### `mine` details, for veto
+
+1. `checking…` is drawn in the muted colour and has no mark.
+2. When the lines arrive with the Checks tab up, the cursor goes to the
+   first line and a selection made on `checking…` is dropped, as on a
+   tab switch.
+3. The check job keeps its own copy of the response while it runs.
