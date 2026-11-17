@@ -289,14 +289,28 @@ the same.
 | B4 | One limit per run, counted from after the filter compiles and the body is read, as for a check (L4). | mine |
 | B5 | The key is `jq_limit_ms` (was `jq_check_limit_ms`), renamed with no alias since it was never released; `ProjectMeta::jq_limit()` and `project::DEFAULT_JQ_LIMIT` likewise. | mine (approved) (#308 Q2: A) |
 | B6 | A bar run the worker parsed the body for, then stopped (or failed whole), still hands back the parse, so the next run doesn't read the body again. It shows as before: the error, the last result behind it. | mine |
-| B7 | Quitting stops every jq run the app has going: the app sets one flag as it quits, and each bar run and completion lookup reads it beside its limit and stops, so quit no longer waits on jq whatever `jq_limit_ms` is. Runs typed past still run to the limit. (2026-11-17, added from the review round 2 question.) | mine (approved) (#308 round 2 question: A) |
-| B8 | The response's check job reads the same flag, so a quit doesn't wait on its jq checks either. | mine |
+| B7 | Quitting doesn't wait for background work at all: the TUI's Tokio runtime is shut down with `shutdown_background()`, as the CLI commands' already is, so a jq run, a check job, a body parse or a DNS lookup still going ends with the process, whatever `jq_limit_ms` is. Runs typed past still run to the limit while the app runs. (2026-11-17, after the review round 4 question; replaces the first B7, below.) ~~Quitting stops every jq run the app has going: the app sets one flag as it quits, and each bar run and completion lookup reads it beside its limit and stops.~~ | mine (approved) (#308 round 4 question: A; the first B7 was round 2's A) |
+| B8 | ~~The response's check job reads the same flag, so a quit doesn't wait on its jq checks either.~~ (2026-11-17: removed with the flag; B7 covers the check job.) | ~~mine~~ |
 
 There is no cancel: a run the bar has moved past still runs until it ends
 or reaches the limit (option B on the ticket, not taken). ~~A quit waits at
 most that long for a run still going.~~ (2026-11-17: replaced by B7 and
 B8; option C, Tokio's `shutdown_timeout`, and option D, a separate bar
 limit, were not taken.)
+
+**2026-11-17, after review round 4: B7 and B8 replaced.** The first B7
+and B8 (one quit flag the app set as it was dropped, read by every jq run
+beside its limit) are replaced by the B7 above: quitting doesn't wait for
+background work at all, and the flag is removed. Decided: mine (approved),
+the user's answer "A" to the round 4 question (ticket comment 1435). The
+round 2 pick rested on a wrong cost: its option C (don't wait at quit) was
+set against the flag with "a project file write still running at quit is
+cut off", but project files are written on the UI thread, done before the
+loop returns; the only file the TUI writes in the background is the
+`--debug-ai` log. The flag also couldn't stop one long native jq step (a
+`sort` over a big body) or a cancelled send's DNS lookup, and not waiting
+covers both. Its cost: with `--debug-ai` on, a log line being written as
+the app quits can be lost or cut short.
 
 **Design.**
 
@@ -333,18 +347,16 @@ limit, were not taken.)
   (Review round 2, 2026-11-17: a whole-run error was first handed back as
   an empty run carrying the error, to carry the parse.)
 - `run --jq`: `run_jq` takes the session's project limit.
-- Quit (B7, B8; 2026-11-17, after review round 2): `jq::run`,
-  `run_with_cap`, `complete::keys_at` and `checks::evaluate` take `quit:
-  Option<&AtomicBool>`, which `Stop` reads on each step beside its timer's
-  flag. `postui run`, `suite` and `check` pass `None`, so nothing there
-  changes. The app owns one `Arc<AtomicBool>`, set when the `App` is
-  dropped, which is as `main.rs`'s loop returns, however it returns, and
-  before the Tokio runtime's drop waits on the blocking pool.
-  `jq_worker` and `jq_complete_worker` take it, and
-  `ResponseData::check_run` and `CheckState::on_arrival` take a clone for
-  the check job. A run the flag stops reports the limit's stop, as a run
-  that timed out does; nothing reads it, since the app that would is gone.
-  No handle per run (option B, not taken).
+- Quit (B7; 2026-11-17, after review round 4): `main.rs` runs the TUI and
+  the CLI commands through one function that makes the runtime, blocks on
+  the work and shuts the runtime down with `shutdown_background()`, after
+  the TUI has given the terminal back. Nothing in jq knows about quitting.
+  (The first design, after review round 2, passed `quit:
+  Option<&AtomicBool>` to `jq::run`, `run_with_cap`, `complete::keys_at`
+  and `checks::evaluate`, read by `Stop` beside its timer's flag, and the
+  app owned it as `JqQuit`, set on drop and handed to `jq_worker`,
+  `jq_complete_worker` and the check job. All of it is removed.) No handle
+  per run (option B, not taken).
 
 **Tests.**
 
@@ -359,12 +371,10 @@ limit, were not taken.)
 | B1, B2 | response: a filter, and a completion lookup, stopped at one limit runs again under another; one that ended, the empty filter and one that doesn't compile don't, and the view keeps its sideways scroll; one going is awaited; app: a raised `jq_limit_ms` read from `project.toml` runs the stopped filter again. |
 | B6 | app: `jq_worker` with a body and a never-ending filter hands back the parsed document beside the error; response: a failed pool run's parse is kept, and the failure shows as any does. |
 | quit | TUI in tmux: a never-ending filter in the bar shows the error about 1 s later, and quitting right after typing it ends the process within the limit. |
-| B7 | `jq`: a run, and `keys_at`, over a never-ending filter with a 60 s limit stop soon after the quit flag is set from another thread. |
-| B7 | app: under a Tokio runtime with `jq_limit_ms = 60000`, a never-ending filter typed in the bar, and a completion lookup that never ends, both end soon after the `App` is dropped. |
-| B8 | `checks`: `evaluate` with a set quit flag stops a never-ending check; app: a check job's never-ending check ends soon after the `App` is dropped. |
+| B7 | `main.rs`: the function the TUI and the CLI commands run through returns soon after its work ends while a blocking job that sleeps for a minute is still on the pool. (Replaces the quit flag's tests in `jq`, `complete`, `checks` and `checks_tests.rs`.) |
 | B7 | TUI in tmux: `jq_limit_ms = 60000`, a never-ending filter typed in the bar, quit at once: the process exits within about a second. |
 
-**`mine` choices, for veto:** B2's keys found before the stop; B4; B6; B8;
+**`mine` choices, for veto:** B2's keys found before the stop; B4; B6;
 the bar's memo and completion's cache carry a stop's limit (a run stopped
 by a slow moment stays until the filter, response or limit changes); no
 cancel of a run the bar moved past.
