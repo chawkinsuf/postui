@@ -18,7 +18,7 @@ use super::out::{count, table_under};
 use super::read::{displayed, spaces_of, warnings_text};
 use super::run::{FAILED, RunOpts, prepare_one, refused, session, shown_url};
 use super::{CliError, Global};
-use crate::http::{run_checks, send_raw};
+use crate::http::{reads_body, run_checks, send_raw};
 use outline::{Listed, SpaceRequests, outline};
 use postui_core::checks::{Outcome, Timing, millis};
 use postui_core::jq::JqDocument;
@@ -157,9 +157,10 @@ impl SuiteResult {
 /// the other sends. Without a filter the body is never read.
 async fn evaluate(checks: Checks, status: u16, timing: Timing, body: Vec<u8>) -> Vec<Outcome> {
     let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
-    let run = move |checks: &Checks| postui_core::checks::evaluate(checks, status, timing, doc);
+    let off_loop = reads_body(&checks);
+    let run = move || postui_core::checks::evaluate(&checks, status, timing, doc);
     // A panic in the checks is a bug: it surfaces as it would inline.
-    run_checks(checks, run).await.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
+    run_checks(off_loop, run).await.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
 }
 
 /// What a run is about to do, for a [`Watch`]: the environment and space

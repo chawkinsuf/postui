@@ -33,17 +33,18 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
-/// Runs `run` over `checks`, off the async loop when a jq filter has to
-/// read the body: over a large one it would otherwise stall the loop.
-/// `Err` when the run panicked.
+/// Runs `run`, a run of a request's checks, off the async loop when
+/// `off_loop`: when a jq filter has to read the body ([`reads_body`]),
+/// over a large one it would otherwise stall the loop. `Err` when the run
+/// panicked.
 pub async fn run_checks<T: Send + 'static>(
-    checks: postui_core::model::Checks,
-    run: impl FnOnce(&postui_core::model::Checks) -> T + Send + 'static,
+    off_loop: bool,
+    run: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, tokio::task::JoinError> {
-    if !reads_body(&checks) {
-        return Ok(run(&checks));
+    if !off_loop {
+        return Ok(run());
     }
-    tokio::task::spawn_blocking(move || run(&checks)).await
+    tokio::task::spawn_blocking(run).await
 }
 
 /// Whether `checks` read the body: a jq check does. The app and the suite
@@ -55,12 +56,13 @@ pub fn reads_body(checks: &postui_core::model::Checks) -> bool {
 /// `run` through [`run_checks`], the hop the suite's checks take too, for
 /// the app's one check job per response (checks tabs spec 2026-11-16,
 /// section 7): its lines, or for a run that panicked one failed line that
-/// says so. A jq check has no time limit yet: that is #310.
+/// says so. The app makes the job only for checks that read the body
+/// (`CheckState::on_arrival`), so the run goes off the loop. A jq check
+/// has no time limit yet: that is #310.
 pub async fn judge(
-    checks: postui_core::model::Checks,
-    run: impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + 'static,
+    run: impl FnOnce() -> Vec<(bool, String)> + Send + 'static,
 ) -> Vec<(bool, String)> {
-    let run = run_checks(checks, run).await;
+    let run = run_checks(true, run).await;
     run.unwrap_or_else(|e| vec![(false, format!("the checks did not run: {e}"))])
 }
 
@@ -68,23 +70,24 @@ impl ResponseData {
     /// The response judged by `checks`, as lines; a request with no checks
     /// has none (spec P1).
     pub fn check_lines(&self, checks: &postui_core::model::Checks) -> Vec<(bool, String)> {
-        self.check_run()(checks)
+        self.check_run(checks.clone())()
     }
 
     /// [`Self::check_lines`] as a run for [`judge`]. It shares the body
     /// and lets go of it once jq has read it.
     pub fn check_run(
         &self,
-    ) -> impl FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send + use<> {
+        checks: postui_core::model::Checks,
+    ) -> impl FnOnce() -> Vec<(bool, String)> + Send + use<> {
         use postui_core::checks::{Timing, evaluate, lines};
         let (status, body) = (self.status, self.body.clone());
         let timing = Timing::of(self.ttfb, self.elapsed);
-        move |checks| {
+        move || {
             if checks.is_empty() {
                 return Vec::new();
             }
             let doc = move || postui_core::jq::JqDocument::parse(&body);
-            lines(status, &evaluate(checks, status, timing, doc))
+            lines(status, &evaluate(&checks, status, timing, doc))
         }
     }
 }
@@ -453,10 +456,10 @@ mod tests {
         let data = send(&client(), &req).await.unwrap();
         server.await.unwrap();
         assert_eq!(data.status, 500);
-        let run = data.check_run();
+        let run = data.check_run(Checks::default());
         assert_eq!(Arc::strong_count(&data.body), 2, "the run shares the body");
         drop(run);
-        let judged = |checks: Checks| judge(checks, data.check_run());
+        let judged = |checks: Checks| judge(data.check_run(checks));
         assert!(judged(Checks::default()).await.is_empty());
         let checks = Checks {
             max_elapsed_ms: Some(60_000),
@@ -474,8 +477,7 @@ mod tests {
         let lines = judged(named).await;
         assert!(passed(&lines), "{lines:?}");
         // A jq run that panics gives one failed line.
-        let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
-        let lines = judge(jq, |_| panic!("a check panicked")).await;
+        let lines = judge(|| panic!("a check panicked")).await;
         let [(false, line)] = &lines[..] else { panic!("{lines:?}") };
         assert!(line.starts_with("the checks did not run: "), "{line}");
     }
