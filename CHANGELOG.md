@@ -48,6 +48,18 @@ change the project file format.
 - The mark that a body's variables are on is part of the Body tab's label
   (`Body · vars`).
 
+### Fixed
+
+- When a large response's Tree, or a jq filter's result, finishes loading
+  while another of the response's tabs is up, that tab keeps its
+  selection, cursor, scroll and search matches. A body that turns out not
+  to be JSON no longer moves the view from Headers or Checks to Raw: only
+  the Tree tab goes.
+- On the Tree tab, while it shows the response's own tree (no filter's
+  result is up), a jq filter whose result is `null` or no output, or
+  switching the filter off, keeps the selection and sideways scroll, which
+  it used to clear.
+
 ## [0.4.1] - 2026-11-13
 
 Small improvements for variables and the project's default headers.
