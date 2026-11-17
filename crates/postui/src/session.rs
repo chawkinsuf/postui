@@ -73,15 +73,11 @@ impl Session {
         // So does the jq Tab-key mode: it is a config-level UI setting, not
         // part of any one request's response, so it rides along too.
         let jq_tab = outgoing.jq_tab();
-        // A background jq run outstanding on the response leaving screen
-        // has nowhere to deliver its result: the `JqRunFinished` it will
-        // eventually produce is matched by generation/run against whatever
-        // `Response` is on screen when it arrives, which by then is a
-        // different one (or this same one, restored, having moved on).
-        // Dropping it here resets `jq_applied` so the reconcile step
-        // re-applies the filter — as a fresh run — instead of trusting a
-        // filter that was only ever started, never finished.
+        // See `Response::drop_pending_jq`.
         outgoing.drop_pending_jq();
+        // The incoming response leaves `warm` before the outgoing one is
+        // pushed, so the shed below never picks the one being opened.
+        self.warm.retain(|s| s != open);
         // An Empty response carries nothing worth restoring; keeping the
         // cache to requests that actually have a result bounds its size to
         // the requests used this session.
@@ -89,6 +85,8 @@ impl Session {
             let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
             if big {
+                // A rename onto a slug still in `warm` (#322) can leave the
+                // outgoing slug listed already; this keeps it listed once.
                 self.warm.retain(|s| s != &self.open_slug);
                 self.warm.push_back(self.open_slug.clone());
                 while self.warm.len() > KEEP_WARM {
@@ -100,8 +98,8 @@ impl Session {
                 }
             }
         }
-        self.warm.retain(|s| s != open);
         self.response = self.cache.remove(open).unwrap_or_default();
+        // A guard; see `Response::drop_pending_jq`.
         self.response.drop_pending_jq();
         self.response.collapsed = collapsed;
         self.response.set_jq_tab(jq_tab);
@@ -355,20 +353,30 @@ mod tests {
         }
     }
 
+    /// A JSON body over `SYNC_PRETTY_BYTES`, told apart by `n`.
+    fn big(n: usize) -> String {
+        let pad = "x".repeat(crate::components::response::SYNC_PRETTY_BYTES);
+        format!(r#"{{"pad": "{pad}", "n": {n}}}"#)
+    }
+
+    /// Opens `big{n}` and gives it a big response with its tree, on screen.
+    fn open_parsed_big(s: &mut Session, n: usize) {
+        use crate::components::json_tree::JsonTree;
+        open(s, &format!("big{n}"));
+        let body = big(n);
+        s.response.set_state(ResponseState::Ready(data(&body)), n as u64);
+        assert!(s.response.attach_tree(n as u64, JsonTree::parse(&body)));
+    }
+
     #[test]
     fn big_responses_beyond_the_last_few_shed_their_trees_and_reparse_on_return() {
         use crate::components::json_tree::JsonTree;
-        use crate::components::response::SYNC_PRETTY_BYTES;
-        let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut s = Session::default();
         // A small response and KEEP_WARM + 1 big ones, each parsed.
         open(&mut s, "small");
         s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 0);
         for i in 1..=KEEP_WARM + 1 {
-            open(&mut s, &format!("big{i}"));
-            let body = big(i);
-            s.response.set_state(ResponseState::Ready(data(&body)), i as u64);
-            assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
+            open_parsed_big(&mut s, i);
         }
         open(&mut s, "elsewhere");
         let has_tree = |s: &Session, slug: &str| {
@@ -397,6 +405,50 @@ mod tests {
         assert_eq!(s.response.take_reparse(), None, "handed out once");
         assert!(s.response.attach_tree(generation, JsonTree::parse(&body)));
         assert!(s.response.view().unwrap().tree.is_some(), "the tree is back");
+    }
+
+    /// #321: the response being opened is never the one shed on its way in.
+    #[test]
+    fn going_straight_back_to_the_oldest_warm_response_keeps_its_tree() {
+        let mut s = Session::default();
+        for i in 1..=KEEP_WARM + 1 {
+            open_parsed_big(&mut s, i);
+        }
+        let slugs = |names: &[&str]| -> Vec<Option<String>> {
+            names.iter().map(|n| Some(n.to_string())).collect()
+        };
+        // `warm` is `names`. Every big response here got its tree while on
+        // screen, so the cached ones still holding a tree are `names` too.
+        let warm_ok = |s: &Session, names: &[&str]| {
+            let mut holding: Vec<_> = s
+                .cache
+                .iter()
+                .filter(|(_, r)| r.holds_big_derived())
+                .map(|(k, _)| k.clone())
+                .collect();
+            holding.sort();
+            let mut want = slugs(names);
+            want.sort();
+            assert_eq!(s.warm.iter().cloned().collect::<Vec<_>>(), slugs(names));
+            assert_eq!(holding, want, "the cached ones holding a tree");
+        };
+        warm_ok(&s, &["big1", "big2", "big3"]);
+        // Straight from the newest back to the oldest of the last few.
+        open(&mut s, "big1");
+        let view = s.response.view().unwrap();
+        assert!(view.tree.is_some() && !view.parsing, "big1 was warm: no re-parse");
+        assert_eq!(s.response.take_reparse(), None);
+        warm_ok(&s, &["big2", "big3", "big4"]);
+        open(&mut s, "elsewhere");
+        warm_ok(&s, &["big3", "big4", "big1"]);
+        // From an Empty response, and from a small one, the response opened
+        // leaves `warm` too.
+        open(&mut s, "big3");
+        warm_ok(&s, &["big4", "big1"]);
+        open(&mut s, "small");
+        s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 9);
+        open(&mut s, "big4");
+        warm_ok(&s, &["big1", "big3"]);
     }
 
     #[test]
