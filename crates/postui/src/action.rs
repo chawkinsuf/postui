@@ -662,6 +662,16 @@ pub enum Action {
     ResponseArrived {
         generation: u64,
         data: Box<crate::http::ResponseData>,
+        /// The request's checks as they were at the send. With a jq check
+        /// among them the response's lines follow as `ChecksJudged`.
+        checks: postui_core::model::Checks,
+    },
+    /// The jq checks of the response of `generation` finished: its Checks
+    /// tab's lines, for whichever response slot that send made (on screen
+    /// or cached). Dropped when that response is gone.
+    ChecksJudged {
+        generation: u64,
+        lines: Vec<(bool, String)>,
     },
     /// A background send task failed. Same staleness handling as
     /// `ResponseArrived`.

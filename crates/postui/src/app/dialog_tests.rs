@@ -369,12 +369,11 @@ fn json_response(app: &mut App, body: &str) {
             url: "https://x.test/a".into(),
             headers: vec![("content-type".into(), "application/json".into())],
             sent_headers: Vec::new(),
-            body: body.to_string(),
+            body: body.to_string().into(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
-            checks: Vec::new(),
         })),
         app.session.send_generation,
     );

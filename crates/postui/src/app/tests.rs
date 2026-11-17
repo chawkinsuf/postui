@@ -1919,12 +1919,11 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
             url: "https://x.test/a".into(),
             headers: vec![],
             sent_headers: vec![],
-            body: r#"{"a": 1}"#.into(),
+            body: r#"{"a": 1}"#.to_string().into(),
             ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -3343,11 +3342,10 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
             headers: vec![],
             sent_headers: vec![],
             size: body.len(),
-            body,
+            body: body.into(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             content_type: Some("text/plain".into()),
-            checks: Vec::new(),
         })),
         0,
     );
@@ -3625,12 +3623,11 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
             url: "https://x.test/a".into(),
             headers: vec![],
             sent_headers: vec![],
-            body: body.clone(),
+            body: body.clone().into(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -4006,12 +4003,11 @@ fn app_with_wide_response() -> App {
             url: "https://x.test/a".into(),
             headers: vec![],
             sent_headers: vec![],
-            body: body.clone(),
+            body: body.clone().into(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -8981,14 +8977,14 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
         url: "https://x.test/a".into(),
         headers: vec![],
         sent_headers: vec![],
-        body: "late".into(),
+        body: "late".to_string().into(),
         ttfb: std::time::Duration::from_millis(1),
         elapsed: std::time::Duration::from_millis(1),
         size: 4,
         content_type: None,
-        checks: Vec::new(),
     };
-    app.update(Action::ResponseArrived { generation, data: Box::new(data) });
+    let checks = Default::default();
+    app.update(Action::ResponseArrived { generation, data: Box::new(data), checks });
     assert!(
         matches!(app.session.response.state(), ResponseState::Cancelled),
         "a result racing the cancel must not overwrite it"
@@ -9013,14 +9009,18 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
         url: "https://x.test/a".into(),
         headers: vec![],
         sent_headers: vec![],
-        body: "ok".into(),
+        body: "ok".to_string().into(),
         ttfb: std::time::Duration::from_millis(1),
         elapsed: std::time::Duration::from_millis(1),
         size: 2,
         content_type: None,
-        checks: Vec::new(),
     };
-    app.update(Action::ResponseArrived { generation: 1, data: Box::new(data.clone()) });
+    let arrived = Box::new(data.clone());
+    app.update(Action::ResponseArrived {
+        generation: 1,
+        data: arrived,
+        checks: Default::default(),
+    });
     assert!(app.session.in_flight.is_empty());
     assert!(matches!(app.session.response.state(), ResponseState::Ready(d) if **d == data));
 }
@@ -9047,12 +9047,11 @@ fn plain_keys_reach_the_focused_response_pane() {
             url: "https://x.test/a".into(),
             headers: vec![],
             sent_headers: vec![],
-            body: r#"{"a": 1}"#.into(),
+            body: r#"{"a": 1}"#.to_string().into(),
             ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );
@@ -10797,12 +10796,11 @@ pub(super) fn ready_response(app: &mut App, body: &str) {
                 value: "Bearer s3cret".into(),
                 display: format!("Bearer {}", postui_core::prepare::SECRET_MASK),
             }],
-            body: body.to_string(),
+            body: body.to_string().into(),
             ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
-            checks: Vec::new(),
         })),
         app.session.send_generation,
     );
@@ -34458,12 +34456,11 @@ fn the_response_toolbar_hints_follow_the_open_tab() {
             url: "https://x.test/a".into(),
             headers: vec![("content-type".into(), "application/json".into())],
             sent_headers: vec![],
-            body: r#"{"a": 1}"#.into(),
+            body: r#"{"a": 1}"#.to_string().into(),
             ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-            checks: Vec::new(),
         })),
         0,
     );

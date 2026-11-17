@@ -2230,6 +2230,14 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
     }
 }
 
+/// A response's one check job (checks tabs spec 2026-11-16, section 7):
+/// the checks it was sent with and the run that judges them
+/// (`ResponseData::check_run`).
+type CheckJob = (
+    postui_core::model::Checks,
+    Box<dyn FnOnce(&postui_core::model::Checks) -> Vec<(bool, String)> + Send>,
+);
+
 /// The blocking-pool half of a background jq run: parse the body if the
 /// view has no cached document yet, run, and flatten the outputs into
 /// their tree (the slow part on a big output). Free-standing so tests can
@@ -2470,22 +2478,42 @@ impl App {
         self.last_action_failed = true;
     }
 
-    /// Hands a body too big to parse on the UI thread to a blocking
-    /// worker, whose result comes back as `PrettyParsed` tagged with
-    /// `generation`. Outside a tokio runtime (`App::new_for_test`) the
-    /// parse runs inline and its result is dispatched immediately.
-    fn spawn_pretty_parse(&mut self, generation: u64, body: String) {
+    /// Runs a response's background jobs, one after the other, with their
+    /// results tagged with `generation`: the Tree parse of a body too big
+    /// to parse on the UI thread (`PrettyParsed`), then its check job
+    /// (`ChecksJudged`), whatever the parse gave. So the Tree never waits
+    /// for the checks, and jaq's document of the body is built after the
+    /// parse has dropped serde's (checks tabs spec 2026-11-16, section 7,
+    /// detail 3). Outside a tokio runtime (`App::new_for_test`) both run
+    /// inline and their results are dispatched at once.
+    fn spawn_response_jobs(
+        &mut self,
+        generation: u64,
+        tree_of: Option<std::sync::Arc<String>>,
+        checks: Option<CheckJob>,
+    ) {
         use crate::components::json_tree::JsonTree;
         if tokio::runtime::Handle::try_current().is_err() {
-            let tree = JsonTree::parse(&body);
-            self.dispatch(Action::PrettyParsed { generation, tree: tree.map(Box::new) });
+            if let Some(body) = tree_of {
+                let tree = JsonTree::parse(&body).map(Box::new);
+                self.dispatch(Action::PrettyParsed { generation, tree });
+            }
+            if let Some((checks, run)) = checks {
+                self.dispatch(Action::ChecksJudged { generation, lines: run(&checks) });
+            }
             return;
         }
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let tree =
-                tokio::task::spawn_blocking(move || JsonTree::parse(&body)).await.ok().flatten();
-            let _ = tx.send(Action::PrettyParsed { generation, tree: tree.map(Box::new) });
+            if let Some(body) = tree_of {
+                let tree = tokio::task::spawn_blocking(move || JsonTree::parse(&body));
+                let tree = tree.await.ok().flatten().map(Box::new);
+                let _ = tx.send(Action::PrettyParsed { generation, tree });
+            }
+            if let Some((checks, run)) = checks {
+                let lines = crate::http::judge(checks, run).await;
+                let _ = tx.send(Action::ChecksJudged { generation, lines });
+            }
         });
     }
 
@@ -2585,7 +2613,7 @@ impl App {
             // `Session::KEEP_WARM`) gets the same background parse a
             // fresh arrival does.
             if let Some((generation, body)) = self.session.response.take_reparse() {
-                self.spawn_pretty_parse(generation, body);
+                self.spawn_response_jobs(generation, Some(body), None);
             }
         }
         // An AI request belongs to the view it was shaped from: once that
@@ -5345,19 +5373,17 @@ impl App {
                 let tx = self.tx.clone();
                 let client = self.clients.for_request(&prepared).clone();
                 // The checks as they are at the send: the response is judged
-                // by these, once, in the send's own task (checks tabs spec
-                // 2026-11-16, P5).
+                // by these, once (checks tabs spec 2026-11-16, P5).
                 let checks = self.editor.checks();
                 let task = tokio::spawn(async move {
-                    match crate::http::send_checked(&client, &prepared, checks).await {
+                    // The response is handed over as it arrives, with those
+                    // checks for `ResponseArrived` to judge it by (section 7).
+                    let _ = tx.send(match crate::http::send(&client, &prepared).await {
                         Ok(data) => {
-                            let _ = tx
-                                .send(Action::ResponseArrived { generation, data: Box::new(data) });
+                            Action::ResponseArrived { generation, data: Box::new(data), checks }
                         }
-                        Err(error) => {
-                            let _ = tx.send(Action::RequestFailed { generation, error });
-                        }
-                    }
+                        Err(error) => Action::RequestFailed { generation, error },
+                    });
                 });
                 self.session.in_flight.push(crate::session::InFlight {
                     started: Instant::now(),
@@ -5437,17 +5463,34 @@ impl App {
                     }
                 }
             }
-            Action::ResponseArrived { generation, data } => {
+            Action::ResponseArrived { generation, data, checks } => {
+                use crate::components::response::CheckState;
                 // A body too big to parse on the UI thread is handed to a
                 // blocking worker, whose result comes back as
-                // `PrettyParsed`. The clone happens before delivery so the
-                // response itself still moves into the session.
+                // `PrettyParsed`. Its hold on the shared body is taken
+                // before delivery so the response itself still moves into
+                // the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
-                let delivered = self.session.arrived(generation, data);
-                if delivered && let Some(body) = big {
-                    self.spawn_pretty_parse(generation, body);
+                let state = CheckState::on_arrival(&data, &checks);
+                // jq checks read the body, so they are judged after the
+                // response is delivered, off this thread, and for a big
+                // body after its Tree parse (section 7). Nothing ends the
+                // job: a re-send starts another, and this one's lines are
+                // dropped when it ends. A check that never ends keeps its
+                // thread, as on main after Esc and a re-send, until #310's
+                // time limit (section 7, detail 4).
+                let job = (state == CheckState::Judging)
+                    .then(|| -> CheckJob { (checks, Box::new(data.check_run())) });
+                if !self.session.arrived(generation, data, state) {
+                    return false;
                 }
-                delivered
+                if big.is_some() || job.is_some() {
+                    self.spawn_response_jobs(generation, big, job);
+                }
+                true
+            }
+            Action::ChecksJudged { generation, lines } => {
+                self.session.checks_judged(generation, lines)
             }
             Action::PrettyParsed { generation, tree } => {
                 self.session.tree_arrived(generation, tree.map(|t| *t))
@@ -12082,7 +12125,7 @@ impl App {
         match target {
             CopyTarget::ResponseBody => match self.session.response.state() {
                 ResponseState::Ready(d) => {
-                    Some((d.body.clone(), "Copied response body".to_string()))
+                    Some((d.body.to_string(), "Copied response body".to_string()))
                 }
                 _ => None,
             },

@@ -9,7 +9,7 @@
 //! navigated away lands in its own request's cache slot instead of on
 //! screen.
 
-use crate::components::response::{Response, ResponseState};
+use crate::components::response::{CheckState, Response, ResponseState};
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
@@ -223,27 +223,33 @@ impl Session {
     }
 
     /// Delivers a completed response to its owner — on screen when that
-    /// request is still open, its cache slot otherwise. A result from a
-    /// superseded generation is dropped.
-    pub fn arrived(&mut self, generation: u64, data: Box<crate::http::ResponseData>) -> bool {
-        self.deliver(generation, ResponseState::Ready(data))
+    /// request is still open, its cache slot otherwise — with how its
+    /// checks stand as it arrives. A result from a superseded generation
+    /// is dropped.
+    pub fn arrived(
+        &mut self,
+        generation: u64,
+        data: Box<crate::http::ResponseData>,
+        checks: CheckState,
+    ) -> bool {
+        let response = self.deliver(generation, ResponseState::Ready(data));
+        response.map(|r| r.set_checks(checks)).is_some()
     }
 
     /// Like `arrived`, for a send that failed.
     pub fn failed(&mut self, generation: u64, error: String) -> bool {
-        self.deliver(generation, ResponseState::Failed(error))
+        self.deliver(generation, ResponseState::Failed(error)).is_some()
     }
 
-    fn deliver(&mut self, generation: u64, state: ResponseState) -> bool {
+    fn deliver(&mut self, generation: u64, state: ResponseState) -> Option<&mut Response> {
         // A result is current exactly while its send is still tracked:
         // cancel and same-request supersession both remove the entry, so
         // a raced or stale result finds nothing and is dropped.
-        let Some(i) = self.in_flight.iter().position(|f| f.generation == generation) else {
-            return false;
-        };
+        let i = self.in_flight.iter().position(|f| f.generation == generation)?;
         let slug = self.in_flight.remove(i).slug;
-        self.response_for(&slug).set_state(state, generation);
-        true
+        let response = self.response_for(&slug);
+        response.set_state(state, generation);
+        Some(response)
     }
 
     /// Delivers a finished background pretty-print to whichever response is
@@ -264,6 +270,20 @@ impl Session {
             }
         }
         false
+    }
+
+    /// Gives the response the send `generation` brought its jq checks'
+    /// lines (`Action::ChecksJudged`). Found as a finished parse finds it,
+    /// on screen or in the cache; when no response is that send's any more
+    /// (a new send replaced it) the lines are dropped. Whether the
+    /// response on screen took them: only then is there anything to draw.
+    pub fn checks_judged(&mut self, generation: u64, lines: Vec<(bool, String)>) -> bool {
+        let on_screen = self.response.is_from(generation);
+        let mut slots = std::iter::once(&mut self.response).chain(self.cache.values_mut());
+        if let Some(response) = slots.find(|r| r.is_from(generation)) {
+            response.set_checks(CheckState::Judged(lines));
+        }
+        on_screen
     }
 
     /// Forgets everything — cache, screen, in-flight — for a project
@@ -300,13 +320,17 @@ mod tests {
             url: "https://x.test/a".into(),
             headers: vec![],
             sent_headers: vec![],
-            body: body.to_string(),
+            body: body.to_string().into(),
             ttfb: Duration::from_millis(1),
             elapsed: Duration::from_millis(1),
             size: body.len(),
             content_type: None,
-            checks: Vec::new(),
         })
+    }
+
+    /// A response to a request without checks arrives.
+    fn arrives(s: &mut Session, generation: u64, body: &str) -> bool {
+        s.arrived(generation, data(body), CheckState::None)
     }
 
     fn body_of(r: &Response) -> Option<&str> {
@@ -447,7 +471,7 @@ mod tests {
         s.in_flight.push(in_flight(generation, "a").await);
 
         open(&mut s, "b");
-        assert!(s.arrived(generation, data("late result")));
+        assert!(arrives(&mut s, generation, "late result"));
         assert!(
             matches!(s.response.state(), ResponseState::Empty),
             "b's screen must not show a's late result"
@@ -455,6 +479,56 @@ mod tests {
 
         open(&mut s, "a");
         assert_eq!(body_of(&s.response), Some("late result"));
+    }
+
+    /// Checks tabs spec 2026-11-16, section 7 (A5): a send's check lines
+    /// land on the response that send brought, on screen or cached, a shed
+    /// one included, and nowhere once it is replaced or forgotten.
+    #[tokio::test]
+    async fn check_lines_find_the_response_their_send_brought() {
+        use crate::components::json_tree::JsonTree;
+        use crate::components::response::{SYNC_PRETTY_BYTES, ViewMode};
+        let lines = |text: &str| vec![(true, text.to_string())];
+        let checks_tab = |r: &mut Response| {
+            r.set_view_mode(ViewMode::Checks);
+            r.view().filter(|v| v.mode == ViewMode::Checks).map(|v| v.view_text())
+        };
+        let big = format!(r#"{{"pad": "{}"}}"#, "x".repeat(SYNC_PRETTY_BYTES));
+        let mut s = Session::default();
+        let mut sent = Vec::new();
+        // Big responses waiting on their checks, enough of them that the
+        // first is shed in the cache.
+        for i in 0..=KEEP_WARM {
+            let slug = format!("big{i}");
+            open(&mut s, &slug);
+            let generation = s.begin_send(&Some(slug.clone()));
+            s.in_flight.push(in_flight(generation, &slug).await);
+            assert!(s.arrived(generation, data(&big), CheckState::Judging));
+            assert!(s.tree_arrived(generation, JsonTree::parse(&big)));
+            sent.push(generation);
+        }
+        open(&mut s, "elsewhere");
+        assert!(s.cache[&Some("big0".into())].view().unwrap().tree.is_none(), "shed");
+        assert!(!s.checks_judged(sent[0], lines(".a")), "off screen: nothing to draw");
+        assert_eq!(checks_tab(&mut s.response), None, "not the request on screen");
+        open(&mut s, "big1");
+        let waiting = Some("checking\u{2026}");
+        assert_eq!(checks_tab(&mut s.response).as_deref(), waiting, "nor another send's");
+        assert!(s.checks_judged(sent[1], lines(".b")), "on screen");
+        assert_eq!(checks_tab(&mut s.response).as_deref(), Some("✓ .b"));
+        open(&mut s, "big0");
+        assert_eq!(checks_tab(&mut s.response).as_deref(), Some("✓ .a"));
+        // A new send of the request: the earlier send's lines find nothing.
+        let again = s.begin_send(&Some("big0".into()));
+        s.in_flight.push(in_flight(again, "big0").await);
+        assert!(!s.checks_judged(sent[0], lines("stale")));
+        assert!(s.arrived(again, data("{}"), CheckState::Judging));
+        assert!(!s.checks_judged(sent[0], lines("stale")));
+        assert_eq!(checks_tab(&mut s.response).as_deref(), waiting);
+        // A project switch forgets every response.
+        s.reset();
+        assert!(!s.checks_judged(again, lines("late")));
+        assert!(!s.checks_judged(sent[1], lines("late")));
     }
 
     #[tokio::test]
@@ -466,12 +540,12 @@ mod tests {
         let current = s.begin_send(&Some("a".into()));
         s.in_flight.push(in_flight(current, "a").await);
 
-        assert!(!s.arrived(stale, data("stale")));
+        assert!(!arrives(&mut s, stale, "stale"));
         assert!(
             matches!(s.response.state(), ResponseState::InFlight { .. }),
             "the newer send is still pending"
         );
-        assert!(s.arrived(current, data("fresh")));
+        assert!(arrives(&mut s, current, "fresh"));
         assert_eq!(body_of(&s.response), Some("fresh"));
     }
 
@@ -488,8 +562,8 @@ mod tests {
         assert!(s.is_in_flight(&Some("a".into())), "b's send leaves a's running");
         assert!(s.is_in_flight(&Some("b".into())));
 
-        assert!(s.arrived(first, data("from a")), "a's result still lands");
-        assert!(s.arrived(second, data("from b")));
+        assert!(arrives(&mut s, first, "from a"), "a's result still lands");
+        assert!(arrives(&mut s, second, "from b"));
         assert_eq!(body_of(&s.response), Some("from b"));
         open(&mut s, "a");
         assert_eq!(body_of(&s.response), Some("from a"));
@@ -512,7 +586,7 @@ mod tests {
         assert!(matches!(s.response.state(), ResponseState::Cancelled));
         assert!(s.is_in_flight(&Some("a".into())), "cancel is per-request");
 
-        assert!(s.arrived(first, data("from a")));
+        assert!(arrives(&mut s, first, "from a"));
         open(&mut s, "a");
         assert_eq!(body_of(&s.response), Some("from a"));
     }
@@ -526,7 +600,7 @@ mod tests {
         assert!(s.cancel());
 
         assert!(
-            !s.arrived(generation, data("raced past the abort")),
+            !arrives(&mut s, generation, "raced past the abort"),
             "a cancelled send's late result must not overwrite Cancelled"
         );
         assert!(matches!(s.response.state(), ResponseState::Cancelled));
@@ -558,8 +632,8 @@ mod tests {
 
         s.reset();
         assert!(s.in_flight.is_empty());
-        assert!(!s.arrived(first, data("late")));
-        assert!(!s.arrived(second, data("late")));
+        assert!(!arrives(&mut s, first, "late"));
+        assert!(!arrives(&mut s, second, "late"));
     }
 
     #[tokio::test]
@@ -574,7 +648,7 @@ mod tests {
         open(&mut s, "a");
         let generation = s.begin_send(&Some("a".into()));
         s.in_flight.push(in_flight(generation, "a").await);
-        assert!(s.arrived(generation, data(&big)));
+        assert!(arrives(&mut s, generation, &big));
         assert!(s.response.view().unwrap().parsing);
 
         // The user moves on while the parse is still running.

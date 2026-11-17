@@ -38,7 +38,7 @@ async fn sends_json_with_auto_content_type_and_reads_response() {
         prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 201);
-    assert_eq!(data.body, "{\"ok\":true}");
+    assert_eq!(*data.body, "{\"ok\":true}");
     assert_eq!(data.size, 11);
 }
 
@@ -71,7 +71,7 @@ async fn non_2xx_is_a_response_not_an_error() {
         prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 500);
-    assert_eq!(data.body, "boom");
+    assert_eq!(*data.body, "boom");
 }
 
 #[tokio::test]
@@ -116,7 +116,7 @@ async fn redirects_are_followed() {
     let (prepared, _) = prepare(&r, &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 200);
-    assert_eq!(data.body, "done");
+    assert_eq!(*data.body, "done");
 }
 
 #[tokio::test]
@@ -235,6 +235,60 @@ async fn drain_until_settled(
         if settled {
             break;
         }
+    }
+}
+
+/// Checks tabs spec 2026-11-16, section 7: a send hands the response over
+/// as it arrives. With a jq check its Checks tab says `checking…` until
+/// the lines follow; with none that reads the body it arrives judged.
+#[tokio::test]
+async fn a_response_arrives_before_its_jq_checks_are_judged() {
+    use postui::components::response::ViewMode;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
+    let checks_tab = |app: &mut postui::app::App| {
+        app.update(Action::ResponseViewMode(ViewMode::Checks));
+        let view = app.session.response.view().filter(|v| v.mode == ViewMode::Checks);
+        view.map(|v| v.view_text())
+    };
+    for (slug, checks, on_arrival, judged) in [
+        (
+            "main/slow",
+            "status = 200\njq = ['.ok', '.n == 1']",
+            "checking\u{2026}",
+            Some("✓ status 200\n✓ .ok\n✗ .n == 1 gave false"),
+        ),
+        ("main/quick", "status = 200", "✓ status 200", None),
+    ] {
+        let toml = format!("url = \"{}/x\"\n[checks]\n{checks}\n", server.uri());
+        let req = HttpRequest::from_toml_str(&toml).unwrap();
+        postui_core::fixtures::save_request(dir.path(), slug, &req).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest(slug.into()));
+        app.update(Action::ForceSend);
+        drain_until_settled(&mut app, &mut rx).await;
+        assert_eq!(checks_tab(&mut app).as_deref(), Some(on_arrival), "{slug}");
+        let Some(lines) = judged else { continue };
+        // The lines follow, among whatever else the app sends itself.
+        loop {
+            let action = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("timed out waiting for the check lines")
+                .expect("channel closed before the check lines arrived");
+            let landed = matches!(action, Action::ChecksJudged { .. });
+            app.update(action);
+            if landed {
+                break;
+            }
+        }
+        assert_eq!(checks_tab(&mut app).as_deref(), Some(lines));
     }
 }
 

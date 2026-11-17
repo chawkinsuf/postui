@@ -107,7 +107,9 @@ its toolbar copies the body, saves it to a file or opens it in `$EDITOR`.
 
 When the request has checks, a fourth view, Checks, lists each one with a `✓`
 or a `✗`, and the tab wears the mark for the response as a whole. Without a
-status check, a status of 400 or more fails the response.
+status check, a status of 400 or more fails the response. The response shows
+as soon as it arrives; while its jq checks are still running, the view says
+`checking…`.
 
 ### The jq filter
 
