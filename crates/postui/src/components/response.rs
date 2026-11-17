@@ -926,16 +926,18 @@ impl CheckState {
     /// them later when they can't be judged here. Checks that read no body
     /// (`http::reads_body`) are judged here; with one that does among them
     /// they are all judged together by the run, after the response is
-    /// shown, each jq check stopped at `limit`.
+    /// shown, each jq check stopped at `limit` or once `quit` is set
+    /// ([`crate::http::ResponseData::check_run`]).
     pub fn on_arrival(
         data: &crate::http::ResponseData,
         checks: postui_core::model::Checks,
         limit: std::time::Duration,
+        quit: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> (Self, Option<crate::http::CheckJob>) {
         if checks.is_empty() {
             return (Self::None, None);
         }
-        let run = data.check_run(checks, limit);
+        let run = data.check_run(checks, limit, quit);
         if run.reads_body() { (Self::Judging, Some(run)) } else { (Self::Judged(run.run()), None) }
     }
 
@@ -3589,8 +3591,10 @@ impl Response {
         if body_len <= sync_limit {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
-            // back, just the outputs.
-            let result = postui_core::jq::run(code_trim, &doc, limit).map(JqRunOutput::from_run);
+            // back, just the outputs. On the UI thread, so no quit flag: the
+            // app can't quit while it runs.
+            let result =
+                postui_core::jq::run(code_trim, &doc, limit, None).map(JqRunOutput::from_run);
             self.land_jq_result(result);
             return None;
         }
@@ -3709,7 +3713,8 @@ impl Response {
                 view.jq_doc = JqDocument::parse(&view.raw.join()).ok();
             }
             let doc = view.jq_doc.clone()?;
-            let found = complete::keys_at(&expr, &doc, limit);
+            // On the UI thread, as the bar's inline run (`apply_jq`).
+            let found = complete::keys_at(&expr, &doc, limit, None);
             c.cached_keys = found.keys;
             c.cached_expr = Some((expr, found.stopped_at));
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
@@ -7181,8 +7186,8 @@ mod tests {
         let mut d = data(body);
         d.status = status;
         let limit = postui_core::project::DEFAULT_JQ_LIMIT;
-        let lines = d.check_run(checks.clone(), limit).run();
-        let (state, _) = CheckState::on_arrival(&d, checks.clone(), limit);
+        let lines = d.check_run(checks.clone(), limit, Default::default()).run();
+        let (state, _) = CheckState::on_arrival(&d, checks.clone(), limit, Default::default());
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         r.set_checks(state);
@@ -11538,7 +11543,7 @@ mod tests {
     fn a_background_run_that_fails_on_one_value_lands_its_error_with_the_outputs() {
         let mut r = ready(PART_FAILING);
         let req = r.apply_jq(".items[]", 0, LIMIT).expect("over the sync limit: background");
-        let action = crate::app::jq_worker(req);
+        let action = crate::app::jq_worker(req, &Default::default());
         let crate::action::Action::JqRunFinished { generation, run, doc, result } = action else {
             panic!("the worker answers with its run: {action:?}");
         };

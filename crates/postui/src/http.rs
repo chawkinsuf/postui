@@ -92,10 +92,16 @@ pub async fn judge(run: CheckJob) -> Vec<(bool, String)> {
 
 impl ResponseData {
     /// The response judged by `checks`, as lines, each jq check stopped at
-    /// `limit`; a request with no checks has none (spec P1). A run for
-    /// [`judge`], or for [`ChecksRun::run`] on this thread. It shares the
-    /// body and lets go of it once jq has read it.
-    pub fn check_run(&self, checks: postui_core::model::Checks, limit: Duration) -> CheckJob {
+    /// `limit` or once `quit` is set (the app's, #308 spec B8); a request
+    /// with no checks has none (spec P1). A run for [`judge`], or for
+    /// [`ChecksRun::run`] on this thread. It shares the body and lets go of
+    /// it once jq has read it.
+    pub fn check_run(
+        &self,
+        checks: postui_core::model::Checks,
+        limit: Duration,
+        quit: Arc<std::sync::atomic::AtomicBool>,
+    ) -> CheckJob {
         use postui_core::checks::{Timing, evaluate, lines};
         let (status, body) = (self.status, self.body.clone());
         let timing = Timing::of(self.ttfb, self.elapsed);
@@ -104,7 +110,7 @@ impl ResponseData {
                 return Vec::new();
             }
             let doc = move || postui_core::jq::JqDocument::parse(&body);
-            lines(status, &evaluate(checks, status, timing, limit, doc))
+            lines(status, &evaluate(checks, status, timing, limit, Some(&quit), doc))
         })
     }
 }
@@ -474,10 +480,10 @@ mod tests {
         server.await.unwrap();
         assert_eq!(data.status, 500);
         let limit = postui_core::project::DEFAULT_JQ_LIMIT;
-        let run = data.check_run(Checks::default(), limit);
+        let run = data.check_run(Checks::default(), limit, Default::default());
         assert_eq!(Arc::strong_count(&data.body), 2, "the run shares the body");
         drop(run);
-        let judged = |checks: Checks| judge(data.check_run(checks, limit));
+        let judged = |checks: Checks| judge(data.check_run(checks, limit, Default::default()));
         assert!(judged(Checks::default()).await.is_empty());
         let checks = Checks {
             max_elapsed_ms: Some(60_000),

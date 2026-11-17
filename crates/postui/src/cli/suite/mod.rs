@@ -164,8 +164,9 @@ async fn evaluate(
     body: Vec<u8>,
 ) -> Vec<Outcome> {
     let doc = move || JqDocument::parse(&String::from_utf8_lossy(&body));
-    let run =
-        move |checks: &Checks| postui_core::checks::evaluate(checks, status, timing, limit, doc);
+    let run = move |checks: &Checks| {
+        postui_core::checks::evaluate(checks, status, timing, limit, None, doc)
+    };
     // A panic in the checks is a bug: it surfaces as it would inline.
     run_checks(ChecksRun::new(checks, run))
         .await

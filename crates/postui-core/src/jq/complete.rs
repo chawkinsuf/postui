@@ -24,12 +24,18 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 /// compile, a runtime error part-way — yields what was collected so far,
 /// never an error: a half-typed filter is normal here. In a stream, a
 /// runtime error ends only that value's run and the next value goes on.
-/// The run stops at `limit` like any jq run (#308), with the keys it had.
-pub fn keys_at(input_expr: &str, doc: &JqDocument, limit: std::time::Duration) -> Keys {
+/// The run stops at `limit`, or once `quit` is set, like any jq run
+/// ([`super::run`], #308), with the keys it had.
+pub fn keys_at(
+    input_expr: &str,
+    doc: &JqDocument,
+    limit: std::time::Duration,
+    quit: Option<&std::sync::atomic::AtomicBool>,
+) -> Keys {
     let mut keys: Vec<String> = Vec::new();
     let mut outputs = 0;
     let ended = with_compiled(input_expr, |filter| {
-        with_limit(limit, |stop| {
+        with_limit(limit, quit, |stop| {
             for_each_output(filter, doc, stop, |item| {
                 if let Ok(Val::Obj(map)) = &item {
                     for (k, _) in map.iter() {
@@ -610,7 +616,7 @@ mod tests {
 
     /// [`super::keys_at`] with a limit no test here reaches.
     fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
-        let found = super::keys_at(input_expr, doc, std::time::Duration::from_secs(60));
+        let found = super::keys_at(input_expr, doc, std::time::Duration::from_secs(60), None);
         assert_eq!(found.stopped_at, None, "{input_expr}");
         found.keys
     }
@@ -622,9 +628,25 @@ mod tests {
         let limit = std::time::Duration::from_millis(50);
         let started = std::time::Instant::now();
         let code = "{a: 1}, (repeat(1) | select(. == 2))";
-        let found = super::keys_at(code, &doc(), limit);
+        let found = super::keys_at(code, &doc(), limit, None);
         assert_eq!(found, super::Keys { keys: vec!["a".into()], stopped_at: Some(limit) });
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// #308 spec B7: a lookup stops soon after its quit flag is set, long
+    /// before its limit.
+    #[test]
+    fn a_lookup_stops_once_its_quit_flag_is_set() {
+        let quit = std::sync::atomic::AtomicBool::new(false);
+        let limit = std::time::Duration::from_secs(10);
+        let started = std::time::Instant::now();
+        let code = "{a: 1}, (repeat(1) | select(. == 2))";
+        let found = super::super::tests::quit_soon(&quit, || {
+            super::keys_at(code, &doc(), limit, Some(&quit))
+        });
+        assert_eq!(found, super::Keys { keys: vec!["a".into()], stopped_at: Some(limit) });
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     }
 
     #[test]

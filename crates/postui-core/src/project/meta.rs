@@ -38,7 +38,7 @@ pub struct ProjectMeta {
     /// [`Self::jq_limit`]. Nothing writes it. One key for all of them, so a
     /// filter stops in the bar where it would as a check (#308 spec B1); the
     /// cost is that raising it for a slow check also lets a bar run that
-    /// never ends, and the TUI's quit waiting on it, last that long.
+    /// never ends last that long (the TUI's quit stops it, #308 spec B7).
     #[serde(default)]
     pub jq_limit_ms: Option<std::num::NonZeroU32>,
 }

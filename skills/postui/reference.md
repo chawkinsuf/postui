@@ -66,8 +66,7 @@ name = "Staging"
 - `jq_limit_ms`: how long each jq run may take, in whole milliseconds, 1 or
   more (default 1000): each jq check in a request's `[checks]`, `run
   --jq`/`--view`, and the TUI's jq bar and its key completion. Quitting the
-  TUI can wait that long for a run still going. A top-level key, above the
-  tables. Leave it out unless a filter over a large body needs longer.
+  TUI stops any run still going. A top-level key, above the tables. Leave it out unless a filter over a large body needs longer.
 
 ## variables.toml
 

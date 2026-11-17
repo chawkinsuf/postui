@@ -363,6 +363,9 @@ pub struct App {
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
+    /// The flag the app's jq runs on the blocking pool read beside their
+    /// limit (#308 spec B7, B8): set as the app is dropped.
+    jq_quit: JqQuit,
     /// The outstanding "describe a filter" AI task, if any.
     pub ai_task: Option<AiTask>,
     /// Counts every AI request ever started, so a finished background task
@@ -2081,6 +2084,7 @@ impl App {
             usage: crate::usage::UsageStore::default(),
             clients: crate::http::Clients::new(),
             tx,
+            jq_quit: JqQuit::default(),
             ai_task: None,
             ai_request: 0,
             ai_log: None,
@@ -2223,6 +2227,21 @@ impl AiTask {
     }
 }
 
+/// The one flag every jq run the app puts on the blocking pool reads
+/// beside its limit: the bar's runs, completion's lookups and the response's
+/// check job (#308 spec B7, B8). Set when the app is dropped, which is as
+/// `main.rs`'s loop returns, however it returns, and before the Tokio
+/// runtime's drop waits for the pool: a run still going stops at its next
+/// step instead of holding the process up to `jq_limit_ms`.
+#[derive(Default)]
+struct JqQuit(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for JqQuit {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Appends to the `--debug-ai` log from a background job, and tells the
 /// main loop (`AiLogFailed`) when the write fails.
 fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender<Action>) {
@@ -2237,10 +2256,13 @@ fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender
 /// call it without a runtime, and so `App::spawn_jq_run` can run it inline
 /// when there is no runtime to spawn onto.
 ///
-/// The run stops at the request's limit (#308). The parse this worker
-/// made comes back beside the result, failed or not, so the next run needn't
-/// read the body again (#308 spec B6).
-pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Action {
+/// The run stops at the request's limit, or once `quit` is set (#308). The
+/// parse this worker made comes back beside the result, failed or not, so
+/// the next run needn't read the body again (#308 spec B6).
+pub(crate) fn jq_worker(
+    req: crate::components::response::JqRunRequest,
+    quit: &std::sync::atomic::AtomicBool,
+) -> Action {
     use crate::components::response::{JqRunOutput, JqRunRequest};
     use postui_core::jq::{JqDocument, JqError, run as jq_run};
     let JqRunRequest { generation, run, code, doc, body, limit } = req;
@@ -2252,14 +2274,18 @@ pub(crate) fn jq_worker(req: crate::components::response::JqRunRequest) -> Actio
         },
         (None, None) => (Err(JqError::Runtime { message: "no document".into() }), None),
     };
-    let result = parsed.and_then(|d| jq_run(&code, &d, limit)).map(JqRunOutput::from_run);
+    let result =
+        parsed.and_then(|d| jq_run(&code, &d, limit, Some(quit))).map(JqRunOutput::from_run);
     Action::JqRunFinished { generation, run, doc: fresh, result }
 }
 
 /// The blocking-pool half of a completion key fetch, stopped at the
-/// request's limit (#308). Free-standing for the same reasons as
-/// [`jq_worker`].
-pub(crate) fn jq_complete_worker(req: crate::components::response::JqCompleteRequest) -> Action {
+/// request's limit or once `quit` is set (#308). Free-standing for the same
+/// reasons as [`jq_worker`].
+pub(crate) fn jq_complete_worker(
+    req: crate::components::response::JqCompleteRequest,
+    quit: &std::sync::atomic::AtomicBool,
+) -> Action {
     let crate::components::response::JqCompleteRequest {
         generation,
         seq,
@@ -2278,7 +2304,7 @@ pub(crate) fn jq_complete_worker(req: crate::components::response::JqCompleteReq
     };
     let keys = doc
         .as_ref()
-        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d, limit))
+        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d, limit, Some(quit)))
         .unwrap_or_default();
     Action::JqCompleteFinished { generation, seq, input_expr, keys, doc: fresh }
 }
@@ -2512,23 +2538,23 @@ impl App {
     /// inline and dispatch its result immediately instead of spawning.
     fn spawn_jq_run(&mut self, req: crate::components::response::JqRunRequest) {
         if tokio::runtime::Handle::try_current().is_err() {
-            let action = jq_worker(req);
+            let action = jq_worker(req, &self.jq_quit.0);
             self.dispatch(action);
             return;
         }
         let tx = self.tx.clone();
         let (generation, run) = (req.generation, req.run);
+        let quit = self.jq_quit.0.clone();
         tokio::spawn(async move {
-            let action =
-                tokio::task::spawn_blocking(move || jq_worker(req)).await.unwrap_or_else(|_| {
-                    Action::JqRunFinished {
-                        generation,
-                        run,
-                        doc: None,
-                        result: Err(postui_core::jq::JqError::Runtime {
-                            message: "filter worker panicked".into(),
-                        }),
-                    }
+            let action = tokio::task::spawn_blocking(move || jq_worker(req, &quit))
+                .await
+                .unwrap_or_else(|_| Action::JqRunFinished {
+                    generation,
+                    run,
+                    doc: None,
+                    result: Err(postui_core::jq::JqError::Runtime {
+                        message: "filter worker panicked".into(),
+                    }),
                 });
             let _ = tx.send(action);
         });
@@ -2538,15 +2564,16 @@ impl App {
     /// dispatched immediately) outside one, like [`Self::spawn_jq_run`].
     fn spawn_jq_complete(&mut self, req: crate::components::response::JqCompleteRequest) {
         if tokio::runtime::Handle::try_current().is_err() {
-            let action = jq_complete_worker(req);
+            let action = jq_complete_worker(req, &self.jq_quit.0);
             self.dispatch(action);
             return;
         }
         let tx = self.tx.clone();
         let (generation, seq) = (req.generation, req.seq);
         let expr = req.input_expr.clone();
+        let quit = self.jq_quit.0.clone();
         tokio::spawn(async move {
-            let action = tokio::task::spawn_blocking(move || jq_complete_worker(req))
+            let action = tokio::task::spawn_blocking(move || jq_complete_worker(req, &quit))
                 .await
                 .unwrap_or_else(|_| Action::JqCompleteFinished {
                     generation,
@@ -5460,12 +5487,13 @@ impl App {
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
                 // jq checks read the body, so they are judged after the
                 // response is delivered, off this thread, and for a big
-                // body after its Tree parse (section 7). Nothing ends the
-                // job early: a re-send starts another, and this one's lines
-                // are dropped when it ends. Each jq check is stopped at the
-                // project's time limit (#310).
+                // body after its Tree parse (section 7). A re-send doesn't
+                // end the job: it starts another, and this one's lines are
+                // dropped when it ends. Each jq check is stopped at the
+                // project's time limit (#310), or as the app quits (#308).
                 let limit = self.meta().jq_limit();
-                let (state, job) = CheckState::on_arrival(&data, checks, limit);
+                let quit = self.jq_quit.0.clone();
+                let (state, job) = CheckState::on_arrival(&data, checks, limit, quit);
                 if !self.session.arrived(generation, data, state) {
                     return false;
                 }
