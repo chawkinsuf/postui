@@ -3798,14 +3798,15 @@ impl Response {
         })
     }
 
-    /// Lands a pool key fetch. Keys for a view that is no longer on
-    /// screen (a stale `generation`), or from a fetch a newer one has
-    /// superseded (a stale `seq`), are dropped without being cached — but
-    /// a stale generation whose `seq` is still the outstanding fetch
-    /// clears it, so the expression can be fetched again. A valid attach
-    /// caches the keys even when the caret's context has moved on; the
-    /// ghost updates only if that context still asks for this expression.
-    /// Returns whether the ghost changed.
+    /// Lands a pool key fetch. Keys for a view that is not on screen (a
+    /// stale `generation`), or from a fetch a newer one has superseded (a
+    /// stale `seq`), are dropped without being cached. The generation is
+    /// checked first: `seq` counts per response, so a fetch started on
+    /// another request can carry the number of this one's outstanding
+    /// fetch, and must leave it waiting (#318). A valid attach caches the
+    /// keys even when the caret's context has moved on; the ghost updates
+    /// only if that context still asks for this expression. Returns
+    /// whether the ghost changed.
     pub fn attach_jq_completion(
         &mut self,
         generation: u64,
@@ -3814,20 +3815,21 @@ impl Response {
         keys: complete::Keys,
         doc: Option<JqDocument>,
     ) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        if view.generation != generation {
+            return false;
+        }
         let c = &mut self.jq.completion;
         if c.pending() != Some(seq) {
             return false;
         }
         c.pending = None;
-        match self.view.as_mut() {
-            Some(view) if view.generation == generation => {
-                // The fetch had to parse the body: keep the document so
-                // the next run or fetch for this view needn't.
-                if view.jq_doc.is_none() {
-                    view.jq_doc = doc;
-                }
-            }
-            _ => return false,
+        // The fetch had to parse the body: keep the document so the next
+        // run or fetch for this view needn't.
+        if view.jq_doc.is_none() {
+            view.jq_doc = doc;
         }
         let c = &mut self.jq.completion;
         c.cached_keys = keys.keys;
@@ -10945,8 +10947,8 @@ mod tests {
             r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_none(),
             "the same context is not fetched twice while pending"
         );
-        // (A stale generation is `an_attach_for_a_gone_generation_still_
-        // clears_its_pending_fetch`: it drops the keys *and* the fetch.)
+        // (A stale generation is `an_attach_for_another_generation_leaves_
+        // the_pending_fetch_alone`.)
         assert!(
             !r.attach_jq_completion(3, creq.seq + 9, ".".into(), found(&["pad"]), None),
             "stale sequence"
@@ -11026,30 +11028,34 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("other"));
     }
 
+    /// #318: each response numbers its own lookups, so a lookup started on
+    /// another request can land on the one on screen with the number of
+    /// that one's own lookup. It is dropped and leaves that wait alone.
     #[test]
-    fn an_attach_for_a_gone_generation_still_clears_its_pending_fetch() {
+    fn an_attach_for_another_generation_leaves_the_pending_fetch_alone() {
         let big = big_body("pad");
-        let mut r = big_body_bar(&big, 3, ".");
-        let creq = r
+        let mut a = big_body_bar(&big, 3, ".");
+        let mut b = big_body_bar(&big, 5, ".");
+        let areq = a
             .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
             .expect("a big body fetches keys on the pool");
-        // The view moved on under the in-flight fetch. (A new response
-        // landing clears `pending` itself; this pins the attach side of
-        // the rule on its own.)
-        r.view.as_mut().unwrap().generation = 4;
+        let breq = b
+            .refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT)
+            .expect("a big body fetches keys on the pool");
+        assert_eq!(areq.seq, breq.seq, "the two responses' numbers meet");
         assert!(
-            !r.attach_jq_completion(3, creq.seq, ".".into(), found(&["pad"]), None),
-            "keys for a view that is gone are dropped"
+            !b.attach_jq_completion(3, areq.seq, ".".into(), found(&["other"]), None),
+            "keys for another response's view are dropped"
         );
-        assert_eq!(r.jq_ghost(), None);
-        assert!(
-            r.jq_bar().completion.pending().is_none(),
-            "and the fetch is not left pending forever"
+        assert_eq!(b.jq_ghost(), None);
+        assert_eq!(
+            b.jq_bar().completion.pending(),
+            Some(breq.seq),
+            "the open response still waits on its own lookup"
         );
-        assert!(
-            r.refresh_jq_completion(SYNC_PRETTY_BYTES, LIMIT).is_some(),
-            "so the expression can be fetched again"
-        );
+        assert!(!breq.cancel.is_cancelled(), "and has not cancelled it");
+        assert!(b.attach_jq_completion(5, breq.seq, ".".into(), found(&["pad", "n"]), None));
+        assert_eq!(b.jq_ghost(), Some("pad"));
     }
 
     #[test]
