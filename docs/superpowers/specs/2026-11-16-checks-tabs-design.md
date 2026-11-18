@@ -445,14 +445,17 @@ to them. What changes:
 
   Amended 2026-11-18 (#326, `mine`): an unsaved request that Save as
   gives its first name is the same request too: its response and a send
-  still out for it follow it to that name (`Session::save_scratch_as`).
+  still out for it follow it to that name (`Session::rename` from the
+  unsaved request's key).
   Before, the pane went empty at the save, and the response stayed under
   the unsaved request's key for the next unsaved request to show. Save
   as of a request that has a name makes another request: the response
   stays with the request it was sent for, and the new one has none.
   Undo of the Save as removes the request it made, so its response and
   a send still out go with it, as above: the unsaved request comes back
-  with an empty response pane (review round 1, `mine`).
+  with an empty response pane, as a deleted request does when its
+  delete is undone (`you`, above). Applying that answer to this undo is
+  `mine` (review round 1).
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

@@ -31,10 +31,11 @@ impl Register {
     /// The request at `from` now lives at `to` (a rename, a move to
     /// another space, their undo or redo): a register naming it follows,
     /// as the session's cache does, so a put copies the request as it is
-    /// now rather than failing on the old slug.
-    pub fn follow(&mut self, from: &str, to: &str) {
+    /// now rather than failing on the old slug. `from` `None` is the
+    /// unsaved request, which the register never names.
+    pub fn follow(&mut self, from: Option<&str>, to: &str) {
         if let Self::Request(slug) = self
-            && slug == from
+            && Some(slug.as_str()) == from
         {
             *slug = to.to_string();
         }

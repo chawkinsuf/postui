@@ -3341,12 +3341,11 @@ impl App {
     }
 
     /// The request at `from` now lives at `to` (a rename, a move, their
-    /// undo or redo): what the app keys by slug beside the editor follows
-    /// it, the session's cache and in-flight sends and the register. Every
-    /// rename and move goes through here, so neither is left behind. A
-    /// Save as of the unsaved request moves only the session's
-    /// (`save_editor_as`): the register names only saved requests.
-    fn follow_slug(&mut self, from: &str, to: &str) {
+    /// undo or redo, or `from` `None`: a Save as giving the unsaved
+    /// request its first name, `save_editor_as`): what the app keys by
+    /// slug beside the editor follows it, the session's cache and
+    /// in-flight sends and the register.
+    fn follow_slug(&mut self, from: Option<&str>, to: &str) {
         self.session.rename(from, to);
         self.yank.follow(from, to);
     }
@@ -5173,7 +5172,7 @@ impl App {
                         // several in a row a chore). From this space's
                         // point of view it's a delete, so the next `m`
                         // has the neighbour to act on.
-                        self.follow_slug(&slug, &new_slug);
+                        self.follow_slug(Some(&slug), &new_slug);
                         self.land_after_removal(from_row, was_open, cursor_on);
                         self.toasts.push(
                             format!(
@@ -8517,7 +8516,7 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
                 for (old, new) in &moved {
-                    self.follow_slug(old, new);
+                    self.follow_slug(Some(old), new);
                 }
                 let follow = open.and_then(|open| {
                     moved.iter().find(|(old, _)| *old == open).map(|(_, new)| new.clone())
@@ -10962,7 +10961,7 @@ impl App {
     /// and the editor and its shadow when they hold it, re-keyed in place
     /// without reloading, so unsaved edits stay.
     fn follow_move(&mut self, from: &str, to: &str) {
-        self.follow_slug(from, to);
+        self.follow_slug(Some(from), to);
         if self.editor.slug.as_deref() == Some(from) {
             self.editor.slug = Some(to.to_string());
             // The body's engine state follows too (amendment C2).
@@ -11811,7 +11810,9 @@ impl App {
     /// send still out for it follow it too (#326). A request that had a
     /// name keeps its own: the new one is another request. Undo of the
     /// save removes the request it made, and the response goes with it
-    /// (#322): the unsaved request comes back with none.
+    /// (#322): the unsaved request comes back with none, as a deleted
+    /// request comes back with none when its delete is undone (the user's
+    /// answer on #322; checks tabs spec, section 7).
     fn save_editor_as(&mut self, name: &str) -> bool {
         self.commit_table_edit();
         let req = self.editor.current_request();
@@ -11821,9 +11822,9 @@ impl App {
         }
         self.vim_body_moved(before.as_deref());
         if before.is_none()
-            && let Some(slug) = &self.editor.slug
+            && let Some(slug) = self.editor.slug.clone()
         {
-            self.session.save_scratch_as(slug);
+            self.follow_slug(None, &slug);
         }
         true
     }

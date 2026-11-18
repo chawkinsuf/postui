@@ -143,24 +143,13 @@ impl Session {
     }
 
     /// Follows a request whose slug changed on disk (a rename, a move to
-    /// another space): the open slug, the cache slot, the warm list and
-    /// any in-flight send all move with it, so Send stays disabled for
-    /// the renamed request and its late response still lands on it
-    /// rather than under a slug some future request would inherit.
-    pub fn rename(&mut self, from: &str, to: &str) {
-        self.rekey(Some(from.to_string()), to);
-    }
-
-    /// The unsaved scratch saved as the request at `to` (a Save as, #326):
-    /// the same request, so its response and any in-flight send follow it
-    /// as a rename's do, and nothing is left for the next scratch.
-    pub fn save_scratch_as(&mut self, to: &str) {
-        self.rekey(None, to);
-    }
-
-    /// What [`Self::rename`] and [`Self::save_scratch_as`] move: every
-    /// place the session keys by `from_key`.
-    fn rekey(&mut self, from_key: Option<String>, to: &str) {
+    /// another space, or `from` `None`: a Save as giving the unsaved
+    /// scratch its first name, #326): the open slug, the cache slot, the
+    /// warm list and any in-flight send all move with it, so Send stays
+    /// disabled for the renamed request and its late response still lands
+    /// on it rather than under a slug some future request would inherit.
+    pub fn rename(&mut self, from: Option<&str>, to: &str) {
+        let from_key = from.map(str::to_string);
         let to_key = Some(to.to_string());
         if from_key == to_key {
             return;
@@ -560,8 +549,8 @@ mod tests {
         open(&mut s, "sent");
         let generation = s.begin_send(&Some("sent".into()));
         s.in_flight.push(in_flight(generation, "sent").await);
-        s.rename("sent", "moved");
-        s.rename("big1", "big9");
+        s.rename(Some("sent"), "moved");
+        s.rename(Some("big1"), "big9");
         assert_eq!(s.warm.iter().flatten().collect::<Vec<_>>(), ["big9"]);
         assert!(s.is_in_flight(&Some("moved".into())));
         assert!(arrives(&mut s, generation, "late"));
@@ -581,7 +570,7 @@ mod tests {
         let mut s = Session::default();
         let generation = s.begin_send(&None);
         s.in_flight.push(InFlight { slug: None, ..in_flight(generation, "unused").await });
-        s.save_scratch_as("kept");
+        s.rename(None, "kept");
         assert!(!s.sync_open(&Some("kept".into())), "already open: nothing to swap");
         assert!(s.is_in_flight(&Some("kept".into())) && !s.is_in_flight(&None));
         assert!(arrives(&mut s, generation, "late"));
