@@ -414,6 +414,15 @@ to them. What changes:
   deleted request's response stays in the session's cache, as on
   `main`, so its lines land on it there, and an undo of the delete
   shows them.
+
+  Amended 2026-11-17 (#322, `mine`): it stays there until another
+  request takes its slug. A request made at the slug (a create, a
+  save-as, a curl import, a duplicate) or renamed or moved onto it
+  drops the cached response, with a send of the deleted request still
+  out (`Session::forget`), so the new request opens with no response
+  and lines for the dropped one land nowhere. An undo or a redo drops
+  nothing: an undone delete and a redone create show the response
+  again.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

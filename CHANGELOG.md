@@ -90,6 +90,9 @@ change the project file format.
   a selection made on Raw or Headers.
 - Going straight back to the first of four large responses opens it at
   once, Tree tab as it was, instead of loading it again.
+- A new request named like one deleted earlier no longer opens with the
+  deleted request's response. Nor does a duplicate, or a request renamed
+  or moved to that name. Undoing the delete still shows the response.
 
 ## [0.4.1] - 2026-11-13
 

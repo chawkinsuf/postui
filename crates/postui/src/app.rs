@@ -4760,6 +4760,10 @@ impl App {
                 };
                 match made {
                     Ok(copies) => {
+                        // A copy is a new request, with no response (#322).
+                        for copy in &copies {
+                            self.session.forget(copy);
+                        }
                         // Copies land beside their anchor and the first
                         // opens (where vim's `3p` leaves the cursor), so
                         // the edit that motivated the duplicate can start
@@ -11863,6 +11867,8 @@ impl App {
         // without a marker to undo it: the file landed either way.
         match created {
             Ok((slug, leaf)) => {
+                // A new request has no response (#322).
+                self.session.forget(&slug);
                 let label = crate::undo::StepLabel::create(leaf.clone());
                 // The editor holds exactly what was written (display name
                 // included); the landing opens the new row's folders and

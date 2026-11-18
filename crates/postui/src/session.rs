@@ -85,8 +85,10 @@ impl Session {
             let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
             if big {
-                // A rename onto a slug still in `warm` (#322) can leave the
-                // outgoing slug listed already; this keeps it listed once.
+                // A space rename can re-key the open request onto a slug
+                // still in `warm` (`rename_space` drops nothing), so the
+                // outgoing slug may be listed already; this keeps it
+                // listed once.
                 self.warm.retain(|s| s != &self.open_slug);
                 self.warm.push_back(self.open_slug.clone());
                 while self.warm.len() > KEEP_WARM {
@@ -107,15 +109,37 @@ impl Session {
         true
     }
 
+    /// Drops what is held under `slug` once another request takes it: the
+    /// cache slot, its place in `warm`, and an in-flight send, whose
+    /// result then lands nowhere. A deleted request's response stays
+    /// cached under its slug, so an undo of the delete shows it; the next
+    /// request made at that slug, or moved onto it, would otherwise open
+    /// with that response (#322).
+    pub fn forget(&mut self, slug: &str) {
+        let key = Some(slug.to_string());
+        self.cache.remove(&key);
+        self.warm.retain(|s| s != &key);
+        self.in_flight.retain(|f| {
+            let gone = f.slug == key;
+            if gone {
+                f.task.abort();
+            }
+            !gone
+        });
+    }
+
     /// Follows a request whose slug changed on disk (a rename, a move to
     /// another space): the open slug, the cache slot, the warm list and
     /// any in-flight send all move with it, so Send stays disabled for
     /// the renamed request and its late response still lands on it
-    /// rather than under a slug some future request would inherit.
+    /// rather than under a slug some future request would inherit. What
+    /// an earlier request left under `to` is dropped first
+    /// ([`Self::forget`]).
     pub fn rename(&mut self, from: &str, to: &str) {
         if from == to {
             return;
         }
+        self.forget(to);
         let from_key = Some(from.to_string());
         let to_key = Some(to.to_string());
         if self.open_slug == from_key {
@@ -449,6 +473,69 @@ mod tests {
         s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 9);
         open(&mut s, "big4");
         warm_ok(&s, &["big1", "big3"]);
+    }
+
+    /// #322: what an earlier request left under a slug goes when another
+    /// takes it: the cached response, its place in `warm`, and a send
+    /// still out, whose result lands nowhere. Other requests keep theirs.
+    #[tokio::test]
+    async fn forgetting_a_slug_drops_its_response_its_warm_place_and_its_send() {
+        let mut s = Session::default();
+        open_parsed_big(&mut s, 1);
+        open_parsed_big(&mut s, 2);
+        open(&mut s, "sent");
+        let generation = s.begin_send(&Some("sent".into()));
+        s.in_flight.push(in_flight(generation, "sent").await);
+        open(&mut s, "kept");
+        let other = s.begin_send(&Some("kept".into()));
+        s.in_flight.push(in_flight(other, "kept").await);
+        open(&mut s, "elsewhere");
+
+        s.forget("big1");
+        assert_eq!(s.warm.iter().flatten().collect::<Vec<_>>(), ["big2"]);
+        s.forget("sent");
+        assert!(!s.is_in_flight(&Some("sent".into())));
+        assert!(!arrives(&mut s, generation, "late"), "the forgotten send's result is dropped");
+        for slug in ["big1", "sent"] {
+            open(&mut s, slug);
+            assert!(matches!(s.response.state(), ResponseState::Empty), "{slug}");
+        }
+        assert!(arrives(&mut s, other, "theirs"), "another request's send still lands");
+        open(&mut s, "kept");
+        assert_eq!(body_of(&s.response), Some("theirs"));
+        open(&mut s, "big2");
+        assert!(body_of(&s.response) == Some(big(2).as_str()), "and its response stays");
+    }
+
+    /// #322: the request now at `to` brings its own response or none; what
+    /// an earlier request left under `to` goes, its place in `warm` too.
+    #[test]
+    fn a_request_renamed_onto_a_slug_takes_nothing_left_under_it() {
+        let mut s = Session::default();
+        let warm = |s: &Session| s.warm.iter().flatten().cloned().collect::<Vec<_>>();
+        // The open request, never sent, takes the name `big1` had.
+        open_parsed_big(&mut s, 1);
+        open(&mut s, "plain");
+        s.rename("plain", "big1");
+        assert!(warm(&s).is_empty(), "the earlier response's place is given up");
+        open(&mut s, "elsewhere");
+        open(&mut s, "big1");
+        assert!(matches!(s.response.state(), ResponseState::Empty));
+        // A request that is not open takes the name `big2` had.
+        open_parsed_big(&mut s, 2);
+        open(&mut s, "elsewhere");
+        s.rename("unopened", "big2");
+        assert!(warm(&s).is_empty());
+        open(&mut s, "big2");
+        assert!(matches!(s.response.state(), ResponseState::Empty));
+        // One with a response brings it, and is listed in `warm` once.
+        open_parsed_big(&mut s, 3);
+        open_parsed_big(&mut s, 4);
+        open(&mut s, "elsewhere");
+        s.rename("big4", "big3");
+        assert_eq!(warm(&s), ["big3"]);
+        open(&mut s, "big3");
+        assert!(body_of(&s.response) == Some(big(4).as_str()), "big4's own response");
     }
 
     #[test]

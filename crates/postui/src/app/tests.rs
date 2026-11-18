@@ -33616,6 +33616,102 @@ async fn renaming_an_in_flight_request_keeps_its_send_and_its_response() {
     ));
 }
 
+/// The body of the response on screen; `None` while none is ready.
+fn response_body(app: &App) -> Option<&str> {
+    match app.session.response.state() {
+        ResponseState::Ready(data) => Some(&data.body),
+        _ => None,
+    }
+}
+
+/// #322: a request made where a deleted one was is a new request, and
+/// opens with no response. The session keeps a deleted request's response
+/// under its slug (an undo of the delete shows it), so making a request at
+/// that slug drops it: a create and a duplicate here; a save-as and a curl
+/// import create through the same function.
+#[test]
+fn a_request_made_where_a_deleted_one_was_opens_with_no_response() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("other".into()));
+    app.update(Action::CreateRequest("ghost".into()));
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest("main/ghost".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
+
+    app.update(Action::CreateRequest("ghost".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"));
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "a new request was never sent: {:?}",
+        response_body(&app)
+    );
+
+    let duplicate = Action::ForceDuplicateRequest {
+        slug: "main/ghost".into(),
+        anchor: None,
+        above: false,
+        count: 1,
+    };
+    app.update(duplicate.clone());
+    let copy = app.editor.slug.clone().expect("the copy is open");
+    assert_ne!(copy, "main/ghost");
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest(copy.clone()));
+    app.update(duplicate);
+    assert_eq!(app.editor.slug, Some(copy), "the second copy takes the first one's slug");
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "nor was a new copy: {:?}",
+        response_body(&app)
+    );
+}
+
+/// #322: a request renamed to a deleted one's name does not take the
+/// deleted one's response either.
+#[test]
+fn a_request_renamed_to_a_deleted_ones_name_does_not_take_its_response() {
+    let mut app = App::new_for_test();
+    for name in ["other", "third", "ghost"] {
+        app.update(Action::CreateRequest(name.into()));
+    }
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest("main/ghost".into()));
+    app.update(Action::RenameRequest { from: "main/other".into(), to: "ghost".into() });
+    assert!(app.proj().request_exists("main/ghost"), "{:?}", app.toasts.messages());
+    app.update(Action::ForceOpenRequest("main/third".into()));
+    app.update(Action::ForceOpenRequest("main/ghost".into()));
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "the renamed request was never sent: {:?}",
+        response_body(&app)
+    );
+}
+
+/// #322: an undo or a redo that puts a request back puts back the request
+/// that was there, so its response is shown again: an undone delete
+/// (checks tabs spec 2026-11-16, section 7) and a redone create alike.
+#[test]
+fn a_request_put_back_by_undo_or_redo_shows_its_response_again() {
+    let old = r#"{"old": true}"#;
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("other".into()));
+    app.update(Action::CreateRequest("ghost".into()));
+    ready_response(&mut app, old);
+
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("main/ghost"), "the create undone");
+    assert_eq!(response_body(&app), None);
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"));
+    assert_eq!(response_body(&app), Some(old), "a redone create");
+
+    app.update(Action::DeleteRequest("main/ghost".into()));
+    assert_eq!(response_body(&app), None);
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"));
+    assert_eq!(response_body(&app), Some(old), "an undone delete");
+}
+
 #[test]
 fn undo_of_a_request_delete_reopens_it_in_the_editor() {
     let (mut app, _dir) = spaced_app();
