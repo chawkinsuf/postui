@@ -9,5 +9,5 @@ Accept = "application/json"
 
 [checks]
 status = 200
-max_elapsed_ms = 2000
+max_elapsed_ms = 5000
 jq = ['length == 5']

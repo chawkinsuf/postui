@@ -114,7 +114,7 @@ Accept = "application/json"
 
 [checks]
 status = 200
-max_elapsed_ms = 2000
+max_elapsed_ms = 5000
 jq = ['length == 5']
 ```
 
@@ -174,7 +174,6 @@ postui requests                          # the project's requests
 postui run main/users/list-users         # send one and print the response
 postui run main/users/list-users --jq '.[].name'
 postui suite                             # send them all: status and timing
-postui suite -j 4 -i                     # pick env and options, four at a time
 postui check                             # validate the files and variables
 ```
 
@@ -191,10 +190,11 @@ any check that failed. `-j 4` sends four at a time, and `-i` picks the
 environment, space, selector options and jobs for one run without saving
 them.
 
-<a href="docs/guide.md#command-line"><img src="docs/images/suite.gif" alt="postui suite -i: four requests at a time, each shown with its status, time and size as it finishes" width="900"></a>
+<a href="docs/guide.md#command-line"><img src="docs/images/suite.gif" alt="postui suite -i --env default: four requests at a time, each shown with its status, time and size as it finishes" width="900"></a>
 
-Through a pipe, or with `--plain`, the suite prints plain text. It exits
-with status 1 when any request failed, so a script can act on the result.
+Without a terminal to draw on, or with `--plain`, the suite prints plain
+text. It exits with status 1 when any request failed, so a script can act
+on the result.
 
 ### For coding agents
 

@@ -14,7 +14,9 @@ Sleep 1s
 Show
 Sleep 1s
 
-Type@90ms "postui suite -i"
+# --env default: the environment the secret is under, whatever the picker
+# would start on.
+Type@90ms "postui suite -i --env default"
 Sleep 500ms
 Enter
 Sleep 1.2s

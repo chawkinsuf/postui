@@ -33,12 +33,12 @@ Type "l"
 Sleep 300ms
 Type "gT"
 Sleep 300ms
-# The same in the response, once its Checks tab has its mark: the checks
-# are done.
+# The same in the response, once its Checks tab has a ✓: every check
+# passed. A take where one failed times out here.
 Ctrl+W
 Type "j"
 Sleep 300ms
-Wait+Screen@15s /Checks [✓✗]/
+Wait+Screen@15s /Checks ✓/
 Type "gT"
 Sleep 800ms
 Show
