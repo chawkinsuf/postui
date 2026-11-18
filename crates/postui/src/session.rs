@@ -5,9 +5,9 @@
 //! A response is not app-global — it is *the response to one request*. This
 //! module owns that binding: the on-screen [`Response`] always belongs to
 //! the open request, every other request's latest response waits in a
-//! session-lifetime cache, and a result that arrives after the user has
-//! navigated away lands in its own request's cache slot instead of on
-//! screen.
+//! cache for as long as the session and the request last, and a result
+//! that arrives after the user has navigated away lands in its own
+//! request's cache slot instead of on screen.
 
 use crate::components::response::{CheckState, Response, ResponseState};
 use std::collections::{HashMap, VecDeque};
@@ -40,7 +40,8 @@ pub struct Session {
     /// Which request `response` belongs to (`None`: unsaved scratch).
     open_slug: Option<String>,
     /// Latest response of every request navigated away from, keyed like
-    /// `open_slug`. Session-lifetime only; never persisted.
+    /// `open_slug`. Never persisted, and dropped when its request goes
+    /// ([`Self::drop_gone`]).
     cache: HashMap<Option<String>, Response>,
     /// Every send still waiting on its result — at most one entry per
     /// request (`Action::Send` is disabled while its request is in
@@ -85,10 +86,7 @@ impl Session {
             let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
             if big {
-                // A space rename can re-key the open request onto a slug
-                // still in `warm` (`rename_space` drops nothing), so the
-                // outgoing slug may be listed already; this keeps it
-                // listed once.
+                // Keeps the slug listed once.
                 self.warm.retain(|s| s != &self.open_slug);
                 self.warm.push_back(self.open_slug.clone());
                 while self.warm.len() > KEEP_WARM {
@@ -109,45 +107,40 @@ impl Session {
         true
     }
 
-    /// Drops what is held under `slug` once another request takes it: the
-    /// cache slot, its place in `warm`, and an in-flight send, whose
-    /// result then lands nowhere. A deleted request's response stays
-    /// cached under its slug, so an undo of the delete shows it; the next
-    /// request made at that slug, or moved onto it, would otherwise open
-    /// with that response (#322).
+    /// A response goes when its request goes (#322; checks tabs spec
+    /// 2026-11-16, section 7, the amendment): drops the cached response,
+    /// the place in `warm` and the in-flight send of every request
+    /// `exists` answers `false` for. A dropped send's result lands
+    /// nowhere. Kept, a response would be shown by the next request at
+    /// its slug.
     ///
-    /// The drop is not undone: when the request that took the slug is
-    /// undone and then the delete, the deleted request is back with no
-    /// response (checks tabs spec 2026-11-16, section 7, the #322
-    /// amendment).
-    ///
-    /// The response on screen stays as it is: the open request's file
-    /// keeps another request off its slug, unless it was removed outside
-    /// the app, and that case is left alone.
-    pub fn forget(&mut self, slug: &str) {
-        let key = Some(slug.to_string());
-        self.cache.remove(&key);
-        self.warm.retain(|s| s != &key);
-        // As `begin_send` drops a request's earlier send.
-        if let Some(i) = self.in_flight.iter().position(|f| f.slug == key) {
-            self.in_flight.remove(i).task.abort();
-        }
+    /// The unsaved scratch has no file to lose. The open request keeps
+    /// its send, and its response on screen, while the editor holds it,
+    /// whether or not its file is still there.
+    pub fn drop_gone(&mut self, exists: impl Fn(&str) -> bool) {
+        let open = self.open_slug.clone();
+        let gone =
+            |slug: &Option<String>| *slug != open && slug.as_deref().is_some_and(|s| !exists(s));
+        self.cache.retain(|slug, _| !gone(slug));
+        self.warm.retain(|slug| !gone(slug));
+        self.in_flight.retain(|f| {
+            let gone = gone(&f.slug);
+            if gone {
+                f.task.abort();
+            }
+            !gone
+        });
     }
 
     /// Follows a request whose slug changed on disk (a rename, a move to
     /// another space): the open slug, the cache slot, the warm list and
     /// any in-flight send all move with it, so Send stays disabled for
     /// the renamed request and its late response still lands on it
-    /// rather than under a slug some future request would inherit. What
-    /// is held under `to` is dropped first ([`Self::forget`]), on the
-    /// undo or redo of a rename or a move too: this request's own
-    /// response travels under `from`, so one under `to` is another
-    /// request's.
+    /// rather than under a slug some future request would inherit.
     pub fn rename(&mut self, from: &str, to: &str) {
         if from == to {
             return;
         }
-        self.forget(to);
         let from_key = Some(from.to_string());
         let to_key = Some(to.to_string());
         if self.open_slug == from_key {
@@ -483,67 +476,66 @@ mod tests {
         warm_ok(&s, &["big1", "big3"]);
     }
 
-    /// #322: what an earlier request left under a slug goes when another
-    /// takes it: the cached response, its place in `warm`, and a send
-    /// still out, whose result lands nowhere. Other requests keep theirs.
+    /// #322: a request that is gone takes its cached response, its place
+    /// in `warm` and its send, whose result then lands nowhere. The open
+    /// request, the unsaved scratch and the requests still there keep
+    /// theirs.
     #[tokio::test]
-    async fn forgetting_a_slug_drops_its_response_its_warm_place_and_its_send() {
+    async fn a_request_that_is_gone_takes_its_response_its_warm_place_and_its_send() {
         let mut s = Session::default();
+        s.response.set_state(ResponseState::Ready(data("scratch")), 0);
         open_parsed_big(&mut s, 1);
         open_parsed_big(&mut s, 2);
         open(&mut s, "sent");
-        let generation = s.begin_send(&Some("sent".into()));
-        s.in_flight.push(in_flight(generation, "sent").await);
+        let gone = s.begin_send(&Some("sent".into()));
+        s.in_flight.push(in_flight(gone, "sent").await);
         open(&mut s, "kept");
-        let other = s.begin_send(&Some("kept".into()));
-        s.in_flight.push(in_flight(other, "kept").await);
-        open(&mut s, "elsewhere");
+        let kept = s.begin_send(&Some("kept".into()));
+        s.in_flight.push(in_flight(kept, "kept").await);
+        open(&mut s, "open");
+        let open_send = s.begin_send(&Some("open".into()));
+        s.in_flight.push(in_flight(open_send, "open").await);
 
-        s.forget("big1");
+        // `big1`, `sent` and the open request have no file any more.
+        s.drop_gone(|slug| ["big2", "kept"].contains(&slug));
         assert_eq!(s.warm.iter().flatten().collect::<Vec<_>>(), ["big2"]);
-        s.forget("sent");
         assert!(!s.is_in_flight(&Some("sent".into())));
-        assert!(!arrives(&mut s, generation, "late"), "the forgotten send's result is dropped");
+        assert!(!arrives(&mut s, gone, "late"), "its result is dropped");
+        assert!(arrives(&mut s, open_send, "open's"), "the open request's send still lands");
+        assert_eq!(body_of(&s.response), Some("open's"));
         for slug in ["big1", "sent"] {
             open(&mut s, slug);
             assert!(matches!(s.response.state(), ResponseState::Empty), "{slug}");
         }
-        assert!(arrives(&mut s, other, "theirs"), "another request's send still lands");
+        assert!(arrives(&mut s, kept, "theirs"), "a request still there keeps its send");
         open(&mut s, "kept");
         assert_eq!(body_of(&s.response), Some("theirs"));
         open(&mut s, "big2");
-        assert!(body_of(&s.response) == Some(big(2).as_str()), "and its response stays");
+        assert!(body_of(&s.response) == Some(big(2).as_str()), "and its response");
+        s.sync_open(&None);
+        assert_eq!(body_of(&s.response), Some("scratch"), "the scratch has no file to lose");
     }
 
-    /// #322: the request now at `to` brings its own response or none; what
-    /// an earlier request left under `to` goes, its place in `warm` too.
-    #[test]
-    fn a_request_renamed_onto_a_slug_takes_nothing_left_under_it() {
+    /// A renamed request's response, its place in `warm` and its send go
+    /// with it, on screen or cached.
+    #[tokio::test]
+    async fn a_renamed_request_keeps_its_response_its_warm_place_and_its_send() {
         let mut s = Session::default();
-        let warm = |s: &Session| s.warm.iter().flatten().cloned().collect::<Vec<_>>();
-        // The open request, never sent, takes the name `big1` had.
         open_parsed_big(&mut s, 1);
-        open(&mut s, "plain");
-        s.rename("plain", "big1");
-        assert!(warm(&s).is_empty(), "the earlier response's place is given up");
-        open(&mut s, "elsewhere");
-        open(&mut s, "big1");
-        assert!(matches!(s.response.state(), ResponseState::Empty));
-        // A request that is not open takes the name `big2` had.
-        open_parsed_big(&mut s, 2);
-        open(&mut s, "elsewhere");
-        s.rename("unopened", "big2");
-        assert!(warm(&s).is_empty());
-        open(&mut s, "big2");
-        assert!(matches!(s.response.state(), ResponseState::Empty));
-        // One with a response brings it, and is listed in `warm` once.
-        open_parsed_big(&mut s, 3);
-        open_parsed_big(&mut s, 4);
-        open(&mut s, "elsewhere");
-        s.rename("big4", "big3");
-        assert_eq!(warm(&s), ["big3"]);
-        open(&mut s, "big3");
-        assert!(body_of(&s.response) == Some(big(4).as_str()), "big4's own response");
+        open(&mut s, "sent");
+        let generation = s.begin_send(&Some("sent".into()));
+        s.in_flight.push(in_flight(generation, "sent").await);
+        s.rename("sent", "moved");
+        s.rename("big1", "big9");
+        assert_eq!(s.warm.iter().flatten().collect::<Vec<_>>(), ["big9"]);
+        assert!(s.is_in_flight(&Some("moved".into())));
+        assert!(arrives(&mut s, generation, "late"));
+        assert_eq!(body_of(&s.response), Some("late"), "on screen, under its new slug");
+        open(&mut s, "big9");
+        assert!(body_of(&s.response) == Some(big(1).as_str()));
+        assert!(s.response.view().unwrap().tree.is_some(), "still warm");
+        open(&mut s, "moved");
+        assert_eq!(body_of(&s.response), Some("late"));
     }
 
     #[test]

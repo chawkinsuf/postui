@@ -2630,8 +2630,6 @@ impl App {
         // threading that bookkeeping through each arm individually.
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
-        self.sidebar.in_flight =
-            self.session.in_flight.iter().filter_map(|f| f.slug.clone()).collect();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
         // project's resolved values and the open request's own `[variables]`;
         // `shadowed` is read from it.
@@ -2660,6 +2658,14 @@ impl App {
                 self.spawn_response_jobs(generation, Some(body), None);
             }
         }
+        // A response goes when its request goes (#322): after every
+        // action, the session drops what it holds for a request the
+        // project no longer lists. After the swap above, which is what
+        // takes a removed request's response off the screen.
+        let project = self.project.as_ref();
+        self.session.drop_gone(|slug| project.is_some_and(|p| p.lists_request(slug)));
+        self.sidebar.in_flight =
+            self.session.in_flight.iter().filter_map(|f| f.slug.clone()).collect();
         // An AI request belongs to the view it was shaped from: once that
         // view has left the screen (another request opened, a send, a
         // project switch) its reply has nowhere to land, so the request
@@ -4760,10 +4766,6 @@ impl App {
                 };
                 match made {
                     Ok(copies) => {
-                        // A copy is a new request, with no response (#322).
-                        for copy in &copies {
-                            self.session.forget(copy);
-                        }
                         // Copies land beside their anchor and the first
                         // opens (where vim's `3p` leaves the cursor), so
                         // the edit that motivated the duplicate can start
@@ -11867,8 +11869,6 @@ impl App {
         // without a marker to undo it: the file landed either way.
         match created {
             Ok((slug, leaf)) => {
-                // A new request has no response (#322).
-                self.session.forget(&slug);
                 let label = crate::undo::StepLabel::create(leaf.clone());
                 // The editor holds exactly what was written (display name
                 // included); the landing opens the new row's folders and

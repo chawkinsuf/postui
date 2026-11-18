@@ -4264,6 +4264,18 @@ fn req(url: &str) -> postui_core::model::HttpRequest {
     postui_core::model::HttpRequest::from_toml_str(&format!(r#"url = "{url}""#)).unwrap()
 }
 
+/// Request files at `main/big1` to `main/big{n}` and `main/elsewhere`,
+/// listed, for a test that puts their slugs in the editor by hand: the
+/// session keeps a response only for a request the project lists (#322).
+fn list_big_requests(app: &mut App, n: usize) {
+    let root = app.proj().root().to_path_buf();
+    let slugs = (1..=n).map(|i| format!("main/big{i}")).chain(["main/elsewhere".to_string()]);
+    for slug in slugs {
+        postui_core::fixtures::save_request(&root, &slug, &req("https://x/1")).unwrap();
+    }
+    app.update(Action::RefreshSidebar);
+}
+
 /// [`req`] as a POST, a method that can show the Body tab.
 pub(super) fn post_req(url: &str) -> postui_core::model::HttpRequest {
     postui_core::model::HttpRequest::from_toml_str(&format!("method = \"POST\"\nurl = \"{url}\""))
@@ -8897,16 +8909,15 @@ async fn force_send_spawns_a_task_and_marks_response_in_flight() {
 
 #[tokio::test]
 async fn sidebar_mirrors_which_requests_are_in_flight() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    let (mut app, _dir) = spaced_app();
     app.session.in_flight.push(crate::session::InFlight {
         started: std::time::Instant::now(),
         generation: 1,
-        slug: Some("ping".into()),
+        slug: Some("main/beta".into()),
         task: tokio::spawn(async {}),
     });
     app.update(Action::Render);
-    assert!(app.sidebar.in_flight.contains("ping"));
+    assert!(app.sidebar.in_flight.contains("main/beta"));
 
     app.session.in_flight.clear();
     app.update(Action::Render);
@@ -29257,8 +29268,9 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
             "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
         )
     };
+    list_big_requests(&mut app, KEEP_WARM + 1);
     for i in 1..=KEEP_WARM + 1 {
-        app.editor.slug = Some(format!("big{i}"));
+        app.editor.slug = Some(format!("main/big{i}"));
         app.update(Action::Render);
         app.session.send_generation = i as u64;
         ready_response(&mut app, &big(i));
@@ -29269,12 +29281,12 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
         // On the Tree tab, so `view_text` below reads the (filtered) tree.
         app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
     }
-    app.editor.slug = Some("elsewhere".into());
+    app.editor.slug = Some("main/elsewhere".into());
     app.update(Action::Render);
 
     app.editor.jq = ".n".into();
     app.editor.jq_enabled = true;
-    app.editor.slug = Some("big1".into());
+    app.editor.slug = Some("main/big1".into());
     app.update(Action::Render);
     let view = app.session.response.view().expect("big1's response is back");
     assert!(view.tree.is_some(), "the shed tree was re-parsed on return");
@@ -29309,8 +29321,9 @@ fn a_shed_response_keeps_a_selection_on_another_tab_through_its_return() {
             app.editor.jq = "del(.pad)".into();
             app.editor.jq_enabled = filter;
             let mut kept = None;
+            list_big_requests(&mut app, KEEP_WARM + 1);
             for i in 1..=KEEP_WARM + 1 {
-                app.editor.slug = Some(format!("big{i}"));
+                app.editor.slug = Some(format!("main/big{i}"));
                 app.update(Action::Render);
                 app.session.send_generation = i as u64;
                 let body = big(i);
@@ -29355,10 +29368,10 @@ fn a_shed_response_keeps_a_selection_on_another_tab_through_its_return() {
                 kept = Some(place);
             }
             // Leaving the last one pushes big1 past `KEEP_WARM`: it sheds.
-            app.editor.slug = Some("elsewhere".into());
+            app.editor.slug = Some("main/elsewhere".into());
             app.update(Action::Render);
 
-            app.editor.slug = Some("big1".into());
+            app.editor.slug = Some("main/big1".into());
             app.update(Action::Render);
             let r = &app.session.response;
             let v = r.view().expect("big1's response is back");
@@ -33624,10 +33637,28 @@ fn response_body(app: &App) -> Option<&str> {
     }
 }
 
+/// Whether the response pane is empty.
+fn no_response(app: &App) -> bool {
+    matches!(app.session.response.state(), ResponseState::Empty)
+}
+
+/// A send of the open request that has not come back; answers its
+/// generation.
+fn send_out(app: &mut App) -> u64 {
+    let slug = app.editor.slug.clone();
+    let generation = app.session.begin_send(&slug);
+    app.session.in_flight.push(crate::session::InFlight {
+        started: std::time::Instant::now(),
+        generation,
+        slug,
+        task: tokio::spawn(async {}),
+    });
+    app.update(Action::Render);
+    generation
+}
+
 /// #322: a request made where a deleted one was is a new request, and
-/// opens with no response. The session keeps a deleted request's response
-/// under its slug (an undo of the delete shows it), so making a request at
-/// that slug drops it: a create and a duplicate here.
+/// opens with no response: a create and a duplicate here.
 #[test]
 fn a_request_made_where_a_deleted_one_was_opens_with_no_response() {
     let mut app = App::new_for_test();
@@ -33719,11 +33750,11 @@ fn a_request_saved_as_or_imported_where_a_deleted_one_was_opens_with_no_response
     );
 }
 
-/// #322: a request moved onto a slug takes no response left under it, by
-/// the move (onto a deleted request's slug) or by its undo (back onto a
-/// slug a request made and undone since left a response under).
+/// #322: a request moved to where another was does not take that one's
+/// response, by the move (onto a deleted request's slug) or by its undo
+/// (back onto a slug a request made, sent and undone since had).
 #[test]
-fn a_request_moved_onto_a_slug_takes_no_response_left_under_it() {
+fn a_request_moved_to_where_another_was_does_not_take_its_response() {
     let (mut app, _dir) = spaced_app();
     let to_auth =
         Action::ForceMoveRequestToSpace { slug: "main/login".into(), space: "auth".into() };
@@ -33742,8 +33773,8 @@ fn a_request_moved_onto_a_slug_takes_no_response_left_under_it() {
         response_body(&app)
     );
 
-    // Another `main/login`, sent, and its create undone: its response
-    // waits under the slug for a redo. The undo of the move drops it.
+    // Another `main/login`, sent, and its create undone; then the move
+    // undone, which puts the first one back at `main/login`.
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::CreateRequest("login".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/login"));
@@ -33761,29 +33792,267 @@ fn a_request_moved_onto_a_slug_takes_no_response_left_under_it() {
     );
 }
 
-/// #322: the undo or redo of a create or a delete drops nothing, so the
-/// response the session holds under the slug is shown again: an undone
-/// delete (checks tabs spec 2026-11-16, section 7) and a redone create.
+/// #322 (checks tabs spec 2026-11-16, section 7, the amendment): a
+/// response goes when its request goes, so a request an undo or a redo
+/// brings back has none: a redone create and an undone delete.
 #[test]
-fn a_request_put_back_by_undo_or_redo_shows_its_response_again() {
-    let old = r#"{"old": true}"#;
+fn a_request_brought_back_by_undo_or_redo_has_no_response() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("other".into()));
     app.update(Action::CreateRequest("ghost".into()));
-    ready_response(&mut app, old);
+    ready_response(&mut app, r#"{"old": true}"#);
 
     app.update(Action::Undo);
     assert!(!app.proj().request_exists("main/ghost"), "the create undone");
-    assert_eq!(response_body(&app), None);
+    assert!(no_response(&app));
     app.update(Action::Redo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"));
-    assert_eq!(response_body(&app), Some(old), "a redone create");
+    assert!(no_response(&app), "a redone create: {:?}", response_body(&app));
 
+    ready_response(&mut app, r#"{"old": true}"#);
     app.update(Action::DeleteRequest("main/ghost".into()));
-    assert_eq!(response_body(&app), None);
+    assert!(no_response(&app));
     app.update(Action::Undo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"));
-    assert_eq!(response_body(&app), Some(old), "an undone delete");
+    assert!(no_response(&app), "an undone delete: {:?}", response_body(&app));
+}
+
+/// #322: no undo or redo shows one request's response on another. Two
+/// requests named `ghost`, the second made after the first was deleted:
+/// the second one's response is not on the first when both steps are
+/// undone, and the first one's is not on the second when both are redone.
+#[test]
+fn undo_and_redo_never_show_one_requests_response_on_another() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("other".into()));
+    app.update(Action::CreateRequest("ghost".into()));
+    app.update(Action::DeleteRequest("main/ghost".into()));
+    app.update(Action::CreateRequest("ghost".into()));
+    ready_response(&mut app, r#"{"second": true}"#);
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("main/ghost"), "the second one's create undone");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"), "the first one's delete undone");
+    assert!(no_response(&app), "the first was never sent: {:?}", response_body(&app));
+
+    ready_response(&mut app, r#"{"first": true}"#);
+    app.update(Action::Redo);
+    assert!(!app.proj().request_exists("main/ghost"), "the delete redone");
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"), "the create redone");
+    assert!(no_response(&app), "the second has none now: {:?}", response_body(&app));
+}
+
+/// #322: a request file that turns up from outside the app where a
+/// deleted request was opens with no response.
+#[test]
+fn a_request_file_made_outside_where_a_deleted_one_was_opens_with_no_response() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    assert_ne!(app.editor.slug.as_deref(), Some("main/alpha"));
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/new")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
+/// #322: every way a request goes takes its response, whether it was open
+/// or not: a batch delete, a folder delete, a space delete, and a file
+/// removed outside the app, seen at the next reload. Each is then brought
+/// back (undo; the file written again) and opens with no response.
+#[test]
+fn every_way_a_request_goes_takes_its_response() {
+    let (mut app, dir) = folder_app();
+    let sent = |app: &mut App, slug: &str| {
+        app.update(Action::ForceOpenRequest(slug.into()));
+        assert_eq!(app.editor.slug.as_deref(), Some(slug));
+        ready_response(app, r#"{"old": true}"#);
+    };
+    let back_empty = |app: &mut App, slug: &str, what: &str| {
+        assert!(app.proj().request_exists(slug), "{what}: {slug} is back");
+        app.update(Action::ForceOpenRequest("main/c/z".into()));
+        app.update(Action::ForceOpenRequest(slug.into()));
+        assert_eq!(app.editor.slug.as_deref(), Some(slug), "{what}");
+        assert!(no_response(app), "{what}: {slug} shows {:?}", response_body(app));
+    };
+
+    // A batch delete: one cached, one on screen.
+    sent(&mut app, "main/alpha");
+    sent(&mut app, "main/beta");
+    app.update(Action::DeleteRequests(vec!["main/alpha".into(), "main/beta".into()]));
+    assert!(!app.proj().request_exists("main/alpha") && !app.proj().request_exists("main/beta"));
+    app.update(Action::Undo);
+    back_empty(&mut app, "main/alpha", "batch delete");
+    back_empty(&mut app, "main/beta", "batch delete");
+
+    // A folder delete, the request in it on screen, then cached.
+    for open_elsewhere in [false, true] {
+        sent(&mut app, "main/a/x");
+        if open_elsewhere {
+            app.update(Action::ForceOpenRequest("main/c/z".into()));
+        }
+        render_once(&mut app);
+        app.sidebar.selected = Some(folder_row(&app, "main/a"));
+        app.update(Action::DeleteSelectedFolder);
+        assert!(!app.proj().request_exists("main/a/x"), "{:?}", app.toasts.messages());
+        app.update(Action::Undo);
+        back_empty(&mut app, "main/a/x", "folder delete");
+    }
+
+    // A space delete, from inside the space and from another.
+    for from_inside in [true, false] {
+        sent(&mut app, "auth/login");
+        if !from_inside {
+            app.update(Action::ForceOpenRequest("main/c/z".into()));
+        }
+        app.update(Action::ForceDeleteSpace("auth".into()));
+        assert!(!app.proj().request_exists("auth/login"), "{:?}", app.toasts.messages());
+        app.update(Action::Undo);
+        back_empty(&mut app, "auth/login", "space delete");
+    }
+
+    // A file removed outside the app, and written again after the reload.
+    sent(&mut app, "main/b/y");
+    app.update(Action::ForceOpenRequest("main/c/z".into()));
+    std::fs::remove_file(dir.path().join("requests/main/b/y.toml")).unwrap();
+    app.update(Action::ReloadFromDisk);
+    postui_core::fixtures::save_request(dir.path(), "main/b/y", &req("https://x/new")).unwrap();
+    app.update(Action::ReloadFromDisk);
+    back_empty(&mut app, "main/b/y", "removed outside");
+}
+
+/// #322: a send still out for a request that goes is stopped, and its
+/// late result lands nowhere: not on the request now open, and not on the
+/// deleted one when an undo brings it back. Another request's send goes
+/// on.
+#[tokio::test]
+async fn a_send_out_for_a_request_that_goes_is_stopped() {
+    let (mut app, _dir) = spaced_app();
+    // The request on screen.
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    let theirs = send_out(&mut app);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let open = send_out(&mut app);
+    assert!(app.editor.sending);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert!(!app.session.is_in_flight(&Some("main/alpha".into())));
+    assert!(app.session.is_in_flight(&Some("main/beta".into())), "beta's send goes on");
+    assert!(!app.update(Action::RequestFailed { generation: open, error: "late".into() }));
+    assert!(matches!(app.session.response.state(), ResponseState::InFlight { .. }), "beta's own");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "the delete undone");
+    assert!(no_response(&app) && !app.editor.sending, "back, not sent and not sending");
+
+    // A request that is not on screen.
+    let cached = send_out(&mut app);
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    assert!(!app.session.is_in_flight(&Some("main/alpha".into())));
+    assert!(!app.update(Action::RequestFailed { generation: cached, error: "late".into() }));
+    app.update(Action::Undo);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    assert!(no_response(&app) && !app.editor.sending);
+
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::RequestFailed { generation: theirs, error: "theirs".into() });
+    assert!(matches!(app.session.response.state(), ResponseState::Failed(e) if e == "theirs"));
+}
+
+/// #322: a renamed or moved request is the same request, so its response
+/// goes with it, on screen or not: a rename, a move to another space and
+/// its undo, a folder rename and a space rename.
+#[test]
+fn a_renamed_or_moved_request_keeps_its_response() {
+    let mine = r#"{"mine": true}"#;
+    let (mut app, _dir) = folder_app();
+    let shows_mine = |app: &mut App, slug: &str, what: &str| {
+        app.update(Action::ForceOpenRequest("main/c/z".into()));
+        app.update(Action::ForceOpenRequest(slug.into()));
+        assert_eq!(app.editor.slug.as_deref(), Some(slug), "{what}: {:?}", app.toasts.messages());
+        assert_eq!(response_body(app), Some(mine), "{what}");
+    };
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    ready_response(&mut app, mine);
+    // Not on screen: a rename, then a move to another space.
+    app.update(Action::ForceOpenRequest("main/c/z".into()));
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "omega".into() });
+    shows_mine(&mut app, "main/omega", "renamed while cached");
+    app.update(Action::ForceOpenRequest("main/c/z".into()));
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/omega".into(), space: "auth".into() });
+    shows_mine(&mut app, "auth/omega", "moved while cached");
+    // On screen: the move undone.
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/omega"), "the move undone");
+    assert_eq!(response_body(&app), Some(mine), "on screen through the undo");
+    shows_mine(&mut app, "main/omega", "after the undo");
+
+    // A folder rename, the request in it cached, then on screen.
+    app.update(Action::ForceOpenRequest("main/a/x".into()));
+    ready_response(&mut app, mine);
+    app.update(Action::ForceOpenRequest("main/c/z".into()));
+    app.update(Action::RenameFolder { from: "main/a".into(), to: "v2".into() });
+    shows_mine(&mut app, "main/v2/x", "folder renamed while cached");
+    app.update(Action::RenameFolder { from: "main/v2".into(), to: "v3".into() });
+    assert_eq!(app.editor.slug.as_deref(), Some("main/v3/x"));
+    assert_eq!(response_body(&app), Some(mine), "folder renamed while on screen");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/v2/x"), "the folder rename undone");
+    assert_eq!(response_body(&app), Some(mine));
+
+    // A space rename, and its undo.
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    ready_response(&mut app, mine);
+    app.update(Action::ForceOpenRequest("main/c/z".into()));
+    app.update(Action::RenameSpace { from: "auth".into(), to: "users".into() });
+    shows_mine(&mut app, "users/login", "space renamed while cached");
+    app.update(Action::ForceOpenRequest("main/c/z".into()));
+    app.update(Action::Undo);
+    shows_mine(&mut app, "auth/login", "the space rename undone");
+}
+
+/// #322: so does a request dropped in a folder with the mouse.
+#[test]
+fn a_request_dropped_in_a_folder_keeps_its_response() {
+    let mine = r#"{"mine": true}"#;
+    let (mut app, _dir) = auth_folder_app();
+    // rows: alpha, beta, auth/, x
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    ready_response(&mut app, mine);
+    let r0 = row_rect(&mut app, 0);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(names_x(r0), r0.y));
+    app.handle_mouse(moved(names_x(r0), r3.y));
+    app.handle_mouse(left_up(names_x(r0), r3.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/alpha"));
+    app.update(Action::Render);
+    assert_eq!(response_body(&app), Some(mine), "on screen");
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::ForceOpenRequest("main/auth/alpha".into()));
+    assert_eq!(response_body(&app), Some(mine), "and on the way back");
+}
+
+/// #325: a space renamed to a deleted space's name does not show the
+/// deleted space's responses: they went with its requests (#322).
+#[test]
+fn a_space_renamed_to_a_deleted_spaces_name_shows_none_of_its_responses() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::CreateRequest("login".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/login"), "never sent");
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    ready_response(&mut app, r#"{"alpha": true}"#);
+    app.update(Action::ForceDeleteSpace("auth".into()));
+    app.update(Action::RenameSpace { from: "main".into(), to: "auth".into() });
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"), "{:?}", app.toasts.messages());
+    assert_eq!(response_body(&app), Some(r#"{"alpha": true}"#), "its own follows the rename");
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert!(no_response(&app), "{:?}", response_body(&app));
 }
 
 #[test]

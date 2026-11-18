@@ -216,6 +216,12 @@ impl Project {
         &self.listing
     }
 
+    /// Whether the listing has a request at `slug`. A binary search:
+    /// `list` sorts by slug.
+    pub fn lists_request(&self, slug: &str) -> bool {
+        self.listing.binary_search_by(|l| l.slug.as_str().cmp(slug)).is_ok()
+    }
+
     /// Every folder of every space, by path (spec 2026-11-03 create
     /// folders F1).
     pub fn folders(&self) -> &[crate::storage::FolderListing] {
