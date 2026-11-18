@@ -65,6 +65,11 @@ change the project file format.
   `ai_cmd` to the script. Leading `NAME=value` settings still work, but
   `env` reads them: quote a `$VAR` in a setting's value, and use `$HOME`
   rather than `~`.
+- A response now goes when its request goes. A request brought back by
+  undoing its delete, or by redoing its create, has an empty response
+  pane until it is sent again, and a send still running for a request
+  that is deleted is stopped. A renamed or moved request keeps its
+  response.
 
 ### Fixed
 
@@ -90,6 +95,10 @@ change the project file format.
   a selection made on Raw or Headers.
 - Going straight back to the first of four large responses opens it at
   once, Tree tab as it was, instead of loading it again.
+- A new request named like one deleted earlier no longer opens with the
+  deleted request's response. Nor does a duplicate, a request renamed or
+  moved to that name, or a request in a space renamed to a deleted
+  space's name.
 
 ## [0.4.1] - 2026-11-13
 

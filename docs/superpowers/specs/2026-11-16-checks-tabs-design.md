@@ -414,6 +414,34 @@ to them. What changes:
   deleted request's response stays in the session's cache, as on
   `main`, so its lines land on it there, and an undo of the delete
   shows them.
+
+  Amended 2026-11-17 (#322): that sentence no longer holds. A response
+  goes when its request goes. Kept in the cache, a deleted request's
+  response was shown by the next request at its slug, and the session
+  cannot tell that one from the deleted request coming back. Asked
+  whether an undone delete must show the response again, the user
+  wrote: "I think its fine for the request to be lost if you delete
+  the request and undo" (`you`; "request" read as the response). How
+  it is done is `mine (approved)`: after every action
+  (`App::dispatch`), the session drops the cached response, the place
+  in `warm` and the in-flight send of each request the project no
+  longer lists (`Session::drop_gone`). So a deleted request's lines
+  land nowhere, a send still out for it is stopped, and an undone
+  delete or a redone create brings the request back with an empty
+  response pane. A renamed or moved request is the same request: its
+  response follows it (`Session::rename`, `rename_space`). The request
+  in the editor keeps its response and its send while the editor holds
+  it, its file gone or not (`mine`).
+
+  Two costs kept (`mine`, review round 1 of this amendment). The
+  listing is read as the action left it, so a request file removed
+  outside the app leaves its response to a request put at its name (a
+  create, a rename, a move) when that op is the first to relist since.
+  And a request that a directory that can't be read leaves out of the
+  listing counts as gone: its response is dropped and its send stopped.
+  Review round 2 names a third (`mine`): the open request's file
+  removed outside the app, a request put at its name while the editor
+  still holds it shows its response, at once when the editor opens it.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the
@@ -484,8 +512,9 @@ lines find it by its generation as above.
   `checking…`; copy and search act on that line; `ChecksJudged` fills
   the tab with no toast and no tab switched. Lines for a request
   navigated away from and for a send since replaced (in flight,
-  arrived, failed); a deleted request's are there when the delete is
-  undone.
+  arrived, failed); a deleted request's land nowhere, and the request
+  is back with no response when the delete is undone (#322; before, its
+  lines were there with its response).
 - App, with the background jobs running (detail 3): a large body's
   Tree lands before its lines, whether it is JSON or not, and a small
   body has only its lines to wait for; a check run held open holds up

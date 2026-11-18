@@ -891,8 +891,9 @@ async fn a_response_shows_at_once_and_its_checks_tab_fills_in_after() {
 /// Section 7, A5: the lines are their own response's. They land on it
 /// while another request is on screen and leave that one's response alone;
 /// once a new send has replaced the response (in flight, arrived or
-/// failed) they are dropped. A deleted request's land on its response
-/// where the session keeps it, and an undo of the delete shows them.
+/// failed) they are dropped. A deleted request's are dropped too: its
+/// response went with it, and an undo of the delete brings the request
+/// back with none (the section's #322 amendment).
 #[tokio::test]
 async fn check_lines_land_on_their_own_response_or_nowhere() {
     use crate::components::response::ViewMode;
@@ -929,8 +930,8 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     app.update(Action::RequestFailed { generation: third, error: "refused".into() });
     assert!(!app.update(Action::ChecksJudged { generation: third, lines: lines.clone() }));
     assert!(matches!(app.session.response.state(), ResponseState::Failed(_)));
-    // The request deleted while its checks run: the session keeps a
-    // deleted request's response, and the lines land on it there.
+    // The request deleted while its checks run: its response went with
+    // it, so the lines land nowhere.
     let (last, _) = send_arrives(&mut app, 200, r#"{"a":true,"b":true}"#, &sent);
     app.update(Action::DeleteRequest("main/probe".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
@@ -939,8 +940,7 @@ async fn check_lines_land_on_their_own_response_or_nowhere() {
     assert!(!response_modes(&app).contains(&ViewMode::Checks));
     app.update(Action::Undo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/probe"), "the delete undone");
-    app.update(Action::ResponseViewMode(ViewMode::Checks));
-    assert_eq!(shown(&app), judged, "its response is back with its lines");
+    assert!(matches!(app.session.response.state(), ResponseState::Empty), "with no response");
 }
 
 /// A background job's result, as [`next_job`] answers it.
