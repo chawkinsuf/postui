@@ -33627,8 +33627,7 @@ fn response_body(app: &App) -> Option<&str> {
 /// #322: a request made where a deleted one was is a new request, and
 /// opens with no response. The session keeps a deleted request's response
 /// under its slug (an undo of the delete shows it), so making a request at
-/// that slug drops it: a create and a duplicate here; a save-as and a curl
-/// import create through the same function.
+/// that slug drops it: a create and a duplicate here.
 #[test]
 fn a_request_made_where_a_deleted_one_was_opens_with_no_response() {
     let mut app = App::new_for_test();
@@ -33687,9 +33686,84 @@ fn a_request_renamed_to_a_deleted_ones_name_does_not_take_its_response() {
     );
 }
 
-/// #322: an undo or a redo that puts a request back puts back the request
-/// that was there, so its response is shown again: an undone delete
-/// (checks tabs spec 2026-11-16, section 7) and a redone create alike.
+/// #322: a save-as and a curl import make a request too.
+#[test]
+fn a_request_saved_as_or_imported_where_a_deleted_one_was_opens_with_no_response() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("other".into()));
+    app.update(Action::CreateRequest("ghost".into()));
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest("main/ghost".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
+
+    app.update(Action::SaveRequestAs("ghost".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"), "{:?}", app.toasts.messages());
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "a save-as: {:?}",
+        response_body(&app)
+    );
+
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest("main/ghost".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("# @name ghost\ncurl https://x/users");
+    app.set_clipboard_for_test(clip);
+    app.update(Action::ImportCurl { folder: None });
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ghost"), "{:?}", app.toasts.messages());
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "a curl import: {:?}",
+        response_body(&app)
+    );
+}
+
+/// #322: a request moved onto a slug takes no response left under it, by
+/// the move (onto a deleted request's slug) or by its undo (back onto a
+/// slug a request made and undone since left a response under).
+#[test]
+fn a_request_moved_onto_a_slug_takes_no_response_left_under_it() {
+    let (mut app, _dir) = spaced_app();
+    let to_auth =
+        Action::ForceMoveRequestToSpace { slug: "main/login".into(), space: "auth".into() };
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    ready_response(&mut app, r#"{"old": true}"#);
+    app.update(Action::DeleteRequest("auth/login".into()));
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::CreateRequest("login".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/login"));
+    app.update(to_auth);
+    assert!(app.proj().request_exists("auth/login"), "{:?}", app.toasts.messages());
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "the moved request was never sent: {:?}",
+        response_body(&app)
+    );
+
+    // Another `main/login`, sent, and its create undone: its response
+    // waits under the slug for a redo. The undo of the move drops it.
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::CreateRequest("login".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/login"));
+    ready_response(&mut app, r#"{"second": true}"#);
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("main/login"), "the create undone");
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("auth/login"), "the move undone");
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::ForceOpenRequest("main/login".into()));
+    assert!(
+        matches!(app.session.response.state(), ResponseState::Empty),
+        "the request moved back was never sent: {:?}",
+        response_body(&app)
+    );
+}
+
+/// #322: the undo or redo of a create or a delete drops nothing, so the
+/// response the session holds under the slug is shown again: an undone
+/// delete (checks tabs spec 2026-11-16, section 7) and a redone create.
 #[test]
 fn a_request_put_back_by_undo_or_redo_shows_its_response_again() {
     let old = r#"{"old": true}"#;

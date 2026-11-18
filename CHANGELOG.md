@@ -92,7 +92,9 @@ change the project file format.
   once, Tree tab as it was, instead of loading it again.
 - A new request named like one deleted earlier no longer opens with the
   deleted request's response. Nor does a duplicate, or a request renamed
-  or moved to that name. Undoing the delete still shows the response.
+  or moved to that name. Undoing a delete still shows the deleted
+  request's response, as long as no other request took its name in
+  between.
 
 ## [0.4.1] - 2026-11-13
 

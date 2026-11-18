@@ -420,9 +420,14 @@ to them. What changes:
   save-as, a curl import, a duplicate) or renamed or moved onto it
   drops the cached response, with a send of the deleted request still
   out (`Session::forget`), so the new request opens with no response
-  and lines for the dropped one land nowhere. An undo or a redo drops
-  nothing: an undone delete and a redone create show the response
-  again.
+  and lines for the dropped one land nowhere. The undo or redo of a
+  rename or a move is a move onto a slug too, and drops what is held
+  under it the same way. The undo or redo of a create or a delete
+  drops nothing: an undone delete and a redone create show the
+  response the cache still holds under the slug. What was dropped
+  stays dropped: after a delete, a create of the same name and two
+  undos, the first request is back with no response. A space rename
+  drops nothing yet (#325).
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

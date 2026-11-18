@@ -115,17 +115,23 @@ impl Session {
     /// cached under its slug, so an undo of the delete shows it; the next
     /// request made at that slug, or moved onto it, would otherwise open
     /// with that response (#322).
+    ///
+    /// The drop is not undone: when the request that took the slug is
+    /// undone and then the delete, the deleted request is back with no
+    /// response (checks tabs spec 2026-11-16, section 7, the #322
+    /// amendment).
+    ///
+    /// The response on screen stays as it is: the open request's file
+    /// keeps another request off its slug, unless it was removed outside
+    /// the app, and that case is left alone.
     pub fn forget(&mut self, slug: &str) {
         let key = Some(slug.to_string());
         self.cache.remove(&key);
         self.warm.retain(|s| s != &key);
-        self.in_flight.retain(|f| {
-            let gone = f.slug == key;
-            if gone {
-                f.task.abort();
-            }
-            !gone
-        });
+        // As `begin_send` drops a request's earlier send.
+        if let Some(i) = self.in_flight.iter().position(|f| f.slug == key) {
+            self.in_flight.remove(i).task.abort();
+        }
     }
 
     /// Follows a request whose slug changed on disk (a rename, a move to
@@ -133,8 +139,10 @@ impl Session {
     /// any in-flight send all move with it, so Send stays disabled for
     /// the renamed request and its late response still lands on it
     /// rather than under a slug some future request would inherit. What
-    /// an earlier request left under `to` is dropped first
-    /// ([`Self::forget`]).
+    /// is held under `to` is dropped first ([`Self::forget`]), on the
+    /// undo or redo of a rename or a move too: this request's own
+    /// response travels under `from`, so one under `to` is another
+    /// request's.
     pub fn rename(&mut self, from: &str, to: &str) {
         if from == to {
             return;
