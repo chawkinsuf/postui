@@ -3343,7 +3343,9 @@ impl App {
     /// The request at `from` now lives at `to` (a rename, a move, their
     /// undo or redo): what the app keys by slug beside the editor follows
     /// it, the session's cache and in-flight sends and the register. Every
-    /// slug change goes through here, so neither is left behind.
+    /// rename and move goes through here, so neither is left behind. A
+    /// Save as of the unsaved request moves only the session's
+    /// (`save_editor_as`): the register names only saved requests.
     fn follow_slug(&mut self, from: &str, to: &str) {
         self.session.rename(from, to);
         self.yank.follow(from, to);
@@ -11807,7 +11809,9 @@ impl App {
     /// body's engine state follows it (amendment C2). An unsaved request
     /// is the same request under its first name, so its response and any
     /// send still out for it follow it too (#326). A request that had a
-    /// name keeps its own: the new one is another request.
+    /// name keeps its own: the new one is another request. Undo of the
+    /// save removes the request it made, and the response goes with it
+    /// (#322): the unsaved request comes back with none.
     fn save_editor_as(&mut self, name: &str) -> bool {
         self.commit_table_edit();
         let req = self.editor.current_request();

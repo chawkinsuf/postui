@@ -450,6 +450,9 @@ to them. What changes:
   the unsaved request's key for the next unsaved request to show. Save
   as of a request that has a name makes another request: the response
   stays with the request it was sent for, and the new one has none.
+  Undo of the Save as removes the request it made, so its response and
+  a send still out go with it, as above: the unsaved request comes back
+  with an empty response pane (review round 1, `mine`).
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

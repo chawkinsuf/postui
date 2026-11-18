@@ -34088,6 +34088,35 @@ async fn a_send_out_for_an_unsaved_request_follows_it_when_saved_as() {
     assert!(matches!(app.session.response.state(), ResponseState::Failed(e) if e == "late"));
 }
 
+/// #326: undo of that Save as removes the request it made, so its
+/// response and a send still out go with it, as for any request that
+/// goes (#322): the unsaved request comes back with none, and so does
+/// the request a redo brings back.
+#[tokio::test]
+async fn undo_of_a_save_as_from_an_unsaved_request_takes_its_response() {
+    let mut app = App::new_for_test();
+    let (generation, task) = send_out(&mut app);
+    app.update(Action::SaveRequestAs("kept".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "{:?}", app.toasts.messages());
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("main/kept"), "the save undone");
+    assert_eq!(app.editor.slug, None, "the unsaved request is back");
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    assert!(no_response(&app) && !app.editor.sending, "{:?}", response_body(&app));
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app));
+
+    ready_response(&mut app, r#"{"mine": true}"#);
+    app.update(Action::SaveRequestAs("kept".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug, None);
+    assert!(no_response(&app), "{:?}", response_body(&app));
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "the save redone");
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
 /// #326: Save as of a request that has a name makes another request: the
 /// response stays with the request it was sent for, and the copy has none.
 #[test]
