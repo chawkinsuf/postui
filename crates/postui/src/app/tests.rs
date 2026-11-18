@@ -34043,6 +34043,95 @@ fn a_request_dropped_in_a_folder_keeps_its_response() {
     assert_eq!(response_body(&app), Some(mine), "and on the way back");
 }
 
+/// #326: an unsaved request sent and then saved as is the same request:
+/// its response stays on screen and with it after, and a fresh unsaved
+/// request opens with none. By Save as, and by the unsaved-request gate's
+/// Save as… (`SaveRequestAsThen`).
+#[test]
+fn a_sent_unsaved_request_keeps_its_response_when_saved_as() {
+    let mine = r#"{"mine": true}"#;
+    let mut app = App::new_for_test();
+    assert_eq!(app.editor.slug, None);
+    ready_response(&mut app, mine);
+    app.update(Action::SaveRequestAs("kept".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "{:?}", app.toasts.messages());
+    assert_eq!(response_body(&app), Some(mine), "on screen");
+    app.update(Action::DeleteRequest("main/kept".into()));
+    assert_eq!(app.editor.slug, None, "the only request gone: a fresh unsaved one");
+    assert!(no_response(&app), "a fresh unsaved request: {:?}", response_body(&app));
+
+    ready_response(&mut app, mine);
+    app.update(Action::SaveRequestAsThen(
+        "second".into(),
+        Box::new(Action::CreateRequest("third".into())),
+    ));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/third"), "{:?}", app.toasts.messages());
+    assert!(no_response(&app), "the request made after: {:?}", response_body(&app));
+    app.update(Action::ForceOpenRequest("main/second".into()));
+    assert_eq!(response_body(&app), Some(mine), "the saved one keeps it");
+}
+
+/// #326: a send still out for an unsaved request follows it to its new
+/// name, as a rename's does: still sending, and its result lands on it.
+#[tokio::test]
+async fn a_send_out_for_an_unsaved_request_follows_it_when_saved_as() {
+    let mut app = App::new_for_test();
+    let (generation, task) = send_out(&mut app);
+    app.update(Action::SaveRequestAs("kept".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "{:?}", app.toasts.messages());
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished(), "the send runs on");
+    assert!(app.editor.sending, "still sending");
+    assert!(app.session.is_in_flight(&Some("main/kept".into())));
+    assert!(!app.session.is_in_flight(&None));
+    assert!(app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(matches!(app.session.response.state(), ResponseState::Failed(e) if e == "late"));
+}
+
+/// #326: undo of that Save as removes the request it made, so its
+/// response and a send still out go with it, as for any request that
+/// goes (#322): the unsaved request comes back with none, and so does
+/// the request a redo brings back.
+#[tokio::test]
+async fn undo_of_a_save_as_from_an_unsaved_request_takes_its_response() {
+    let mut app = App::new_for_test();
+    let (generation, task) = send_out(&mut app);
+    app.update(Action::SaveRequestAs("kept".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "{:?}", app.toasts.messages());
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("main/kept"), "the save undone");
+    assert_eq!(app.editor.slug, None, "the unsaved request is back");
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    assert!(no_response(&app) && !app.editor.sending, "{:?}", response_body(&app));
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app));
+
+    ready_response(&mut app, r#"{"mine": true}"#);
+    app.update(Action::SaveRequestAs("kept".into()));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug, None);
+    assert!(no_response(&app), "{:?}", response_body(&app));
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "the save redone");
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
+/// #326: Save as of a request that has a name makes another request: the
+/// response stays with the request it was sent for, and the copy has none.
+#[test]
+fn a_named_request_saved_as_keeps_its_response_and_the_copy_has_none() {
+    let mine = r#"{"mine": true}"#;
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("first".into()));
+    ready_response(&mut app, mine);
+    app.update(Action::SaveRequestAs("copy".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/copy"), "{:?}", app.toasts.messages());
+    assert!(no_response(&app), "the copy was never sent: {:?}", response_body(&app));
+    app.update(Action::ForceOpenRequest("main/first".into()));
+    assert_eq!(response_body(&app), Some(mine));
+}
+
 /// #325: a space renamed to a deleted space's name does not show the
 /// deleted space's responses: they went with its requests (#322).
 #[test]
