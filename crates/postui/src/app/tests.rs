@@ -34169,22 +34169,53 @@ fn a_discarded_unsaved_request_takes_its_response_with_it() {
     assert!(no_response(&app), "a switch to an empty space: {:?}", response_body(&app));
 }
 
-/// #327: a send still out for a discarded unsaved request is stopped by
-/// the next unsaved request: that one is not sending, and the late
-/// result lands nowhere.
+/// #327: a send still out for a discarded unsaved request stops when the
+/// editor leaves it: nothing ticks for it, the next unsaved request is
+/// not sending, and the late result lands nowhere.
 #[tokio::test]
-async fn a_send_out_for_a_discarded_unsaved_request_stops_at_the_next_one() {
+async fn a_send_out_for_a_discarded_unsaved_request_stops_when_it_is_left() {
     let mut app = scratch_app();
     let (generation, task) = send_out(&mut app);
     app.update(Action::CreateRequest("other".into()));
     app.handle_key(plain('d'));
     assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
-    app.update(Action::DeleteRequest("main/other".into()));
-    assert_eq!(app.editor.slug, None);
     tokio::task::yield_now().await;
     assert!(task.is_finished(), "its task is aborted");
+    assert!(!app.in_flight_ticking(), "nothing ticks for it");
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None);
     assert!(!app.editor.sending, "the fresh unsaved request is not sending");
     assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
+/// #327: curl import's Discard of an unsaved request blanks it in place,
+/// and its response and its send go with the old text, even when the
+/// import then stops at its name prompt. Undo brings the text back, with
+/// the response pane empty, as the undo of a create through a Discard.
+#[tokio::test]
+async fn curl_imports_discard_takes_the_unsaved_requests_response_and_send() {
+    let mut app = scratch_app();
+    app.capture_undo();
+    let before = app.editor.current_request();
+    let (generation, task) = send_out(&mut app);
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("curl https://x/users");
+    app.set_clipboard_for_test(clip);
+    app.update(Action::ImportCurl { folder: None });
+    app.handle_key(plain('d'));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "the import's name prompt");
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    app.update(Action::CancelTopModal);
+    assert_eq!(app.editor.slug, None);
+    assert!(app.editor.url.text().is_empty(), "a blank unsaved request");
+    assert!(!app.editor.sending);
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app), "{:?}", response_body(&app));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.current_request(), before, "the unsaved request as it was");
     assert!(no_response(&app), "{:?}", response_body(&app));
 }
 

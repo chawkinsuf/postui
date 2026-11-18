@@ -465,16 +465,16 @@ to them. What changes:
   nothing in it to lose) is gone, and so is its response.
   Before, its response and a send still out for it stayed under the
   unsaved request's key, for the next unsaved request to show, or to
-  show as sending. Every unsaved request comes into the editor through
-  one path (`App::install_scratch`), and it is always a new one: there
-  the session drops what it holds under that key, the response on
-  screen or cached, the place in `warm`, and the send, stopped
-  (`Session::drop_scratch`). A Save as has moved its response to its
-  new name before then. An undo that brings an unsaved request's text
-  back (of a create made through the gate's Discard, of a Save as)
-  brings it back with an empty response pane, by the user's ruling
-  above. The cost: a discarded request's send runs on, unseen, until
-  the next unsaved request comes, and its response is held till then.
+  show as sending. It is dropped, and its send stopped, when the editor
+  leaves it, which happens one of two ways. Another request opens:
+  `Session::drop_gone` counts the unsaved request's key as gone whenever
+  another request is open. Or a new unsaved request takes its place,
+  with the key unchanged (a landing on a fresh one, curl import's
+  Discard): `App::drop_old_scratch` drops it (`Session::drop_scratch`).
+  A Save as has moved its response to its new name before either. An
+  undo that brings an unsaved request's text back (of a Discard, of a
+  Save as) brings it back with an empty response pane, by the user's
+  ruling above.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

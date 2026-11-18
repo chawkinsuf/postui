@@ -2660,7 +2660,8 @@ impl App {
         }
         // A response goes when its request goes (#322): after every
         // action, the session drops what it holds for a request the
-        // project no longer lists. After the swap above, which is what
+        // project no longer lists, and for the unsaved request once
+        // another is open (#327). After the swap above, which is what
         // takes a removed request's response off the screen.
         //
         // Here, and not where the listing changes: that is inside the

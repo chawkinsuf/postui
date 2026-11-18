@@ -78,8 +78,8 @@ change the project file format.
   response pane went empty at the save, and the next new unsaved request
   showed that response.
 - A request sent before it was saved and then discarded, or left for
-  another request, no longer leaves its response, or its send still
-  running, for the next new unsaved request.
+  another request, no longer leaves its response for the next new
+  unsaved request, and a send still running for it stops.
 - Cancelling "Describe a filter…", or quitting while it runs, stops the AI
   command. Before, only the shell that started it was stopped, so the
   command could go on running, and spending, with its reply thrown away.
