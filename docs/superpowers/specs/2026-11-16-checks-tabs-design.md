@@ -471,10 +471,12 @@ to them. What changes:
   another request is open. Or a new unsaved request takes its place,
   with the key unchanged (a landing on a fresh one, curl import's
   Discard): `App::drop_old_scratch` drops it (`Session::drop_scratch`).
-  A Save as has moved its response to its new name before either. An
-  undo that brings an unsaved request's text back (of a Discard, of a
-  Save as) brings it back with an empty response pane, by the user's
-  ruling above.
+  A Save as has moved its response to its new name before either; a
+  redo of a Save as has not, so the request it makes opens with an
+  empty response pane, and a send out for the unsaved request stops.
+  An undo that brings an unsaved request's text back (of a Discard, of
+  a Save as) brings it back with an empty response pane. Both by the
+  user's ruling above.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

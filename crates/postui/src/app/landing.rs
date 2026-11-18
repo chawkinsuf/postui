@@ -309,10 +309,9 @@ impl App {
     /// `scratch` in the editor, with the old buffer's shadow dropped, and
     /// what an unsaved request before it had ([`Self::drop_old_scratch`]).
     ///
-    /// An undo that brings an unsaved request's text back lands here, so
-    /// it comes back with an empty response pane: the response is not
-    /// saved state (the user on #326: "The response does not need to come
-    /// back. It is ephemeral").
+    /// So an unsaved request put here, an undo's too, starts with an empty
+    /// response pane: the response is not saved state (the user on #326:
+    /// "The response does not need to come back. It is ephemeral").
     fn install_scratch(&mut self, scratch: crate::components::editor::Editor) {
         self.editor = scratch;
         self.shadow = None;

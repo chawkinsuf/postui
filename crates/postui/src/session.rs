@@ -115,8 +115,9 @@ impl Session {
     /// its slug.
     ///
     /// The unsaved scratch has no file: it is gone once another request
-    /// is open (#327). A Save as moved what it had to its new name first
-    /// ([`Self::rename`] from `None`). One scratch replaced by another
+    /// is open (#327). A Save as moves what it had to its new name first
+    /// ([`Self::rename`] from `None`); a redo of one does not. One scratch
+    /// replaced by another
     /// leaves the open slug `None`: that is [`Self::drop_scratch`]'s.
     ///
     /// The open request keeps its send, and its response on screen, while
