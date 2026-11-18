@@ -122,9 +122,9 @@ the full body shows until you turn it back on. A filter that yields only
 `null`, or nothing, keeps the full body on screen and says "invalid filter",
 so a half-typed path doesn't blank the response you're reading. Several
 outputs run together, one after another, as `jq` prints them. A filter still
-running after 1 second is stopped with the error `stopped at the 1000 ms
-limit`, and a jq check stopped that way fails; `jq_limit_ms` in
-`project.toml` sets another limit.
+running after 1 second is stopped with an error that says so, and a jq check
+stopped that way fails; `jq_limit_ms` in `project.toml` sets another limit,
+in whole milliseconds from 1 up.
 
 As you type, the bar completes what you're most likely writing: after a `.`,
 the keys the filter has reached at that point in the response; otherwise jq's
@@ -194,9 +194,10 @@ text instead.
 
 A request fails the suite on a status of 400 or more. To test more than the
 status, give the request file a `[checks]` table: `status` lists the codes
-that pass (so a request can expect a 404), `max_ttfb_ms` and
-`max_elapsed_ms` are time limits in milliseconds, and `jq` lists filters
-that must each give `true`:
+that pass in place of that rule (so a request can expect a 404),
+`max_ttfb_ms` and `max_elapsed_ms` limit the time in milliseconds to the
+first byte and to the last, and `jq` lists filters that must each give
+`true`:
 
 ```toml
 [checks]
