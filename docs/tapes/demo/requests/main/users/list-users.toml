@@ -6,3 +6,8 @@ _limit = "5"
 
 [headers]
 Accept = "application/json"
+
+[checks]
+status = 200
+max_elapsed_ms = 2000
+jq = ['length == 5']

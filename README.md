@@ -37,11 +37,14 @@
   the keys the response really has. Save filters as named views, right-click
   the tree for filters written for you, or describe the one you want and let an
   AI command write it from the response's shape, never its values.
+- **Checks.** Say what a good response is: the status codes that pass, time
+  limits, and jq filters that must give `true`. The app, `postui run` and
+  the suite check each send against them.
 - **curl in and out.** Paste a curl command into the sidebar to import it as a
   request, or copy any request as curl.
 - **A command line for scripts and agents.** List a project's requests and
   variables, check it, and send one request or all of them, from a shell or
-  a coding agent.
+  a coding agent. At a terminal, the suite shows each request as it runs.
 - **Undo for everything.** Edits, deletes, renames and moves all undo, even
   after you've moved on to another request.
 - **Themes.** Built-in dark and light themes, your terminal's own colors, a
@@ -53,6 +56,11 @@
 selection.
 
 <a href="docs/guide.md#keys"><img src="docs/images/vim.gif" alt="Maximizing the response with ctrl+w _, folding it, searching it and yanking a Visual selection" width="900"></a>
+
+**Checks.** The request's Checks tab says what a good response is, and the
+response's shows how the last send did.
+
+<a href="docs/guide.md#editing-a-request"><img src="docs/images/checks.png" alt="A request's Checks tab with a status, a time limit and a jq check, and the response's Checks tab with each one passed" width="900"></a>
 
 **Variables and environments.** The Manage screen (`alt+r`) shows a variable's
 description and its value in the active environment.
@@ -103,6 +111,11 @@ _limit = "5"
 
 [headers]
 Accept = "application/json"
+
+[checks]
+status = 200
+max_elapsed_ms = 2000
+jq = ['length == 5']
 ```
 
 ## Install
@@ -170,8 +183,37 @@ Run these in the folder that holds `project.toml`, or name the project with
 it. Output is text; most commands print JSON with `--json`. `postui help`
 lists every command and `postui help <command>` gives its usage.
 
-For coding agents, `postui skill install` installs a Claude Code skill that
-teaches them postui's commands and project files.
+### The suite
+
+`postui suite` sends every request in the project, or in one space, and at a
+terminal shows each one as it runs: a ✓ or ✗, its status, time and size, and
+any check that failed. `-j 4` sends four at a time, and `-i` picks the
+environment, space, selector options and jobs for one run without saving
+them.
+
+<a href="docs/guide.md#command-line"><img src="docs/images/suite.gif" alt="postui suite -i: four requests at a time, each shown with its status, time and size as it finishes" width="900"></a>
+
+Through a pipe, or with `--plain`, the suite prints plain text. It exits
+with status 1 when any request failed, so a script can act on the result.
+
+### For coding agents
+
+postui comes with a [Claude Code](https://claude.com/claude-code) skill that
+teaches an agent postui's commands and project files. With it, an agent
+working on your API can send a request to check its change instead of
+writing curl by hand, run the suite, and add or change requests, variables
+and environments by editing the TOML.
+
+```sh
+postui skill install            # into ~/.claude/skills/postui
+postui skill install --project  # into .claude/skills/postui in this folder
+```
+
+Skill files already there that differ are left alone; `--force` replaces
+them, as after an upgrade. The agent marks its edits with `postui edit
+begin` and `postui edit end`, and postui won't open the project while an
+edit is in progress. The skill's source is in
+[`skills/postui/`](skills/postui/SKILL.md).
 
 ## License
 
