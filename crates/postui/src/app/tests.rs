@@ -34132,6 +34132,81 @@ fn a_named_request_saved_as_keeps_its_response_and_the_copy_has_none() {
     assert_eq!(response_body(&app), Some(mine));
 }
 
+/// #327: an unsaved request left any way but Save as is gone, and its
+/// response goes with it: the next unsaved request opens with none. By
+/// the unsaved-request gate's Discard before a create; by a create from
+/// an unsaved request with nothing in it to lose (no gate); and by the
+/// gate's Discard before a switch to a space with no requests, where one
+/// unsaved request follows another with no request in between.
+#[test]
+fn a_discarded_unsaved_request_takes_its_response_with_it() {
+    let mine = r#"{"mine": true}"#;
+    let mut app = scratch_app();
+    ready_response(&mut app, mine);
+    app.update(Action::CreateRequest("other".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
+    assert!(no_response(&app), "the new request was never sent");
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None, "the only request gone: a fresh unsaved one");
+    assert!(no_response(&app), "the gate's Discard: {:?}", response_body(&app));
+
+    ready_response(&mut app, mine);
+    app.update(Action::CreateRequest("other".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None);
+    assert!(no_response(&app), "a create with no gate: {:?}", response_body(&app));
+
+    app.update(Action::CreateSpace("empty".into()));
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/scratch");
+    ready_response(&mut app, mine);
+    app.update(Action::SwitchSpace("empty".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.active_space(), "empty", "{:?}", app.toasts.messages());
+    assert_eq!(app.editor.slug, None);
+    assert!(app.editor.url.text().is_empty(), "a fresh unsaved request");
+    assert!(no_response(&app), "a switch to an empty space: {:?}", response_body(&app));
+}
+
+/// #327: a send still out for a discarded unsaved request is stopped by
+/// the next unsaved request: that one is not sending, and the late
+/// result lands nowhere.
+#[tokio::test]
+async fn a_send_out_for_a_discarded_unsaved_request_stops_at_the_next_one() {
+    let mut app = scratch_app();
+    let (generation, task) = send_out(&mut app);
+    app.update(Action::CreateRequest("other".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None);
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    assert!(!app.editor.sending, "the fresh unsaved request is not sending");
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
+/// #327: undo of a create made through the gate's Discard brings the
+/// unsaved request back as it was, and its response pane empty: undo
+/// restores saved state exactly, and the response is not saved state
+/// (the user on #326: "The response does not need to come back. It is
+/// ephemeral").
+#[test]
+fn undo_of_a_create_through_a_discard_brings_the_unsaved_request_back_without_its_response() {
+    let mut app = scratch_app();
+    let before = app.editor.current_request();
+    ready_response(&mut app, r#"{"mine": true}"#);
+    app.update(Action::CreateRequest("fresh".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"), "{:?}", app.toasts.messages());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug, None);
+    assert_eq!(app.editor.current_request(), before, "the unsaved request as it was");
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
 /// #325: a space renamed to a deleted space's name does not show the
 /// deleted space's responses: they went with its requests (#322).
 #[test]

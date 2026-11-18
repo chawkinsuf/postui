@@ -41,7 +41,8 @@ pub struct Session {
     open_slug: Option<String>,
     /// Latest response of every request navigated away from, keyed like
     /// `open_slug`. Never persisted, and dropped when its request goes
-    /// ([`Self::drop_gone`]).
+    /// ([`Self::drop_gone`]; the unsaved scratch's, when the next one
+    /// comes, [`Self::drop_scratch`]).
     cache: HashMap<Option<String>, Response>,
     /// Every send still waiting on its result — at most one entry per
     /// request (`Action::Send` is disabled while its request is in
@@ -114,7 +115,8 @@ impl Session {
     /// nowhere. Kept, a response would be shown by the next request at
     /// its slug.
     ///
-    /// The unsaved scratch has no file to lose. The open request keeps
+    /// The unsaved scratch has no file to lose: its response goes when
+    /// the next scratch comes ([`Self::drop_scratch`]). The open request keeps
     /// its send, and its response on screen, while the editor holds it,
     /// whether or not its file is still there: the editor can send a
     /// request whose file was removed outside the app, and
@@ -135,6 +137,28 @@ impl Session {
         self.warm.retain(|slug| !gone(slug));
         self.in_flight.retain(|f| {
             let gone = gone(&f.slug);
+            if gone {
+                f.task.abort();
+            }
+            !gone
+        });
+    }
+
+    /// A new unsaved scratch takes the key the one before it had (#327):
+    /// drops what the session holds for that one, its response on screen
+    /// or cached, its place in `warm` and its send, whose task is
+    /// aborted and whose result then lands nowhere. Kept, the new scratch
+    /// would show that response, or be sending. Nothing reports it: the
+    /// scratch it was for is gone. A scratch saved as a request took its
+    /// response to its new name first ([`Self::rename`] from `None`).
+    pub fn drop_scratch(&mut self) {
+        if self.open_slug.is_none() {
+            self.blank_response();
+        }
+        self.cache.remove(&None);
+        self.warm.retain(Option::is_some);
+        self.in_flight.retain(|f| {
+            let gone = f.slug.is_none();
             if gone {
                 f.task.abort();
             }
@@ -332,6 +356,12 @@ impl Session {
         self.send_generation += 1;
         self.cache.clear();
         self.warm.clear();
+        self.blank_response();
+        self.open_slug = None;
+    }
+
+    /// An empty response on screen in place of the one there.
+    fn blank_response(&mut self) {
         // The collapse layout preference survives even a project switch.
         let collapsed = self.response.collapsed;
         // So does the jq Tab-key mode: it is a config-level UI setting
@@ -341,7 +371,6 @@ impl Session {
         self.response = Response::default();
         self.response.collapsed = collapsed;
         self.response.set_jq_tab(jq_tab);
-        self.open_slug = None;
     }
 }
 
@@ -579,6 +608,58 @@ mod tests {
         assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
         open(&mut s, "kept");
         assert_eq!(body_of(&s.response), Some("late"));
+    }
+
+    /// #327: a new unsaved scratch is another request under the same key:
+    /// what the session holds for the scratch before it goes, its
+    /// response on screen or cached, its place in `warm` and its send,
+    /// whose task is aborted and whose result then lands nowhere. Other
+    /// requests keep theirs.
+    #[tokio::test]
+    async fn a_new_scratch_drops_the_old_ones_response_and_send() {
+        let scratch_send = |s: &mut Session| {
+            let generation = s.begin_send(&None);
+            let task = tokio::spawn(std::future::pending());
+            let handle = task.abort_handle();
+            s.in_flight.push(InFlight { started: Instant::now(), generation, slug: None, task });
+            (generation, handle)
+        };
+        // On screen: the editor still holds the old scratch.
+        let mut s = Session::default();
+        s.response.collapsed = true;
+        let (generation, task) = scratch_send(&mut s);
+        s.drop_scratch();
+        tokio::task::yield_now().await;
+        assert!(task.is_finished(), "its task is aborted");
+        assert!(!s.is_in_flight(&None));
+        assert!(matches!(s.response.state(), ResponseState::Empty));
+        assert!(s.response.collapsed, "the pane's layout stays");
+        assert!(!arrives(&mut s, generation, "late"), "its result is dropped");
+
+        // Cached, with its send still out: another request is open.
+        let mut s = Session::default();
+        let (generation, task) = scratch_send(&mut s);
+        open(&mut s, "other");
+        s.response.set_state(ResponseState::Ready(data("other's")), 0);
+        s.drop_scratch();
+        tokio::task::yield_now().await;
+        assert!(task.is_finished(), "its task is aborted");
+        assert!(!arrives(&mut s, generation, "late"), "its result is dropped");
+        assert_eq!(body_of(&s.response), Some("other's"), "the open request keeps its own");
+        s.sync_open(&None);
+        assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
+
+        // Cached and warm: a big response leaves its place in `warm` too.
+        let mut s = Session::default();
+        let body = big(0);
+        s.response.set_state(ResponseState::Ready(data(&body)), 0);
+        assert!(s.response.attach_tree(0, crate::components::json_tree::JsonTree::parse(&body)));
+        open(&mut s, "other");
+        assert_eq!(s.warm.len(), 1, "the scratch's response is warm");
+        s.drop_scratch();
+        assert!(s.warm.is_empty(), "{:?}", s.warm);
+        s.sync_open(&None);
+        assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
     }
 
     #[test]
