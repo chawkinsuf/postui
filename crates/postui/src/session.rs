@@ -148,11 +148,23 @@ impl Session {
     /// the renamed request and its late response still lands on it
     /// rather than under a slug some future request would inherit.
     pub fn rename(&mut self, from: &str, to: &str) {
-        if from == to {
+        self.rekey(Some(from.to_string()), to);
+    }
+
+    /// The unsaved scratch saved as the request at `to` (a Save as, #326):
+    /// the same request, so its response and any in-flight send follow it
+    /// as a rename's do, and nothing is left for the next scratch.
+    pub fn save_scratch_as(&mut self, to: &str) {
+        self.rekey(None, to);
+    }
+
+    /// What [`Self::rename`] and [`Self::save_scratch_as`] move: every
+    /// place the session keys by `from_key`.
+    fn rekey(&mut self, from_key: Option<String>, to: &str) {
+        let to_key = Some(to.to_string());
+        if from_key == to_key {
             return;
         }
-        let from_key = Some(from.to_string());
-        let to_key = Some(to.to_string());
         if self.open_slug == from_key {
             self.open_slug = to_key.clone();
         }
@@ -558,6 +570,25 @@ mod tests {
         assert!(body_of(&s.response) == Some(big(1).as_str()));
         assert!(s.response.view().unwrap().tree.is_some(), "still warm");
         open(&mut s, "moved");
+        assert_eq!(body_of(&s.response), Some("late"));
+    }
+
+    /// #326: the unsaved scratch saved as a request is the same request:
+    /// its response and its send go with it, and the next scratch starts
+    /// with neither.
+    #[tokio::test]
+    async fn a_scratch_saved_as_a_request_takes_its_response_and_its_send() {
+        let mut s = Session::default();
+        let generation = s.begin_send(&None);
+        s.in_flight.push(InFlight { slug: None, ..in_flight(generation, "unused").await });
+        s.save_scratch_as("kept");
+        assert!(!s.sync_open(&Some("kept".into())), "already open: nothing to swap");
+        assert!(s.is_in_flight(&Some("kept".into())) && !s.is_in_flight(&None));
+        assert!(arrives(&mut s, generation, "late"));
+        assert_eq!(body_of(&s.response), Some("late"), "on screen, under its new slug");
+        s.sync_open(&None);
+        assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
+        open(&mut s, "kept");
         assert_eq!(body_of(&s.response), Some("late"));
     }
 

@@ -5305,14 +5305,7 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                self.commit_table_edit();
-                let req = self.editor.current_request();
-                let before = self.editor.slug.clone();
-                if self.create_or_save_as(&name, NewAt::Cursor, move || req) {
-                    // The editor holds the same text under its new slug: the
-                    // body's engine state follows it (amendment C2).
-                    self.vim_body_moved(before.as_deref());
-                }
+                self.save_editor_as(&name);
                 true
             }
             Action::PromptSaveScratch(then) => {
@@ -5329,14 +5322,10 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                self.commit_table_edit();
-                let req = self.editor.current_request();
                 // The deferred step (quit, open another request, switch
                 // project) runs only when the save lands — a bad name or a
                 // write failure toasts and stays put, content intact.
-                let before = self.editor.slug.clone();
-                if self.create_or_save_as(&name, NewAt::Cursor, move || req) {
-                    self.vim_body_moved(before.as_deref());
+                if self.save_editor_as(&name) {
                     self.apply(*then);
                 }
                 true
@@ -11810,6 +11799,29 @@ impl App {
         let at = at.min(map.len());
         map.shift_insert(at, new_key, entry);
         self.editor.table.set_selected(Some(Stop::Row(at)));
+    }
+
+    /// Saves the request in the editor as a new request named `name` and
+    /// opens it there (`SaveRequestAs`, `SaveRequestAsThen`); `true` when
+    /// it did. The editor holds the same text under its new slug, so the
+    /// body's engine state follows it (amendment C2). An unsaved request
+    /// is the same request under its first name, so its response and any
+    /// send still out for it follow it too (#326). A request that had a
+    /// name keeps its own: the new one is another request.
+    fn save_editor_as(&mut self, name: &str) -> bool {
+        self.commit_table_edit();
+        let req = self.editor.current_request();
+        let before = self.editor.slug.clone();
+        if !self.create_or_save_as(name, NewAt::Cursor, move || req) {
+            return false;
+        }
+        self.vim_body_moved(before.as_deref());
+        if before.is_none()
+            && let Some(slug) = &self.editor.slug
+        {
+            self.session.save_scratch_as(slug);
+        }
+        true
     }
 
     /// `create_request_from`, answering only whether the new request is

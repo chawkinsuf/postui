@@ -73,6 +73,10 @@ change the project file format.
 
 ### Fixed
 
+- A request sent before it was saved keeps its response when it is saved
+  with a name, and a send still running for it lands on it. Before, the
+  response pane went empty at the save, and the next new unsaved request
+  showed that response.
 - Cancelling "Describe a filter…", or quitting while it runs, stops the AI
   command. Before, only the shell that started it was stopped, so the
   command could go on running, and spending, with its reply thrown away.

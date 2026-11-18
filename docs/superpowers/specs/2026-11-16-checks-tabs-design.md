@@ -442,6 +442,14 @@ to them. What changes:
   Review round 2 names a third (`mine`): the open request's file
   removed outside the app, a request put at its name while the editor
   still holds it shows its response, at once when the editor opens it.
+
+  Amended 2026-11-18 (#326, `mine`): an unsaved request that Save as
+  gives its first name is the same request too: its response and a send
+  still out for it follow it to that name (`Session::save_scratch_as`).
+  Before, the pane went empty at the save, and the response stayed under
+  the unsaved request's key for the next unsaved request to show. Save
+  as of a request that has a name makes another request: the response
+  stays with the request it was sent for, and the new one has none.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the
