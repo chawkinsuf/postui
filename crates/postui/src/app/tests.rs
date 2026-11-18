@@ -34091,7 +34091,9 @@ async fn a_send_out_for_an_unsaved_request_follows_it_when_saved_as() {
 /// #326: undo of that Save as removes the request it made, so its
 /// response and a send still out go with it, as for any request that
 /// goes (#322): the unsaved request comes back with none, and so does
-/// the request a redo brings back.
+/// the request a redo brings back. A redo is not a Save as: what the
+/// unsaved request has then goes with it as it is left (#327), a send
+/// out for it included.
 #[tokio::test]
 async fn undo_of_a_save_as_from_an_unsaved_request_takes_its_response() {
     let mut app = App::new_for_test();
@@ -34115,6 +34117,17 @@ async fn undo_of_a_save_as_from_an_unsaved_request_takes_its_response() {
     app.update(Action::Redo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "the save redone");
     assert!(no_response(&app), "{:?}", response_body(&app));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug, None);
+    let (generation, task) = send_out(&mut app);
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"), "the save redone");
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    assert!(no_response(&app) && !app.editor.sending, "{:?}", response_body(&app));
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app));
 }
 
 /// #326: Save as of a request that has a name makes another request: the
@@ -34130,6 +34143,112 @@ fn a_named_request_saved_as_keeps_its_response_and_the_copy_has_none() {
     assert!(no_response(&app), "the copy was never sent: {:?}", response_body(&app));
     app.update(Action::ForceOpenRequest("main/first".into()));
     assert_eq!(response_body(&app), Some(mine));
+}
+
+/// #327: an unsaved request left any way but Save as is gone, and its
+/// response goes with it: the next unsaved request opens with none. By
+/// the unsaved-request gate's Discard before a create; by a create from
+/// an unsaved request with nothing in it to lose (no gate); and by the
+/// gate's Discard before a switch to a space with no requests, where one
+/// unsaved request follows another with no request in between.
+#[test]
+fn a_discarded_unsaved_request_takes_its_response_with_it() {
+    let mine = r#"{"mine": true}"#;
+    let mut app = scratch_app();
+    ready_response(&mut app, mine);
+    app.update(Action::CreateRequest("other".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
+    assert!(no_response(&app), "the new request was never sent");
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None, "the only request gone: a fresh unsaved one");
+    assert!(no_response(&app), "the gate's Discard: {:?}", response_body(&app));
+
+    ready_response(&mut app, mine);
+    app.update(Action::CreateRequest("other".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None);
+    assert!(no_response(&app), "a create with no gate: {:?}", response_body(&app));
+
+    app.update(Action::CreateSpace("empty".into()));
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/scratch");
+    ready_response(&mut app, mine);
+    app.update(Action::SwitchSpace("empty".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.active_space(), "empty", "{:?}", app.toasts.messages());
+    assert_eq!(app.editor.slug, None);
+    assert!(app.editor.url.text().is_empty(), "a fresh unsaved request");
+    assert!(no_response(&app), "a switch to an empty space: {:?}", response_body(&app));
+}
+
+/// #327: a send still out for a discarded unsaved request stops when the
+/// editor leaves it: nothing ticks for it, the next unsaved request is
+/// not sending, and the late result lands nowhere.
+#[tokio::test]
+async fn a_send_out_for_a_discarded_unsaved_request_stops_when_it_is_left() {
+    let mut app = scratch_app();
+    let (generation, task) = send_out(&mut app);
+    app.update(Action::CreateRequest("other".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"), "{:?}", app.toasts.messages());
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    assert!(!app.in_flight_ticking(), "nothing ticks for it");
+    app.update(Action::DeleteRequest("main/other".into()));
+    assert_eq!(app.editor.slug, None);
+    assert!(!app.editor.sending, "the fresh unsaved request is not sending");
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
+/// #327: curl import's Discard of an unsaved request blanks it in place,
+/// and its response and its send go with the old text, even when the
+/// import then stops at its name prompt. Undo brings the text back, with
+/// the response pane empty, as the undo of a create through a Discard.
+#[tokio::test]
+async fn curl_imports_discard_takes_the_unsaved_requests_response_and_send() {
+    let mut app = scratch_app();
+    app.capture_undo();
+    let before = app.editor.current_request();
+    let (generation, task) = send_out(&mut app);
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("curl https://x/users");
+    app.set_clipboard_for_test(clip);
+    app.update(Action::ImportCurl { folder: None });
+    app.handle_key(plain('d'));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "the import's name prompt");
+    tokio::task::yield_now().await;
+    assert!(task.is_finished(), "its task is aborted");
+    app.update(Action::CancelTopModal);
+    assert_eq!(app.editor.slug, None);
+    assert!(app.editor.url.text().is_empty(), "a blank unsaved request");
+    assert!(!app.editor.sending);
+    assert!(!app.update(Action::RequestFailed { generation, error: "late".into() }));
+    assert!(no_response(&app), "{:?}", response_body(&app));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.current_request(), before, "the unsaved request as it was");
+    assert!(no_response(&app), "{:?}", response_body(&app));
+}
+
+/// #327: undo of a create made through the gate's Discard brings the
+/// unsaved request back as it was, and its response pane empty: undo
+/// restores saved state exactly, and the response is not saved state
+/// (the user on #326: "The response does not need to come back. It is
+/// ephemeral").
+#[test]
+fn undo_of_a_create_through_a_discard_brings_the_unsaved_request_back_without_its_response() {
+    let mut app = scratch_app();
+    let before = app.editor.current_request();
+    ready_response(&mut app, r#"{"mine": true}"#);
+    app.update(Action::CreateRequest("fresh".into()));
+    app.handle_key(plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"), "{:?}", app.toasts.messages());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug, None);
+    assert_eq!(app.editor.current_request(), before, "the unsaved request as it was");
+    assert!(no_response(&app), "{:?}", response_body(&app));
 }
 
 /// #325: a space renamed to a deleted space's name does not show the

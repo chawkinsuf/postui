@@ -306,12 +306,25 @@ impl App {
         self.install_scratch(self.editor.fresh());
     }
 
-    /// `scratch` in the editor, with the old buffer's shadow and engine
-    /// state dropped ([`Self::fresh_scratch`]).
+    /// `scratch` in the editor, with the old buffer's shadow dropped, and
+    /// what an unsaved request before it had ([`Self::drop_old_scratch`]).
+    ///
+    /// So an unsaved request put here, an undo's too, starts with an empty
+    /// response pane: the response is not saved state (the user on #326:
+    /// "The response does not need to come back. It is ephemeral").
     fn install_scratch(&mut self, scratch: crate::components::editor::Editor) {
         self.editor = scratch;
         self.shadow = None;
+        self.drop_old_scratch();
+    }
+
+    /// The editor holds a new unsaved request, in place of whatever it
+    /// held. An unsaved request before it had no slug to tell the two
+    /// apart, so what was keyed to it goes: the body's engine state, and
+    /// the session's response and send (#327).
+    pub(super) fn drop_old_scratch(&mut self) {
         self.vim_drop_body();
+        self.session.drop_scratch();
     }
 
     /// Empties the editor for a project switch, before the switch swaps the

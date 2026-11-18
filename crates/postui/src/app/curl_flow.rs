@@ -213,8 +213,9 @@ impl App {
     /// `Action::BeginCurlImport`: the dirty gate's answer, then the first
     /// prompt. A saved request's discard is `Action::DiscardChanges`; a
     /// scratch request has nothing to go back to, so it becomes a blank
-    /// one: a fresh scratch, its body's engine state gone with the old
-    /// text, but with the shadow kept so the discard is an undo step.
+    /// one: a fresh scratch, its body's engine state, its response and its
+    /// send gone with the old text ([`Self::drop_old_scratch`]), but with
+    /// the shadow kept so the discard is an undo step.
     pub(super) fn begin_curl_import(&mut self, run: CurlImportRun, discard: bool) -> bool {
         if discard {
             if self.editor.slug.is_some() {
@@ -224,7 +225,7 @@ impl App {
                 self.no_coalesce = true;
                 self.reseed_editor(None, postui_core::model::HttpRequest::default());
                 self.editor.set_saved(None);
-                self.vim_drop_body();
+                self.drop_old_scratch();
                 self.toasts.push(format!("Request discarded{}", self.undo_hint()), ToastKind::Info);
             }
         }

@@ -454,8 +454,29 @@ to them. What changes:
   Undo of the Save as removes the request it made, so its response and
   a send still out go with it, as above: the unsaved request comes back
   with an empty response pane, as a deleted request does when its
-  delete is undone (`you`, above). Applying that answer to this undo is
-  `mine` (review round 1).
+  delete is undone (`you`, above). The user ruled on this undo itself
+  (2026-11-18, #326, `you`): "Undo should always go back to the exact
+  previous state", and of the response, "The request is not saved
+  state so that doesn't count" and "The response does not need to come
+  back. It is ephemeral".
+
+  Amended 2026-11-18 (#327, `mine`): an unsaved request left any way
+  but Save as (discarded at the unsaved-request gate, or left with
+  nothing in it to lose) is gone, and so is its response.
+  Before, its response and a send still out for it stayed under the
+  unsaved request's key, for the next unsaved request to show, or to
+  show as sending. It is dropped, and its send stopped, when the editor
+  leaves it, which happens one of two ways. Another request opens:
+  `Session::drop_gone` counts the unsaved request's key as gone whenever
+  another request is open. Or a new unsaved request takes its place,
+  with the key unchanged (a landing on a fresh one, curl import's
+  Discard): `App::drop_old_scratch` drops it (`Session::drop_scratch`).
+  A Save as has moved its response to its new name before either; a
+  redo of a Save as has not, so the request it makes opens with an
+  empty response pane, and a send out for the unsaved request stops.
+  An undo that brings an unsaved request's text back (of a Discard, of
+  a Save as) brings it back with an empty response pane. Both by the
+  user's ruling above.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

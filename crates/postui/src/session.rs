@@ -41,7 +41,7 @@ pub struct Session {
     open_slug: Option<String>,
     /// Latest response of every request navigated away from, keyed like
     /// `open_slug`. Never persisted, and dropped when its request goes
-    /// ([`Self::drop_gone`]).
+    /// ([`Self::drop_gone`], [`Self::drop_scratch`]).
     cache: HashMap<Option<String>, Response>,
     /// Every send still waiting on its result — at most one entry per
     /// request (`Action::Send` is disabled while its request is in
@@ -114,23 +114,43 @@ impl Session {
     /// nowhere. Kept, a response would be shown by the next request at
     /// its slug.
     ///
-    /// The unsaved scratch has no file to lose. The open request keeps
-    /// its send, and its response on screen, while the editor holds it,
-    /// whether or not its file is still there: the editor can send a
-    /// request whose file was removed outside the app, and
-    /// `App::dispatch` calls this after every action, so that send
+    /// The unsaved scratch has no file: it is gone once another request
+    /// is open (#327). A Save as moves what it had to its new name first
+    /// ([`Self::rename`] from `None`); a redo of one does not. One scratch
+    /// replaced by another
+    /// leaves the open slug `None`: that is [`Self::drop_scratch`]'s.
+    ///
+    /// The open request keeps its send, and its response on screen, while
+    /// the editor holds it, whether or not its file is still there: the
+    /// editor can send a request whose file was removed outside the app,
+    /// and `App::dispatch` calls this after every action, so that send
     /// would be stopped at the next one. The cost: a request put at that
     /// slug while the editor holds the gone one shows that response, at
     /// once when the editor opens it, since the open slug does not
     /// change.
-    ///
-    /// A dropped send's task is aborted rather than left to run: with its
-    /// entry gone, nothing could cancel it. Nothing reports it: the
-    /// request it was for is gone.
     pub fn drop_gone(&mut self, exists: impl Fn(&str) -> bool) {
-        let open = &self.open_slug;
-        let gone =
-            |slug: &Option<String>| slug != open && slug.as_deref().is_some_and(|s| !exists(s));
+        let open = self.open_slug.clone();
+        self.drop_where(|slug| slug != &open && slug.as_deref().is_none_or(|s| !exists(s)));
+    }
+
+    /// A new unsaved scratch in place of the one before it, under the
+    /// same key (#327): drops what the session holds for the old one,
+    /// its response on screen or cached, its place in `warm` and its
+    /// send. Kept, the new scratch would show that response, or be
+    /// sending.
+    pub fn drop_scratch(&mut self) {
+        if self.open_slug.is_none() {
+            self.blank_response();
+        }
+        self.drop_where(Option::is_none);
+    }
+
+    /// Drops the cached response, the place in `warm` and the in-flight
+    /// send of every request `gone` picks. A dropped send's task is
+    /// aborted rather than left to run: with its entry gone, nothing could
+    /// cancel it, and its result lands nowhere. Nothing reports it: the
+    /// request it was for is gone.
+    fn drop_where(&mut self, gone: impl Fn(&Option<String>) -> bool) {
         self.cache.retain(|slug, _| !gone(slug));
         self.warm.retain(|slug| !gone(slug));
         self.in_flight.retain(|f| {
@@ -332,6 +352,12 @@ impl Session {
         self.send_generation += 1;
         self.cache.clear();
         self.warm.clear();
+        self.blank_response();
+        self.open_slug = None;
+    }
+
+    /// An empty response on screen in place of the one there.
+    fn blank_response(&mut self) {
         // The collapse layout preference survives even a project switch.
         let collapsed = self.response.collapsed;
         // So does the jq Tab-key mode: it is a config-level UI setting
@@ -341,7 +367,6 @@ impl Session {
         self.response = Response::default();
         self.response.collapsed = collapsed;
         self.response.set_jq_tab(jq_tab);
-        self.open_slug = None;
     }
 }
 
@@ -494,8 +519,9 @@ mod tests {
 
     /// #322: a request that is gone takes its cached response, its place
     /// in `warm` and its send, whose task is aborted and whose result
-    /// then lands nowhere. The open request, the unsaved scratch and the
-    /// requests still there keep theirs.
+    /// then lands nowhere. The open request and the requests still there
+    /// keep theirs. The unsaved scratch, left for another request, is
+    /// gone (#327).
     #[tokio::test]
     async fn a_request_that_is_gone_takes_its_response_its_warm_place_and_its_send() {
         let mut s = Session::default();
@@ -537,7 +563,7 @@ mod tests {
         open(&mut s, "big2");
         assert!(body_of(&s.response) == Some(big(2).as_str()), "and its response");
         s.sync_open(&None);
-        assert_eq!(body_of(&s.response), Some("scratch"), "the scratch has no file to lose");
+        assert!(matches!(s.response.state(), ResponseState::Empty), "the scratch is gone");
     }
 
     /// A renamed request's response, its place in `warm` and its send go
@@ -579,6 +605,60 @@ mod tests {
         assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
         open(&mut s, "kept");
         assert_eq!(body_of(&s.response), Some("late"));
+    }
+
+    /// #327: an unsaved scratch left for another request, or replaced by
+    /// a new one, is gone: what the session holds for it goes, its
+    /// response on screen or cached, its place in `warm` and its send,
+    /// whose task is aborted and whose result then lands nowhere. Other
+    /// requests keep theirs.
+    #[tokio::test]
+    async fn a_scratch_left_or_replaced_takes_its_response_and_send() {
+        let scratch_send = |s: &mut Session| {
+            let generation = s.begin_send(&None);
+            let task = tokio::spawn(std::future::pending());
+            let handle = task.abort_handle();
+            s.in_flight.push(InFlight { started: Instant::now(), generation, slug: None, task });
+            (generation, handle)
+        };
+        // Replaced by a new scratch: on screen, the open slug stays `None`.
+        let mut s = Session::default();
+        s.response.collapsed = true;
+        let (generation, task) = scratch_send(&mut s);
+        s.drop_gone(|_| false);
+        assert!(s.is_in_flight(&None), "open, it is kept");
+        s.drop_scratch();
+        tokio::task::yield_now().await;
+        assert!(task.is_finished(), "its task is aborted");
+        assert!(!s.is_in_flight(&None));
+        assert!(matches!(s.response.state(), ResponseState::Empty));
+        assert!(s.response.collapsed, "the pane's layout stays");
+        assert!(!arrives(&mut s, generation, "late"), "its result is dropped");
+
+        // Left for another request, with its send still out.
+        let mut s = Session::default();
+        let (generation, task) = scratch_send(&mut s);
+        open(&mut s, "other");
+        s.response.set_state(ResponseState::Ready(data("other's")), 0);
+        s.drop_gone(|_| true);
+        tokio::task::yield_now().await;
+        assert!(task.is_finished(), "its task is aborted");
+        assert!(!arrives(&mut s, generation, "late"), "its result is dropped");
+        assert_eq!(body_of(&s.response), Some("other's"), "the open request keeps its own");
+        s.sync_open(&None);
+        assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
+
+        // Left, with a big response: it leaves its place in `warm` too.
+        let mut s = Session::default();
+        let body = big(0);
+        s.response.set_state(ResponseState::Ready(data(&body)), 0);
+        assert!(s.response.attach_tree(0, crate::components::json_tree::JsonTree::parse(&body)));
+        open(&mut s, "other");
+        assert_eq!(s.warm.len(), 1, "the scratch's response is warm");
+        s.drop_gone(|_| true);
+        assert!(s.warm.is_empty(), "{:?}", s.warm);
+        s.sync_open(&None);
+        assert!(matches!(s.response.state(), ResponseState::Empty), "a fresh scratch");
     }
 
     #[test]
