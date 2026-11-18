@@ -4,7 +4,14 @@ Notable changes to postui, newest first. Versions follow
 [Semantic Versioning](https://semver.org/); before 1.0, a release may still
 change the project file format.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-18
+
+Requests can now say what a good response is, in a `[checks]` table that
+`postui run` and `postui suite` evaluate and the app edits on a Checks tab.
+`postui suite` shows its run live at a terminal and can send several
+requests at once. postui 0.4.1 and older can't read a request file with a
+`[checks]` table, or a `project.toml` with `jq_limit_ms`, so a team sharing
+a project should upgrade together.
 
 ### Added
 
