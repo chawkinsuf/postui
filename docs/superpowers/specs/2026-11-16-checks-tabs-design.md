@@ -432,6 +432,13 @@ to them. What changes:
   response follows it (`Session::rename`, `rename_space`). The request
   in the editor keeps its response and its send while the editor holds
   it, its file gone or not (`mine`).
+
+  Two costs kept (`mine`, review round 1 of this amendment). The
+  listing is read as the action left it, so a request file removed
+  outside the app leaves its response to a request put at its name (a
+  create, a rename, a move) when that op is the first to relist since.
+  And a request that a directory that can't be read leaves out of the
+  listing counts as gone: its response is dropped and its send stopped.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

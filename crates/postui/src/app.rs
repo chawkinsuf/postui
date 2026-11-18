@@ -2662,6 +2662,15 @@ impl App {
         // action, the session drops what it holds for a request the
         // project no longer lists. After the swap above, which is what
         // takes a removed request's response off the screen.
+        //
+        // The listing is read as the action left it, so a slug that left
+        // it and was taken again inside the one action is not seen gone:
+        // a request file removed outside the app, when the first op to
+        // relist since is the one that puts a request at its name.
+        // Seeing that would take a record of what each relist removed. A
+        // request a directory that can't be read leaves out of the
+        // listing counts as gone: skipping the drop while the walk warns
+        // would keep a deleted request's response for as long as it does.
         let project = self.project.as_ref();
         self.session.drop_gone(|slug| project.is_some_and(|p| p.lists_request(slug)));
         self.sidebar.in_flight =

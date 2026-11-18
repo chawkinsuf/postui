@@ -116,11 +116,19 @@ impl Session {
     ///
     /// The unsaved scratch has no file to lose. The open request keeps
     /// its send, and its response on screen, while the editor holds it,
-    /// whether or not its file is still there.
+    /// whether or not its file is still there: the editor can send a
+    /// request whose file was removed outside the app, and
+    /// `App::dispatch` calls this after every action, so that send
+    /// would be stopped at the next one. The cost: if another request
+    /// takes the slug while the editor still holds the gone one, the
+    /// response on screen is kept under that slug when the editor lets
+    /// go.
+    ///
+    /// Nothing reports a stopped send: the request it was for is gone.
     pub fn drop_gone(&mut self, exists: impl Fn(&str) -> bool) {
-        let open = self.open_slug.clone();
+        let open = &self.open_slug;
         let gone =
-            |slug: &Option<String>| *slug != open && slug.as_deref().is_some_and(|s| !exists(s));
+            |slug: &Option<String>| slug != open && slug.as_deref().is_some_and(|s| !exists(s));
         self.cache.retain(|slug, _| !gone(slug));
         self.warm.retain(|slug| !gone(slug));
         self.in_flight.retain(|f| {
@@ -378,6 +386,11 @@ mod tests {
         }
     }
 
+    /// [`in_flight`] with a task that runs until it is aborted.
+    async fn running(generation: u64, slug: &str) -> InFlight {
+        InFlight { task: tokio::spawn(std::future::pending()), ..in_flight(generation, slug).await }
+    }
+
     /// A JSON body over `SYNC_PRETTY_BYTES`, told apart by `n`.
     fn big(n: usize) -> String {
         let pad = "x".repeat(crate::components::response::SYNC_PRETTY_BYTES);
@@ -477,9 +490,9 @@ mod tests {
     }
 
     /// #322: a request that is gone takes its cached response, its place
-    /// in `warm` and its send, whose result then lands nowhere. The open
-    /// request, the unsaved scratch and the requests still there keep
-    /// theirs.
+    /// in `warm` and its send, whose task is aborted and whose result
+    /// then lands nowhere. The open request, the unsaved scratch and the
+    /// requests still there keep theirs.
     #[tokio::test]
     async fn a_request_that_is_gone_takes_its_response_its_warm_place_and_its_send() {
         let mut s = Session::default();
@@ -488,16 +501,24 @@ mod tests {
         open_parsed_big(&mut s, 2);
         open(&mut s, "sent");
         let gone = s.begin_send(&Some("sent".into()));
-        s.in_flight.push(in_flight(gone, "sent").await);
+        s.in_flight.push(running(gone, "sent").await);
         open(&mut s, "kept");
         let kept = s.begin_send(&Some("kept".into()));
-        s.in_flight.push(in_flight(kept, "kept").await);
+        s.in_flight.push(running(kept, "kept").await);
         open(&mut s, "open");
         let open_send = s.begin_send(&Some("open".into()));
-        s.in_flight.push(in_flight(open_send, "open").await);
+        s.in_flight.push(running(open_send, "open").await);
+        let task = |s: &Session, slug: &str| {
+            s.in_flight_for(&Some(slug.into())).expect("in flight").task.abort_handle()
+        };
+        let (sent_task, kept_task, open_task) =
+            (task(&s, "sent"), task(&s, "kept"), task(&s, "open"));
 
         // `big1`, `sent` and the open request have no file any more.
         s.drop_gone(|slug| ["big2", "kept"].contains(&slug));
+        tokio::task::yield_now().await;
+        assert!(sent_task.is_finished(), "its task is aborted");
+        assert!(!kept_task.is_finished() && !open_task.is_finished(), "the others run on");
         assert_eq!(s.warm.iter().flatten().collect::<Vec<_>>(), ["big2"]);
         assert!(!s.is_in_flight(&Some("sent".into())));
         assert!(!arrives(&mut s, gone, "late"), "its result is dropped");
