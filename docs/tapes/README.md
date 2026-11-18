@@ -60,7 +60,10 @@ The recording config uses the `catppuccin-mocha` theme, turns off hover hints
 answers "Describe a filter…" with a fixed filter, so no AI account is needed
 and the result is the same every time. The project copy gets a
 `.postui/layout.toml` with a narrower sidebar than the default. The key
-profile is arrows, except for `vim.tape`, which passes `vim` to `setup.sh`.
+profile is arrows, except for `vim.tape` and `checks.tape`, which pass `vim`
+to `setup.sh`. `suite.tape` runs `postui suite` at the shell instead of
+opening the app, and gives the demo's one secret a value first, so every
+request can be sent.
 
 `curl-import.tape` puts its curl command on your system clipboard with VHS's
 `Copy`, so recording it replaces whatever you had copied. On Linux that needs
@@ -71,11 +74,12 @@ the sidebar takes those as commands.
 
 Each tape starts with `include/common.tape`: the recording settings from
 `include/settings.tape`, and the hidden launch through `setup.sh`. `vim.tape`
-sources the settings alone and launches with the Vim profile itself. The
-font size and height set the terminal to about 110 columns by 35 rows, so
-the text stays readable when GitHub scales the images down to its README
-column. `include/open-users.tape` holds the sidebar
-steps into the demo's `users/` folder, where the tapes depend on the demo
-project's layout; `vim.tape` takes the same steps with Vim keys, so a change
-to the demo's folders means changing both. The shared pieces sit in
+and `checks.tape` source the settings alone and launch with the Vim profile
+themselves, and `suite.tape` sources them and runs `setup.sh` without the
+app. The font size and height set the terminal to about 110 columns by 35
+rows, so the text stays readable when GitHub scales the images down to its
+README column. `include/open-users.tape` holds the sidebar steps into the
+demo's `users/` folder, where the tapes depend on the demo project's layout;
+`vim.tape` and `checks.tape` take the same steps with Vim keys, so a change
+to the demo's folders means changing all three. The shared pieces sit in
 `include/` so the `docs/tapes/*.tape` loop doesn't record them on their own.

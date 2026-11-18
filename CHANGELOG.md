@@ -15,6 +15,13 @@ change the project file format.
   without saving anything. `--plain`, a pipe or `TERM=dumb` gives the plain
   text as before. The plain heading gains `jobs N` when N is more than 1,
   and the JSON gains `"jobs"`.
+- A request file's `[checks]` table says what a good response is: `status`
+  lists the codes that pass, `max_ttfb_ms` and `max_elapsed_ms` are time
+  limits, and `jq` lists filters that must each give `true`. `postui run`
+  and `postui suite` evaluate them and say which failed. A `status` check
+  replaces the rule that a status of 400 or more fails.
+- The Manage screen has a Project tab for the project's name and its
+  default headers, which are edited like a request's headers.
 - A request has a Checks tab that edits its `[checks]`: the status codes
   that pass, the time limits until the first byte and until the last byte
   (the total time), and the jq checks. An empty box says what empty means
