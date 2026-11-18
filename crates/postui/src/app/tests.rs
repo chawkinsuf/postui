@@ -33642,19 +33642,21 @@ fn no_response(app: &App) -> bool {
     matches!(app.session.response.state(), ResponseState::Empty)
 }
 
-/// A send of the open request that has not come back; answers its
-/// generation.
-fn send_out(app: &mut App) -> u64 {
+/// A send of the open request that has not come back, its task running
+/// until it is aborted; answers its generation and the task's handle.
+fn send_out(app: &mut App) -> (u64, tokio::task::AbortHandle) {
     let slug = app.editor.slug.clone();
     let generation = app.session.begin_send(&slug);
+    let task = tokio::spawn(std::future::pending());
+    let handle = task.abort_handle();
     app.session.in_flight.push(crate::session::InFlight {
         started: std::time::Instant::now(),
         generation,
         slug,
-        task: tokio::spawn(async {}),
+        task,
     });
     app.update(Action::Render);
-    generation
+    (generation, handle)
 }
 
 /// #322: a request made where a deleted one was is a new request, and
@@ -33924,20 +33926,23 @@ fn every_way_a_request_goes_takes_its_response() {
     back_empty(&mut app, "main/b/y", "removed outside");
 }
 
-/// #322: a send still out for a request that goes is stopped, and its
-/// late result lands nowhere: not on the request now open, and not on the
-/// deleted one when an undo brings it back. Another request's send goes
-/// on.
+/// #322: a send still out for a request that goes is stopped (its task
+/// aborted), and its late result lands nowhere: not on the request now
+/// open, and not on the deleted one when an undo brings it back. Another
+/// request's send goes on.
 #[tokio::test]
 async fn a_send_out_for_a_request_that_goes_is_stopped() {
     let (mut app, _dir) = spaced_app();
     // The request on screen.
     app.update(Action::ForceOpenRequest("main/beta".into()));
-    let theirs = send_out(&mut app);
+    let (theirs, theirs_task) = send_out(&mut app);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    let open = send_out(&mut app);
+    let (open, open_task) = send_out(&mut app);
     assert!(app.editor.sending);
     app.update(Action::DeleteRequest("main/alpha".into()));
+    tokio::task::yield_now().await;
+    assert!(open_task.is_finished(), "its task is aborted");
+    assert!(!theirs_task.is_finished(), "beta's runs on");
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     assert!(!app.session.is_in_flight(&Some("main/alpha".into())));
     assert!(app.session.is_in_flight(&Some("main/beta".into())), "beta's send goes on");
@@ -33948,9 +33953,12 @@ async fn a_send_out_for_a_request_that_goes_is_stopped() {
     assert!(no_response(&app) && !app.editor.sending, "back, not sent and not sending");
 
     // A request that is not on screen.
-    let cached = send_out(&mut app);
+    let (cached, cached_task) = send_out(&mut app);
     app.update(Action::ForceOpenRequest("main/beta".into()));
     app.update(Action::DeleteRequest("main/alpha".into()));
+    tokio::task::yield_now().await;
+    assert!(cached_task.is_finished(), "its task is aborted");
+    assert!(!theirs_task.is_finished(), "beta's runs on");
     assert!(!app.session.is_in_flight(&Some("main/alpha".into())));
     assert!(!app.update(Action::RequestFailed { generation: cached, error: "late".into() }));
     app.update(Action::Undo);

@@ -439,6 +439,9 @@ to them. What changes:
   create, a rename, a move) when that op is the first to relist since.
   And a request that a directory that can't be read leaves out of the
   listing counts as gone: its response is dropped and its send stopped.
+  Review round 2 names a third (`mine`): the open request's file
+  removed outside the app, a request put at its name while the editor
+  still holds it shows its response, at once when the editor opens it.
 - **One field,** `ReadyView::checks`, a `CheckState`: `None`,
   `Judging`, `Judged(lines)`. `Session::arrived` takes the state the
   response starts in and sets it on the response it delivers, so the

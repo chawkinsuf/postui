@@ -86,7 +86,7 @@ impl Session {
             let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
             if big {
-                // Keeps the slug listed once.
+                // `rename` can have listed it already.
                 self.warm.retain(|s| s != &self.open_slug);
                 self.warm.push_back(self.open_slug.clone());
                 while self.warm.len() > KEEP_WARM {
@@ -119,12 +119,14 @@ impl Session {
     /// whether or not its file is still there: the editor can send a
     /// request whose file was removed outside the app, and
     /// `App::dispatch` calls this after every action, so that send
-    /// would be stopped at the next one. The cost: if another request
-    /// takes the slug while the editor still holds the gone one, the
-    /// response on screen is kept under that slug when the editor lets
-    /// go.
+    /// would be stopped at the next one. The cost: a request put at that
+    /// slug while the editor holds the gone one shows that response, at
+    /// once when the editor opens it, since the open slug does not
+    /// change.
     ///
-    /// Nothing reports a stopped send: the request it was for is gone.
+    /// A dropped send's task is aborted rather than left to run: with its
+    /// entry gone, nothing could cancel it. Nothing reports it: the
+    /// request it was for is gone.
     pub fn drop_gone(&mut self, exists: impl Fn(&str) -> bool) {
         let open = &self.open_slug;
         let gone =

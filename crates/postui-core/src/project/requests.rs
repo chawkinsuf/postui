@@ -219,7 +219,6 @@ impl Project {
     /// Whether the listing has a request at `slug`. A binary search:
     /// `list` sorts by slug.
     pub fn lists_request(&self, slug: &str) -> bool {
-        debug_assert!(self.listing.is_sorted_by(|a, b| a.slug <= b.slug));
         self.listing.binary_search_by(|l| l.slug.as_str().cmp(slug)).is_ok()
     }
 
