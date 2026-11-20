@@ -13,6 +13,9 @@ change the project file format.
 
 ### Fixed
 
+- A large response whose Tree finishes loading while another request is
+  open now counts toward the last three large responses kept loaded. It
+  used to stay loaded outside that count until its request was next opened.
 - In the response pane and the variable tooltip, a mouse selection dragged
   down past the end of a one-character line, such as a closing `}`, takes
   that character. A selection dragged up from a line's first character past
