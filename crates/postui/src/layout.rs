@@ -167,7 +167,7 @@ pub fn compute_layout(
 pub const SIDEBAR_MIN_COLS: u16 = 16;
 /// The narrowest the main column (editor/response) may be squeezed to by
 /// the sidebar: wide enough that the editor's tab row without its counts
-/// (the Body tab's `vars` and badge included) ends clear of the split
+/// (the Body tab's badge included) ends clear of the split
 /// control at its right end, so the chips never paint over a tab or take
 /// its clicks (the editor's
 /// `the_tab_row_fits_beside_the_split_control_at_the_main_minimum`).

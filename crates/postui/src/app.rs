@@ -4563,6 +4563,10 @@ impl App {
                 true
             }
             Action::ToggleBodyVars => {
+                // No toast, from any tab: the Body tab's `substitute` chip
+                // shows the flag, and no other tab names it (#329, user:
+                // "not information that's really needed unless the user is
+                // already editing the body").
                 self.no_coalesce = true;
                 self.editor.substitute_body = !self.editor.substitute_body;
                 true

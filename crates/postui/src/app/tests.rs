@@ -10122,21 +10122,28 @@ async fn a_url_value_holding_a_token_blocks_send_with_toast() {
 }
 
 #[test]
-fn toggle_body_vars_flips_flag_and_shows_badge() {
+fn toggle_body_vars_flips_flag_and_shows_it_on_the_chip_alone() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     let mut app = App::new_for_test();
-    app.update(Action::ToggleBodyVars);
-    assert!(app.editor.substitute_body);
-
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.editor.active_tab = EditorTab::Body;
-    // The Body tab's label says so (checks tabs spec 2026-11-16, W3).
-    let backend = TestBackend::new(80, 20);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    let content = format!("{:?}", terminal.backend().buffer());
-    assert!(content.contains("Body · vars"), "expected a vars badge: {content}");
+    // The body's `substitute` chip says which, and the Body tab's label is
+    // `Body` either way (#329, replacing checks tabs spec 2026-11-16, W3).
+    for (on, chip) in [(true, "substitute {{on}}"), (false, "substitute {{off}}")] {
+        app.update(Action::ToggleBodyVars);
+        assert_eq!(app.editor.substitute_body, on);
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let content = format!("{buf:?}");
+        assert!(content.contains(chip), "expected `{chip}`: {content}");
+        let r = app.hits.rect_of(&Hit::EditorTab(3)).unwrap();
+        let tab: String = (r.x..r.right()).map(|x| buf[(x, r.y)].symbol()).collect();
+        assert_eq!(tab.trim(), "Body", "the Body tab's label, variables {on}");
+    }
 }
 
 #[test]

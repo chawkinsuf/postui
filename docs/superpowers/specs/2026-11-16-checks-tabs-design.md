@@ -54,7 +54,18 @@ picked, `mine` my call. Sources are copied from the ticket.
 |---|---|---|
 | W1 | The main column's minimum stays 65. When the request's tab row doesn't fit before the split chips, every tab drops its count. | you: "yes, go back to 65 and compact the tab row"; dropping the counts as the one compact form: mine |
 | W2 | The form follows the room only, never the selected tab, so switching tabs never moves the row. | the no-layout-shift rule |
-| W3 | The mark that a body's variables are on is part of the Body tab's label, as a count is part of its tab's: `Body · vars`, inside the tab's width, click target and underline. | you: "the vars should be part of the body tab like the 2 is part of the checks tab"; the details (section 6, 15): mine |
+| W3 | ~~The mark that a body's variables are on is part of the Body tab's label, as a count is part of its tab's: `Body · vars`, inside the tab's width, click target and underline.~~ Replaced 2026-11-19 (#329): the Body tab's label carries no mark for the body's variables; the body's `substitute {{on}}`/`{{off}}` chip shows it. See the paragraph under this table. | was you: "the vars should be part of the body tab like the 2 is part of the checks tab"; the details (section 6, 15): mine. Now you (#329) |
+
+**W3 replaced (2026-11-19, #329).** `you`: "It's not necessary to show
+this status in the tab. We already have "substitute on/off" in the body
+display after the tab has been selected. It's not information that's
+really needed unless the user is already editing the body." The Body
+tab's label is `Body`, with its `✓` or `✗`, whether the body's variables
+are on or off, so switching them changes no tab. The tab row is no
+longer measured with room for `vars`; it keeps the room for the badge
+(17). The main column's minimum stays 65 (W1), though the compact row
+is now 7 columns narrower, so the sidebar's limits don't move: mine.
+The body's `substitute` chip is unchanged.
 
 "Not in this task" on the ticket is binding: no judging but at a send,
 no multi-line checks, no check from a view or the jq bar, no variables
@@ -206,6 +217,8 @@ end reaches the split chips it lays it out again without them. The Body
 tab's label carries ` · vars` in both forms while the body's variables
 are on (W3), and the row is measured with it, and with the Body tab's
 badge, whether or not the tab has them (#309 review round 4).
+(2026-11-19, #329: the label no longer carries ` · vars`, and the row
+is measured with the badge alone; see W3.)
 
 Removed: `cli/checks.rs`'s own `FIRST_FAILING_STATUS`, `passed` body
 and `summary` body; `settle_view_under_head`,
@@ -327,6 +340,8 @@ the check results by `HintCtx::checks`, the Checks view being up.
     is measured with it whether or not it is on, so switching the
     body's variables never changes the form; the Checks tab moves by
     its 7 columns, as a tab moves when a count gains a digit.
+    (2026-11-19, #329: replaced with W3; the label reads `Body` and its
+    badge alone.)
 16. The response is handed on after its checks, with no time limit on a
     jq check until #310 sets one (answer 1). Replaced by section 7
     (#312): the response is handed on as it arrives.
