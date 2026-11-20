@@ -14,8 +14,8 @@ change the project file format.
 ### Fixed
 
 - A large response whose Tree finishes loading while another request is
-  open now counts toward the last three large responses kept loaded. Each
-  one used to keep its Tree in memory for the rest of the session.
+  open now counts toward the last three large responses kept loaded. It
+  used to stay loaded outside that count until its request was next opened.
 
 ## [0.5.0] - 2026-11-18
 
