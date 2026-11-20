@@ -137,7 +137,8 @@ pub(crate) fn grow_by_words<B: Lines + ?Sized>(buf: &B, span: Span, at: Pos) -> 
 /// At the ragged edges the pointer reads as a boundary. A downward sweep
 /// ends at the end of the row above instead of taking the head's row when
 /// the pointer is on column 0, or when that row shows nothing at the left
-/// edge (an empty row, or one scrolled out of view). Past the end of a
+/// edge (an empty row, one of only zero-width chars, or one scrolled out
+/// of view). Past the end of a
 /// row that shows, the head is its last char and the sweep takes it, a
 /// one-glyph row's too (#299). An upward sweep whose pointer is past the
 /// end of a row with text, shown or scrolled out of view, starts at the
@@ -155,6 +156,8 @@ pub(crate) fn sweep(
     last: impl Fn(usize) -> usize,
 ) -> Option<(Pos, Pos)> {
     if head.row > anchor.row && (col == 0 || !head_cell(first)) {
+        // Pressed on that row's last char, the end is the anchor and the
+        // char stays selected, as the body editor's `body_drag_to` does.
         let row = head.row - 1;
         return Some((anchor, Pos::new(row, last(row))));
     }

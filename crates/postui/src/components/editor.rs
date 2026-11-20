@@ -10507,6 +10507,16 @@ mod body_click_tests {
         assert_eq!(e.body_selected_text().as_deref(), Some("\nd"));
     }
 
+    /// Task #299: a downward drag from a row's last char onto the next
+    /// row's first cell selects that char.
+    #[test]
+    fn downward_drag_from_a_row_end_onto_the_next_row_start_selects_its_char() {
+        let mut e = editor_with_body("abc\ndef\n");
+        e.handle_mouse(left_down(4, 0)); // on 'c'
+        assert!(e.body_drag_to(2, 1)); // on 'd'
+        assert_eq!(e.body_selected_text().as_deref(), Some("c"));
+    }
+
     #[test]
     fn paste_body_inserts_multiline_text_at_the_caret() {
         let mut e = editor_with_body("ab\ncd\n");

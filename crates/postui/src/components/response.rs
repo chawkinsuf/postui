@@ -6745,6 +6745,17 @@ mod tests {
         assert_eq!(r.selected_text().as_deref(), Some("\nd"), "onto an empty row");
     }
 
+    /// Task #299: a downward drag from a row's last char onto the next
+    /// row's first cell selects that char, as the body editor does.
+    #[test]
+    fn a_downward_drag_from_a_rows_last_char_onto_the_next_row_start_takes_it() {
+        let mut r = ready("abc\ndef");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x + 2, area.y));
+        assert!(r.drag_selection_to(area.x, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("c"));
+    }
+
     /// Task #23 review round 7 (A3): a row scrolled right past all its text
     /// shows none of it, so a double click there selects nothing.
     #[test]
