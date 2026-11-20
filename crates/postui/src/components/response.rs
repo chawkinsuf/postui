@@ -4413,11 +4413,8 @@ impl Response {
 
     /// Extends the selection sweep to the drag point (clamped onto the
     /// body area, so sweeping past an edge keeps selecting the nearest
-    /// cells). At the ragged edges the pointer reads as a boundary: a
-    /// downward sweep onto a row's first cell ends at the end of the
-    /// line above, and an upward sweep past a row's end starts at the
-    /// start of the row below. Dragging back onto the anchor cell
-    /// collapses the selection.
+    /// cells). The ragged edges and the collapse back on the anchor
+    /// follow `text::mouse::sweep`.
     /// After a double click (word anchor set) the sweep extends by whole
     /// words instead, as a field's does (`text::mouse::grow_by_words`), so
     /// the anchor word always stays covered.
@@ -6724,7 +6721,8 @@ mod tests {
     /// Task #299: an upward drag from a row's first char past the end of
     /// the row above has only the line break between them, so it selects
     /// nothing, as the body editor does; from the second char it takes
-    /// the first two.
+    /// the first two. Onto an empty row above, the sweep starts on it, as
+    /// the body editor's does.
     #[test]
     fn an_upward_drag_from_a_rows_first_char_past_the_row_above_selects_nothing() {
         let mut r = ready("abc\ndef");
@@ -6735,6 +6733,11 @@ mod tests {
         assert!(r.begin_selection_at(area.x + 1, area.y + 1));
         assert!(r.drag_selection_to(area.x + 8, area.y));
         assert_eq!(r.selected_text().as_deref(), Some("de"));
+        let mut r = ready("abc\n\ndef");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x, area.y + 2));
+        assert!(r.drag_selection_to(area.x + 8, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("\nd"), "onto an empty row");
     }
 
     /// Task #23 review round 7 (A3): a row scrolled right past all its text

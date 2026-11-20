@@ -143,8 +143,9 @@ pub(crate) fn grow_by_words<B: Lines + ?Sized>(buf: &B, span: Span, at: Pos) -> 
 /// char (#299); on the right half of a wide first glyph it is taken too.
 /// An upward sweep whose pointer is past the end of a row that paints
 /// starts at the start of the row below instead of taking that row's last
-/// char; when that start is the anchor, only the line break lies between,
-/// so nothing is selected (#299). Back on the anchor, nothing is selected.
+/// char; when that start is the anchor, nothing is selected (#299). An
+/// upward sweep onto an empty row starts on it, as the body editor's
+/// does. Back on the anchor, nothing is selected.
 pub(crate) fn sweep(
     anchor: Pos,
     head: Pos,
