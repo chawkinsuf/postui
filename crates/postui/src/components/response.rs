@@ -4441,7 +4441,9 @@ impl Response {
         // The ragged edges' rules are the shared sweep's. Scrolled
         // sideways, the left edge is mid-line for every row, so the
         // pointer there is not on column 0 and the sweep takes the cell
-        // under it, a cut wide first glyph included.
+        // under it, a cut wide first glyph included. `h_scroll` is the
+        // column the left edge shows, which tells the sweep whether a
+        // one-glyph row shows at all.
         let area = view.last_area.expect("cell_at resolved through last_area");
         let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
         let disp_col = view.h_scroll + usize::from(xx - area.x);
@@ -4453,6 +4455,7 @@ impl Response {
             at(anchor),
             at(head),
             disp_col,
+            v.h_scroll,
             |col| {
                 let text = head_text.get_or_init(|| v.display_line_text(head.0));
                 text.as_deref().is_some_and(|t| v.grapheme_at(head.0, t, col).is_some())
@@ -6666,9 +6669,9 @@ mod tests {
     }
 
     /// Task #55: a CRLF row sweeps as the same LF row does, its `\r` gone.
-    /// A downward drag past a one-glyph row's end is the boundary above it
-    /// (one glyph short of the pointer), on its first cell too; past a
-    /// longer row's end it takes the row through its last char.
+    /// A downward drag past a row's end takes the row through its last
+    /// char, a one-glyph row too (#299); on its first cell it is the
+    /// boundary above it.
     #[test]
     fn a_crlf_row_sweeps_as_its_lf_row_does() {
         for body in ["hello\nx\nzz\nw", "hello\r\nx\r\nzz\r\nw"] {
@@ -6676,12 +6679,62 @@ mod tests {
             let (area, _) = render_buf(&mut r);
             r.begin_selection_at(area.x, area.y);
             r.drag_selection_to(area.x + 5, area.y + 1);
-            assert_eq!(r.selected_text().as_deref(), Some("hello"), "{body:?}");
+            assert_eq!(r.selected_text().as_deref(), Some("hello\nx"), "{body:?}");
             r.drag_selection_to(area.x, area.y + 1);
             assert_eq!(r.selected_text().as_deref(), Some("hello"), "first cell, {body:?}");
             r.drag_selection_to(area.x + 5, area.y + 2);
             assert_eq!(r.selected_text().as_deref(), Some("hello\nx\nzz"), "{body:?}");
         }
+    }
+
+    /// Task #299: the ticket's steps. A downward drag past the end of a
+    /// one-glyph row (the closing `}`) takes it, a wide glyph too.
+    #[test]
+    fn a_downward_drag_past_a_one_glyph_row_takes_it() {
+        let mut r = ready("{\"a\": 1}");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 20, area.y + 2);
+        assert_eq!(r.selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
+        let mut r = ready("abc\n\u{65E5}\nz");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 5, area.y + 1);
+        assert_eq!(r.selected_text().as_deref(), Some("abc\n\u{65E5}"));
+    }
+
+    /// Task #299: scrolled sideways, a one-glyph row is the boundary above
+    /// it only when it shows nothing at the view's left edge: scrolled out
+    /// of view it is left out, as before; a wide glyph cut at the edge is
+    /// taken.
+    #[test]
+    fn a_downward_drag_past_a_scrolled_one_glyph_row_takes_it_only_if_shown() {
+        for (scroll, row, want) in [(100, "x", ""), (1, "\u{65E5}", "\n\u{65E5}")] {
+            let mut r = ready(&format!("{}\n{row}\nzz", "a".repeat(300)));
+            render_buf(&mut r);
+            r.view.as_mut().unwrap().h_scroll = scroll;
+            let (area, _) = render_buf(&mut r);
+            r.begin_selection_at(area.x, area.y);
+            r.drag_selection_to(area.x + 5, area.y + 1);
+            let a = "a".repeat(300 - scroll);
+            assert_eq!(r.selected_text(), Some(format!("{a}{want}")), "{row:?}");
+        }
+    }
+
+    /// Task #299: an upward drag from a row's first char past the end of
+    /// the row above has only the line break between them, so it selects
+    /// nothing, as the body editor does; from the second char it takes
+    /// the first two.
+    #[test]
+    fn an_upward_drag_from_a_rows_first_char_past_the_row_above_selects_nothing() {
+        let mut r = ready("abc\ndef");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x, area.y + 1));
+        assert!(r.drag_selection_to(area.x + 8, area.y));
+        assert_eq!(r.selected_text(), None);
+        assert!(r.begin_selection_at(area.x + 1, area.y + 1));
+        assert!(r.drag_selection_to(area.x + 8, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("de"));
     }
 
     /// Task #23 review round 7 (A3): a row scrolled right past all its text

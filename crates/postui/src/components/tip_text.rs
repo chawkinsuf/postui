@@ -134,6 +134,7 @@ impl TipText {
             anchor,
             head,
             self.disp_col(x),
+            0,
             |col| grapheme_at_col(&rows[head.row].text, col, (0, 0, 0)).is_some(),
             |row| last_grapheme(&rows[row].text),
         );
@@ -253,6 +254,21 @@ mod tests {
         t.begin_at(11, 6);
         t.drag_to(30, 5);
         assert_eq!(t.selected_text().as_deref(), Some("de"), "up past a row's end");
+        t.begin_at(10, 6);
+        t.drag_to(30, 5);
+        assert_eq!(t.selected_text(), None, "up from a row's first char past the row above");
+    }
+
+    /// Task #299: a value wrapped with one char on its last row keeps it in
+    /// a downward sweep past that row's end.
+    #[test]
+    fn a_downward_sweep_past_a_one_char_row_takes_it() {
+        let mut t = tip(&[("https://a/", "\n"), ("x", "")]);
+        t.begin_at(10, 5);
+        t.drag_to(30, 6);
+        assert_eq!(t.selected_text().as_deref(), Some("https://a/x"));
+        t.drag_to(10, 6);
+        assert_eq!(t.selected_text().as_deref(), Some("https://a/"), "on its first cell");
     }
 
     #[test]

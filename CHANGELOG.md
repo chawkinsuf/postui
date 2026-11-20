@@ -11,6 +11,13 @@ change the project file format.
 - The Body tab's label no longer says `vars` while the body's variables
   are on. The body's `substitute` chip still shows whether they are.
 
+### Fixed
+
+- In the response pane and the variable tooltip, a mouse selection dragged
+  down past the end of a one-character line, such as a closing `}`, takes
+  that character. A selection dragged up from a line's first character past
+  the end of the line above selects nothing, as the body editor does.
+
 ## [0.5.0] - 2026-11-18
 
 Requests can now say what a good response is, in a `[checks]` table that

@@ -129,30 +129,40 @@ pub(crate) fn grow_by_words<B: Lines + ?Sized>(buf: &B, span: Span, at: Pos) -> 
 
 /// A sweep over read-only text (the response view, the variable tooltip):
 /// the selection, inclusive `(anchor, head)` chars, of a press on `anchor`
-/// dragged onto char `head`, the pointer at line column `col`.
-/// `head_cell(c)` is whether `head`'s row paints a grapheme at line column
-/// `c`; `last(row)` is the char of `row`'s last grapheme.
+/// dragged onto char `head`, the pointer at line column `col`. `first` is
+/// the line column the view's left edge shows (its sideways scroll, 0
+/// unscrolled). `head_cell(c)` is whether `head`'s row paints a grapheme
+/// at line column `c`; `last(row)` is the char of `row`'s last grapheme.
 ///
 /// At the ragged edges the pointer reads as a boundary. A downward sweep
-/// whose head is a row's first char, with the pointer on column 0 or past
-/// the row's end, ends at the end of the row above instead of taking that
-/// char (on the right half of a wide first glyph the pointer is on the
-/// glyph, so it is taken). An upward sweep whose pointer is past the end
-/// of a row that paints starts at the start of the row below instead of
-/// taking that row's last char. Back on the anchor, nothing is selected.
+/// whose head is a row's first char ends at the end of the row above
+/// instead of taking that char when the pointer is on column 0, or when
+/// the row shows nothing at the left edge (an empty row, or one scrolled
+/// out of view). Past the end of a one-glyph row that shows, the head is
+/// that glyph and the sweep takes it, as it takes a longer row's last
+/// char (#299); on the right half of a wide first glyph it is taken too.
+/// An upward sweep whose pointer is past the end of a row that paints
+/// starts at the start of the row below instead of taking that row's last
+/// char; when that start is the anchor, only the line break lies between,
+/// so nothing is selected (#299). Back on the anchor, nothing is selected.
 pub(crate) fn sweep(
     anchor: Pos,
     head: Pos,
     col: usize,
+    first: usize,
     head_cell: impl Fn(usize) -> bool,
     last: impl Fn(usize) -> usize,
 ) -> Option<(Pos, Pos)> {
-    if head.col == 0 && head.row > anchor.row && (col == 0 || !head_cell(col)) {
+    // With the head on the row's first char, the pointer is on that char's
+    // cells or past the end of a row that has no other char, so the row
+    // shows at the left edge exactly when it paints column `first`.
+    if head.col == 0 && head.row > anchor.row && (col == 0 || !head_cell(first)) {
         let row = head.row - 1;
         return Some((anchor, Pos::new(row, last(row))));
     }
     if head.row < anchor.row && head_cell(0) && !head_cell(col) {
-        return Some((anchor, Pos::new(head.row + 1, 0)));
+        let start = Pos::new(head.row + 1, 0);
+        return (start != anchor).then_some((anchor, start));
     }
     (head != anchor).then_some((anchor, head))
 }
