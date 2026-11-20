@@ -48,9 +48,11 @@ pub struct Session {
     /// flight, and `begin_send` defensively supersedes a same-request
     /// entry), any number of entries across requests.
     pub in_flight: Vec<InFlight>,
-    /// The cached big responses still holding their derived state, oldest
-    /// first; at most `KEEP_WARM` long — pushing past that sheds the
-    /// oldest.
+    /// The cached big responses still holding their derived state, in the
+    /// order each was listed, oldest first: when its request was left
+    /// holding its tree, or when its tree landed in the cache
+    /// (`tree_arrived`). At most `KEEP_WARM` long — listing past that
+    /// sheds the oldest.
     warm: VecDeque<Option<String>>,
     /// Bumped on every `begin_send`; tags each spawned send so a result
     /// that arrives after a newer send has started can be told apart and
