@@ -4,6 +4,13 @@ Notable changes to postui, newest first. Versions follow
 [Semantic Versioning](https://semver.org/); before 1.0, a release may still
 change the project file format.
 
+## [Unreleased]
+
+### Changed
+
+- The Body tab's label no longer says `vars` while the body's variables
+  are on. The body's `substitute` chip still shows whether they are.
+
 ## [0.5.0] - 2026-11-18
 
 Requests can now say what a good response is, in a `[checks]` table that

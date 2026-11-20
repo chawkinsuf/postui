@@ -10122,7 +10122,7 @@ async fn a_url_value_holding_a_token_blocks_send_with_toast() {
 }
 
 #[test]
-fn toggle_body_vars_flips_flag_and_shows_badge() {
+fn toggle_body_vars_flips_flag_and_shows_it_on_the_chip_alone() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -10131,12 +10131,14 @@ fn toggle_body_vars_flips_flag_and_shows_badge() {
     assert!(app.editor.substitute_body);
 
     app.editor.active_tab = EditorTab::Body;
-    // The Body tab's label says so (checks tabs spec 2026-11-16, W3).
+    // The body's `substitute` chip says so, and the Body tab's label
+    // doesn't (#329, replacing checks tabs spec 2026-11-16, W3).
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let content = format!("{:?}", terminal.backend().buffer());
-    assert!(content.contains("Body · vars"), "expected a vars badge: {content}");
+    assert!(content.contains("substitute {{on}}"), "expected the chip on: {content}");
+    assert!(!content.contains("Body · vars"), "no vars on the Body tab: {content}");
 }
 
 #[test]

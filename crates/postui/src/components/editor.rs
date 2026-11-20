@@ -52,11 +52,6 @@ pub enum EditorTab {
 const DRAW_ORDER: [EditorTab; 5] =
     [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Body, EditorTab::Checks];
 
-/// What the Body tab's label ends with while the body's variables are on,
-/// as a counted tab's ends with its count (checks tabs spec 2026-11-16,
-/// W3).
-const BODY_VARS: &str = " · vars";
-
 /// One of the Checks tab's fields: its label, what its well shows while
 /// empty, and its footer text, shown under the pointer and under the
 /// keyboard cursor alike (checks tabs spec section 8, H1, H2, H7).
@@ -1933,11 +1928,10 @@ impl Editor {
 
     /// A tab's label in the strip: its name, and with `counts` its entry
     /// count when it has entries ([`Self::check_count`] on the Checks
-    /// tab). The Body tab has no count; while the body's variables are on
-    /// its label carries [`BODY_VARS`], with or without `counts`.
+    /// tab). The Body tab has no count, and says nothing of the body's
+    /// variables: its `substitute` chip does (#329).
     fn tab_label_text(&self, t: EditorTab, counts: bool) -> String {
         let count = match t {
-            EditorTab::Body if self.substitute_body => return format!("{}{BODY_VARS}", t.label()),
             EditorTab::Body => 0,
             EditorTab::Checks => self.check_count(),
             _ => self.table_map(t).map_or(0, IndexMap::len),
@@ -4096,18 +4090,16 @@ impl Editor {
             tabs.iter().map(|t| (self.tab_label_text(*t, counts), badge(t))).collect()
         };
         // The row must end before the split chips, with room kept for the
-        // Body tab's `vars` and its badge whether or not it has them. When
-        // it doesn't, every tab drops its count: the one compact form
-        // (checks tabs spec 2026-11-16, W1). So the form follows the room
-        // and the counts, which are what it drops, and never the selected
-        // tab (W2). Measuring fixed counts instead would hide counts that
-        // fit.
+        // Body tab's badge whether or not it has one. When it doesn't,
+        // every tab drops its count: the one compact form (checks tabs spec
+        // 2026-11-16, W1). So the form follows the room and the counts,
+        // which are what it drops, and never the selected tab (W2).
+        // Measuring fixed counts instead would hide counts that fit.
         let control_x = area.right().saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
-        let vars_room = if self.substitute_body { 0 } else { crate::ui::cells(BODY_VARS) as u16 };
         let badge_room = if body_badge.is_some() { 0 } else { crate::paint::TabStrip::BADGE_W };
         let fits = |labels: &Labels| {
             let end = crate::paint::TabStrip::spans(labels).last().map_or(0, |(x, w)| x + w);
-            area.x + end + vars_room + badge_room <= control_x
+            area.x + end + badge_room <= control_x
         };
         let full = labels(true);
         let tab_strip = if fits(&full) { full } else { labels(false) };
@@ -7300,10 +7292,10 @@ mod tests {
     #[test]
     fn the_tab_row_fits_beside_the_split_control_at_the_main_minimum() {
         // The widest everyday tab row: single-digit counts on the four
-        // counted tabs, and the Body tab's `vars` and badge. With the
-        // fifth tab it no longer fits at the main-column minimum, so every
-        // tab drops its count there (checks tabs spec 2026-11-16, W1), and
-        // all five still end before the split chips.
+        // counted tabs, and the Body tab's badge, with the body's variables
+        // on. With the fifth tab it no longer fits at the main-column
+        // minimum, so every tab drops its count there (checks tabs spec
+        // 2026-11-16, W1), and all five still end before the split chips.
         let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
         for i in 0..9 {
             let entry = || Entry { value: "1".into(), enabled: true };
@@ -7328,21 +7320,24 @@ mod tests {
         // room `Checks · 9`.
         assert_eq!(tabs[4].width, 8, "no count at the minimum");
         assert_eq!(tab_rects(&mut e, 120).0[4].width, 12, "the count with room");
-        // W3: `vars` is inside the Body tab, in both forms: the label, two
-        // cells for the badge, and a cell either side.
-        assert_eq!(tabs[3].width, 15, "`Body · vars ✓` at the minimum");
-        assert!(draw_editor(&mut e).0.contains("Body · vars ✓"));
+        // W3 as #329 left it: the Body tab's label is its name alone, the
+        // body's variables on or off: the label, two cells for the badge,
+        // and a cell either side.
+        assert_eq!(tabs[3].width, 8, "`Body ✓` at the minimum");
+        let (content, _) = draw_editor(&mut e);
+        assert!(content.contains("Body ✓"), "{content}");
+        assert!(!content.contains("vars"), "no `vars` in the tab row: {content}");
         // W2: the form follows the room, never the selected tab.
         for tab in DRAW_ORDER {
             e.active_tab = tab;
             assert_eq!(tab_rects(&mut e, crate::layout::MAIN_MIN_COLS).0, tabs, "{tab:?}");
         }
-        // Nor does it follow the Body tab's own parts, its `vars` and its
-        // badge: without one the Body tab is that much narrower and every
-        // other tab keeps its form, at any width.
+        // Nor does it follow the Body tab's badge: without it the Body tab
+        // is that much narrower and every other tab keeps its form, at any
+        // width. The body's variables change no tab at all.
         for width in crate::layout::MAIN_MIN_COLS..=120 {
             let with = tab_rects(&mut e, width).0;
-            for (vars, body, narrower) in [(false, "{}", 7), (true, "", 2), (false, "", 9)] {
+            for (vars, body, narrower) in [(false, "{}", 0), (true, "", 2), (false, "", 2)] {
                 e.substitute_body = vars;
                 e.set_body_text(body);
                 let without = tab_rects(&mut e, width).0;
