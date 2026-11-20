@@ -48,9 +48,11 @@ pub struct Session {
     /// flight, and `begin_send` defensively supersedes a same-request
     /// entry), any number of entries across requests.
     pub in_flight: Vec<InFlight>,
-    /// The cached big responses still holding their derived state, oldest
-    /// first; at most `KEEP_WARM` long — pushing past that sheds the
-    /// oldest.
+    /// The cached big responses still holding their derived state, in the
+    /// order each was listed, oldest first: when its request was left
+    /// holding its tree, or when its tree landed in the cache
+    /// (`tree_arrived`). At most `KEEP_WARM` long — listing past that
+    /// sheds the oldest.
     warm: VecDeque<Option<String>>,
     /// Bumped on every `begin_send`; tags each spawned send so a result
     /// that arrives after a newer send has started can be told apart and
@@ -86,16 +88,7 @@ impl Session {
             let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
             if big {
-                // `rename` can have listed it already.
-                self.warm.retain(|s| s != &self.open_slug);
-                self.warm.push_back(self.open_slug.clone());
-                while self.warm.len() > KEEP_WARM {
-                    if let Some(old) = self.warm.pop_front()
-                        && let Some(cold) = self.cache.get_mut(&old)
-                    {
-                        cold.shed_derived();
-                    }
-                }
+                self.make_warm(self.open_slug.clone());
             }
         }
         self.response = self.cache.remove(open).unwrap_or_default();
@@ -105,6 +98,21 @@ impl Session {
         self.response.set_jq_tab(jq_tab);
         self.open_slug = open.clone();
         true
+    }
+
+    /// Lists the cached big response at `slug` as the newest in `warm`,
+    /// shedding the oldest past `KEEP_WARM`.
+    fn make_warm(&mut self, slug: Option<String>) {
+        // Listed at most once.
+        self.warm.retain(|s| s != &slug);
+        self.warm.push_back(slug);
+        while self.warm.len() > KEEP_WARM {
+            if let Some(old) = self.warm.pop_front()
+                && let Some(cold) = self.cache.get_mut(&old)
+            {
+                cold.shed_derived();
+            }
+        }
     }
 
     /// A response goes when its request goes (#322; checks tabs spec
@@ -310,6 +318,8 @@ impl Session {
     /// still waiting on it: the one on screen, or — when the user has
     /// navigated away since the send — the cache slot it moved into. `false`
     /// when nothing is waiting (superseded, or the response was replaced).
+    /// A big response that gets its tree in the cache counts toward
+    /// `KEEP_WARM` from then on, like one left holding its tree (#323).
     pub fn tree_arrived(
         &mut self,
         generation: u64,
@@ -318,12 +328,16 @@ impl Session {
         if self.response.awaits_tree(generation) {
             return self.response.attach_tree(generation, tree);
         }
-        for cached in self.cache.values_mut() {
-            if cached.awaits_tree(generation) {
-                return cached.attach_tree(generation, tree);
-            }
+        let Some((slug, cached)) = self.cache.iter_mut().find(|(_, r)| r.awaits_tree(generation))
+        else {
+            return false;
+        };
+        let attached = cached.attach_tree(generation, tree);
+        if attached && cached.holds_big_derived() {
+            let slug = slug.clone();
+            self.make_warm(slug);
         }
-        false
+        attached
     }
 
     /// Gives the response the send `generation` brought its jq checks'
@@ -515,6 +529,43 @@ mod tests {
         s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 9);
         open(&mut s, "big4");
         warm_ok(&s, &["big1", "big3"]);
+    }
+
+    /// #323: a big response whose tree lands in its cache slot, left
+    /// before its result came or while its tree was parsing, counts
+    /// toward `KEEP_WARM` like one left holding its tree.
+    #[tokio::test]
+    async fn a_tree_that_lands_in_a_cache_slot_counts_toward_keep_warm() {
+        use crate::components::json_tree::JsonTree;
+        let mut s = Session::default();
+        let mut sent = Vec::new();
+        for n in 1..=KEEP_WARM + 1 {
+            let slug = format!("big{n}");
+            open(&mut s, &slug);
+            let generation = s.begin_send(&Some(slug.clone()));
+            s.in_flight.push(in_flight(generation, &slug).await);
+            // Even ones are left while parsing, odd ones still in flight.
+            if n % 2 == 0 {
+                assert!(arrives(&mut s, generation, &big(n)));
+            }
+            sent.push((n, generation));
+        }
+        open(&mut s, "elsewhere");
+        assert!(s.warm.is_empty(), "none held a tree when left");
+        for (n, generation) in sent {
+            if n % 2 == 1 {
+                assert!(arrives(&mut s, generation, &big(n)), "lands in big{n}'s slot");
+            }
+            assert!(s.tree_arrived(generation, JsonTree::parse(&big(n))));
+        }
+        let want: Vec<_> = (2..=KEEP_WARM + 1).map(|n| Some(format!("big{n}"))).collect();
+        assert_eq!(s.warm.iter().cloned().collect::<Vec<_>>(), want);
+        let mut holding: Vec<_> =
+            s.cache.iter().filter(|(_, r)| r.holds_big_derived()).map(|(k, _)| k.clone()).collect();
+        holding.sort();
+        assert_eq!(holding, want, "the oldest one's tree is shed");
+        open(&mut s, "big1");
+        assert!(s.response.take_reparse().is_some(), "and it re-parses on return");
     }
 
     /// #322: a request that is gone takes its cached response, its place

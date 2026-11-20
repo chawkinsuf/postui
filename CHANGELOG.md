@@ -11,6 +11,12 @@ change the project file format.
 - The Body tab's label no longer says `vars` while the body's variables
   are on. The body's `substitute` chip still shows whether they are.
 
+### Fixed
+
+- A large response whose Tree finishes loading while another request is
+  open now counts toward the last three large responses kept loaded. It
+  used to stay loaded outside that count until its request was next opened.
+
 ## [0.5.0] - 2026-11-18
 
 Requests can now say what a good response is, in a `[checks]` table that
