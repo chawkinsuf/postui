@@ -4435,12 +4435,8 @@ impl Response {
         let Some(anchor) = view.sel_anchor else {
             return false;
         };
-        // The ragged edges' rules are the shared sweep's. Scrolled
-        // sideways, the left edge is mid-line for every row, so the
-        // pointer there is not on column 0 and the sweep takes the cell
-        // under it, a cut wide first glyph included. `h_scroll` is the
-        // column the left edge shows, which tells the sweep whether a
-        // one-glyph row shows at all.
+        // The ragged edges' rules are the shared sweep's. `h_scroll` is
+        // the line column the view's left edge shows.
         let area = view.last_area.expect("cell_at resolved through last_area");
         let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
         let disp_col = view.h_scroll + usize::from(xx - area.x);

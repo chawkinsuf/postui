@@ -156,7 +156,11 @@ pub(crate) fn sweep(
 ) -> Option<(Pos, Pos)> {
     // With the head on the row's first char, the pointer is on that char's
     // cells or past the end of a row that has no other char, so the row
-    // shows at the left edge exactly when it paints column `first`.
+    // shows at the left edge exactly when it paints column `first`. Only
+    // such a head can be the boundary: past the end of a longer row the
+    // head is its last char, taken whether the row shows or not, as before
+    // #299, so a one-glyph row scrolled out of view is left out (as #55
+    // kept it) where a longer one is taken.
     if head.col == 0 && head.row > anchor.row && (col == 0 || !head_cell(first)) {
         let row = head.row - 1;
         return Some((anchor, Pos::new(row, last(row))));
