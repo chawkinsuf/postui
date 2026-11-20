@@ -3508,8 +3508,7 @@ pub const URL_FOCUS_LIFT: f32 = 0.09;
 pub const TAB_BAR_HEIGHT: u16 = 2;
 /// Height of the toolbar chip row holding the Body tab's
 /// format/minify/substitute/`$EDITOR` chips — the third row of that split
-/// on the Body tab only. The other tabs have no body tools, and the
-/// request-level save/vars chips live on the tab-label row, so they skip
+/// on the Body tab only. The other tabs have no body tools, so they skip
 /// the row entirely.
 pub const TOOLBAR_HEIGHT: u16 = 1;
 /// The fixed chrome above the tab content: address bar + full tab bar.
@@ -4248,9 +4247,8 @@ impl Editor {
     /// Paints the Body tab's toolbar chip row: `format`/`minify`/
     /// `substitute`/`$EDITOR` chips for the body-only actions that
     /// alt+j/alt+g/alt+s/alt+e already bind, but had no mouse-reachable
-    /// equivalent before. Body-scoped only — the request-level save/vars
-    /// chips live on the tab-label row (`draw_tab_bar`), so this row only
-    /// exists while the Body tab is active. Chips reuse
+    /// equivalent before. Body-scoped only, so this row only exists while
+    /// the Body tab is active. Chips reuse
     /// `Hit::FooterChip(Action)` and `footer::paint_chip_row`'s painting so
     /// hover/click behave exactly like the footer's own chips; `on_hit`
     /// already dispatches `FooterChip`'s action with no new `Hit` variant.
