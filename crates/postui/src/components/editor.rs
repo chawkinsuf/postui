@@ -10492,6 +10492,21 @@ mod body_click_tests {
         assert_eq!(e.body_selected_text().as_deref(), Some("alpha\nbravo\ncharlie"));
     }
 
+    /// Task #299: an upward drag from a row's first char past the end of
+    /// the line above selects nothing; onto an empty row above it takes
+    /// that row's line break through the anchor char.
+    #[test]
+    fn upward_drag_from_a_row_start_past_the_line_above_selects_nothing() {
+        let mut e = editor_with_body("abc\ndef\n");
+        e.handle_mouse(left_down(2, 1)); // on 'd'
+        assert!(e.body_drag_to(9, 0)); // past the end of "abc"
+        assert_eq!(e.body_selected_text(), None);
+        let mut e = editor_with_body("abc\n\ndef\n");
+        e.handle_mouse(left_down(2, 2)); // on 'd'
+        assert!(e.body_drag_to(9, 1)); // onto the empty row
+        assert_eq!(e.body_selected_text().as_deref(), Some("\nd"));
+    }
+
     #[test]
     fn paste_body_inserts_multiline_text_at_the_caret() {
         let mut e = editor_with_body("ab\ncd\n");

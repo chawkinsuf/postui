@@ -19,7 +19,9 @@ change the project file format.
 - In the response pane and the variable tooltip, a mouse selection dragged
   down past the end of a one-character line, such as a closing `}`, takes
   that character. A selection dragged up from a line's first character past
-  the end of the line above selects nothing, as the body editor does.
+  the end of the line above selects nothing, as the body editor does. In
+  the response pane scrolled sideways, a selection dragged down past a line
+  scrolled out of view leaves that line out, whatever its length.
 
 ## [0.5.0] - 2026-11-18
 

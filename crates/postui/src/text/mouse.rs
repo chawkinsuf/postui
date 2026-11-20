@@ -135,17 +135,17 @@ pub(crate) fn grow_by_words<B: Lines + ?Sized>(buf: &B, span: Span, at: Pos) -> 
 /// at line column `c`; `last(row)` is the char of `row`'s last grapheme.
 ///
 /// At the ragged edges the pointer reads as a boundary. A downward sweep
-/// whose head is a row's first char ends at the end of the row above
-/// instead of taking that char when the pointer is on column 0, or when
-/// the row shows nothing at the left edge (an empty row, or one scrolled
-/// out of view). Past the end of a one-glyph row that shows, the head is
-/// that glyph and the sweep takes it, as it takes a longer row's last
-/// char (#299); on the right half of a wide first glyph it is taken too.
-/// An upward sweep whose pointer is past the end of a row that paints
-/// starts at the start of the row below instead of taking that row's last
-/// char; when that start is the anchor, nothing is selected (#299). An
-/// upward sweep onto an empty row starts on it, as the body editor's
-/// does. Back on the anchor, nothing is selected.
+/// ends at the end of the row above instead of taking the head's row when
+/// the pointer is on column 0, or when that row shows nothing at the left
+/// edge (an empty row, or one scrolled out of view). Past the end of a
+/// row that shows, the head is its last char and the sweep takes it, a
+/// one-glyph row's too (#299). An upward sweep whose pointer is past the
+/// end of a row with text, shown or scrolled out of view, starts at the
+/// start of the row below instead of taking that row's last char; when
+/// that start is the anchor, nothing is selected, as the body editor does
+/// (#299). An upward sweep onto an empty row starts on it, taking its line
+/// break through the anchor char, as the body editor's does. Back on the
+/// anchor, nothing is selected.
 pub(crate) fn sweep(
     anchor: Pos,
     head: Pos,
@@ -154,14 +154,7 @@ pub(crate) fn sweep(
     head_cell: impl Fn(usize) -> bool,
     last: impl Fn(usize) -> usize,
 ) -> Option<(Pos, Pos)> {
-    // With the head on the row's first char, the pointer is on that char's
-    // cells or past the end of a row that has no other char, so the row
-    // shows at the left edge exactly when it paints column `first`. Only
-    // such a head can be the boundary: past the end of a longer row the
-    // head is its last char, taken whether the row shows or not, as before
-    // #299, so a one-glyph row scrolled out of view is left out (as #55
-    // kept it) where a longer one is taken.
-    if head.col == 0 && head.row > anchor.row && (col == 0 || !head_cell(first)) {
+    if head.row > anchor.row && (col == 0 || !head_cell(first)) {
         let row = head.row - 1;
         return Some((anchor, Pos::new(row, last(row))));
     }

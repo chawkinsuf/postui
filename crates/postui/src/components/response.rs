@@ -6696,13 +6696,15 @@ mod tests {
         assert_eq!(r.selected_text().as_deref(), Some("abc\n\u{65E5}"));
     }
 
-    /// Task #299: scrolled sideways, a one-glyph row is the boundary above
-    /// it only when it shows nothing at the view's left edge: scrolled out
-    /// of view it is left out, as before; a wide glyph cut at the edge is
-    /// taken.
+    /// Task #299: scrolled sideways, a downward drag past a row's end takes
+    /// the row only when it shows at the view's left edge: scrolled out of
+    /// view it is left out, whatever its length; a wide glyph cut at the
+    /// edge is taken.
     #[test]
-    fn a_downward_drag_past_a_scrolled_one_glyph_row_takes_it_only_if_shown() {
-        for (scroll, row, want) in [(100, "x", ""), (1, "\u{65E5}", "\n\u{65E5}")] {
+    fn a_downward_drag_past_a_scrolled_row_takes_it_only_if_shown() {
+        let cases =
+            [(100, "x", ""), (100, "xy", ""), (1, "xy", "\nxy"), (1, "\u{65E5}", "\n\u{65E5}")];
+        for (scroll, row, want) in cases {
             let mut r = ready(&format!("{}\n{row}\nzz", "a".repeat(300)));
             render_buf(&mut r);
             r.view.as_mut().unwrap().h_scroll = scroll;
@@ -6712,6 +6714,13 @@ mod tests {
             let a = "a".repeat(300 - scroll);
             assert_eq!(r.selected_text(), Some(format!("{a}{want}")), "{row:?}");
         }
+        let mut r = ready(&format!("xy\n{}", "a".repeat(300)));
+        render_buf(&mut r);
+        r.view.as_mut().unwrap().h_scroll = 100;
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x + 5, area.y + 1);
+        r.drag_selection_to(area.x + 5, area.y);
+        assert_eq!(r.selected_text(), Some("a".repeat(106)), "upward, left out too");
     }
 
     /// Task #299: an upward drag from a row's first char past the end of
