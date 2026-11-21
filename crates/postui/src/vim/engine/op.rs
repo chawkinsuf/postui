@@ -440,19 +440,23 @@ impl Engine {
         let reg = self.regs.read(reg).clone();
         let mut caret =
             put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
-        if self.put_ends_after(&reg) {
+        if self.put_ends_after(&reg, &*buf) {
             caret.col += 1;
         }
         self.land_caret(caret, buf, st);
     }
 
     /// Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
-    /// last char" of a one-line charwise put (`p`, `P`, Visual `p`).
-    pub(super) fn put_ends_after(&self, reg: &Register) -> bool {
-        matches!(self.mode, Mode::InsertNormal { .. })
-            && reg.kind == RegKind::Char
-            && !reg.text.is_empty()
-            && !reg.text.contains('\n')
+    /// last char" of a one-line charwise put (`p`, `P`, Visual `p`). A put
+    /// into a one-line field is one row: the text its rule makes of the
+    /// register (`TextBuf::pasted`).
+    pub(super) fn put_ends_after<B: TextBuf>(&self, reg: &Register, buf: &B) -> bool {
+        let one_row = if B::MULTILINE {
+            !reg.text.is_empty() && !reg.text.contains('\n')
+        } else {
+            !buf.pasted(&reg.text).is_empty()
+        };
+        matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && one_row
     }
 
     /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the

@@ -148,6 +148,9 @@ impl TextBuf for OneLineBuf<'_> {
     }
 
     fn splice(&mut self, start: Pos, end: Pos, text: &str) {
+        // No check that `text` holds no `'\n'`: undo and redo put back one
+        // the field already held, in any one-line field. A paste or a put
+        // is shaped by `TextBuf::pasted` before it gets here.
         self.0.splice_raw(start.col, end.col, text);
     }
 

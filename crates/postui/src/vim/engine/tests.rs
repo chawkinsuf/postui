@@ -3410,3 +3410,40 @@ fn an_edit_over_a_line_break_in_a_one_line_field_undoes_and_redoes_whole() {
         assert_eq!(f.text(), "", "keeps: {keeps}: the redo takes the break too");
     }
 }
+
+/// #307: a put into a one-line field is one row, whatever line breaks the
+/// register holds: Insert `ctrl+o p` leaves the caret after it, and Visual
+/// `p` at the line's end marks from its first char (`gv`), as a put of one
+/// line does.
+#[test]
+fn a_put_into_a_one_line_field_is_one_row_for_the_caret_and_marks() {
+    for keeps in [true, false] {
+        let field = |text: &str, col, start| {
+            if keeps { keeping(text, col, start) } else { Field::start(text, col, start) }
+        };
+        let mut f = field("xy", 0, Start::Insert);
+        f.engine.registers_mut().set_unnamed(Register { text: "a\nb".into(), kind: RegKind::Char });
+        f.key(ctrl('o'));
+        f.keys("p");
+        assert_eq!(f.col(), 4, "keeps: {keeps}: ctrl+o p ends after the text put");
+        let mut f = field("abc", 2, Start::Normal);
+        f.engine.registers_mut().set_unnamed(Register { text: "\nX".into(), kind: RegKind::Char });
+        f.keys("vp");
+        assert_eq!(f.text(), "abX", "keeps: {keeps}");
+        f.keys("gv");
+        assert_eq!(f.visual(), Some((2, 2)), "keeps: {keeps}: `gv` selects what was put");
+        let mut f = field("abc", 2, Start::Normal);
+        f.engine.registers_mut().set_unnamed(Register { text: "\n".into(), kind: RegKind::Char });
+        f.keys("vp");
+        assert_eq!(f.text(), "ab", "keeps: {keeps}: a register of a line break puts nothing");
+    }
+}
+
+/// #307: in a one-line field a line break is a char like any other, so
+/// Visual `r` replaces it too.
+#[test]
+fn visual_r_replaces_a_line_break_in_a_one_line_field() {
+    let mut f = keeping("ab\ncd", 0, Start::Normal);
+    f.keys("v$rx");
+    assert_eq!(f.text(), "xxxxx");
+}
