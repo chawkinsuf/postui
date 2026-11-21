@@ -6704,7 +6704,7 @@ impl App {
                 true
             }
             Action::JqCollect => {
-                let text = format!("[ {} ]", self.session.response.jq_text().trim());
+                let text = postui_core::jq::collect_into_array(self.session.response.jq_text());
                 let cursor = text.chars().count();
                 self.session.response.set_jq_text_with_cursor(&text, cursor);
                 true
