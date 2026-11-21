@@ -426,7 +426,7 @@ impl Engine {
                 // register's first line is not empty (`yanklen`): text that
                 // starts with a line break leaves it on that char.
                 let stays = forward && text.text.starts_with('\n');
-                let area = ed.hist.last_put().map(|(start, end)| {
+                let area = ed.hist.last_put::<B>().map(|(start, end)| {
                     if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) }
                 });
                 (caret, area)

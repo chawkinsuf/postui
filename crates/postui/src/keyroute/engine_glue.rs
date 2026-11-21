@@ -45,6 +45,15 @@ impl FieldBuf<'_> {
             FieldBuf::Body(state, _) => Pos::new(state.cursor.row, state.cursor.col),
         }
     }
+
+    /// What a paste of `text` leaves in this field: a one-line field's
+    /// own rule (`LineInput::pasted`); the body takes it as it is.
+    pub fn pasted<'t>(&self, text: &'t str) -> std::borrow::Cow<'t, str> {
+        match self {
+            FieldBuf::Line(input) => input.pasted(text).into(),
+            FieldBuf::Body(..) => text.into(),
+        }
+    }
 }
 
 /// Which field has an engine session (spec §3.3). A parked field sits under
@@ -78,7 +87,8 @@ pub enum OpenSeat {
 
 /// A change made outside the key path (spec §3.7: a picked `{{token}}`,
 /// format, minify, paste outside Insert): one engine undo step, not
-/// repeatable with `.`. One-line text must already be flattened.
+/// repeatable with `.`. One-line text must already be as the field takes
+/// it ([`FieldBuf::pasted`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edit<'a> {
     /// At the caret, as Insert would type it: the caret ends after it.
@@ -110,12 +120,12 @@ impl Edit<'_> {
         match *self {
             Edit::AtCaret(text) => {
                 s.splice(caret, caret, text);
-                s.set_cursor(end_of(caret, text));
+                s.set_cursor(B::end_of(caret, text));
             }
             Edit::Append(text) => {
                 let at = append_at(s.buf(), caret);
                 s.splice(at, at, text);
-                let end = end_of(at, text);
+                let end = B::end_of(at, text);
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
             }
             Edit::AtCaretOverToken(text) => {
@@ -125,7 +135,7 @@ impl Edit<'_> {
                     Some(token) => {
                         let from = Pos::new(caret.row, token.start);
                         s.splice(from, Pos::new(caret.row, token.end), text);
-                        s.set_cursor(end_of(from, text));
+                        s.set_cursor(B::end_of(from, text));
                     }
                     None => Edit::AtCaret(text).apply(s),
                 }
@@ -152,7 +162,7 @@ impl Edit<'_> {
             }
             Edit::Replace(from, to, text) => {
                 s.splice(from, to, text);
-                let end = end_of(from, text);
+                let end = B::end_of(from, text);
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
             }
         }
@@ -189,16 +199,6 @@ fn span_of<B: TextBuf>(b: &B, anchor: Pos, shape: Shape) -> (Pos, Pos) {
         Pos::new(hi_row, len)
     };
     (Pos::new(lo_row, lo.col.min(b.line_len(lo_row))), to)
-}
-
-/// Where `text` put at `at` ends.
-fn end_of(at: Pos, text: &str) -> Pos {
-    match text.rsplit_once('\n') {
-        Some((head, tail)) => {
-            Pos::new(at.row + head.matches('\n').count() + 1, tail.chars().count())
-        }
-        None => Pos::new(at.row, at.col + text.chars().count()),
-    }
 }
 
 /// What the caret did between two syncs, by the field with an engine

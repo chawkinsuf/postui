@@ -3314,3 +3314,99 @@ fn insert_ctrl_t_and_ctrl_d_use_the_buffer_shiftwidth() {
 fn a_fresh_buffer_state_keeps_the_pinned_shiftwidth() {
     assert_eq!(BufState::new().shiftwidth(), super::settings::SHIFTWIDTH);
 }
+
+/// A one-line field holding `text`, the caret at `col`, entered as
+/// `start`, that keeps a paste's line breaks (the jq bar's, #307).
+fn keeping(text: &str, col: usize, start: Start) -> Field {
+    let mut input = LineInput::new(text).keeping_breaks();
+    input.set_cursor(col);
+    let mut f = Field { input, engine: Engine::new(), state: BufState::new() };
+    f.engine.enter(
+        start,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
+    f
+}
+
+/// #307: a field that keeps line breaks takes a bracketed paste with
+/// them, CRLF and CR made `\n` and none at the edges, a line break being a
+/// char of its one row: the caret ends after the text, and undo and redo
+/// take it out and put it back whole.
+#[test]
+fn a_field_that_keeps_line_breaks_takes_a_paste_with_them() {
+    let mut f = keeping("", 0, Start::InsertOnly);
+    f.engine.paste(
+        "\r\n.a # n\r\n| .b\r",
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
+    assert_eq!(f.text(), ".a # n\n| .b");
+    assert_eq!(f.col(), 11, "the caret after the paste, on the one row");
+    let mut f = keeping("", 0, Start::Insert);
+    f.engine
+        .paste(".a\n| .b", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.key(esc());
+    f.keys("u");
+    assert_eq!(f.text(), "");
+    f.key(ctrl('r'));
+    assert_eq!(f.text(), ".a\n| .b");
+    // Replace overwrites with it, a line break like any other char.
+    let mut f = keeping("abcd", 0, Start::Normal);
+    f.keys("R");
+    f.engine.paste("x\ny", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), "x\nyd");
+    f.key(esc());
+    f.keys("u");
+    assert_eq!(f.text(), "abcd");
+}
+
+/// #307: a put and Insert `ctrl+r` of a register holding a line break
+/// keep it in a field that keeps line breaks, and flatten it in one that
+/// doesn't.
+#[test]
+fn a_put_and_insert_ctrl_r_keep_line_breaks_where_the_field_does() {
+    let mut f = keeping("ab\ncd", 0, Start::Normal);
+    f.keys("y$$p");
+    assert_eq!(f.text(), "ab\ncdab\ncd");
+    assert_eq!(f.col(), 9, "the caret on the last char put");
+    f.keys("u");
+    assert_eq!(f.text(), "ab\ncd");
+    f.key(ctrl('r'));
+    assert_eq!(f.text(), "ab\ncdab\ncd");
+    let mut f = keeping("ab\ncd", 0, Start::Normal);
+    f.keys("y$A");
+    f.key(ctrl('r'));
+    f.keys("\"");
+    assert_eq!(f.text(), "ab\ncdab\ncd");
+    assert_eq!(f.col(), 10, "the caret after the text typed");
+    let mut f = Field::new("ab\ncd", 0);
+    f.keys("y$$p");
+    assert_eq!(f.text(), "ab\ncdab cd", "a field that doesn't keep them flattens");
+}
+
+/// #307: a line break a one-line field already holds (a jq view's filter,
+/// set into the bar unflattened) is a char of its one row, in any one-line
+/// field: an edit over it undoes and redoes whole.
+#[test]
+fn an_edit_over_a_line_break_in_a_one_line_field_undoes_and_redoes_whole() {
+    for keeps in [true, false] {
+        let field = |col| {
+            if keeps { keeping("ab\ncd", col, Start::Normal) } else { Field::new("ab\ncd", col) }
+        };
+        let mut f = field(2);
+        f.keys("x");
+        assert_eq!(f.text(), "abcd", "keeps: {keeps}");
+        f.keys("u");
+        assert_eq!(f.text(), "ab\ncd", "keeps: {keeps}");
+        assert_eq!(f.col(), 2, "keeps: {keeps}");
+        f.key(ctrl('r'));
+        assert_eq!(f.text(), "abcd", "keeps: {keeps}");
+        let mut f = field(0);
+        f.keys("D");
+        assert_eq!(f.text(), "");
+        f.keys("u");
+        assert_eq!(f.text(), "ab\ncd", "keeps: {keeps}");
+        f.key(ctrl('r'));
+        assert_eq!(f.text(), "", "keeps: {keeps}: the redo takes the break too");
+    }
+}

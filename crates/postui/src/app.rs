@@ -12020,8 +12020,9 @@ impl App {
     /// then the `LineInput` behind the screen field (the editor's cell edit
     /// or URL bar, a Settings or Variables edit), then the body. A live
     /// selection is replaced (GUI semantics);
-    /// single-line surfaces flatten line breaks (`LineInput::paste`),
-    /// the body takes them verbatim. Returns `false` when nothing
+    /// single-line surfaces flatten line breaks unless they keep them, as
+    /// the jq bar does (`LineInput::paste`), the body takes them
+    /// verbatim. Returns `false` when nothing
     /// focused accepts text. The sidebar takes none, but imports the
     /// paste's curl (spec 2026-10-15 curl import visibility V1).
     ///

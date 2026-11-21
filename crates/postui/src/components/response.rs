@@ -459,6 +459,14 @@ pub struct JqBar {
 }
 
 impl JqBar {
+    /// The bar's input holding `text`. It keeps a paste's line breaks
+    /// (#307, `mine (approved)`): a filter written over several lines
+    /// runs as written, where joining its lines would turn the rest of a
+    /// `# comment`'s line into comment too. Each break shows as `^J`.
+    fn input_for(text: &str) -> LineInput {
+        LineInput::new(text).keeping_breaks()
+    }
+
     /// Whether a background run has been outstanding long enough (as of
     /// `now`) for the bar's chip to spin: past `JQ_SPINNER_AFTER`, so a
     /// run that finishes sooner never flickers.
@@ -651,7 +659,7 @@ impl JqBar {
             return;
         };
         self.menu_scroll.set(0);
-        self.input = LineInput::new(&menu.base);
+        self.input = Self::input_for(&menu.base);
         self.edited = true;
     }
 
@@ -663,7 +671,7 @@ impl JqBar {
         };
         let n = menu.items.len();
         menu.index = if forward { (menu.index + 1) % n } else { (menu.index + n - 1) % n };
-        let mut input = LineInput::new(&menu.base);
+        let mut input = Self::input_for(&menu.base);
         Self::apply_candidate(&mut input, &menu.items[menu.index]);
         self.input = input;
         self.edited = true;
@@ -678,7 +686,7 @@ impl JqBar {
 impl Default for JqBar {
     fn default() -> Self {
         Self {
-            input: LineInput::new(""),
+            input: Self::input_for(""),
             focused: false,
             enabled: true,
             edited: false,
@@ -3201,7 +3209,7 @@ impl Response {
     /// at the end. Not an edit — [`Response::take_jq_edited`] is unaffected.
     pub fn set_jq_text(&mut self, text: &str) {
         self.jq.menu = None;
-        self.jq.input = LineInput::new(text);
+        self.jq.input = JqBar::input_for(text);
         // The text just changed underneath any previous error/stale span —
         // `apply_jq` re-derives both against the new text right after this
         // call, so a leftover from before must not linger if it bails

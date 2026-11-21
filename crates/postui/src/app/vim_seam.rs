@@ -722,8 +722,9 @@ impl App {
     /// Insert, Replace and the search prompt type it; in Visual (the
     /// mouse's too) it replaces the selection (the user's ruling, final
     /// review); anywhere else it goes in by Vim's bracketed-paste rule. Each
-    /// is one engine step. A one-line field takes it flattened (today's
-    /// rule). `None` when no engine field has the caret: today's routing
+    /// is one engine step. A one-line field takes it by its own rule
+    /// (`LineInput::pasted`: flattened, unless it keeps line breaks).
+    /// `None` when no engine field has the caret: today's routing
     /// pastes. A bracketed paste is an event of its own, so the session
     /// catches up first, as a key's does: a body replaced since (`$EDITOR`)
     /// rebases before the paste lands on it.
@@ -735,16 +736,11 @@ impl App {
         if id == FieldId::FilePicker {
             return None;
         }
-        let flat;
-        let text = if id.engine_kind() == EngineKind::Line {
-            flat = crate::components::line_input::flatten_paste(text);
-            flat.as_str()
-        } else {
-            text
-        };
         let feedback = {
             let (glue, buf) = self.session_parts(id);
             let mut buf = buf?;
+            let pasted = buf.pasted(text);
+            let text = &*pasted;
             // An open search prompt takes the paste before a selection
             // does, as Vim's paste goes into its command line (#129):
             // `visual_span` is `None` while the prompt is open, Visual

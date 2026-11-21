@@ -312,9 +312,9 @@ impl History {
     /// last line (column 0 when that line is empty, as after a text ending
     /// in a line break). A put of whole lines does not use this: its splice
     /// can carry a line break that is not part of the text.
-    pub(crate) fn last_put(&self) -> Option<(Pos, Pos)> {
+    pub(crate) fn last_put<B: TextBuf>(&self) -> Option<(Pos, Pos)> {
         let e = self.open.as_ref()?.edits.last()?;
-        let end = end_of(e.at, &e.inserted);
+        let end = B::end_of(e.at, &e.inserted);
         Some((e.at, Pos::new(end.row, end.col.saturating_sub(1))))
     }
 }
@@ -330,14 +330,6 @@ fn is_blank_buffer<B: TextBuf>(buf: &B) -> bool {
     buf.line_count() == 1 && buf.line_len(0) == 0
 }
 
-/// Where `text` ends when it starts at `at`.
-pub(crate) fn end_of(at: Pos, text: &str) -> Pos {
-    match text.rfind('\n') {
-        None => Pos::new(at.row, at.col + text.chars().count()),
-        Some(i) => Pos::new(at.row + text.matches('\n').count(), text[i + 1..].chars().count()),
-    }
-}
-
 /// One edit as the block of whole lines Vim's `u_save` would have saved:
 /// the block's first row, its size now and after the edit is reverted or
 /// replayed, and those lines.
@@ -349,6 +341,17 @@ struct Block {
 
 /// `now` is the text the buffer holds at `at`, `then` what replaces it.
 fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str, join: bool) -> Block {
+    // The rows the edit touches, whole, with `then` in them.
+    let charwise = || {
+        let head: String = buf.line(at.row).iter().take(at.col).collect();
+        let end = B::end_of(at, now);
+        let tail: String = buf.line(end.row).iter().skip(end.col).collect();
+        format!("{head}{then}{tail}")
+    };
+    if !B::MULTILINE {
+        // A one-line field is its one row, any line break in it a char.
+        return Block { first: at.row, now: 1, lines: vec![charwise()] };
+    }
     let nl = |s: &str| s.matches('\n').count();
     let whole = |s: &str| s.is_empty() || s.ends_with('\n');
     let joined = |s: &str| s.is_empty() || s.starts_with('\n');
@@ -365,10 +368,7 @@ fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str, join: bool) -> Blo
         return Block { first: at.row + 1, now: nl(now), lines };
     }
     // Charwise: every row the edit touches, whole.
-    let head: String = buf.line(at.row).iter().take(at.col).collect();
-    let end = end_of(at, now);
-    let tail: String = buf.line(end.row).iter().skip(end.col).collect();
-    let lines = format!("{head}{then}{tail}").split('\n').map(str::to_string).collect();
+    let lines = charwise().split('\n').map(str::to_string).collect();
     Block { first: at.row, now: nl(now) + 1, lines }
 }
 
@@ -420,7 +420,7 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut M
                 }
             }
         }
-        buf.splice(e.at, end_of(e.at, now), then);
+        buf.splice(e.at, B::end_of(e.at, now), then);
     }
     // Vim's `u_undoredo()` moves the marks by each undo entry's net size,
     // and one change (a whole Insert session) is one entry: a session whose

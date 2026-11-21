@@ -69,6 +69,9 @@ pub struct LineInput {
     /// The text when the vim engine opened this field (plan M3b Deviation
     /// 11): its edits record no snapshot, so `text_at_open` reads this.
     opened: Option<String>,
+    /// A paste or a put keeps its line breaks ([`Self::pasted`]): the jq
+    /// bar's, whose filter may be written over several lines (#307).
+    keeps_breaks: bool,
 }
 
 /// Text and caret as they stood before a step.
@@ -115,7 +118,25 @@ impl LineInput {
             redo: Vec::new(),
             run: None,
             opened: None,
+            keeps_breaks: false,
         }
+    }
+
+    /// The input with a paste's line breaks kept ([`Self::pasted`]).
+    pub(crate) fn keeping_breaks(mut self) -> Self {
+        self.keeps_breaks = true;
+        self
+    }
+
+    /// What a paste or a put of `text` leaves in this field, in both
+    /// profiles: flattened to one line ([`flatten_paste`]), or, where the
+    /// field keeps line breaks, with each CRLF or CR made a line break and
+    /// none at the edges.
+    pub(crate) fn pasted(&self, text: &str) -> String {
+        if !self.keeps_breaks {
+            return flatten_paste(text);
+        }
+        text.replace("\r\n", "\n").replace('\r', "\n").trim_matches('\n').to_string()
     }
 
     pub fn text(&self) -> &str {
@@ -489,9 +510,9 @@ impl LineInput {
     }
 
     /// Pastes `text` at the caret: a live selection is replaced (GUI
-    /// paste semantics), and the text is flattened to a single line via
-    /// [`flatten_paste`], so a multi-line paste can't smuggle an Enter
-    /// into a one-line field.
+    /// paste semantics), and the text goes in as [`Self::pasted`] makes
+    /// it: flattened to a single line, so a multi-line paste can't smuggle
+    /// an Enter into a one-line field, unless the field keeps line breaks.
     pub fn paste(&mut self, text: &str) {
         self.record(EditKind::Whole);
         self.paste_unrecorded(text);
@@ -502,10 +523,10 @@ impl LineInput {
     fn paste_unrecorded(&mut self, text: &str) {
         self.snap_to_graphemes();
         self.delete_selection();
-        let flat = flatten_paste(text);
+        let pasted = self.pasted(text);
         let at = self.byte_offset(self.cursor);
-        self.text.insert_str(at, &flat);
-        self.cursor += flat.chars().count();
+        self.text.insert_str(at, &pasted);
+        self.cursor += pasted.chars().count();
         self.anchor = None;
         self.click_span = None;
     }
@@ -1201,7 +1222,8 @@ pub(crate) fn char_code(c: char) -> String {
 /// Flattens pasted text to one line: runs of line breaks and tabs collapse
 /// to a single space (none at the edges). Shared by [`LineInput::paste`]
 /// and the plain-`String` filter queries (palette, chooser, var picker)
-/// so every single-line surface flattens a paste identically.
+/// so every single-line surface flattens a paste identically (the jq bar
+/// keeps a paste's line breaks instead: [`LineInput::pasted`]).
 pub fn flatten_paste(text: &str) -> String {
     let mut flat = String::with_capacity(text.len());
     let mut pending_gap = false;
@@ -2127,6 +2149,23 @@ mod tests {
         let mut input = inside();
         input.paste("yz");
         assert_eq!(input.text(), format!("ayz{HEART}b"));
+    }
+
+    /// #307: a field that keeps line breaks (the jq bar) takes a paste
+    /// with them, CRLF and CR made `\n`, tabs kept, none at the edges;
+    /// any other field flattens it.
+    #[test]
+    fn a_paste_keeps_its_line_breaks_only_where_the_field_keeps_them() {
+        let pasted = "\r\n.a # note\r\n|\t.b\r| .c\n\n";
+        let mut input = LineInput::new("").keeping_breaks();
+        input.paste(pasted);
+        assert_eq!(input.text(), ".a # note\n|\t.b\n| .c");
+        assert_eq!(input.cursor(), input.text().chars().count());
+        input.undo();
+        assert_eq!(input.text(), "", "one undo step");
+        let mut input = LineInput::new("");
+        input.paste(pasted);
+        assert_eq!(input.text(), ".a # note | .b | .c");
     }
 
     /// A grapheme that takes no cell (a zero-width space, a control char)
