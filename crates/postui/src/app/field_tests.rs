@@ -1437,6 +1437,29 @@ fn a_body_paste_keeps_its_line_breaks() {
     assert_eq!(body(&app), "{\n  \"a\": 1x\ny\n}");
 }
 
+/// #335: a paste outside Insert takes CRLF and CR as line breaks, as the
+/// Insert paste does.
+#[test]
+fn a_body_paste_outside_insert_takes_crlf_and_cr_as_line_breaks() {
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "j$");
+    app.paste_text("x\r\ny\rz");
+    assert_eq!(body(&app), "{\n  \"a\": 1x\ny\nz\n}", "Normal");
+    assert_eq!(caret(&app), (3, 0), "on the last char put");
+    feed(&mut app, "u");
+    assert_eq!(body(&app), BODY, "one undo step");
+    feed(&mut app, "0wvll");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    app.paste_text("x\r\ny\r");
+    assert_eq!(body(&app), "{\n  x\ny\n: 1\n}", "Visual");
+    assert_eq!(caret(&app), (3, 0), "at the start of the row after");
+    let mut app = vim(Fixture::Body);
+    feed(&mut app, "j$");
+    app.paste_text("x\r");
+    assert_eq!(body(&app), "{\n  \"a\": 1x\n\n}", "Normal, ending in a CR");
+    assert_eq!(caret(&app), (2, 0), "at the start of the row after");
+}
+
 #[test]
 fn a_paste_into_the_search_prompt_types_the_pattern() {
     let mut app = vim(Fixture::Body);

@@ -2,6 +2,7 @@
 //! file that names app types: it adapts `LineInput` (one-line fields) and
 //! edtui's `EditorState` (the request body).
 
+use crate::components::editor::Editor;
 use crate::components::line_input::{LineInput, VisualShape};
 use edtui::{EditorMode, EditorState, Index2, RowIndex};
 use std::borrow::Cow;
@@ -60,9 +61,11 @@ pub trait TextBuf {
     /// `(row + 1, 0)` to take the line break after `row`. In a one-line
     /// field a `'\n'` in `text` is a char of its one row.
     fn splice(&mut self, start: Pos, end: Pos, text: &str);
-    /// What a paste or a put of `text` leaves in a one-line field, by the
-    /// field's own rule (`LineInput::pasted`): flattened to one line, or
-    /// with its line breaks kept. The body takes `text` as it is.
+    /// What a paste of `text` leaves in the buffer, or a put in a one-line
+    /// field. A one-line field goes by its own rule (`LineInput::pasted`):
+    /// flattened to one line, or with its line breaks kept. The body makes
+    /// each CRLF and CR a line break (`Editor::body_pasted`); a put there
+    /// does not ask, and puts the register as it is.
     fn pasted(&self, text: &str) -> String;
     /// Paint only: the Visual span, and for the body edtui's mode (its
     /// caret shape). A one-line field has no caret shape of its own; the
@@ -268,7 +271,7 @@ impl TextBuf for BodyBuf<'_> {
     }
 
     fn pasted(&self, text: &str) -> String {
-        text.to_string()
+        Editor::body_pasted(text)
     }
 
     fn show(&mut self, paint: Paint) {
@@ -372,6 +375,15 @@ mod tests {
         assert_eq!(b.text(), "adX\nY\nef");
         b.splice(Pos::new(0, 0), Pos::new(2, 2), "");
         assert_eq!(rows(&b), [""]);
+    }
+
+    /// #335: every paste route into the body asks `pasted`.
+    #[test]
+    fn a_body_paste_takes_crlf_and_cr_as_line_breaks() {
+        let mut state = EditorState::new(Lines::from(""));
+        let mut visual = None;
+        let b = BodyBuf::new(&mut state, &mut visual);
+        assert_eq!(b.pasted("a\r\nb\rc\n\r\nd\t"), "a\nb\nc\n\nd\t");
     }
 
     /// Review focus 1: edtui holds an empty text as zero rows.

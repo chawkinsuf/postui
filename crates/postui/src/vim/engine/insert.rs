@@ -45,16 +45,13 @@ impl InsertKey {
     /// The key as a buffer of kind `B` takes it, typed now or replayed by
     /// `.` (a replay acts as if its keys were typed in the target buffer,
     /// spec §4.2). A one-line field has no
-    /// Enter or Tab (`None`: typed, they are declined; replayed, dropped)
-    /// and takes a paste by its own rule (`TextBuf::pasted`: flattened,
-    /// unless it keeps line breaks); the body takes CRLF and CR as line
-    /// breaks.
+    /// Enter or Tab (`None`: typed, they are declined; replayed, dropped).
+    /// Every buffer takes a paste by its own rule (`TextBuf::pasted`): a
+    /// one-line field flattens it, unless it keeps line breaks; the body
+    /// takes CRLF and CR as line breaks.
     fn for_buffer<B: TextBuf>(self, buf: &B) -> Option<Self> {
         match self {
             InsertKey::Enter | InsertKey::Tab if !B::MULTILINE => None,
-            InsertKey::Paste(text) if B::MULTILINE => {
-                Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n")))
-            }
             InsertKey::Paste(text) => Some(InsertKey::Paste(buf.pasted(&text))),
             key => Some(key),
         }
@@ -409,7 +406,8 @@ impl Engine {
     /// as one, so `.` and a count put it in the same way), not a key per
     /// char, each of which would rebuild the line. A one-line field takes the text
     /// as `p` puts it (key list §5), by its own rule (`TextBuf::pasted`), as
-    /// one run.
+    /// one run. In the body a CR is an Enter too, so a CRLF is two, as
+    /// Vim types them.
     fn insert_register_text<B: TextBuf>(
         &mut self,
         name: char,

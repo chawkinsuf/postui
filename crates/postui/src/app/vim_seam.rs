@@ -722,8 +722,9 @@ impl App {
     /// Insert, Replace and the search prompt type it; in Visual (the
     /// mouse's too) it replaces the selection (the user's ruling, final
     /// review); anywhere else it goes in by Vim's bracketed-paste rule. Each
-    /// is one engine step. A one-line field takes it by its own rule
-    /// (`LineInput::pasted`: flattened, unless it keeps line breaks).
+    /// is one engine step. Every field takes it by its own rule
+    /// (`FieldBuf::pasted`): a one-line field flattens it, unless it keeps
+    /// line breaks; the body makes each CRLF and CR a line break.
     /// `None` when no engine field has the caret: today's routing
     /// pastes. A bracketed paste is an event of its own, so the session
     /// catches up first, as a key's does: a body replaced since (`$EDITOR`)

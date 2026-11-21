@@ -2557,26 +2557,26 @@ impl Editor {
         self.body.mode = EditorMode::Insert;
     }
 
+    /// What a paste of `text` leaves in the body: each CRLF and CR becomes
+    /// a line break. Both profiles' pastes into the body take it
+    /// ([`Self::paste_body`], and the vim engine's `BodyBuf`).
+    pub fn body_pasted(text: &str) -> String {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    }
+
     /// Pastes `text` into the body at the caret (GUI semantics: a live
     /// selection is replaced first), staying in Insert mode. Line endings
-    /// are normalized — `\r\n`/`\r` become `\n` — and inserted as real
-    /// line breaks; everything else lands verbatim. Returns `false` when
-    /// the Body tab isn't active (nothing to paste into).
+    /// are normalized ([`Self::body_pasted`]) and inserted as real line
+    /// breaks; everything else lands verbatim. Returns `false` when the
+    /// Body tab isn't active (nothing to paste into).
     pub fn paste_body(&mut self, text: &str) -> bool {
         use edtui::actions::{Execute, InsertChar, LineBreak};
         if self.active_tab != EditorTab::Body {
             return false;
         }
         self.delete_body_selection();
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
+        for c in Self::body_pasted(text).chars() {
             match c {
-                '\r' => {
-                    if chars.peek() == Some(&'\n') {
-                        chars.next();
-                    }
-                    LineBreak(1).execute(&mut self.body);
-                }
                 '\n' => LineBreak(1).execute(&mut self.body),
                 _ => InsertChar(c).execute(&mut self.body),
             }
