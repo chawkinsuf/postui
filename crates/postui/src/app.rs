@@ -12021,8 +12021,8 @@ impl App {
     /// or URL bar, a Settings or Variables edit), then the body. A live
     /// selection is replaced (GUI semantics);
     /// single-line surfaces flatten line breaks unless they keep them, as
-    /// the jq bar does (`LineInput::paste`), the body takes them
-    /// verbatim. Returns `false` when nothing
+    /// the jq bar does (`LineInput::paste`), the body makes each CRLF and
+    /// CR a line break. Returns `false` when nothing
     /// focused accepts text. The sidebar takes none, but imports the
     /// paste's curl (spec 2026-10-15 curl import visibility V1).
     ///

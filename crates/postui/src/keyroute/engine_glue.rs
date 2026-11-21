@@ -96,11 +96,15 @@ pub enum Edit<'a> {
     AtCaret(&'a str),
     /// Vim's bracketed paste outside Insert (`nv_edit()` with `K_PS`):
     /// after the caret's char, or before it at column 0; the caret ends on
-    /// the last char put (plan M3a Deviation 13).
+    /// the last char put (plan M3a Deviation 13). Text that ends in a line
+    /// break leaves the caret at the start of the row after it, as Vim's
+    /// does (its Esc doesn't move left from column 0).
     Append(&'a str),
     /// The whole text, the caret kept where it was (the engine clamps it).
     Whole(&'a str),
-    /// `[from, to)` replaced, the caret on the last char put: a paste or
+    /// `[from, to)` replaced, the caret on the last char put (after a
+    /// trailing line break, at the start of the row after, as
+    /// [`Edit::Append`] leaves it): a paste or
     /// a picked token over a Visual selection ([`Glue::visual_span`]), as
     /// Vim and GUI editors replace a selection (the user's ruling, final
     /// review).

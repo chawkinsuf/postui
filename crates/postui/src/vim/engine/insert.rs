@@ -406,7 +406,8 @@ impl Engine {
     /// as one, so `.` and a count put it in the same way), not a key per
     /// char, each of which would rebuild the line. A one-line field takes the text
     /// as `p` puts it (key list §5), by its own rule (`TextBuf::pasted`), as
-    /// one run.
+    /// one run. In the body a CR is an Enter too, so a CRLF is two, as
+    /// Vim types them.
     fn insert_register_text<B: TextBuf>(
         &mut self,
         name: char,

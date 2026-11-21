@@ -155,7 +155,9 @@ Visual put each CR into the body as a char, which the body draws as
 nothing. Every paste into the body asks it: the Insert paste and its `.`
 replay (`InsertKey::for_buffer`) and the vim seam's paste in Normal and
 Visual (`FieldBuf::pasted`). A put in the body still puts the register as
-it is, as Vim's does; a register holds a CR only when a buffer did.
+it is, as Vim's does; a register holds a CR only where the text it was
+yanked from did. Insert `ctrl+r` types the register, each CR as an Enter,
+so a CRLF is two, as Vim types it.
 
 ### 3.3 The two buffers
 
