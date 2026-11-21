@@ -3,7 +3,7 @@
 //! app's send share, with the verdict and the wording they all give.
 
 use crate::jq::{self, JqDocument, JqError};
-use crate::model::Checks;
+use crate::model::{Checks, StatusTerm};
 
 /// The most characters of a value or an error a failure line shows (§2.3).
 const SHOWN_CHARS: usize = 60;
@@ -39,8 +39,9 @@ pub fn lines(status: u16, outcomes: &[Outcome]) -> Vec<(bool, String)> {
 /// How one check came out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The `status` check: the codes that pass, and the one that came.
-    Status { expected: Vec<u16>, got: u16 },
+    /// The `status` check: the terms that pass (status ranges spec S1),
+    /// and the code that came.
+    Status { expected: Vec<StatusTerm>, got: u16 },
     /// A time limit (spec §2.7): which figure, its limit and what it took,
     /// in milliseconds.
     Time { measure: Measure, limit: u64, got: u64 },
@@ -50,13 +51,13 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// A status check passes on a code it names. A jq check passes when it
+    /// A status check passes on a code any of its terms matches. A jq check passes when it
     /// gave at least one output, every output is `true`, and nothing
     /// errored (R4): stricter than `jq -e`, so a filter that forgot its
     /// comparison fails instead of passing on any value.
     pub fn passed(&self) -> bool {
         match self {
-            Outcome::Status { expected, got } => expected.contains(got),
+            Outcome::Status { expected, got } => expected.iter().any(|t| t.matches(*got)),
             Outcome::Time { limit, got, .. } => got <= limit,
             Outcome::Jq { got, error, .. } => {
                 error.is_none() && !got.is_empty() && got.iter().all(|v| v == "true")
@@ -77,8 +78,8 @@ impl Outcome {
         }
         Some(one_line(&match self {
             Outcome::Status { expected, got } => {
-                let codes: Vec<String> = expected.iter().map(u16::to_string).collect();
-                format!("status {got}, expected {}", codes.join(" or "))
+                let terms: Vec<String> = expected.iter().map(StatusTerm::to_string).collect();
+                format!("status {got}, expected {}", terms.join(" or "))
             }
             Outcome::Time { measure, limit, got } => measure.line(*limit, *got),
             Outcome::Jq { filter, got, error } => {
@@ -250,7 +251,7 @@ mod tests {
 
     fn checks(status: &[u16], jq: &[&str]) -> Checks {
         Checks {
-            status: status.to_vec(),
+            status: status.iter().map(|c| StatusTerm::Code(*c)).collect(),
             jq: jq.iter().map(|f| f.to_string()).collect(),
             ..Checks::default()
         }
@@ -337,7 +338,7 @@ mod tests {
     #[test]
     fn time_checks_come_between_status_and_jq() {
         let checks = Checks {
-            status: vec![200],
+            status: vec![StatusTerm::Code(200)],
             max_ttfb_ms: Some(10),
             max_elapsed_ms: Some(20),
             jq: vec![".a".into()],
@@ -484,7 +485,7 @@ mod tests {
         let out = evaluate(&checks(&[200], &[]), 200, Timing::default(), LIMIT, || {
             panic!("the body was read")
         });
-        assert_eq!(out, [Outcome::Status { expected: vec![200], got: 200 }]);
+        assert_eq!(out, [Outcome::Status { expected: vec![StatusTerm::Code(200)], got: 200 }]);
     }
 
     /// A stream body is read value by value, as `run --jq` reads it: every
@@ -506,6 +507,34 @@ mod tests {
         assert_eq!(failures(&out), ["status 500, expected 200 or 201"]);
         let out = over(&checks(&[200], &[]), 201, "");
         assert_eq!(failures(&out), ["status 201, expected 200"]);
+    }
+
+    /// Status ranges spec S1, S9, S13: a status check of ranges and
+    /// comparisons passes on any term, says `status 204` when it passed and
+    /// names its terms in one form, joined by `or`, when it failed.
+    #[test]
+    fn a_status_check_of_terms_passes_on_any_of_them() {
+        let terms = Checks {
+            status: Checks::parse_status("200-299, 404, >=500").unwrap(),
+            ..Checks::default()
+        };
+        for (status, passed) in [(200, true), (299, true), (404, true), (503, true), (300, false)] {
+            let out = over(&terms, status, "");
+            assert_eq!(out[0].passed(), passed, "{status}");
+        }
+        assert_eq!(lines(204, &over(&terms, 204, "")), [(true, "status 204".to_string())]);
+        assert_eq!(
+            failures(&over(&terms, 302, "")),
+            ["status 302, expected 200-299 or 404 or >= 500"]
+        );
+        // `< 400` alone is a status check: it passes a 399, fails a 400 by
+        // its own line and leaves no below-400 rule line.
+        let below = Checks { status: Checks::parse_status("<400").unwrap(), ..Checks::default() };
+        assert_eq!(lines(399, &over(&below, 399, "")), [(true, "status 399".to_string())]);
+        assert_eq!(
+            lines(400, &over(&below, 400, "")),
+            [(false, "status 400, expected < 400".to_string())]
+        );
     }
 
     /// The status check comes first, then the filters in file order.

@@ -15,7 +15,9 @@ use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
 };
 use indexmap::IndexMap;
-use postui_core::model::{Body, Checks, Entry, HttpRequest, JqView, Method, ViewNameRefusal};
+use postui_core::model::{
+    Body, Checks, Entry, HttpRequest, JqView, Method, StatusTerm, ViewNameRefusal,
+};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -77,7 +79,7 @@ pub const CHECK_FIELDS: [CheckField; TableSpec::CHECKS.heads] = [
         alone: Some("run and suite: any code below 400"),
         // What empty means is the placeholder's to say: it depends on the
         // other checks.
-        hint: "Codes that pass, e.g. 200, 201",
+        hint: "Codes that pass, e.g. 200, 201-204, < 400",
     },
     CheckField {
         label: "first byte (ms)",
@@ -259,10 +261,11 @@ pub struct Editor {
     /// view has) is the scratch. File content, as a plain edit (A4).
     pub jq_current: Option<String>,
     /// The request's status check (`[checks]`, checks tabs spec
-    /// 2026-11-16): the codes that pass, edited by the Checks tab's first
-    /// field. Empty is no status check. File content, like the rest of the
-    /// checks below; [`Self::checks`] puts them together.
-    pub check_status: Vec<u16>,
+    /// 2026-11-16): the terms that pass (status ranges spec 2026-11-19),
+    /// edited by the Checks tab's first field. Empty is no status check.
+    /// File content, like the rest of the checks below; [`Self::checks`]
+    /// puts them together.
+    pub check_status: Vec<StatusTerm>,
     /// The request's time limits in milliseconds, first byte then total
     /// (`Measure::ALL`'s order): the Checks tab's other two fields.
     pub check_limits: [Option<u32>; 2],
@@ -587,10 +590,11 @@ impl Editor {
     }
 
     /// What the Checks tab's field `k` shows and opens with: the status
-    /// codes as `200, 201`, or a limit's milliseconds; empty when unset.
+    /// terms as `200, 201-204, < 400` (status ranges spec S5), or a limit's
+    /// milliseconds; empty when unset.
     pub fn check_field_text(&self, k: usize) -> String {
         match k {
-            0 => self.check_status.iter().map(u16::to_string).collect::<Vec<_>>().join(", "),
+            0 => self.check_status.iter().map(StatusTerm::to_string).collect::<Vec<_>>().join(", "),
             _ => self
                 .check_limits
                 .get(k - 1)
@@ -619,7 +623,7 @@ impl Editor {
     /// field keeps what it had, and the refusal comes back for a toast.
     fn commit_check_field(&mut self, k: usize, text: &str) -> Option<String> {
         let taken = match k {
-            0 => Checks::parse_status(text).map(|codes| self.check_status = codes),
+            0 => Checks::parse_status(text).map(|terms| self.check_status = terms),
             _ => Checks::parse_limit(text).map(|limit| {
                 if let Some(slot) = self.check_limits.get_mut(k - 1) {
                     *slot = limit;

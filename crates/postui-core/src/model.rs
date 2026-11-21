@@ -1,6 +1,6 @@
 use crate::checks::Measure;
 use indexmap::IndexMap;
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -323,10 +323,11 @@ pub struct HttpRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checks {
-    /// The statuses that pass, one code or a list in the file. Empty is
-    /// the default rule, below 400 (R3).
-    #[serde(default, deserialize_with = "status_codes", skip_serializing_if = "Vec::is_empty")]
-    pub status: Vec<u16>,
+    /// The statuses that pass: a response passes on any term (status
+    /// ranges spec 2026-11-19, S1), one term or a list in the file. Empty
+    /// is the default rule, below 400 (R3).
+    #[serde(default, deserialize_with = "status_terms", skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<StatusTerm>,
     /// The most milliseconds the response head may take to come in (spec
     /// §2.7, T1); `None` checks nothing.
     #[serde(default, deserialize_with = "limit_ms", skip_serializing_if = "Option::is_none")]
@@ -347,21 +348,20 @@ impl Checks {
             && self.jq.is_empty()
     }
 
-    /// The status codes typed as `200, 201` (commas or spaces between),
-    /// by the read's own rule for a code; empty text is no status check.
-    /// A code typed twice counts once, as in the file.
-    pub fn parse_status(text: &str) -> Result<Vec<u16>, String> {
-        let mut codes = Vec::new();
-        for word in text.split([',', ' ']).filter(|w| !w.is_empty()) {
-            let code = word.parse::<u16>().ok().and_then(status_code).ok_or_else(|| {
-                let word = crate::checks::brief(word);
-                format!("a check's status must be a code from 100 to 599, not {word}")
-            })?;
-            if !codes.contains(&code) {
-                codes.push(code);
+    /// The status terms typed as `200, 201-204, < 400` (status ranges spec
+    /// S4): commas or spaces between terms, while a space after a
+    /// comparison's sign or beside a range's `-` belongs to its term. Empty
+    /// text is no status check. A term typed twice counts once, as in the
+    /// file. The file read calls this on a string (S7).
+    pub fn parse_status(text: &str) -> Result<Vec<StatusTerm>, String> {
+        let mut terms = Vec::new();
+        for word in status_words(text) {
+            let term = StatusTerm::parse(&word)?;
+            if !terms.contains(&term) {
+                terms.push(term);
             }
         }
-        Ok(codes)
+        Ok(terms)
     }
 
     /// A time limit typed as a whole number of milliseconds, by the
@@ -392,6 +392,134 @@ fn limit_of<V: TryInto<u32>>(v: V) -> Option<u32> {
     v.try_into().ok().filter(|ms| *ms > 0)
 }
 
+/// One term of a status check (status ranges spec 2026-11-19, S2). Every
+/// number in it is a code from 100 to 599 (S3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusTerm {
+    /// `404`
+    Code(u16),
+    /// `200-299`: both ends included, the low one first.
+    Range(u16, u16),
+    /// `< 400`
+    Below(u16),
+    /// `<= 399`
+    AtMost(u16),
+    /// `> 499`
+    Above(u16),
+    /// `>= 500`
+    AtLeast(u16),
+}
+
+impl StatusTerm {
+    /// Whether a response with `status` passes on this term. A status
+    /// outside 100 to 599 is judged by the same comparison (S14).
+    pub fn matches(self, status: u16) -> bool {
+        match self {
+            StatusTerm::Code(code) => status == code,
+            StatusTerm::Range(low, high) => (low..=high).contains(&status),
+            StatusTerm::Below(n) => status < n,
+            StatusTerm::AtMost(n) => status <= n,
+            StatusTerm::Above(n) => status > n,
+            StatusTerm::AtLeast(n) => status >= n,
+        }
+    }
+
+    /// The term as the file writes it, as [`Serialize`] gives it (S6).
+    fn to_value(self) -> toml_edit::Value {
+        match self {
+            StatusTerm::Code(code) => i64::from(code).into(),
+            term => term.to_string().into(),
+        }
+    }
+
+    /// One term as [`status_words`] gives it; the refusal is S11's words.
+    fn parse(word: &str) -> Result<Self, String> {
+        let bare: String = word.chars().filter(|c| !c.is_whitespace()).collect();
+        let code =
+            |n: &str| n.parse::<u16>().ok().and_then(status_code).ok_or_else(|| no_term(word));
+        let term = if let Some(n) = bare.strip_prefix("<=") {
+            StatusTerm::AtMost(code(n)?)
+        } else if let Some(n) = bare.strip_prefix('<') {
+            StatusTerm::Below(code(n)?)
+        } else if let Some(n) = bare.strip_prefix(">=") {
+            StatusTerm::AtLeast(code(n)?)
+        } else if let Some(n) = bare.strip_prefix('>') {
+            StatusTerm::Above(code(n)?)
+        } else if let Some((low, high)) = bare.split_once('-') {
+            let (low, high) = (code(low)?, code(high)?);
+            if low > high {
+                let word = crate::checks::brief(word);
+                return Err(format!("a check's status range must run low to high, not {word}"));
+            }
+            StatusTerm::Range(low, high)
+        } else {
+            StatusTerm::Code(code(&bare)?)
+        };
+        if !(100..=599).any(|status| term.matches(status)) {
+            return Err(format!("a check's status must match a code from 100 to 599, not {term}"));
+        }
+        Ok(term)
+    }
+}
+
+/// S11's refusal of `word`, which is no term.
+fn no_term(word: &str) -> String {
+    format!(
+        "a check's status must be codes from 100 to 599, ranges like 200-299 or comparisons \
+         like < 400, not {}",
+        crate::checks::brief(word)
+    )
+}
+
+/// The terms of a status field's `text`, each as typed with its spaces cut
+/// to one (S4): split at commas, then at spaces, except where a part ends
+/// in a comparison's sign or a `-`, or the next one starts with a `-`.
+fn status_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for part in text.split(',') {
+        let mut word = String::new();
+        for piece in part.split_whitespace() {
+            let joins = word.ends_with(['<', '>', '=', '-']) || piece.starts_with('-');
+            if !word.is_empty() && !joins {
+                words.push(std::mem::take(&mut word));
+            }
+            if !word.is_empty() {
+                word.push(' ');
+            }
+            word.push_str(piece);
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// S5's form: `404`, `200-299`, `< 400`, `<= 399`, `> 499`, `>= 500`.
+impl fmt::Display for StatusTerm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StatusTerm::Code(code) => write!(f, "{code}"),
+            StatusTerm::Range(low, high) => write!(f, "{low}-{high}"),
+            StatusTerm::Below(n) => write!(f, "< {n}"),
+            StatusTerm::AtMost(n) => write!(f, "<= {n}"),
+            StatusTerm::Above(n) => write!(f, "> {n}"),
+            StatusTerm::AtLeast(n) => write!(f, ">= {n}"),
+        }
+    }
+}
+
+/// As the file writes it (S6, S10): a code as a number, any other term as
+/// its [`Display`](fmt::Display) string.
+impl Serialize for StatusTerm {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            StatusTerm::Code(code) => s.serialize_u16(*code),
+            term => s.collect_str(term),
+        }
+    }
+}
+
 /// `jq = [...]` as the app's list holds it (checks tabs spec 2026-11-16):
 /// each filter without the whitespace around it, and one listed twice
 /// read once, the first kept. The read is the one `run` and `suite` use,
@@ -405,45 +533,74 @@ fn filters<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     Ok(filters.filter(|f| seen.insert(f.clone())).collect())
 }
 
-/// `status = 200` or `status = [200, 201]`, each a code from 100 to 599; any
-/// other value refuses the read (R6). A code listed twice reads once.
-fn status_codes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
-    struct Codes;
-
-    fn code<E: de::Error, V: TryInto<u16> + fmt::Display + Copy>(v: V) -> Result<u16, E> {
-        status_code(v).ok_or_else(|| {
-            E::custom(format!("a check's status must be a code from 100 to 599, not {v}"))
-        })
+/// `status = 200`, `status = "< 400"` or `status = ["200-299", 404]`
+/// (status ranges spec S6, S7): a number is a code from 100 to 599, and a
+/// string reads as the status field reads its text
+/// ([`Checks::parse_status`]). Any other value refuses the read (R6). A
+/// term listed twice reads once.
+fn status_terms<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<StatusTerm>, D::Error> {
+    /// The value's terms; `in_list` for an entry of the list, which may
+    /// not be a list itself.
+    struct Terms {
+        in_list: bool,
     }
 
-    impl<'de> Visitor<'de> for Codes {
-        type Value = Vec<u16>;
+    fn code<E: de::Error, V: TryInto<u16> + fmt::Display + Copy>(
+        v: V,
+    ) -> Result<Vec<StatusTerm>, E> {
+        status_code(v)
+            .map(|c| vec![StatusTerm::Code(c)])
+            .ok_or_else(|| E::custom(no_term(&v.to_string())))
+    }
+
+    impl<'de> DeserializeSeed<'de> for Terms {
+        type Value = Vec<StatusTerm>;
+
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Terms {
+        type Value = Vec<StatusTerm>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a status code or a list of them")
+            f.write_str("a status code, a range or a comparison")?;
+            if !self.in_list {
+                f.write_str(", or a list of them")?;
+            }
+            Ok(())
         }
 
         fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-            Ok(vec![code(v)?])
+            code(v)
         }
 
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-            Ok(vec![code(v)?])
+            code(v)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Checks::parse_status(v).map_err(E::custom)
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut codes = Vec::new();
-            while let Some(v) = seq.next_element::<i64>()? {
-                let code = code(v)?;
-                if !codes.contains(&code) {
-                    codes.push(code);
+            if self.in_list {
+                return Err(de::Error::invalid_type(de::Unexpected::Seq, &self));
+            }
+            let mut terms = Vec::new();
+            while let Some(entry) = seq.next_element_seed(Terms { in_list: true })? {
+                for term in entry {
+                    if !terms.contains(&term) {
+                        terms.push(term);
+                    }
                 }
             }
-            Ok(codes)
+            Ok(terms)
         }
     }
 
-    d.deserialize_any(Codes)
+    d.deserialize_any(Terms { in_list: false })
 }
 
 /// `max_ttfb_ms = 500`: a time limit, a whole number of milliseconds from 1
@@ -569,9 +726,9 @@ impl HttpRequest {
             let mut t = Table::new();
             match self.checks.status.as_slice() {
                 [] => {}
-                [one] => t["status"] = value(i64::from(*one)),
+                [one] => t["status"] = value(one.to_value()),
                 many => {
-                    t["status"] = value(many.iter().map(|c| i64::from(*c)).collect::<Array>());
+                    t["status"] = value(many.iter().map(|t| t.to_value()).collect::<Array>());
                 }
             }
             for measure in Measure::ALL {
@@ -621,6 +778,7 @@ impl HttpRequest {
 
 #[cfg(test)]
 mod tests {
+    use super::StatusTerm::{Above, AtLeast, AtMost, Below, Code, Range};
     use super::*;
     use indexmap::IndexMap;
 
@@ -957,7 +1115,7 @@ mod tests {
         let mut req = sample();
         req.jq_views = vec![JqView { name: "names".into(), filter: ".n".into(), id: 0 }];
         req.checks = Checks {
-            status: vec![200],
+            status: vec![Code(200)],
             jq: vec![".a == 1".into(), ".choices[0].finish_reason == \"stop\"".into()],
             ..Checks::default()
         };
@@ -968,10 +1126,30 @@ mod tests {
         assert!(out.contains("\n  '.choices[0].finish_reason == \"stop\"',\n]\n"), "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
 
-        req.checks.status = vec![200, 201];
+        req.checks.status = vec![Code(200), Code(201)];
         let out = req.to_toml_string();
         assert!(out.contains("status = [200, 201]"), "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    /// Status ranges spec S6, S7: a range or a comparison is written as a
+    /// string in S5's form, a code as a number, one term bare and several
+    /// as a list, and each reads back.
+    #[test]
+    fn a_status_range_or_comparison_round_trips_as_a_string() {
+        let mut req = sample();
+        let write = |req: &HttpRequest| {
+            let out = req.to_toml_string();
+            assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), *req, "{out}");
+            out
+        };
+        req.checks.status = vec![Range(200, 299), Code(404)];
+        assert!(write(&req).contains("[checks]\nstatus = [\"200-299\", 404]\n"));
+        req.checks.status = vec![Below(400)];
+        assert!(write(&req).contains("[checks]\nstatus = \"< 400\"\n"));
+        req.checks.status = vec![AtMost(399), Above(499), AtLeast(500), Code(200)];
+        let out = write(&req);
+        assert!(out.contains("status = [\"<= 399\", \"> 499\", \">= 500\", 200]\n"), "{out}");
     }
 
     #[test]
@@ -988,22 +1166,70 @@ mod tests {
     fn checks_read_one_status_or_a_list() {
         let read =
             |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
-        assert_eq!(read("status = 404\n").unwrap().checks.status, [404]);
-        assert_eq!(read("status = [200, 204]\n").unwrap().checks.status, [200, 204]);
+        assert_eq!(read("status = 404\n").unwrap().checks.status, [Code(404)]);
+        assert_eq!(read("status = [200, 204]\n").unwrap().checks.status, [Code(200), Code(204)]);
         assert_eq!(read("jq = ['.a']\n").unwrap().checks.jq, [".a"]);
     }
 
-    /// Spec R6: a status that isn't a code from 100 to 599 refuses the read;
-    /// so does a key `[checks]` doesn't know.
+    /// Status ranges spec S7: a string reads as the status field reads its
+    /// text, so it may hold a code, a range or a comparison, spaced either
+    /// way; a list may mix them with numbers.
+    #[test]
+    fn a_status_string_reads_as_the_field_reads_it() {
+        let status = |checks: &str| {
+            HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"))
+                .unwrap()
+                .checks
+                .status
+        };
+        assert_eq!(status("status = \"200\"\n"), [Code(200)]);
+        assert_eq!(status("status = \"<400\"\n"), [Below(400)]);
+        assert_eq!(status("status = [\"200 - 299\", 404]\n"), [Range(200, 299), Code(404)]);
+        assert_eq!(
+            status("status = [\"200\", 200, \"< 400\", \"<400\"]\n"),
+            [Code(200), Below(400)]
+        );
+    }
+
+    /// Spec R6, status ranges spec S7, S11: a status that isn't a code from
+    /// 100 to 599, a range or a comparison refuses the read with the
+    /// field's words; so does a key `[checks]` doesn't know.
     #[test]
     fn a_bad_check_status_or_key_refuses_the_read() {
         let read =
             |checks: &str| HttpRequest::from_toml_str(&format!("url = \"u\"\n[checks]\n{checks}"));
-        for bad in ["status = 99\n", "status = 600\n", "status = [200, 1000]\n", "status = -1\n"] {
+        let terms = "a check's status must be codes from 100 to 599, ranges like 200-299 or \
+                     comparisons like < 400, not ";
+        for (bad, why) in [
+            ("status = 99\n", format!("{terms}99")),
+            ("status = 600\n", format!("{terms}600")),
+            ("status = [200, 1000]\n", format!("{terms}1000")),
+            ("status = -1\n", format!("{terms}-1")),
+            ("status = \"2xx\"\n", format!("{terms}2xx")),
+            ("status = [\"200-\"]\n", format!("{terms}200-")),
+            ("status = \"< 600\"\n", format!("{terms}< 600")),
+            (
+                "status = \"300-200\"\n",
+                "a check's status range must run low to high, not 300-200".into(),
+            ),
+            (
+                "status = [\"< 100\"]\n",
+                "a check's status must match a code from 100 to 599, not < 100".into(),
+            ),
+            (
+                "status = \">599\"\n",
+                "a check's status must match a code from 100 to 599, not > 599".into(),
+            ),
+        ] {
             let err = read(bad).unwrap_err().to_string();
-            assert!(err.contains("a code from 100 to 599"), "{bad}: {err}");
+            assert!(err.contains(&why), "{bad}: {err}");
         }
-        for bad in ["status = \"200\"\n", "status = [\"200\"]\n", "jq = '.a'\n", "header = 1\n"] {
+        for bad in
+            ["status = 200.0\n", "status = [[200]]\n", "status = { a = 1 }\n", "status = true\n"]
+        {
+            assert!(read(bad).is_err(), "{bad}");
+        }
+        for bad in ["jq = '.a'\n", "header = 1\n"] {
             assert!(read(bad).is_err(), "{bad}");
         }
     }
@@ -1014,7 +1240,7 @@ mod tests {
     fn time_limits_round_trip_between_status_and_jq() {
         let mut req = sample();
         req.checks = Checks {
-            status: vec![200],
+            status: vec![Code(200)],
             max_ttfb_ms: Some(500),
             max_elapsed_ms: Some(2000),
             jq: vec![".a == 1".into()],
@@ -1055,7 +1281,7 @@ mod tests {
             "url = \"u\"\n[checks]\nstatus = [200, 201, 200]\njq = ['.a', ' .b', '.a ']\n",
         )
         .unwrap();
-        assert_eq!(read.checks.status, [200, 201]);
+        assert_eq!(read.checks.status, [Code(200), Code(201)]);
         assert_eq!(read.checks.jq, [".a", ".b"]);
     }
 
@@ -1063,12 +1289,28 @@ mod tests {
     #[test]
     fn a_typed_status_or_limit_reads_by_the_files_rules() {
         assert_eq!(Checks::parse_status(""), Ok(vec![]));
-        assert_eq!(Checks::parse_status("200"), Ok(vec![200]));
-        assert_eq!(Checks::parse_status(" 200, 201,200 404 "), Ok(vec![200, 201, 404]));
-        for bad in ["99", "600", "2xx", "200;201", "-200", "200.5"] {
+        assert_eq!(Checks::parse_status("200"), Ok(vec![Code(200)]));
+        assert_eq!(
+            Checks::parse_status(" 200, 201,200 404 "),
+            Ok(vec![Code(200), Code(201), Code(404)])
+        );
+        for bad in ["99", "600", "2xx", "200;201", "-200", "200.5", "<", "<=", "200-", "--"] {
             let err = Checks::parse_status(bad).unwrap_err();
-            assert!(err.starts_with("a check's status must be a code from 100 to 599"), "{err}");
+            let want = "a check's status must be codes from 100 to 599, ranges like 200-299 or \
+                        comparisons like < 400, not ";
+            assert_eq!(err, format!("{want}{bad}"));
         }
+        // Status ranges spec S3, S11: a range the wrong way round, and a
+        // term no code from 100 to 599 matches, each with its own words;
+        // what was typed is quoted as typed, spaces cut to one.
+        let wrong = "a check's status range must run low to high, not ";
+        assert_eq!(Checks::parse_status("300-200"), Err(format!("{wrong}300-200")));
+        assert_eq!(Checks::parse_status("200, 300  - 200"), Err(format!("{wrong}300 - 200")));
+        let none = "a check's status must match a code from 100 to 599, not ";
+        assert_eq!(Checks::parse_status("<100"), Err(format!("{none}< 100")));
+        assert_eq!(Checks::parse_status("> 599"), Err(format!("{none}> 599")));
+        assert_eq!(Checks::parse_status("<= 100"), Ok(vec![AtMost(100)]));
+        assert_eq!(Checks::parse_status(">=599"), Ok(vec![AtLeast(599)]));
         assert_eq!(Checks::parse_limit(" "), Ok(None));
         assert_eq!(Checks::parse_limit(" 500 "), Ok(Some(500)));
         assert_eq!(Checks::parse_limit("4294967295"), Ok(Some(u32::MAX)));
@@ -1078,23 +1320,77 @@ mod tests {
         }
         // What was typed is quoted cut short.
         let long = "9".repeat(200);
-        for err in [Checks::parse_status(&long), Checks::parse_limit(&long).map(|_| vec![])] {
+        let range = format!("300-{long}");
+        let errs = [&long, &range].map(|typed| Checks::parse_status(typed));
+        for err in errs.into_iter().chain([Checks::parse_limit(&long).map(|_| vec![])]) {
             let err = err.unwrap_err();
-            assert!(err.ends_with('…') && err.chars().count() < 150, "{err}");
+            let quoted = err.rsplit_once(", not ").unwrap().1;
+            assert!(quoted.ends_with('…') && quoted.chars().count() == 60, "{err}");
+        }
+    }
+
+    /// Status ranges spec S2, S4, S5: each term form reads with or without
+    /// spaces inside it, between terms commas or spaces; each shows back in
+    /// one form; a term typed twice counts once and overlaps both stay.
+    #[test]
+    fn each_status_term_reads_and_shows_in_one_form() {
+        let cases = [
+            ("404", Code(404), "404"),
+            ("200-299", Range(200, 299), "200-299"),
+            ("200 - 299", Range(200, 299), "200-299"),
+            ("200 -299", Range(200, 299), "200-299"),
+            ("200- 299", Range(200, 299), "200-299"),
+            ("200-200", Range(200, 200), "200-200"),
+            ("<400", Below(400), "< 400"),
+            ("< 400", Below(400), "< 400"),
+            ("<=399", AtMost(399), "<= 399"),
+            ("<= 399", AtMost(399), "<= 399"),
+            (">499", Above(499), "> 499"),
+            ("> 499", Above(499), "> 499"),
+            (">=500", AtLeast(500), ">= 500"),
+            (">=  500", AtLeast(500), ">= 500"),
+        ];
+        for (typed, term, shown) in cases {
+            assert_eq!(Checks::parse_status(typed), Ok(vec![term]), "{typed}");
+            assert_eq!(term.to_string(), shown, "{typed}");
+        }
+        assert_eq!(
+            Checks::parse_status("200, 200-299 < 400,<400 ,  >= 500 404"),
+            Ok(vec![Code(200), Range(200, 299), Below(400), AtLeast(500), Code(404)])
+        );
+    }
+
+    /// Status ranges spec S1, S14: a term matches the codes it names, both
+    /// ends of a range included, a status past 599 by the same comparison.
+    #[test]
+    fn a_status_term_matches_at_its_edges() {
+        let cases: [(StatusTerm, &[u16], &[u16]); 6] = [
+            (Code(404), &[404], &[403, 405]),
+            (Range(200, 299), &[200, 250, 299], &[199, 300]),
+            (Below(400), &[100, 399], &[400, 999]),
+            (AtMost(399), &[399], &[400]),
+            (Above(499), &[500, 600], &[499]),
+            (AtLeast(500), &[500, 999], &[499]),
+        ];
+        for (term, pass, fail) in cases {
+            assert!(pass.iter().all(|s| term.matches(*s)), "{term} {pass:?}");
+            assert!(!fail.iter().any(|s| term.matches(*s)), "{term} {fail:?}");
         }
     }
 
     /// `Checks` reads back what its `Serialize` gives in a format that hands
-    /// a positive integer to `visit_u64`, as JSON does.
+    /// a positive integer to `visit_u64`, as JSON does; a term other than a
+    /// code goes as its string (status ranges spec S10).
     #[test]
     fn checks_round_trip_through_json() {
         let checks = Checks {
-            status: vec![200],
+            status: vec![Code(200), Range(201, 204), Below(400)],
             max_ttfb_ms: Some(500),
             max_elapsed_ms: Some(2000),
             jq: vec![".a".into()],
         };
         let json = serde_json::to_string(&checks).unwrap();
+        assert!(json.starts_with(r#"{"status":[200,"201-204","< 400"],"#), "{json}");
         assert_eq!(serde_json::from_str::<Checks>(&json).unwrap(), checks);
     }
 

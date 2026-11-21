@@ -1022,6 +1022,37 @@ fn run_evaluates_the_requests_checks() {
     assert_eq!(json(&out)["checks"], serde_json::json!([]));
 }
 
+/// Status ranges spec S6, S9, S10: a status check of a range and a
+/// comparison in the file passes a 404 in the range, fails a 200 with its
+/// terms in the line, and its JSON `expected` follows the file.
+#[test]
+fn run_judges_a_status_range_from_the_file() {
+    let home = Home::new();
+    let server = Server::start();
+    let status = "\n[checks]\nstatus = [\"400-499\", \">= 500\"]\n";
+    let root = write_suite_project(
+        &home,
+        &server.base(),
+        &[
+            ("main/gone", &format!("{}{status}", get("/missing"))),
+            ("main/good", &format!("{}{status}", get("/ok"))),
+        ],
+    );
+    let (code, _, err) = streams(&home, &root, "main/gone", &[]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let (code, _, err) = streams(&home, &root, "main/good", &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(err, "postui: check failed: status 200, expected 400-499 or >= 500\n");
+    let v = json(&send(&home, &root, "main/gone", &[]));
+    assert_eq!(
+        v["checks"],
+        serde_json::json!([
+            {"check": "status", "expected": ["400-499", ">= 500"], "got": 404, "passed": true,
+             "failure": null}
+        ])
+    );
+}
+
 /// The suite fails a request on its checks and passes one on its expected
 /// status, and says why under the row.
 #[test]

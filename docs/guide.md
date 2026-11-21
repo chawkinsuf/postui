@@ -55,7 +55,8 @@ Params, Vars, Body and Checks:
   with the value it has now.
 - **Body** is a JSON editor that can format or minify the body, or open it in
   your `$EDITOR`.
-- **Checks** says what a good response is: the status codes that pass (left
+- **Checks** says what a good response is: the status codes that pass, as
+  codes, ranges and comparisons such as `200, 201-204, < 400` (left
   empty, any code below 400 passes: in `run` and `suite` always, in the app
   once another check is set), limits in
   milliseconds on the time until the first byte and until the last byte (the
@@ -205,6 +206,12 @@ status = 200
 max_elapsed_ms = 2000
 jq = ['.items | length > 0', '.items[0].id == 42']
 ```
+
+`status` takes a code as a number, and a range (both ends included) or a
+comparison (`<`, `<=`, `>`, `>=`) as a string, one or a list of them:
+`status = ["200-299", 404]` or `status = "< 400"`. A response passes on any
+of them. postui 0.5.0 can't read a request file whose `status` holds a
+string.
 
 `postui suite` and `postui run` both evaluate them and say which failed. In
 the app, the request's Checks tab edits them and the response's Checks tab
