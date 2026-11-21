@@ -432,28 +432,35 @@ impl StatusTerm {
         }
     }
 
-    /// One term as [`status_words`] gives it; the refusal is S11's words.
+    /// One term as [`status_words`] gives it, read by S2's forms: a sign
+    /// then a code, a code `-` a code, or a code, with a space allowed only
+    /// after the sign and beside the `-`. A code is plain digits, 100 to
+    /// 599. The refusal is S11's words.
     fn parse(word: &str) -> Result<Self, String> {
-        let bare: String = word.chars().filter(|c| !c.is_whitespace()).collect();
-        let code =
-            |n: &str| n.parse::<u16>().ok().and_then(status_code).ok_or_else(|| no_term(word));
-        let term = if let Some(n) = bare.strip_prefix("<=") {
-            StatusTerm::AtMost(code(n)?)
-        } else if let Some(n) = bare.strip_prefix('<') {
-            StatusTerm::Below(code(n)?)
-        } else if let Some(n) = bare.strip_prefix(">=") {
-            StatusTerm::AtLeast(code(n)?)
-        } else if let Some(n) = bare.strip_prefix('>') {
-            StatusTerm::Above(code(n)?)
-        } else if let Some((low, high)) = bare.split_once('-') {
-            let (low, high) = (code(low)?, code(high)?);
+        let code = |n: &str| {
+            Some(n)
+                .filter(|n| n.len() == 3 && n.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|n| n.parse::<u16>().ok())
+                .and_then(status_code)
+                .ok_or_else(|| no_term(word))
+        };
+        let term = if let Some(n) = word.strip_prefix("<=") {
+            StatusTerm::AtMost(code(n.trim_start())?)
+        } else if let Some(n) = word.strip_prefix('<') {
+            StatusTerm::Below(code(n.trim_start())?)
+        } else if let Some(n) = word.strip_prefix(">=") {
+            StatusTerm::AtLeast(code(n.trim_start())?)
+        } else if let Some(n) = word.strip_prefix('>') {
+            StatusTerm::Above(code(n.trim_start())?)
+        } else if let Some((low, high)) = word.split_once('-') {
+            let (low, high) = (code(low.trim_end())?, code(high.trim_start())?);
             if low > high {
                 let word = crate::checks::brief(word);
                 return Err(format!("a check's status range must run low to high, not {word}"));
             }
             StatusTerm::Range(low, high)
         } else {
-            StatusTerm::Code(code(&bare)?)
+            StatusTerm::Code(code(word)?)
         };
         if !(100..=599).any(|status| term.matches(status)) {
             return Err(format!("a check's status must match a code from 100 to 599, not {term}"));
@@ -473,13 +480,15 @@ fn no_term(word: &str) -> String {
 
 /// The terms of a status field's `text`, each as typed with its spaces cut
 /// to one (S4): split at commas, then at spaces, except where a part ends
-/// in a comparison's sign or a `-`, or the next one starts with a `-`.
+/// in a comparison's sign or a `-`, or the next one starts with a `-` and
+/// the part is digits alone (a range's low end).
 fn status_words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
     for part in text.split(',') {
         let mut word = String::new();
         for piece in part.split_whitespace() {
-            let joins = word.ends_with(['<', '>', '=', '-']) || piece.starts_with('-');
+            let joins = word.ends_with(['<', '>', '=', '-'])
+                || (piece.starts_with('-') && word.bytes().all(|b| b.is_ascii_digit()));
             if !word.is_empty() && !joins {
                 words.push(std::mem::take(&mut word));
             }
@@ -580,6 +589,8 @@ fn status_terms<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<StatusTerm>, D::E
             code(v)
         }
 
+        // Blank text reads as no terms, as in the field (S13) and as
+        // `status = []` does; the app writes neither.
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             Checks::parse_status(v).map_err(E::custom)
         }
@@ -1183,6 +1194,8 @@ mod tests {
                 .status
         };
         assert_eq!(status("status = \"200\"\n"), [Code(200)]);
+        // Blank text is no status check, as in the field and as `[]` is.
+        assert!(status("status = \"\"\n").is_empty());
         assert_eq!(status("status = \"<400\"\n"), [Below(400)]);
         assert_eq!(status("status = [\"200 - 299\", 404]\n"), [Range(200, 299), Code(404)]);
         assert_eq!(
@@ -1208,6 +1221,8 @@ mod tests {
             ("status = \"2xx\"\n", format!("{terms}2xx")),
             ("status = [\"200-\"]\n", format!("{terms}200-")),
             ("status = \"< 600\"\n", format!("{terms}< 600")),
+            ("status = \"200-+299\"\n", format!("{terms}200-+299")),
+            ("status = [\"> = 500\"]\n", format!("{terms}> = 500")),
             (
                 "status = \"300-200\"\n",
                 "a check's status range must run low to high, not 300-200".into(),
@@ -1294,7 +1309,12 @@ mod tests {
             Checks::parse_status(" 200, 201,200 404 "),
             Ok(vec![Code(200), Code(201), Code(404)])
         );
-        for bad in ["99", "600", "2xx", "200;201", "-200", "200.5", "<", "<=", "200-", "--"] {
+        // A number is plain digits: no sign, no leading zero; a sign has no
+        // space inside it.
+        for bad in [
+            "99", "600", "2xx", "200;201", "-200", "200.5", "<", "<=", "200-", "--", "+200",
+            "0200", "<+400", ">=0500", "200-+299", "200-0299", "< = 399", "> = 500", "=< 400",
+        ] {
             let err = Checks::parse_status(bad).unwrap_err();
             let want = "a check's status must be codes from 100 to 599, ranges like 200-299 or \
                         comparisons like < 400, not ";
@@ -1311,6 +1331,11 @@ mod tests {
         assert_eq!(Checks::parse_status("> 599"), Err(format!("{none}> 599")));
         assert_eq!(Checks::parse_status("<= 100"), Ok(vec![AtMost(100)]));
         assert_eq!(Checks::parse_status(">=599"), Ok(vec![AtLeast(599)]));
+        // A `-` after a finished term starts a term of its own.
+        let terms = "a check's status must be codes from 100 to 599, ranges like 200-299 or \
+                     comparisons like < 400, not ";
+        assert_eq!(Checks::parse_status(">= 500 -200"), Err(format!("{terms}-200")));
+        assert_eq!(Checks::parse_status("< 400 - 200"), Err(format!("{terms}- 200")));
         assert_eq!(Checks::parse_limit(" "), Ok(None));
         assert_eq!(Checks::parse_limit(" 500 "), Ok(Some(500)));
         assert_eq!(Checks::parse_limit("4294967295"), Ok(Some(u32::MAX)));
