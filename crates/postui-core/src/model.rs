@@ -589,8 +589,10 @@ fn status_terms<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<StatusTerm>, D::E
             code(v)
         }
 
-        // Blank text reads as no terms, as in the field (S13) and as
-        // `status = []` does; the app writes neither.
+        // A string, bare or in a list, reads as the field reads its text
+        // (S7), with no rule of its own for a list entry: `"200 404"` is
+        // two terms, and blank text is none, so `status = ""` and
+        // `status = [""]` are no status check, as `status = []` is.
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             Checks::parse_status(v).map_err(E::custom)
         }
@@ -1196,6 +1198,9 @@ mod tests {
         assert_eq!(status("status = \"200\"\n"), [Code(200)]);
         // Blank text is no status check, as in the field and as `[]` is.
         assert!(status("status = \"\"\n").is_empty());
+        assert!(status("status = [\"\"]\n").is_empty());
+        assert_eq!(status("status = [\" \", 200]\n"), [Code(200)]);
+        assert_eq!(status("status = [\"200, 404\", 500]\n"), [Code(200), Code(404), Code(500)]);
         assert_eq!(status("status = \"<400\"\n"), [Below(400)]);
         assert_eq!(status("status = [\"200 - 299\", 404]\n"), [Range(200, 299), Code(404)]);
         assert_eq!(

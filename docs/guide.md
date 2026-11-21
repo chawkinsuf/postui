@@ -211,9 +211,9 @@ jq = ['.items | length > 0', '.items[0].id == 42']
 `status` takes a code as a number, and a range (both ends included) or a
 comparison (`<`, `<=`, `>`, `>=`) as a string, one or a list of them:
 `status = ["200-299", 404]` or `status = "< 400"`. A response passes on any
-of them. Any string reads as the request's Checks tab reads its text, so `"200"` is
-the code 200, and postui saves a code back as a number. postui 0.5.0 can't read a request file whose `status` holds a
-string.
+of them. Any string reads as the request's Checks tab reads its text, so
+`"200"` is the code 200, and postui saves a code back as a number. postui
+0.5.0 can't read a request file whose `status` holds a string.
 
 `postui suite` and `postui run` both evaluate them and say which failed. In
 the app, the request's Checks tab edits them and the response's Checks tab

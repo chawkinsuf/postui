@@ -38,8 +38,8 @@
   the tree for filters written for you, or describe the one you want and let an
   AI command write it from the response's shape, never its values.
 - **Checks.** Say what a good response is: the statuses that pass (codes,
-  ranges or comparisons), time limits, and jq filters that must give `true`. The app, `postui run` and
-  the suite check each send against them.
+  ranges or comparisons), time limits, and jq filters that must give `true`.
+  The app, `postui run` and the suite check each send against them.
 - **curl in and out.** Paste a curl command into the sidebar to import it as a
   request, or copy any request as curl.
 - **A command line for scripts and agents.** List a project's requests and
