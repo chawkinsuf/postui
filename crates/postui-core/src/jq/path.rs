@@ -67,9 +67,9 @@ pub(crate) fn push_bracket(out: &mut String, inner: &str) {
 /// comment, which runs to the end of its line and would swallow text
 /// written on that line (#334). Telling a comment from a `#` inside a
 /// string would take lexing jq, so any `#` gets the break, which costs a
-/// filter with a `#` in a string only an extra line. A comment line that
-/// ends in a backslash runs on into the next line, so text ending in one
-/// gets an empty line between.
+/// filter with a `#` in a string only an extra line. jaq runs a comment
+/// line that ends in an odd number of backslashes on into the next line,
+/// so text ending in any backslash gets an empty line between.
 fn joint(current: &str) -> &'static str {
     if !current.contains('#') {
         " "
@@ -94,9 +94,15 @@ pub fn compose(current: &str, path: &str, expr: Option<&str>) -> String {
         return current.to_string();
     }
     let tail = parts.join(" | ");
-    // A filter of only comments doesn't compile in jaq, so the `|` after
-    // one changes only the error.
-    if current.trim().is_empty() { tail } else { format!("{current}{}| {tail}", joint(current)) }
+    if current.trim().is_empty() {
+        tail
+    } else if current.lines().all(|l| matches!(l.trim_start().chars().next(), None | Some('#'))) {
+        // Only comments: no code for a `|` to follow, so the tail goes
+        // after them as on an empty bar.
+        format!("{current}{}{tail}", joint(current))
+    } else {
+        format!("{current}{}| {tail}", joint(current))
+    }
 }
 
 /// `current` wrapped as `[ current ]`, Collect into array's filter.
@@ -184,8 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_of_only_comments_fails_to_compile_with_or_without_a_verb() {
-        assert!(crate::jq::check("# todo").is_err());
-        assert!(crate::jq::check(&compose("# todo", ".items", Some("length"))).is_err());
+    fn on_a_filter_of_only_comments_the_added_part_follows_them_without_a_pipe() {
+        let counted = compose("# todo\n\n  # more", ".items", Some("length"));
+        assert_eq!(counted, "# todo\n\n  # more\n.items | length");
+        assert_eq!(outputs(&counted), ["2"]);
+        let counted = compose(r"# todo \", ".items", Some("length"));
+        assert_eq!(counted, "# todo \\\n\n.items | length");
+        assert_eq!(outputs(&counted), ["2"]);
+        // A line of code among the comments keeps the pipe.
+        assert_eq!(compose("# note\n.items", ".", Some("length")), "# note\n.items\n| length");
     }
 }

@@ -271,6 +271,8 @@ would take lexing jq, and the extra line break is harmless. Text with no
 `#` composes on one line as before. Text that holds a `#` and ends in a
 backslash gets an empty line before the appended part, since jaq runs a
 comment line ending in an odd number of backslashes on into the next.
+Text that is only comments (every non-blank line starts with `#`) gets
+the expression after them without the `| `, as an empty bar does.
 
 The scalar literal in "only items where" is the value's JSON text, so
 numbers stay bare and strings stay quoted. The item is absent when no
