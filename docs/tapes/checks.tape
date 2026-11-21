@@ -27,7 +27,8 @@ Enter
 Wait+Screen@15s /200 +\d/
 Sleep 500ms
 
-# Into the request's tabs, and back from Headers to Checks, the last tab.
+# Into the request's tabs, and back from Headers to Checks: Body, the last
+# tab, is off for a GET, so gT steps over it.
 Ctrl+W
 Type "l"
 Sleep 300ms

@@ -27,7 +27,7 @@ picked, `mine` my call. Sources are copied from the ticket.
 
 | # | Rule | Source |
 |---|---|---|
-| Q1 | A fifth tab, Checks, last in the request's tab row, with a count as the other tabs have. Reached as they are: a click, or each profile's tab keys. No new default key. | the tab: you; its place, the count, no new key: mine |
+| Q1 | A fifth tab, Checks, ~~last in the request's tab row~~ fourth, before Body (2026-11-21, #331: see the paragraph under this table), with a count as the other tabs have. Reached as they are: a click, or each profile's tab keys. No new default key. | the tab: you; its place: was mine, now you (#331); the count, no new key: mine |
 | Q2 | Three one-line fields at the top: **status** (one code or several, typed `200, 201`), **first byte** and **total** (each a whole number of milliseconds). An empty field means no such check. | mine (approved) |
 | Q3 | Under them the jq checks, one row each, with `+ Add check`, and copy and delete on each row as a Headers row has. | you: "a proper add check"; the list: mine (approved) |
 | Q4 | A check is one line, typed and edited as the jq bar's filter is. | you |
@@ -35,6 +35,14 @@ picked, `mine` my call. Sources are copied from the ticket.
 | Q6 | A jq check that doesn't compile is kept and drawn in the error colour. | mine |
 | Q7 | Each change is one undo step, and a delete never asks. | existing rules |
 | Q8 | An edit takes effect at the next send. Editing a check re-judges nothing. | mine (approved); you: "who ever asked for automatic runs?" |
+
+**Q1's place changed (2026-11-21, #331).** `you`: "Even though the
+Checks tab was the most recently added, as the only tab that can be
+disabled I want to keep the Body tab at the end of the list." The row is
+Headers, Params, Vars, Checks, Body. The tab numbers follow the row, as
+they always have, so `editor_tab_4` and `4gt` now pick Checks and
+`editor_tab_5` and `5gt` pick Body (item 12): mine. With Body last, its
+badge coming or going no longer moves any other tab.
 
 ### The response's Checks tab
 
@@ -330,7 +338,8 @@ the check results by `HintCtx::checks`, the Checks view being up.
 11. The read drops a repeated status code as well as a repeated jq
     filter, and a status typed twice in the field counts once.
 12. The tab can be bound as `editor_tab_5`, unbound by default like the
-    other four.
+    other four. (2026-11-21, #331: `editor_tab_4`, now that Body is last;
+    `editor_tab_5` is Body's.)
 13. Tab or Shift-Tab out of a check that drew a warning (a repeat, a
     blank) ends on the check the warning names, as Enter does (round 2).
 14. Checks that panic leave the response, with one failed line (round 2).

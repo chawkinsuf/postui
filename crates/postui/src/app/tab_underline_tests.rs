@@ -15,7 +15,7 @@ const BODY: &str =
     r#"{"data":{"items":[{"id":1,"status":"active"},{"id":2,"status":"off"}],"total":2}}"#;
 
 fn editor_tabs() -> Vec<Hit> {
-    (0..4).map(Hit::EditorTab).collect()
+    (0..EditorTab::COUNT).map(Hit::EditorTab).collect()
 }
 
 fn response_tabs() -> Vec<Hit> {
