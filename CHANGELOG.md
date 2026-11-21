@@ -7,11 +7,13 @@ change the project file format.
 ## [0.5.1] - 2026-11-21
 
 A request's `[checks]` status can now name ranges and comparisons, such as
-`200-299` or `< 400`, as well as codes. postui 0.5.0 can't read a request
-file whose status holds a range or a comparison, so a team sharing a
-project should upgrade together; a file of codes only reads as before. The
-request's Body tab is now last, after Checks, so `editor_tab_4` (`4gt` in
-the Vim profile) opens Checks and `editor_tab_5` (`5gt`) opens Body.
+`200-299` or `< 400`, as well as codes. This patch release adds to the file
+format: postui 0.5.0 can't read a request file whose status holds a range
+or a comparison, so a team sharing a project should upgrade together. A
+file of codes only reads as before. The request's Body tab is now last,
+after Checks, so `editor_tab_4` (`4gt` in the Vim profile) opens Checks and
+`editor_tab_5` (`5gt`) opens Body: a config that bound `editor_tab_5` to
+reach Checks needs `editor_tab_4` instead.
 
 ### Added
 
@@ -35,8 +37,9 @@ the Vim profile) opens Checks and `editor_tab_5` (`5gt`) opens Body.
 - A paste of several lines into the response's jq bar keeps its line
   breaks (shown as `^J`), so a filter with a `# comment` runs as written
   instead of turning everything after the comment into comment. Pasted into
-  an empty bar, blank lines at the start and end are dropped. Every other
-  one-line field still joins the pasted lines with spaces.
+  an empty bar, or over all of its text, blank lines at the start and end
+  are dropped. Every other one-line field still joins the pasted lines with
+  spaces.
 
 ### Fixed
 
