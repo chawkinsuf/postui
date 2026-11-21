@@ -5,6 +5,7 @@
 //! buffer of the field with the caret for each call (`App::session_parts`).
 
 use super::ctx::{EngineKind, EngineView, FieldId};
+use crate::components::editor::Editor;
 use crate::components::line_input::LineInput;
 use crate::config::KeyProfile;
 use crate::text::indent::Indent;
@@ -48,11 +49,11 @@ impl FieldBuf<'_> {
 
     /// What a paste of `text` leaves in this field, by the buffer's rule
     /// (`TextBuf::pasted`): a one-line field's own (`LineInput::pasted`);
-    /// the body makes each CRLF and CR a line break (`BodyBuf::paste_of`).
+    /// the body makes each CRLF and CR a line break (`Editor::body_pasted`).
     pub fn pasted(&self, text: &str) -> String {
         match self {
             FieldBuf::Line(input) => input.pasted(text),
-            FieldBuf::Body(..) => BodyBuf::paste_of(text),
+            FieldBuf::Body(..) => Editor::body_pasted(text),
         }
     }
 }

@@ -2,6 +2,7 @@
 //! file that names app types: it adapts `LineInput` (one-line fields) and
 //! edtui's `EditorState` (the request body).
 
+use crate::components::editor::Editor;
 use crate::components::line_input::{LineInput, VisualShape};
 use edtui::{EditorMode, EditorState, Index2, RowIndex};
 use std::borrow::Cow;
@@ -63,7 +64,7 @@ pub trait TextBuf {
     /// What a paste of `text` leaves in the buffer, or a put in a one-line
     /// field. A one-line field goes by its own rule (`LineInput::pasted`):
     /// flattened to one line, or with its line breaks kept. The body makes
-    /// each CRLF and CR a line break ([`BodyBuf::paste_of`]); a put there
+    /// each CRLF and CR a line break (`Editor::body_pasted`); a put there
     /// does not ask, and puts the register as it is.
     fn pasted(&self, text: &str) -> String;
     /// Paint only: the Visual span, and for the body edtui's mode (its
@@ -208,13 +209,6 @@ impl<'a> BodyBuf<'a> {
     pub fn new(state: &'a mut EditorState, visual: &'a mut BodyVisual) -> Self {
         Self { state, visual }
     }
-
-    /// What a paste of `text` leaves in the body ([`TextBuf::pasted`]):
-    /// each CRLF and CR becomes a line break, as the arrows paste
-    /// (`Editor::paste_body`) takes them.
-    pub fn paste_of(text: &str) -> String {
-        text.replace("\r\n", "\n").replace('\r', "\n")
-    }
 }
 
 impl TextBuf for BodyBuf<'_> {
@@ -277,7 +271,7 @@ impl TextBuf for BodyBuf<'_> {
     }
 
     fn pasted(&self, text: &str) -> String {
-        Self::paste_of(text)
+        Editor::body_pasted(text)
     }
 
     fn show(&mut self, paint: Paint) {

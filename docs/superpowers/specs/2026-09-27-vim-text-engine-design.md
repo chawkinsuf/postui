@@ -149,8 +149,8 @@ into lines.
 
 **Amended 2026-11-21, #335 (`mine`, on a bug the user asked fixed before
 the release).** The body's `TextBuf::pasted` makes each CRLF and CR a line
-break (`BodyBuf::paste_of`), as the Insert paste and the arrows paste
-already did. Before this it took the text as it is, so a paste in Normal or
+break (`Editor::body_pasted`, which the arrows paste uses too), as the
+Insert paste and the arrows paste already did. Before this it took the text as it is, so a paste in Normal or
 Visual put each CR into the body as a char, which the body draws as
 nothing. Every paste into the body asks it: the Insert paste and its `.`
 replay (`InsertKey::for_buffer`) and the vim seam's paste in Normal and
