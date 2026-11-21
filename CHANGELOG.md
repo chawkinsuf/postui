@@ -11,6 +11,18 @@ change the project file format.
 - The Body tab's label no longer says `vars` while the body's variables
   are on. The body's `substitute` chip still shows whether they are.
 
+### Fixed
+
+- A large response whose Tree finishes loading while another request is
+  open now counts toward the last three large responses kept loaded. It
+  used to stay loaded outside that count until its request was next opened.
+- In the response pane and the variable tooltip, a mouse selection dragged
+  down past the end of a one-character line, such as a closing `}`, takes
+  that character. A selection dragged up from a line's first character past
+  the end of the line above selects nothing, as the body editor does. In
+  the response pane scrolled sideways, a selection dragged down past a line
+  scrolled out of view leaves that line out, whatever its length.
+
 ## [0.5.0] - 2026-11-18
 
 Requests can now say what a good response is, in a `[checks]` table that
