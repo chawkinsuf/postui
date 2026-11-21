@@ -457,9 +457,9 @@ impl App {
                 // `describe…`), and its `commands` and `quit` keep the
                 // caret as their keys do.
                 // A press on a window separator is exempt as a scrollbar is:
-                // it disturbs nothing ([`Self::is_separator_press`]). So is
-                // a press on the variable tooltip, which floats over the
-                // panes ([`Hit::is_float_overlay`], #298).
+                // it disturbs nothing ([`Self::is_separator_press`]).
+                // A press on the variable tooltip is exempt too
+                // ([`Hit::is_float_overlay`], #298).
                 let on_bar_row = self.hits.rect_of(&Hit::ResponseJqBar).is_some_and(|bar| {
                     bar.y == m.row && self.hits.pane_at(m.column, m.row) == Some(PaneId::Response)
                 });

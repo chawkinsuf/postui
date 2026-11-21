@@ -32486,7 +32486,8 @@ fn tooltip_pill_click_keeps_the_table_edit_and_selection() {
 /// Nor is a press on the tooltip a click away from a focused jq bar
 /// (#298): a pill or the tip's text leaves the bar with the caret, in
 /// both profiles. The edit pill's dialog opens over the focused bar, and
-/// once it closes the bar still takes the typing.
+/// once it closes the bar still takes the typing. The reveal pill and an
+/// undefined name's edit pill keep the caret too.
 #[test]
 fn tooltip_press_keeps_the_jq_bar_focused() {
     use crate::config::KeyProfile;
@@ -32533,6 +32534,34 @@ fn tooltip_press_keeps_the_jq_bar_focused() {
         assert!(app.session.response.jq_focused(), "{profile:?}: the bar still has the caret");
         type_str(&mut app, "z");
         assert_eq!(app.session.response.jq_text(), ".datza.total", "{profile:?}: at the caret");
+
+        app.editor.url = crate::components::line_input::LineInput::new("{{api_key}}/{{nowhere}}");
+        hover_token(&mut app, "api_key");
+        click_hit(&mut app, Hit::TipReveal("api_key".into()));
+        assert!(app.session.response.jq_focused(), "{profile:?}: the reveal pill keeps the caret");
+
+        // An undefined name's edit pill opens the insert picker over the
+        // bar. A pick from it has nowhere to insert: the bar takes no
+        // `{{token}}`.
+        hover_token(&mut app, "nowhere");
+        click_hit(&mut app, Hit::TipEdit("nowhere".into()));
+        assert!(
+            matches!(app.modals.top(), Some(Modal::VarPicker(_))),
+            "{profile:?}: the undefined name's edit pill opens the picker"
+        );
+        assert!(app.session.response.jq_focused(), "{profile:?}: under the picker");
+        for _ in 0.."nowhere".len() {
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        click_hit(&mut app, Hit::VarPickerRow(0));
+        assert!(app.modals.is_empty(), "{profile:?}: the pick closed the picker");
+        assert!(
+            app.toasts.messages().contains(&"nowhere to insert — focus a text field first"),
+            "{profile:?}: {:?}",
+            app.toasts.messages()
+        );
+        assert_eq!(app.session.response.jq_text(), ".datza.total", "{profile:?}: bar unchanged");
+        assert!(app.session.response.jq_focused(), "{profile:?}: the bar keeps the caret");
     }
 }
 
