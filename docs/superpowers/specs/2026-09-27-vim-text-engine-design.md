@@ -147,6 +147,16 @@ this, the engine assumed no `'\n'` ever reached a one-line buffer: a
 `debug_assert` in `OneLineBuf::splice` said so, and undo split such a row
 into lines.
 
+**Amended 2026-11-21, #335 (`mine`, on a bug the user asked fixed before
+the release).** The body's `TextBuf::pasted` makes each CRLF and CR a line
+break (`BodyBuf::paste_of`), as the Insert paste and the arrows paste
+already did. Before this it took the text as it is, so a paste in Normal or
+Visual put each CR into the body as a char, which the body draws as
+nothing. Every paste into the body asks it: the Insert paste and its `.`
+replay (`InsertKey::for_buffer`) and the vim seam's paste in Normal and
+Visual (`FieldBuf::pasted`). A put in the body still puts the register as
+it is, as Vim's does; a register holds a CR only when a buffer did.
+
 ### 3.3 The two buffers
 
 **`OneLineBuf<'a>(&'a mut LineInput)`**: `line(0)` collects the chars.

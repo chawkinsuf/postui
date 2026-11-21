@@ -35,6 +35,10 @@ change the project file format.
 
 - A press on a `{{token}}`'s tip (its buttons or its text) no longer takes
   the caret out of the response's jq bar.
+- In the Vim profile, a paste into the request body outside Insert mode
+  (in Normal or Visual) now takes Windows line breaks, and lone carriage
+  returns, as line breaks, as a paste in Insert mode does. It used to leave
+  hidden carriage returns in the body, which were sent with the request.
 - A large response whose Tree finishes loading while another request is
   open now counts toward the last three large responses kept loaded. It
   used to stay loaded outside that count until its request was next opened.

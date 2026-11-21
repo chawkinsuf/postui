@@ -46,12 +46,13 @@ impl FieldBuf<'_> {
         }
     }
 
-    /// What a paste of `text` leaves in this field: a one-line field's
-    /// own rule (`LineInput::pasted`); the body takes it as it is.
-    pub fn pasted<'t>(&self, text: &'t str) -> std::borrow::Cow<'t, str> {
+    /// What a paste of `text` leaves in this field, by the buffer's rule
+    /// (`TextBuf::pasted`): a one-line field's own (`LineInput::pasted`);
+    /// the body makes each CRLF and CR a line break (`BodyBuf::paste_of`).
+    pub fn pasted(&self, text: &str) -> String {
         match self {
-            FieldBuf::Line(input) => input.pasted(text).into(),
-            FieldBuf::Body(..) => text.into(),
+            FieldBuf::Line(input) => input.pasted(text),
+            FieldBuf::Body(..) => BodyBuf::paste_of(text),
         }
     }
 }
