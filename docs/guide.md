@@ -136,6 +136,8 @@ where `Tab` cycles and `Right` or `End` takes it
 ([configuration](configuration.md)).
 Inside a path, `ctrl+backspace` deletes back to the previous `.`, so
 `.data.items[0]` becomes `.data.` and then `.`.
+A filter pasted over several lines keeps its line breaks, shown as `^J`, so
+a `# comment` in it ends at its line.
 
 **Views** save filters by name, so a request can keep several and switch
 between them.
