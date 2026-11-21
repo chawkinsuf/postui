@@ -1,7 +1,8 @@
 # Status checks take ranges — Design
 
-Task #324. Status: **waiting for approval** (questions 1 and 2 on the
-ticket).
+Task #324. Status: **approved** 2026-11-21 ("A for both" on the ticket:
+questions 1 and 2 both took option A, recorded below as `mine (approved)`;
+the section 5 `mine` choices were not vetoed).
 
 ## 1. The problem
 
@@ -30,15 +31,15 @@ response Checks tab all read those. The writers are `Checks::parse_status`
 | # | Rule | Who |
 |---|---|---|
 | S1 | A status check is a list of terms. A response passes it when its status matches any term. | mine |
-| S2 | A term is one of: an exact code `404`; a range `200-299` (both ends included); a comparison `< 400`, `<= 399`, `> 499`, `>= 500`. | Q2 (recommended A); the ticket's examples `< 400`, `>= 500`, `200-299` |
+| S2 | A term is one of: an exact code `404`; a range `200-299` (both ends included); a comparison `< 400`, `<= 399`, `> 499`, `>= 500`. | mine (approved): Q2, A; the ticket's examples `< 400`, `>= 500`, `200-299` |
 | S3 | Every number in a term is a code from 100 to 599, as an exact code is today. A range runs low to high (`200-200` is allowed). A term that matches no code from 100 to 599 (`< 100`, `> 599`) is refused. | mine |
 | S4 | In the box, terms are separated by commas or spaces, as codes are today (`200 201` still works). Spaces after a comparison sign and around a range's `-` belong to the term: `< 400`, `<400`, `200 - 299` and `200-299` all read. | mine |
 | S5 | The box shows the terms back in one form: `200, 200-299, < 400` (a comparison with one space after its sign, a range with none), in the order typed. A term typed twice counts once, as a code does today. Two terms that overlap (`200, 200-299`) both stay. | mine |
-| S6 | In the file, an exact code stays a number and a range or a comparison is a string: `status = ["200-299", 404]`, `status = "< 400"`. A file of exact codes reads and writes exactly as in 0.5.0. | Q1 (recommended A) |
+| S6 | In the file, an exact code stays a number and a range or a comparison is a string: `status = ["200-299", 404]`, `status = "< 400"`. A file of exact codes reads and writes exactly as in 0.5.0. | mine (approved): Q1, A |
 | S7 | A string in the file reads as the box reads its text, so `"200"` reads as the code 200 and `"< 400"` as the comparison. The app writes each term back in S5's form, a code as a number. Any other value (a float, a table, a bad term) refuses the read, as a bad code does today (R6). | mine |
 | S8 | 0.5.0 and older refuse a request file whose `status` holds a string: the CHANGELOG says so. A file with exact codes only stays readable by 0.5.0. | mine (the cost of any choice for Q1) |
 | S9 | A failed status check says `status 500, expected 200-299 or 404`, the terms in S5's form joined by `or`, as codes are joined today. A passed one says `status 204`, as today. | mine |
-| S10 | The `run --json` / `suite --json` check is `{"check": "status", "expected": [200, "200-299", "< 400"], "got": 500, …}`: each term as the file writes it, a code as a number and the rest as strings. A check of exact codes is the JSON 0.5.0 gave. | Q1 (follows the file) |
+| S10 | The `run --json` / `suite --json` check is `{"check": "status", "expected": [200, "200-299", "< 400"], "got": 500, …}`: each term as the file writes it, a code as a number and the rest as strings. A check of exact codes is the JSON 0.5.0 gave. | mine (approved): Q1, A (follows the file) |
 | S11 | The box refuses a bad term with a warning toast and keeps what it had, as today: `a check's status must be codes from 100 to 599, ranges like 200-299 or comparisons like < 400, not 600`; a range the wrong way round: `a check's status range must run low to high, not 300-200`; a term that matches nothing: `a check's status must match a code from 100 to 599, not < 100`. The file read gives the same words. | mine |
 | S12 | The status box's footer text becomes `Codes that pass, e.g. 200, 201-204, < 400`. Its placeholders (`any code below 400`, `run and suite: any code below 400`) stay. | mine |
 | S13 | An empty status is still no status check (below 400 in `run` and `suite`; checks tabs spec H1). `< 400` typed in the box is a status check: it judges the response in the app even with no other check (checks tabs spec P1), and its line reads `status 200`. | mine |
