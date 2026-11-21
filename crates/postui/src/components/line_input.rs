@@ -131,15 +131,17 @@ impl LineInput {
     /// What a paste or a put of `text` leaves in this field, in both
     /// profiles: flattened to one line ([`flatten_paste`]), or, where the
     /// field keeps line breaks, with each CRLF or CR made a line break.
-    /// Into an empty field a blank line (empty or only whitespace) at
-    /// either edge is dropped with its break; next to text every break
-    /// stays, since one may end a jq `# comment` (#307).
+    /// Into an empty field, or over a selection of all its text (which a
+    /// paste replaces), a blank line (empty or only whitespace) at either
+    /// edge is dropped with its break; next to text every break stays,
+    /// since one may end a jq `# comment` (#307).
     pub(crate) fn pasted(&self, text: &str) -> String {
         if !self.keeps_breaks {
             return flatten_paste(text);
         }
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        if !self.text.is_empty() {
+        let selected = self.selection().map_or(0, |(start, end)| end - start);
+        if self.len_chars() > selected {
             return text;
         }
         let mut lines: Vec<&str> = text.split('\n').collect();
@@ -2207,6 +2209,7 @@ mod tests {
         // A paste over a selection of all the text goes into an empty field.
         let mut input = LineInput::new(".old").keeping_breaks();
         input.select_all();
+        assert_eq!(input.pasted("\n.a\n"), ".a", "asked before the selection goes");
         input.paste("\n.a\n");
         assert_eq!(input.text(), ".a");
     }

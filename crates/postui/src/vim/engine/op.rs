@@ -222,7 +222,11 @@ pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, 
     if !B::MULTILINE {
         // A one-line field: a linewise register goes in charwise without
         // its line break, and line breaks become spaces (key list §5),
-        // unless the field keeps them (`TextBuf::pasted`).
+        // unless the field keeps them (`TextBuf::pasted`). Both apply to
+        // one copy before the copies are joined, so a count can join them
+        // with no line break between, even where the field keeps line
+        // breaks. The one such field, the jq bar, is a query box, with no
+        // put.
         let text = match reg.kind {
             RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
             RegKind::Char => &reg.text,

@@ -739,20 +739,23 @@ impl App {
         let feedback = {
             let (glue, buf) = self.session_parts(id);
             let mut buf = buf?;
-            let pasted = buf.pasted(text);
-            let text = &*pasted;
             // An open search prompt takes the paste before a selection
             // does, as Vim's paste goes into its command line (#129):
             // `visual_span` is `None` while the prompt is open, Visual
             // under it or not, so a search begun from a selection gets it.
             if let Some((from, to)) = glue.visual_span(&mut buf) {
-                glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, text));
+                // The field's rule is asked with the selection still in
+                // it (spec §3.10's #307 amendments).
+                let text = buf.pasted(text);
+                glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, &text));
                 None
             } else {
+                // The engine applies the field's rule itself.
                 match glue.paste(text, &mut buf) {
                     Outcome::Consumed { note, request, .. } => Some((note, request)),
                     Outcome::Declined { .. } => {
-                        glue.edit(&mut buf, &engine_glue::Edit::Append(text));
+                        let text = buf.pasted(text);
+                        glue.edit(&mut buf, &engine_glue::Edit::Append(&text));
                         None
                     }
                 }

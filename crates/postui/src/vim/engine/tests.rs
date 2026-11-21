@@ -3480,6 +3480,48 @@ fn a_line_break_next_to_text_stays_and_one_into_an_empty_field_goes() {
     assert_eq!(f.text(), "| .b", "Insert ctrl+r into an empty field");
 }
 
+/// #307 review round 4: a query box's paste and Insert `ctrl+r` replace a
+/// mouse selection of all its text, so a field that keeps line breaks
+/// drops blank edge lines there, as into an empty field and as the arrows
+/// paste over a selection of all the text does.
+#[test]
+fn a_paste_over_a_selection_of_all_the_text_is_one_into_an_empty_field() {
+    let mut f = keeping(".old", 4, Start::InsertOnly);
+    f.input.select_all();
+    f.engine
+        .paste("\n.a\n", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), ".a", "a paste");
+    let mut f = keeping(".old", 4, Start::InsertOnly);
+    f.engine.registers_mut().set_unnamed(Register { text: "\n| .b\n".into(), kind: RegKind::Char });
+    f.input.select_all();
+    f.key(ctrl('r'));
+    f.keys("\"");
+    assert_eq!(f.text(), "| .b", "Insert ctrl+r");
+    let mut f = keeping(".old", 4, Start::InsertOnly);
+    f.input.set_cursor(1);
+    f.input.begin_mouse_selection();
+    f.input.extend_mouse_selection_to(4);
+    f.engine
+        .paste("\n.a\n", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    assert_eq!(f.text(), ".\n.a\n", "next to text every break stays");
+}
+
+/// #307 review round 4: an empty put and its undo in a one-line field
+/// land the caret back on the char it was on.
+#[test]
+fn an_empty_put_in_a_one_line_field_undoes_to_the_caret() {
+    for keeps in [true, false] {
+        let mut f = if keeps { keeping("abc", 0, Start::Normal) } else { Field::new("abc", 0) };
+        f.engine.registers_mut().set_unnamed(Register { text: String::new(), kind: RegKind::Char });
+        f.keys("$p");
+        f.keys("0u");
+        assert_eq!((f.text(), f.col()), ("abc", 2), "keeps: {keeps}");
+        f.keys("0P");
+        f.keys("$u");
+        assert_eq!((f.text(), f.col()), ("abc", 0), "keeps: {keeps}");
+    }
+}
+
 /// #307: in a one-line field a line break is a char like any other, so
 /// Visual `r` replaces it too.
 #[test]
