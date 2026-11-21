@@ -12778,7 +12778,7 @@ impl App {
         let unselected = self.tip_text.clear_selection();
         self.vim_after_key(ran);
         // A key that does nothing may still drop the pending keys the
-        // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
+        // footer echoes (a refused `<C-w>h`, `9gt` past the strip).
         let changed =
             ran.changed || self.key_echo() != echo || armed.is_some() || unselected || handed;
         // The op safety net at the event boundary, as `dispatch` has one

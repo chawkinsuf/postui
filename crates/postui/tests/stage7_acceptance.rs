@@ -474,8 +474,8 @@ fn clicking_a_body_line_puts_the_caret_at_that_lines_end() {
     open_request(&mut app, "ping");
     app.update(Action::SetMethod(postui_core::model::Method::Post));
 
-    // Draw position 3 is the Body tab (Params, Headers, Vars, Body).
-    click(&mut app, Hit::EditorTab(3));
+    // Draw position 4 is the Body tab (Headers, Params, Vars, Checks, Body).
+    click(&mut app, Hit::EditorTab(4));
     app.editor.set_body_text("{\n  \"aa\": 1,\n}\n");
 
     render(&mut app);

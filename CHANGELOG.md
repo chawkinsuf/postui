@@ -21,6 +21,10 @@ change the project file format.
 
 - The Body tab's label no longer says `vars` while the body's variables
   are on. The body's `substitute` chip still shows whether they are.
+- The request's Body tab is now the last tab, after Checks, since it is the
+  one tab a request without a body turns off. The tab numbers follow the
+  row: `editor_tab_4` now opens the Checks tab and `editor_tab_5` the Body
+  tab, and so do `4gt` and `5gt` in the Vim profile.
 
 ### Fixed
 

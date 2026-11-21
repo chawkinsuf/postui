@@ -1113,7 +1113,7 @@ fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
 }
 
 #[test]
-fn editor_tab_cycle_order_is_headers_params_vars_body_checks() {
+fn editor_tab_cycle_order_is_headers_params_vars_checks_body() {
     let mut app = App::new_for_test();
     // Body is only reachable for a method that sends one.
     app.update(Action::SetMethod(postui_core::model::Method::Post));
@@ -1123,10 +1123,11 @@ fn editor_tab_cycle_order_is_headers_params_vars_body_checks() {
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
     app.update(Action::EditorTabCycle(1));
-    assert_eq!(app.editor.active_tab, EditorTab::Body);
-    // Checks tabs spec 2026-11-16, Q1: Checks is the fifth tab, last.
-    app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Checks);
+    // #331 (amending the checks tabs spec's Q1): Body, the one tab that
+    // can be disabled, is last.
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "cycle wraps back to Headers");
 }
@@ -1188,7 +1189,7 @@ fn alt_arrows_do_nothing_on_a_screen_without_a_strip() {
 fn editor_tab_select_slot_numbers_follow_the_screen_order() {
     // `EditorTabSelect`'s slot numbers ([`EditorTab::index`], bindable as
     // `editor_tab_N`) select the tabs in the order they appear on screen:
-    // Headers, Params, Vars, Body. alt+1..4 no longer drive this — they
+    // Headers, Params, Vars, Checks, Body. alt+1..4 no longer drive this — they
     // jump spaces now (`Action::JumpSpace`) — so this drives the action
     // directly rather than through the old default alt bindings.
     let mut app = App::new_for_test();
@@ -1200,8 +1201,13 @@ fn editor_tab_select_slot_numbers_follow_the_screen_order() {
     assert_eq!(app.editor.active_tab, EditorTab::Params);
     app.update(Action::EditorTabSelect(EditorTab::Vars.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    app.update(Action::EditorTabSelect(EditorTab::Checks.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Checks);
     app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
+    // The numbers themselves: `editor_tab_4` is Checks, `editor_tab_5` Body.
+    assert_eq!(EditorTab::Checks.index(), 3);
+    assert_eq!(EditorTab::Body.index(), 4);
 }
 
 #[test]
@@ -1210,20 +1216,21 @@ fn body_tab_is_unreachable_for_get_and_head() {
     // a no-op and cycling skips over it in both directions.
     let mut app = App::new_for_test();
     assert_eq!(app.editor.method, postui_core::model::Method::Get);
-    app.update(Action::EditorTabSelect(3));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "select is a no-op");
-    app.update(Action::EditorTabSelect(2)); // Vars, the tab before Body
+    // Body is last (#331), so a step past it wraps.
+    app.update(Action::EditorTabSelect(EditorTab::Checks.index())); // the tab before Body
     app.update(Action::EditorTabCycle(1));
-    assert_eq!(app.editor.active_tab, EditorTab::Checks, "forward skips Body");
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "forward skips Body");
     app.update(Action::EditorTabCycle(-1));
-    assert_eq!(app.editor.active_tab, EditorTab::Vars, "backward skips Body");
+    assert_eq!(app.editor.active_tab, EditorTab::Checks, "backward skips Body");
 
     app.update(Action::SetMethod(postui_core::model::Method::Head));
-    app.update(Action::EditorTabSelect(3));
-    assert_eq!(app.editor.active_tab, EditorTab::Vars, "HEAD: still a no-op");
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Checks, "HEAD: still a no-op");
 
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    app.update(Action::EditorTabSelect(3));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Body, "POST re-enables it");
 }
 
@@ -1231,13 +1238,13 @@ fn body_tab_is_unreachable_for_get_and_head() {
 fn switching_to_a_bodyless_method_hops_off_the_body_tab() {
     let mut app = App::new_for_test();
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    app.update(Action::EditorTabSelect(3));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     app.update(Action::SetMethod(postui_core::model::Method::Get));
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "GET can't sit on a disabled tab");
     // The body text itself survives the round trip.
     app.update(Action::SetMethod(postui_core::model::Method::Put));
-    app.update(Action::EditorTabSelect(3));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
 }
 
@@ -1976,7 +1983,8 @@ fn add_row_chip_label_follows_the_active_tab() {
     app.update(Action::EditorTabSelect(2));
     assert!(frame(&mut app).contains("add variable"), "Vars tab");
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    app.update(Action::EditorTabSelect(3));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
     let body = frame(&mut app);
     assert!(
         !body.contains("add header") && !body.contains("add param"),
@@ -2072,7 +2080,7 @@ fn alt_a_starts_a_new_row_on_the_active_table_tab() {
 
     // On the Body tab there is no table to add to: inert.
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    app.update(Action::EditorTabSelect(3));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     app.handle_key(alt('a'));
     assert!(app.editor.table.editing.is_none());
     assert_eq!(app.editor.active_tab, EditorTab::Body);
@@ -10140,7 +10148,7 @@ fn toggle_body_vars_flips_flag_and_shows_it_on_the_chip_alone() {
         let buf = terminal.backend().buffer();
         let content = format!("{buf:?}");
         assert!(content.contains(chip), "expected `{chip}`: {content}");
-        let r = app.hits.rect_of(&Hit::EditorTab(3)).unwrap();
+        let r = app.hits.rect_of(&Hit::EditorTab(EditorTab::Body.draw_position())).unwrap();
         let tab: String = (r.x..r.right()).map(|x| buf[(x, r.y)].symbol()).collect();
         assert_eq!(tab.trim(), "Body", "the Body tab's label, variables {on}");
     }
@@ -10448,7 +10456,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
 
 #[test]
 fn click_editor_tab_selects_it() {
-    // Draw order is Params, Headers, Vars, Body — position 2 is Vars.
+    // Draw order is Headers, Params, Vars, Checks, Body — position 2 is Vars.
     let mut app = App::new_for_test();
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::EditorTab(2)).unwrap();
@@ -10456,11 +10464,12 @@ fn click_editor_tab_selects_it() {
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
     assert_eq!(app.focus, PaneId::Editor);
 
-    // Position 3 (Body) still maps correctly too (for a method that has one).
+    // Position 4 (Body, last: #331) still maps correctly too (for a method
+    // that has one).
     let mut app = App::new_for_test();
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     render_once(&mut app);
-    let r = app.hits.rect_of(&Hit::EditorTab(3)).unwrap();
+    let r = app.hits.rect_of(&Hit::EditorTab(4)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     assert_eq!(app.focus, PaneId::Editor);
