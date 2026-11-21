@@ -4,7 +4,16 @@ Notable changes to postui, newest first. Versions follow
 [Semantic Versioning](https://semver.org/); before 1.0, a release may still
 change the project file format.
 
-## [Unreleased]
+## [0.5.1] - 2026-11-21
+
+A request's `[checks]` status can now name ranges and comparisons, such as
+`200-299` or `< 400`, as well as codes. This patch release adds to the file
+format: postui 0.5.0 can't read a request file whose status holds a range
+or a comparison, so a team sharing a project should upgrade together. A
+file of codes only reads as before. The request's Body tab is now last,
+after Checks, so `editor_tab_4` (`4gt` in the Vim profile) opens Checks and
+`editor_tab_5` (`5gt`) opens Body: a config that bound `editor_tab_5` to
+reach Checks needs `editor_tab_4` instead.
 
 ### Added
 
@@ -28,16 +37,18 @@ change the project file format.
 - A paste of several lines into the response's jq bar keeps its line
   breaks (shown as `^J`), so a filter with a `# comment` runs as written
   instead of turning everything after the comment into comment. Pasted into
-  an empty bar, blank lines at the start and end are dropped. Every other
-  one-line field still joins the pasted lines with spaces.
+  an empty bar, or over all of its text, blank lines at the start and end
+  are dropped. Every other one-line field still joins the pasted lines with
+  spaces.
 
 ### Fixed
 
 - The response tree's menu items that add to the jq filter (Filter to this,
-  Count, Pluck field, Where field, Only items where, Collect into array) now work on a
-  filter that ends in a `# comment`. What they add used to land inside the
-  comment, so Pluck field did nothing and Collect into array gave an error.
-  On a filter that holds a `#`, the added part now starts a new line.
+  Count, Pluck field, Where field, Only items where, Collect into array) now
+  work on a filter that ends in a `# comment`. What they add used to land
+  inside the comment, so Pluck field did nothing and Collect into array gave
+  an error. On a filter that holds a `#`, the added part now starts a new
+  line.
 - A press on a `{{token}}`'s tip (its buttons or its text) no longer takes
   the caret out of the response's jq bar.
 - In the Vim profile, a paste into the request body outside Insert mode
