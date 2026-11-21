@@ -389,16 +389,18 @@ arrows paste, the vim seam's paste and the engine's paste, put and Insert
 only), so of these only the paste and Insert `ctrl+r` reach it today.
 
 **Amended 2026-11-21, #307 review round 3 (`mine (approved)`: the user
-picked "A").** The jq bar drops a blank line (empty or only whitespace) at
-the text's edges, with its line break, only into an empty field:
+picked "A").** The jq bar drops the blank lines (empty or only whitespace)
+at the text's edges, with their line breaks, only into an empty field, so
+an all-blank paste there leaves nothing (review round 5):
 `LineInput::pasted` asks whether the field holds any text outside its
 selection, which a paste replaces (an arrows paste removes it first; in
 vim a query box's paste and Insert `ctrl+r` remove it after; review round
-4). Next to text every
+4). Whitespace in the field counts as text. Next to text every
 line break stays, since a break on either side of a `#` comment is what
-ends it. A vim bracketed paste over a Visual selection of the whole filter
-asks before the selection goes, so it keeps its edge breaks (the bar is
-Insert only, so this does not come up today). The rule applies to one
+ends it. `pasted` counts only the field's own selection, not the vim
+engine's Visual span, so a vim bracketed paste over a Visual selection of
+the whole filter keeps its edge breaks (the bar is Insert only, so this
+does not come up today). The rule applies to one
 copy of a put or of a recorded Insert paste, so `2p` or a counted Insert
 would join the copies without the breaks it dropped; neither reaches the
 bar, which has no Normal. This replaces rounds 0 and 2's rule, which

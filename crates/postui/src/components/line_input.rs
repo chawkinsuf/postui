@@ -131,10 +131,11 @@ impl LineInput {
     /// What a paste or a put of `text` leaves in this field, in both
     /// profiles: flattened to one line ([`flatten_paste`]), or, where the
     /// field keeps line breaks, with each CRLF or CR made a line break.
-    /// Into an empty field, or over a selection of all its text (which a
-    /// paste replaces), a blank line (empty or only whitespace) at either
-    /// edge is dropped with its break; next to text every break stays,
-    /// since one may end a jq `# comment` (#307).
+    /// Into a field with no text outside its selection (which a paste
+    /// replaces), the paste keeps only its first through last lines that
+    /// are not blank (empty or only whitespace), so an all-blank paste
+    /// leaves nothing; next to text every break stays, since one may end a
+    /// jq `# comment` (#307).
     pub(crate) fn pasted(&self, text: &str) -> String {
         if !self.keeps_breaks {
             return flatten_paste(text);
@@ -144,14 +145,12 @@ impl LineInput {
         if self.len_chars() > selected {
             return text;
         }
-        let mut lines: Vec<&str> = text.split('\n').collect();
-        while lines.len() > 1 && lines[lines.len() - 1].trim().is_empty() {
-            lines.pop();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let blank = |line: &&str| line.trim().is_empty();
+        match (lines.iter().position(|l| !blank(l)), lines.iter().rposition(|l| !blank(l))) {
+            (Some(first), Some(last)) => lines[first..=last].join("\n"),
+            _ => String::new(),
         }
-        while lines.len() > 1 && lines[0].trim().is_empty() {
-            lines.remove(0);
-        }
-        lines.join("\n")
     }
 
     pub fn text(&self) -> &str {
@@ -2185,15 +2184,20 @@ mod tests {
 
     /// #307 (review round 3's adjustment, A): into an empty jq bar a blank
     /// edge line of a paste goes with its line break, as a selection copied
-    /// from an indented block ends; the first line's indent stays, and a
-    /// paste with no line break goes in as it is. Next to text every line
-    /// break stays, so a `# comment` on either side still ends at its line.
+    /// from an indented block ends; the first line's indent stays, a line
+    /// with text goes in as it is, and an all-blank paste leaves nothing.
+    /// Next to text every line break stays, so a `# comment` on either side
+    /// still ends at its line.
     #[test]
     fn a_paste_that_keeps_line_breaks_drops_blank_edge_lines_only_into_an_empty_field() {
         let input = LineInput::new("").keeping_breaks();
         assert_eq!(input.pasted("  \t\n    .a\n    | .b\n    "), "    .a\n    | .b");
         assert_eq!(input.pasted(" | .b "), " | .b ");
         assert_eq!(input.pasted("\n \n"), "");
+        assert_eq!(input.pasted("  \n  "), "");
+        assert_eq!(input.pasted("  "), "");
+        let input = LineInput::new(" ").keeping_breaks();
+        assert_eq!(input.pasted("\n.a\n"), "\n.a\n", "whitespace counts as text");
         let input = LineInput::new("x").keeping_breaks();
         assert_eq!(input.pasted("\r\n .a\r \n"), "\n .a\n \n");
 

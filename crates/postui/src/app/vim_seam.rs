@@ -744,8 +744,8 @@ impl App {
             // `visual_span` is `None` while the prompt is open, Visual
             // under it or not, so a search begun from a selection gets it.
             if let Some((from, to)) = glue.visual_span(&mut buf) {
-                // The field's rule is asked with the selection still in
-                // it (spec §3.10's #307 amendments).
+                // The field's rule counts only the field's own selection,
+                // not this Visual span (spec §3.10's #307 amendments).
                 let text = buf.pasted(text);
                 glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, &text));
                 None
