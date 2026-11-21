@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(failures(&out), [".ok gave false"]);
     }
 
-    /// A status check names the codes it expects, one or several.
+    /// A status check of codes passes on a code it names, one or several.
     #[test]
     fn a_status_check_passes_on_a_code_it_names() {
         assert!(over(&checks(&[404], &[]), 404, "")[0].passed());

@@ -55,7 +55,7 @@ Params, Vars, Body and Checks:
   with the value it has now.
 - **Body** is a JSON editor that can format or minify the body, or open it in
   your `$EDITOR`.
-- **Checks** says what a good response is: the status codes that pass, as
+- **Checks** says what a good response is: the statuses that pass, as
   codes, ranges and comparisons such as `200, 201-204, < 400` (left
   empty, any code below 400 passes: in `run` and `suite` always, in the app
   once another check is set), limits in
@@ -194,8 +194,9 @@ with 130, and nothing is sent. A pipe, `--plain` or `TERM=dumb` gives plain
 text instead.
 
 A request fails the suite on a status of 400 or more. To test more than the
-status, give the request file a `[checks]` table: `status` lists the codes
-that pass in place of that rule (so a request can expect a 404),
+status, give the request file a `[checks]` table: `status` names the
+statuses that pass (codes, ranges or comparisons) in place of that rule (so a
+request can expect a 404),
 `max_ttfb_ms` and `max_elapsed_ms` limit the time in milliseconds to the
 first byte and to the last, and `jq` lists filters that must each give
 `true`:

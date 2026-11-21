@@ -69,7 +69,7 @@ pub struct CheckField {
 }
 
 /// The Checks tab's fields, in walk order (one for each of the table's
-/// heads): the status codes, then the two time limits in `Measure::ALL`'s
+/// heads): the status terms, then the two time limits in `Measure::ALL`'s
 /// order. "Last byte" is the total time, until the response has fully
 /// arrived (`max_elapsed_ms`).
 pub const CHECK_FIELDS: [CheckField; TableSpec::CHECKS.heads] = [

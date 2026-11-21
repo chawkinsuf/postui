@@ -100,7 +100,7 @@ postui suite [--space S] [--env E] [--select SELECTOR=OPTION]... [--var NAME=VAL
   pseudo-terminal. Don't use `-i` (it opens a picker for a person). Use
   `--jobs N` (N at once) only when the requests don't depend on each other.
 - A request's `[checks]` (see the reference) say what a right answer is:
-  `status` the codes that pass (codes, ranges like `"200-299"` and
+  `status` the statuses that pass (codes, ranges like `"200-299"` and
   comparisons like `"< 400"`), `max_ttfb_ms` and `max_elapsed_ms` time
   limits, and `jq` filters that must each give `true`.
   `run` and `suite` both evaluate them: a failed check fails the request and
