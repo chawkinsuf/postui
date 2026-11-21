@@ -37,14 +37,13 @@ fc-cache -f
 
 ## Each time
 
-From the repo root:
-
 ```sh
-cargo build --release
-for t in docs/tapes/*.tape; do vhs "$t"; done
+docs/tapes/record.sh                   # every tape
+docs/tapes/record.sh checks hero vim   # only these
 ```
 
-The images land in `docs/images/`. The demo requests call
+It builds the release binary, then runs each tape through VHS in turn (`vhs`
+takes one tape per call). The images land in `docs/images/`. The demo requests call
 [JSONPlaceholder](https://jsonplaceholder.typicode.com), so recording needs a
 network connection.
 
