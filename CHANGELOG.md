@@ -25,9 +25,16 @@ change the project file format.
   one tab a request without a body turns off. The tab numbers follow the
   row: `editor_tab_4` now opens the Checks tab and `editor_tab_5` the Body
   tab, and so do `4gt` and `5gt` in the Vim profile.
+- A paste of several lines into the response's jq bar keeps its line
+  breaks (shown as `^J`), so a filter with a `# comment` runs as written
+  instead of turning everything after the comment into comment. Pasted into
+  an empty bar, blank lines at the start and end are dropped. Every other
+  one-line field still joins the pasted lines with spaces.
 
 ### Fixed
 
+- A press on a `{{token}}`'s tip (its buttons or its text) no longer takes
+  the caret out of the response's jq bar.
 - A large response whose Tree finishes loading while another request is
   open now counts toward the last three large responses kept loaded. It
   used to stay loaded outside that count until its request was next opened.
