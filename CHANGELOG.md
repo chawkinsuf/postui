@@ -33,6 +33,11 @@ change the project file format.
 
 ### Fixed
 
+- The response tree's menu items that add to the jq filter (Filter to this,
+  Count, Pluck field, Where field, Only items where, Collect into array) now work on a
+  filter that ends in a `# comment`. What they add used to land inside the
+  comment, so Pluck field did nothing and Collect into array gave an error.
+  On a filter that holds a `#`, the added part now starts a new line.
 - A press on a `{{token}}`'s tip (its buttons or its text) no longer takes
   the caret out of the response's jq bar.
 - A large response whose Tree finishes loading while another request is

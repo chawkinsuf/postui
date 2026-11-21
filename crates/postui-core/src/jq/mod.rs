@@ -14,7 +14,7 @@ pub mod ai;
 pub mod complete;
 pub mod path;
 pub mod shape;
-pub use path::{PathSeg, compose, render_path};
+pub use path::{PathSeg, collect_into_array, compose, render_path};
 
 /// What a filter runs on: JSON values, with the compiled lookup table and
 /// the values `input`/`inputs` read (`Globals`) as its global data.

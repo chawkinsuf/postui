@@ -62,6 +62,16 @@ pub(crate) fn push_bracket(out: &mut String, inner: &str) {
     out.push(']');
 }
 
+/// What goes between a filter and text written after it: a line break
+/// when the filter holds a `#`, a space otherwise. A `#` may start a
+/// comment, which runs to the end of its line and would swallow text
+/// written on that line (#334). Telling a comment from a `#` inside a
+/// string would take lexing jq, so any `#` gets the break, which costs a
+/// filter with a `#` in a string only an extra line.
+fn joint(current: &str) -> &'static str {
+    if current.contains('#') { "\n" } else { " " }
+}
+
 /// Appends `path` and `expr` to `current` as one pipeline; see rules below.
 pub fn compose(current: &str, path: &str, expr: Option<&str>) -> String {
     let mut parts: Vec<&str> = Vec::new();
@@ -76,7 +86,13 @@ pub fn compose(current: &str, path: &str, expr: Option<&str>) -> String {
         return current.to_string();
     }
     let tail = parts.join(" | ");
-    if current.trim().is_empty() { tail } else { format!("{current} | {tail}") }
+    if current.trim().is_empty() { tail } else { format!("{current}{}| {tail}", joint(current)) }
+}
+
+/// `current` wrapped as `[ current ]`, Collect into array's filter.
+pub fn collect_into_array(current: &str) -> String {
+    let current = current.trim();
+    format!("[ {current}{}]", joint(current))
 }
 
 #[cfg(test)]
@@ -119,5 +135,24 @@ mod tests {
         assert_eq!(compose(".data", ".items", Some("length")), ".data | .items | length");
         assert_eq!(compose(".data ", ".", Some("length")), ".data | length");
         assert_eq!(compose(".data", ".", None), ".data");
+    }
+
+    #[test]
+    fn compose_after_a_filter_holding_a_hash_starts_a_new_line() {
+        // The `#` may start a comment, which runs to the end of its line.
+        assert_eq!(
+            compose(".items # the list", ".", Some("map(.name)")),
+            ".items # the list\n| map(.name)"
+        );
+        assert_eq!(compose(".a # x\n| .b \n", ".c", Some("length")), ".a # x\n| .b\n| .c | length");
+        // A `#` in a string costs only the line break.
+        assert_eq!(compose(r#".["a#b"]"#, ".", Some("length")), ".[\"a#b\"]\n| length");
+        assert_eq!(compose(".a\n| .b", ".", Some("length")), ".a\n| .b | length", "no `#`");
+    }
+
+    #[test]
+    fn collect_wraps_the_filter_in_brackets() {
+        assert_eq!(collect_into_array(" .items[] "), "[ .items[] ]");
+        assert_eq!(collect_into_array(".items[] # each\n"), "[ .items[] # each\n]");
     }
 }

@@ -263,6 +263,13 @@ When the applied filter produced more than one output the composing
 items are disabled with the hint "collect into array first", and
 Collect into array is offered.
 
+*Amended 2026-11-21 (task #334, `mine`):* when the text a verb grows
+holds a `#`, the appended part starts a new line (`<text>\n| <expression>`,
+and Collect's `[ <text>\n]`), so a `# comment` at the end of the text
+can't swallow it. Any `#` counts, one in a string too: telling them apart
+would take lexing jq, and the extra line break is harmless. Text with no
+`#` composes on one line as before.
+
 The scalar literal in "only items where" is the value's JSON text, so
 numbers stay bare and strings stay quoted. The item is absent when no
 ancestor is an array, or when the scalar is the array element itself (no
