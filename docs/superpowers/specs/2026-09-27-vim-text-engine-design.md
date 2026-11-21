@@ -378,10 +378,8 @@ Rules for one-line fields (`mine`, key list §5):
 **Amended 2026-11-21, #307: the jq bar keeps line breaks (`mine
 (approved)`: the user picked "1: A").** The jq bar's field is the exception
 to the first rule. A paste, a put and Insert `ctrl+r` there keep the text's
-line breaks: each CRLF and CR becomes `\n`, and line breaks at the text's
-edges are dropped, with any blank line there (only whitespace, `mine`,
-#307 review round 2). Tabs stay as they are (`mine`). Each break shows as
-`^J`.
+line breaks: each CRLF and CR becomes `\n`. Tabs stay as they are
+(`mine`). Each break shows as `^J`.
 A jq `#` comment runs to the end of its line, so joining a filter's lines
 could turn the rest of the filter into comment without an error. Every
 other one-line field still flattens, as browsers do. The field carries the
@@ -389,6 +387,18 @@ rule (`LineInput::keeping_breaks`, read by `LineInput::pasted`), and the
 arrows paste, the vim seam's paste and the engine's paste, put and Insert
 `ctrl+r` all ask it (§3.2's amendment). The bar is a query box (Insert
 only), so of these only the paste and Insert `ctrl+r` reach it today.
+
+**Amended 2026-11-21, #307 review round 3 (`mine (approved)`: the user
+picked "A").** The jq bar drops a blank line (empty or only whitespace) at
+the text's edges, with its line break, only when the field is empty as
+`LineInput::pasted` is asked: an empty bar, or in the arrows profile a
+selection of all its text, which goes before the paste. Next to text every
+line break stays, since a break on either side of a `#` comment is what
+ends it. A vim bracketed paste over a Visual selection of the whole filter
+asks before the selection goes, so it keeps its edge breaks (the bar is
+Insert only, so this does not come up today). This replaces rounds 0 and
+2's rule, which dropped edge breaks into any field and so could join a
+pasted line onto a comment.
 
 ### 3.11 Undo and redo
 

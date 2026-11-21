@@ -424,8 +424,8 @@ impl Engine {
                 }
                 // `do_put()` moves `'[` past the caret's char only when the
                 // register's first line is not empty (`yanklen`): text that
-                // starts with a line break leaves it on that char. A one-line
-                // field puts no line break at the text's start.
+                // starts with a line break leaves it on that char. In a
+                // one-line field a line break is a char of the text put.
                 let stays = B::MULTILINE && forward && text.text.starts_with('\n');
                 let area = ed.hist.last_put::<B>().map(|(start, end)| {
                     if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) }

@@ -3330,9 +3330,9 @@ fn keeping(text: &str, col: usize, start: Start) -> Field {
 }
 
 /// #307: a field that keeps line breaks takes a bracketed paste with
-/// them, CRLF and CR made `\n` and none at the edges, a line break being a
-/// char of its one row: the caret ends after the text, and undo and redo
-/// take it out and put it back whole.
+/// them, CRLF and CR made `\n` and, into an empty field, none at the
+/// edges, a line break being a char of its one row: the caret ends after
+/// the text, and undo and redo take it out and put it back whole.
 #[test]
 fn a_field_that_keeps_line_breaks_takes_a_paste_with_them() {
     let mut f = keeping("", 0, Start::InsertOnly);
@@ -3426,17 +3426,58 @@ fn a_put_into_a_one_line_field_is_one_row_for_the_caret_and_marks() {
         f.key(ctrl('o'));
         f.keys("p");
         assert_eq!(f.col(), 4, "keeps: {keeps}: ctrl+o p ends after the text put");
+        // Next to text a field that keeps line breaks keeps an edge one;
+        // into an emptied field it drops it (#307, review round 3's A).
         let mut f = field("abc", 2, Start::Normal);
         f.engine.registers_mut().set_unnamed(Register { text: "\nX".into(), kind: RegKind::Char });
         f.keys("vp");
-        assert_eq!(f.text(), "abX", "keeps: {keeps}");
+        let put = if keeps { "\nX" } else { "X" };
+        assert_eq!(f.text(), format!("ab{put}"), "keeps: {keeps}");
         f.keys("gv");
-        assert_eq!(f.visual(), Some((2, 2)), "keeps: {keeps}: `gv` selects what was put");
+        let last = 1 + put.chars().count();
+        assert_eq!(f.visual(), Some((2, last)), "keeps: {keeps}: `gv` selects what was put");
         let mut f = field("abc", 2, Start::Normal);
         f.engine.registers_mut().set_unnamed(Register { text: "\n".into(), kind: RegKind::Char });
         f.keys("vp");
-        assert_eq!(f.text(), "ab", "keeps: {keeps}: a register of a line break puts nothing");
+        assert_eq!(f.text(), if keeps { "ab\n" } else { "ab" }, "keeps: {keeps}");
+        let mut f = field("abc", 0, Start::Normal);
+        f.engine.registers_mut().set_unnamed(Register { text: "\n".into(), kind: RegKind::Char });
+        f.keys("v$p");
+        assert_eq!(f.text(), "", "keeps: {keeps}: a line break put into an emptied field");
     }
+}
+
+/// #307 (review round 3's adjustment, A): next to text a field that keeps
+/// line breaks keeps every one a paste, a put or Insert `ctrl+r` brings,
+/// so a `# comment` on either side still ends at its line; into an empty
+/// field a blank edge line goes with its break.
+#[test]
+fn a_line_break_next_to_text_stays_and_one_into_an_empty_field_goes() {
+    let paste = |text: &str, col, pasted: &str| {
+        let mut f = keeping(text, col, Start::InsertOnly);
+        f.engine
+            .paste(pasted, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+        f.text().to_string()
+    };
+    assert_eq!(paste(".items # keep", 13, "\n| map(.id)"), ".items # keep\n| map(.id)");
+    assert_eq!(paste("| .b", 0, ".a # note\r\n"), ".a # note\n| .b");
+    assert_eq!(paste("", 0, "\n.a # note\n \n"), ".a # note");
+
+    let mut f = keeping(".a # note", 0, Start::Normal);
+    f.engine.registers_mut().set_unnamed(Register { text: "\n| .b".into(), kind: RegKind::Char });
+    f.keys("$p");
+    assert_eq!(f.text(), ".a # note\n| .b", "a put");
+    let mut f = keeping(".a # note", 0, Start::Normal);
+    f.engine.registers_mut().set_unnamed(Register { text: "\n| .b".into(), kind: RegKind::Char });
+    f.keys("A");
+    f.key(ctrl('r'));
+    f.keys("\"");
+    assert_eq!(f.text(), ".a # note\n| .b", "Insert ctrl+r");
+    let mut f = keeping("", 0, Start::Insert);
+    f.engine.registers_mut().set_unnamed(Register { text: "\n| .b\n".into(), kind: RegKind::Char });
+    f.key(ctrl('r'));
+    f.keys("\"");
+    assert_eq!(f.text(), "| .b", "Insert ctrl+r into an empty field");
 }
 
 /// #307: in a one-line field a line break is a char like any other, so
