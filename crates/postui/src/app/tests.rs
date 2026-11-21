@@ -32483,6 +32483,30 @@ fn tooltip_pill_click_keeps_the_table_edit_and_selection() {
     assert_eq!(app.editor.table.selected(), Some(Stop::Add), "so does the selection");
 }
 
+/// Nor is a press on the tooltip a click away from a focused jq bar
+/// (#298): a pill or the tip's text leaves the bar with the caret.
+#[test]
+fn tooltip_press_keeps_the_jq_bar_focused() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    render_once(&mut app);
+    let bar = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
+    app.handle_mouse(left_down(bar.x + 4, bar.y));
+    app.handle_mouse(left_up(bar.x + 4, bar.y));
+    assert!(app.session.response.jq_focused(), "the bar has the caret");
+
+    hover_token(&mut app, "base_url");
+    click_hit(&mut app, Hit::TipCopy("base_url".into()));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+    assert!(app.session.response.jq_focused(), "a pill press keeps the caret");
+
+    let (x, y) = tip_cell(&app, "base_url", 0, 0);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_up(x, y));
+    assert!(app.session.response.jq_focused(), "a press on the tip's text keeps it too");
+}
+
 /// A right click on a row the tooltip floats over reaches the row: the
 /// tip is a left-click affordance only, like the token it belongs to.
 #[test]
