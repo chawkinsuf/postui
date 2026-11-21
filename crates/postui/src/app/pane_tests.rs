@@ -20,7 +20,8 @@ fn a_refused_count_gt_moves_nothing() {
     let mut app = app_in(Fixture::UrlLine, KeyProfile::Vim);
     assert!(app.editor.body_tab_disabled(), "the fixture is a GET");
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
-    feed(&mut app, "4gt");
+    // Body is the fifth tab (#331).
+    feed(&mut app, "5gt");
     assert_eq!(app.editor.active_tab, EditorTab::Headers, "Body is disabled");
     assert_eq!(app.editor.sub_focus, SubFocus::Url, "the caret stays");
     feed(&mut app, "9gt");
@@ -44,7 +45,7 @@ fn a_refused_count_gt_in_an_open_field_keeps_it_open() {
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     feed(&mut app, "0");
     let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
-    for keys in ["4gt", "9gt"] {
+    for keys in ["5gt", "9gt"] {
         feed(&mut app, keys);
         assert_eq!(
             app.vim.glue.session(),
@@ -216,8 +217,8 @@ fn a_count_gt_onto_the_body_tab_keeps_the_engine_history() {
     let after_first = app.editor.body_text();
     feed(&mut app, "jx");
     let steps = app.history.undo_len();
-    // A POST: Headers, Params, Vars, Body.
-    feed(&mut app, "4gt");
+    // A POST: Headers, Params, Vars, Checks, Body.
+    feed(&mut app, "5gt");
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
     assert_eq!(app.history.undo_len(), steps, "the session still holds its edits");
@@ -547,12 +548,12 @@ fn a_paste_on_another_tab_never_reaches_a_variables_edit_behind_it() {
 #[test]
 fn a_gt_from_a_table_tab_lands_in_the_body_without_a_history_step() {
     let mut app = app_in(Fixture::Body, KeyProfile::Vim);
-    // A POST: Headers, Params, Vars, Body.
+    // A POST: Headers, Params, Vars, Checks, Body.
     feed(&mut app, "1gt");
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
     let steps = app.history.undo_len();
-    feed(&mut app, "4gt");
+    feed(&mut app, "5gt");
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     assert_eq!(app.editor.sub_focus, SubFocus::Content, "the caret lands in the body");
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));

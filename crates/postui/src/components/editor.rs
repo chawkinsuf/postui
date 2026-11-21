@@ -45,12 +45,12 @@ pub enum EditorTab {
 }
 
 /// Left-to-right tab-strip order, and the order `EditorTabCycle` walks:
-/// Headers → Params → Vars → Body → Checks. The tab slot numbers
-/// ([`EditorTab::index`], bindable as `editor_tab_N`) follow this same
-/// order, so the number you bind always matches the tab's on-screen
-/// position.
+/// Headers → Params → Vars → Checks → Body. Body, the one tab that can be
+/// disabled, is last (#331). The tab slot numbers ([`EditorTab::index`],
+/// bindable as `editor_tab_N`) follow this same order, so the number you
+/// bind always matches the tab's on-screen position.
 const DRAW_ORDER: [EditorTab; 5] =
-    [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Body, EditorTab::Checks];
+    [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Checks, EditorTab::Body];
 
 /// One of the Checks tab's fields: its label, what its well shows while
 /// empty, and its footer text, shown under the pointer and under the
@@ -5335,7 +5335,7 @@ mod tests {
         app.update(Action::CycleMethod);
         assert_eq!(app.editor.method, Method::Post);
         app.update(Action::EditorTabSelect(4));
-        assert_eq!(app.editor.active_tab, EditorTab::Checks);
+        assert_eq!(app.editor.active_tab, EditorTab::Body);
         app.update(Action::EditorTabCycle(1));
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "cycle wraps");
     }
@@ -5346,7 +5346,7 @@ mod tests {
         app.update(Action::SetMethod(postui_core::model::Method::Post));
         assert_eq!(app.editor.active_tab, EditorTab::Headers);
         app.update(Action::EditorTabCycle(-1));
-        assert_eq!(app.editor.active_tab, EditorTab::Checks, "backward wraps to last tab");
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "backward wraps to last tab");
     }
 
     #[test]
@@ -7311,17 +7311,19 @@ mod tests {
             let [first, ..] = control_rects(&hits);
             (tabs, first.x)
         };
+        let checks = EditorTab::Checks.draw_position();
+        let body = EditorTab::Body.draw_position();
         let (tabs, control_x) = tab_rects(&mut e, crate::layout::MAIN_MIN_COLS);
-        let end = tabs[4].right();
+        let end = tabs.last().unwrap().right();
         assert!(end < control_x, "the row ends at {end}, the control starts at {control_x}");
         // A tab is its label and a cell either side: `Checks`, or with
         // room `Checks · 9`.
-        assert_eq!(tabs[4].width, 8, "no count at the minimum");
-        assert_eq!(tab_rects(&mut e, 120).0[4].width, 12, "the count with room");
+        assert_eq!(tabs[checks].width, 8, "no count at the minimum");
+        assert_eq!(tab_rects(&mut e, 120).0[checks].width, 12, "the count with room");
         // W3 as #329 left it: the Body tab's label is its name alone, the
         // body's variables on or off: the label, two cells for the badge,
         // and a cell either side.
-        assert_eq!(tabs[3].width, 8, "`Body ✓` at the minimum");
+        assert_eq!(tabs[body].width, 8, "`Body ✓` at the minimum");
         let (content, _) = draw_editor(&mut e);
         assert!(content.contains("Body ✓"), "{content}");
         assert!(!content.contains("vars"), "no `vars` in the tab row: {content}");
@@ -7332,16 +7334,17 @@ mod tests {
         }
         // Nor does it follow the Body tab's badge: without it the Body tab
         // is that much narrower and every other tab keeps its form, at any
-        // width. The body's variables change no tab at all.
+        // width. Body is last (#331), so no other tab moves either. The
+        // body's variables change no tab at all.
         for width in crate::layout::MAIN_MIN_COLS..=120 {
             let with = tab_rects(&mut e, width).0;
-            for (vars, body, narrower) in [(false, "{}", 0), (true, "", 2), (false, "", 2)] {
+            for (vars, text, narrower) in [(false, "{}", 0), (true, "", 2), (false, "", 2)] {
                 e.substitute_body = vars;
-                e.set_body_text(body);
+                e.set_body_text(text);
                 let without = tab_rects(&mut e, width).0;
-                assert_eq!(without[3].width + narrower, with[3].width, "at {width}");
-                for i in [0, 1, 2, 4] {
-                    assert_eq!(without[i].width, with[i].width, "tab {i} at {width}");
+                assert_eq!(without[body].width + narrower, with[body].width, "at {width}");
+                for i in (0..DRAW_ORDER.len()).filter(|i| *i != body) {
+                    assert_eq!(without[i], with[i], "tab {i} at {width}");
                 }
             }
             e.substitute_body = true;
@@ -9411,15 +9414,17 @@ url = "https://api.example.com/users""#,
 
     #[test]
     fn tab_order_headers_first_and_slot_numbers_match_screen() {
-        // Draw order / EditorTabCycle: Headers -> Params -> Vars -> Body.
+        // Draw order / EditorTabCycle: Headers -> Params -> Vars -> Checks
+        // -> Body. Body is last (#331).
         assert_eq!(EditorTab::from_draw_position(0), EditorTab::Headers);
         assert_eq!(EditorTab::from_draw_position(1), EditorTab::Params);
         assert_eq!(EditorTab::from_draw_position(2), EditorTab::Vars);
-        assert_eq!(EditorTab::from_draw_position(3), EditorTab::Body);
-        // The tab slot numbers (`EditorTabSelect(0..3)`, bindable as
+        assert_eq!(EditorTab::from_draw_position(3), EditorTab::Checks);
+        assert_eq!(EditorTab::from_draw_position(4), EditorTab::Body);
+        // The tab slot numbers (`EditorTabSelect(0..4)`, bindable as
         // `editor_tab_N`) follow the screen order: what you see is what
         // the number selects.
-        for i in 0..4 {
+        for i in 0..EditorTab::COUNT {
             assert_eq!(EditorTab::from_index(i), EditorTab::from_draw_position(i));
             assert_eq!(
                 EditorTab::from_draw_position(i).index(),

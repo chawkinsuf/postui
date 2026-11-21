@@ -42,7 +42,7 @@ for postui itself.
 ## Editing a request
 
 The URL line holds the method and the URL. Under it are tabs for Headers,
-Params, Vars, Body and Checks:
+Params, Vars, Checks and Body:
 
 - **Headers and Params** are tables. A row's checkbox switches it off without
   deleting it. The Headers tab also lists the headers postui adds for you,
@@ -53,14 +53,14 @@ Params, Vars, Body and Checks:
 - **Vars** sets values for this request alone, and lists every variable the
   request uses, including those in the project default headers it sends,
   with the value it has now.
-- **Body** is a JSON editor that can format or minify the body, or open it in
-  your `$EDITOR`.
 - **Checks** says what a good response is: the status codes that pass (left
   empty, any code below 400 passes: in `run` and `suite` always, in the app
   once another check is set), limits in
   milliseconds on the time until the first byte and until the last byte (the
   total time, until the response has fully arrived), and jq checks that must
   each give `true`. They are judged each time the request is sent.
+- **Body** is a JSON editor that can format or minify the body, or open it in
+  your `$EDITOR`.
 
 Send sends, and turns into Cancel while the request is in flight. Saving
 writes the request to its file; discarding throws unsaved changes away. A
