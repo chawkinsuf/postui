@@ -69,6 +69,9 @@ pub struct LineInput {
     /// The text when the vim engine opened this field (plan M3b Deviation
     /// 11): its edits record no snapshot, so `text_at_open` reads this.
     opened: Option<String>,
+    /// A paste or a put keeps its line breaks ([`Self::pasted`]): the jq
+    /// bar's, whose filter may be written over several lines (#307).
+    keeps_breaks: bool,
 }
 
 /// Text and caret as they stood before a step.
@@ -115,6 +118,38 @@ impl LineInput {
             redo: Vec::new(),
             run: None,
             opened: None,
+            keeps_breaks: false,
+        }
+    }
+
+    /// The input with a paste's line breaks kept ([`Self::pasted`]).
+    pub(crate) fn keeping_breaks(mut self) -> Self {
+        self.keeps_breaks = true;
+        self
+    }
+
+    /// What a paste or a put of `text` leaves in this field, in both
+    /// profiles: flattened to one line ([`flatten_paste`]), or, where the
+    /// field keeps line breaks, with each CRLF or CR made a line break.
+    /// Into a field with no text outside its selection (which a paste
+    /// replaces), the paste keeps only its first through last lines that
+    /// are not blank (empty or only whitespace), so an all-blank paste
+    /// leaves nothing; next to text every break stays, since one may end a
+    /// jq `# comment` (#307).
+    pub(crate) fn pasted(&self, text: &str) -> String {
+        if !self.keeps_breaks {
+            return flatten_paste(text);
+        }
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let selected = self.selection().map_or(0, |(start, end)| end - start);
+        if self.len_chars() > selected {
+            return text;
+        }
+        let lines: Vec<&str> = text.split('\n').collect();
+        let blank = |line: &&str| line.trim().is_empty();
+        match (lines.iter().position(|l| !blank(l)), lines.iter().rposition(|l| !blank(l))) {
+            (Some(first), Some(last)) => lines[first..=last].join("\n"),
+            _ => String::new(),
         }
     }
 
@@ -489,9 +524,9 @@ impl LineInput {
     }
 
     /// Pastes `text` at the caret: a live selection is replaced (GUI
-    /// paste semantics), and the text is flattened to a single line via
-    /// [`flatten_paste`], so a multi-line paste can't smuggle an Enter
-    /// into a one-line field.
+    /// paste semantics), and the text goes in as [`Self::pasted`] makes
+    /// it: flattened to a single line, so a multi-line paste can't smuggle
+    /// an Enter into a one-line field, unless the field keeps line breaks.
     pub fn paste(&mut self, text: &str) {
         self.record(EditKind::Whole);
         self.paste_unrecorded(text);
@@ -502,10 +537,10 @@ impl LineInput {
     fn paste_unrecorded(&mut self, text: &str) {
         self.snap_to_graphemes();
         self.delete_selection();
-        let flat = flatten_paste(text);
+        let pasted = self.pasted(text);
         let at = self.byte_offset(self.cursor);
-        self.text.insert_str(at, &flat);
-        self.cursor += flat.chars().count();
+        self.text.insert_str(at, &pasted);
+        self.cursor += pasted.chars().count();
         self.anchor = None;
         self.click_span = None;
     }
@@ -1201,7 +1236,8 @@ pub(crate) fn char_code(c: char) -> String {
 /// Flattens pasted text to one line: runs of line breaks and tabs collapse
 /// to a single space (none at the edges). Shared by [`LineInput::paste`]
 /// and the plain-`String` filter queries (palette, chooser, var picker)
-/// so every single-line surface flattens a paste identically.
+/// so every single-line surface flattens a paste identically (the jq bar
+/// keeps a paste's line breaks instead: [`LineInput::pasted`]).
 pub fn flatten_paste(text: &str) -> String {
     let mut flat = String::with_capacity(text.len());
     let mut pending_gap = false;
@@ -2127,6 +2163,59 @@ mod tests {
         let mut input = inside();
         input.paste("yz");
         assert_eq!(input.text(), format!("ayz{HEART}b"));
+    }
+
+    /// #307: a field that keeps line breaks (the jq bar) takes a paste
+    /// with them, CRLF and CR made `\n`, tabs kept, and into an empty
+    /// field none at the edges; any other field flattens it.
+    #[test]
+    fn a_paste_keeps_its_line_breaks_only_where_the_field_keeps_them() {
+        let pasted = "\r\n.a # note\r\n|\t.b\r| .c\n\n";
+        let mut input = LineInput::new("").keeping_breaks();
+        input.paste(pasted);
+        assert_eq!(input.text(), ".a # note\n|\t.b\n| .c");
+        assert_eq!(input.cursor(), input.text().chars().count());
+        input.undo();
+        assert_eq!(input.text(), "", "one undo step");
+        let mut input = LineInput::new("");
+        input.paste(pasted);
+        assert_eq!(input.text(), ".a # note | .b | .c");
+    }
+
+    /// #307 (review round 3's adjustment, A): into an empty jq bar a blank
+    /// edge line of a paste goes with its line break, as a selection copied
+    /// from an indented block ends; the first line's indent stays, a line
+    /// with text goes in as it is, and an all-blank paste leaves nothing.
+    /// Next to text every line break stays, so a `# comment` on either side
+    /// still ends at its line.
+    #[test]
+    fn a_paste_that_keeps_line_breaks_drops_blank_edge_lines_only_into_an_empty_field() {
+        let input = LineInput::new("").keeping_breaks();
+        assert_eq!(input.pasted("  \t\n    .a\n    | .b\n    "), "    .a\n    | .b");
+        assert_eq!(input.pasted(" | .b "), " | .b ");
+        assert_eq!(input.pasted("\n \n"), "");
+        assert_eq!(input.pasted("  \n  "), "");
+        assert_eq!(input.pasted("  "), "");
+        let input = LineInput::new(" ").keeping_breaks();
+        assert_eq!(input.pasted("\n.a\n"), "\n.a\n", "whitespace counts as text");
+        let input = LineInput::new("x").keeping_breaks();
+        assert_eq!(input.pasted("\r\n .a\r \n"), "\n .a\n \n");
+
+        let mut input = LineInput::new(".items # keep only items").keeping_breaks();
+        input.paste("\n| map(.id)");
+        assert_eq!(input.text(), ".items # keep only items\n| map(.id)");
+        let mut input = LineInput::new("| .b").keeping_breaks();
+        input.set_cursor(0);
+        input.paste(".a # note\r\n");
+        assert_eq!(input.text(), ".a # note\n| .b");
+        assert_eq!(input.cursor(), 10, "the caret after the break pasted");
+
+        // A paste over a selection of all the text goes into an empty field.
+        let mut input = LineInput::new(".old").keeping_breaks();
+        input.select_all();
+        assert_eq!(input.pasted("\n.a\n"), ".a", "asked before the selection goes");
+        input.paste("\n.a\n");
+        assert_eq!(input.text(), ".a");
     }
 
     /// A grapheme that takes no cell (a zero-width space, a control char)

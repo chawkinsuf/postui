@@ -722,8 +722,9 @@ impl App {
     /// Insert, Replace and the search prompt type it; in Visual (the
     /// mouse's too) it replaces the selection (the user's ruling, final
     /// review); anywhere else it goes in by Vim's bracketed-paste rule. Each
-    /// is one engine step. A one-line field takes it flattened (today's
-    /// rule). `None` when no engine field has the caret: today's routing
+    /// is one engine step. A one-line field takes it by its own rule
+    /// (`LineInput::pasted`: flattened, unless it keeps line breaks).
+    /// `None` when no engine field has the caret: today's routing
     /// pastes. A bracketed paste is an event of its own, so the session
     /// catches up first, as a key's does: a body replaced since (`$EDITOR`)
     /// rebases before the paste lands on it.
@@ -735,13 +736,6 @@ impl App {
         if id == FieldId::FilePicker {
             return None;
         }
-        let flat;
-        let text = if id.engine_kind() == EngineKind::Line {
-            flat = crate::components::line_input::flatten_paste(text);
-            flat.as_str()
-        } else {
-            text
-        };
         let feedback = {
             let (glue, buf) = self.session_parts(id);
             let mut buf = buf?;
@@ -750,13 +744,18 @@ impl App {
             // `visual_span` is `None` while the prompt is open, Visual
             // under it or not, so a search begun from a selection gets it.
             if let Some((from, to)) = glue.visual_span(&mut buf) {
-                glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, text));
+                // The field's rule counts only the field's own selection,
+                // not this Visual span (spec §3.10's #307 amendments).
+                let text = buf.pasted(text);
+                glue.edit(&mut buf, &engine_glue::Edit::Replace(from, to, &text));
                 None
             } else {
+                // The engine applies the field's rule itself.
                 match glue.paste(text, &mut buf) {
                     Outcome::Consumed { note, request, .. } => Some((note, request)),
                     Outcome::Declined { .. } => {
-                        glue.edit(&mut buf, &engine_glue::Edit::Append(text));
+                        let text = buf.pasted(text);
+                        glue.edit(&mut buf, &engine_glue::Edit::Append(&text));
                         None
                     }
                 }

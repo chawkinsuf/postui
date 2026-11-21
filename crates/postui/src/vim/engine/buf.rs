@@ -44,7 +44,9 @@ pub struct GuiSel {
 /// The engine's only view of text (spec §3.2). Every change goes through
 /// [`TextBuf::splice`], so recording undo and `.` happens in one place.
 pub trait TextBuf {
-    /// `false` for a one-line field: `splice` never receives `'\n'`.
+    /// `false` for a one-line field. Its one row can hold a `'\n'` (the jq
+    /// bar's, from a view or a paste, #307), and there it is a char like
+    /// any other ([`TextBuf::end_of`]).
     const MULTILINE: bool;
     /// At least 1: an empty buffer is one empty line.
     fn line_count(&self) -> usize;
@@ -55,9 +57,13 @@ pub trait TextBuf {
     /// which clamps the column to the text and drops any GUI selection.
     fn set_cursor(&mut self, at: Pos);
     /// The one mutation: replaces `[start, end)` with `text`. `end` may be
-    /// `(row + 1, 0)` to take the line break after `row`; `text` may hold
-    /// `'\n'` only when [`TextBuf::MULTILINE`].
+    /// `(row + 1, 0)` to take the line break after `row`. In a one-line
+    /// field a `'\n'` in `text` is a char of its one row.
     fn splice(&mut self, start: Pos, end: Pos, text: &str);
+    /// What a paste or a put of `text` leaves in a one-line field, by the
+    /// field's own rule (`LineInput::pasted`): flattened to one line, or
+    /// with its line breaks kept. The body takes `text` as it is.
+    fn pasted(&self, text: &str) -> String;
     /// Paint only: the Visual span, and for the body edtui's mode (its
     /// caret shape). A one-line field has no caret shape of its own; the
     /// app draws its caret from `Engine::mode` (spec §3.3).
@@ -91,6 +97,17 @@ pub trait TextBuf {
     fn text(&self) -> String {
         let last = self.line_count() - 1;
         self.slice(Pos::new(0, 0), Pos::new(last, self.line_len(last)))
+    }
+
+    /// Where `text` ends when it starts at `at`: past its last line break,
+    /// or in a one-line field, where a line break is a char, on `at`'s row.
+    fn end_of(at: Pos, text: &str) -> Pos {
+        match text.rfind('\n') {
+            Some(i) if Self::MULTILINE => {
+                Pos::new(at.row + text.matches('\n').count(), text[i + 1..].chars().count())
+            }
+            _ => Pos::new(at.row, at.col + text.chars().count()),
+        }
     }
 }
 
@@ -131,8 +148,14 @@ impl TextBuf for OneLineBuf<'_> {
     }
 
     fn splice(&mut self, start: Pos, end: Pos, text: &str) {
-        debug_assert!(!text.contains('\n'), "a one-line buffer never takes a line break");
+        // No line-break check: any one-line field can already hold a
+        // `'\n'` (a URL read from a request file, a view in the jq bar),
+        // and undo puts back what the field held.
         self.0.splice_raw(start.col, end.col, text);
+    }
+
+    fn pasted(&self, text: &str) -> String {
+        self.0.pasted(text)
     }
 
     fn show(&mut self, paint: Paint) {
@@ -242,6 +265,10 @@ impl TextBuf for BodyBuf<'_> {
         if y > last {
             self.state.set_viewport_offset(x, last);
         }
+    }
+
+    fn pasted(&self, text: &str) -> String {
+        text.to_string()
     }
 
     fn show(&mut self, paint: Paint) {

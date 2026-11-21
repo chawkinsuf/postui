@@ -10,7 +10,6 @@ use super::motion::{self, MKind, MotionCx};
 use super::register::{PLUS_PASTE_NOTE, RegKind, Register};
 use super::settings::TABSTOP;
 use super::{BufState, Engine, Mode, Note, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
-use crate::components::line_input::flatten_paste;
 use crate::text::class::white;
 use ratatui::crossterm::event::KeyEvent;
 
@@ -222,12 +221,18 @@ pub(crate) fn put<B: TextBuf>(ed: &mut Ed<'_, B>, reg: &Register, before: bool, 
     }
     if !B::MULTILINE {
         // A one-line field: a linewise register goes in charwise without
-        // its line break, and line breaks become spaces (key list §5).
+        // its line break, and line breaks become spaces (key list §5),
+        // unless the field keeps them (`TextBuf::pasted`). Both apply to
+        // one copy before the copies are joined, so a count can join them
+        // with no line break between, even where the field keeps line
+        // breaks. The one such field, the jq bar, is a query box, with no
+        // put.
         let text = match reg.kind {
             RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
             RegKind::Char => &reg.text,
         };
-        return put_chars(ed, caret, &flatten_paste(text).repeat(n), before);
+        let text = ed.buf.pasted(text).repeat(n);
+        return put_chars(ed, caret, &text, before);
     }
     match reg.kind {
         RegKind::Char => put_chars(ed, caret, &reg.text.repeat(n), before),
@@ -281,7 +286,11 @@ fn put_chars<B: TextBuf>(ed: &mut Ed<'_, B>, caret: Pos, text: &str, before: boo
     let len = ed.buf.line_len(caret.row);
     let at = if before || len == 0 { caret } else { Pos::new(caret.row, caret.col + 1) };
     ed.splice(at, at, text);
-    if text.contains('\n') { at } else { Pos::new(at.row, at.col + text.chars().count() - 1) }
+    if B::MULTILINE && text.contains('\n') {
+        at
+    } else {
+        Pos::new(at.row, at.col + text.chars().count() - 1)
+    }
 }
 
 /// Joins `n` lines from `row` the way `J` does: Vim's `do_join()` with
@@ -435,19 +444,23 @@ impl Engine {
         let reg = self.regs.read(reg).clone();
         let mut caret =
             put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
-        if self.put_ends_after(&reg) {
+        if self.put_ends_after(&reg, &*buf) {
             caret.col += 1;
         }
         self.land_caret(caret, buf, st);
     }
 
     /// Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
-    /// last char" of a one-line charwise put (`p`, `P`, Visual `p`).
-    pub(super) fn put_ends_after(&self, reg: &Register) -> bool {
-        matches!(self.mode, Mode::InsertNormal { .. })
-            && reg.kind == RegKind::Char
-            && !reg.text.is_empty()
-            && !reg.text.contains('\n')
+    /// last char" of a one-line charwise put (`p`, `P`, Visual `p`). A put
+    /// into a one-line field is one row: the text its rule makes of the
+    /// register (`TextBuf::pasted`).
+    pub(super) fn put_ends_after<B: TextBuf>(&self, reg: &Register, buf: &B) -> bool {
+        let one_row = if B::MULTILINE {
+            !reg.text.is_empty() && !reg.text.contains('\n')
+        } else {
+            !buf.pasted(&reg.text).is_empty()
+        };
+        matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && one_row
     }
 
     /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the

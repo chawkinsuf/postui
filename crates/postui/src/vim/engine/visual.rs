@@ -419,14 +419,15 @@ impl Engine {
                 ed.buf
                     .set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
                 let mut caret = put(&mut ed, &text, !forward, n);
-                if self.put_ends_after(&text) {
+                if self.put_ends_after(&text, &*ed.buf) {
                     caret.col += 1;
                 }
                 // `do_put()` moves `'[` past the caret's char only when the
                 // register's first line is not empty (`yanklen`): text that
-                // starts with a line break leaves it on that char.
-                let stays = forward && text.text.starts_with('\n');
-                let area = ed.hist.last_put().map(|(start, end)| {
+                // starts with a line break leaves it on that char. In a
+                // one-line field a line break is a char of the text put.
+                let stays = B::MULTILINE && forward && text.text.starts_with('\n');
+                let area = ed.hist.last_put::<B>().map(|(start, end)| {
                     if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) }
                 });
                 (caret, area)
@@ -461,7 +462,8 @@ fn lines_put<B: TextBuf>(buf: &B, first: usize, rows: usize) -> (Pos, Pos) {
 }
 
 /// Visual `r{c}` (Vim's `op_replace()`): every char of the range except
-/// line breaks. The lines are saved first, so replacing a char with itself
+/// line breaks (in a one-line field a line break is a char, and is
+/// replaced). The lines are saved first, so replacing a char with itself
 /// is still an undo step. The caret goes to the range start (column 0 for
 /// linewise).
 fn replace_range<B: TextBuf>(ed: &mut Ed<'_, B>, r: Range, ch: char) -> Pos {
@@ -470,8 +472,9 @@ fn replace_range<B: TextBuf>(ed: &mut Ed<'_, B>, r: Range, ch: char) -> Pos {
         RKind::Line => (Pos::new(r.start.row, 0), Pos::new(r.end.row, ed.buf.line_len(r.end.row))),
     };
     ed.save_rows(r.start, start.row, end.row);
+    let keep = |c| B::MULTILINE && c == '\n';
     let text: String =
-        ed.buf.slice(start, end).chars().map(|c| if c == '\n' { c } else { ch }).collect();
+        ed.buf.slice(start, end).chars().map(|c| if keep(c) { c } else { ch }).collect();
     ed.splice(start, end, &text);
     start
 }

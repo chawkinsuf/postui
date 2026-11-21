@@ -131,6 +131,22 @@ in one place, the engine (§3.11). The engine keeps the Visual anchor and the
 mode itself. The buffer's selection is paint only. The one exception is a
 selection made by the mouse or a GUI key, which `settle` adopts (§4.2).
 
+**Amended 2026-11-21, #307 (`mine (approved)`: the user picked "1: A" from
+the research's options).** A one-line field's row can hold `'\n'`: the jq
+bar's text from a view or the AI always could, and now a paste into the bar
+keeps its line breaks too (§3.10). There a `'\n'` is a char of the one row,
+like any other, and `splice` may receive one in any one-line field. Two
+trait items carry the rule. `TextBuf::end_of(at, text)` says where a text
+ends: past its last line break in the body, on `at`'s row in a one-line
+field. Undo, redo, a put's caret and marks, Insert typing and the glue's
+edits all use it. `TextBuf::pasted(text)` is what a paste or a put leaves in
+the buffer: the body takes it as it is, and a one-line field asks its
+`LineInput::pasted`. The undo history reads a one-line field's edit as its
+one row whole, so an edit over a `'\n'` undoes and redoes whole. Before
+this, the engine assumed no `'\n'` ever reached a one-line buffer: a
+`debug_assert` in `OneLineBuf::splice` said so, and undo split such a row
+into lines.
+
 ### 3.3 The two buffers
 
 **`OneLineBuf<'a>(&'a mut LineInput)`**: `line(0)` collects the chars.
@@ -358,6 +374,38 @@ Rules for one-line fields (`mine`, key list §5):
 - A linewise register is put charwise after the caret without its trailing
   `\n`. This matches vim-mode's `capital_v_y_then_p_is_a_characterwise_put`
   (`earlier`).
+
+**Amended 2026-11-21, #307: the jq bar keeps line breaks (`mine
+(approved)`: the user picked "1: A").** The jq bar's field is the exception
+to the first rule. A paste, a put and Insert `ctrl+r` there keep the text's
+line breaks: each CRLF and CR becomes `\n`. Tabs stay as they are
+(`mine`). Each break shows as `^J`.
+A jq `#` comment runs to the end of its line, so joining a filter's lines
+could turn the rest of the filter into comment without an error. Every
+other one-line field still flattens, as browsers do. The field carries the
+rule (`LineInput::keeping_breaks`, read by `LineInput::pasted`), and the
+arrows paste, the vim seam's paste and the engine's paste, put and Insert
+`ctrl+r` all ask it (§3.2's amendment). The bar is a query box (Insert
+only), so of these only the paste and Insert `ctrl+r` reach it today.
+
+**Amended 2026-11-21, #307 review round 3 (`mine (approved)`: the user
+picked "A").** The jq bar drops the blank lines (empty or only whitespace)
+at the text's edges, with their line breaks, only into an empty field, so
+an all-blank paste there leaves nothing (review round 5):
+`LineInput::pasted` asks whether the field holds any text outside its
+selection, which a paste replaces (an arrows paste removes it first; in
+vim a query box's paste and Insert `ctrl+r` remove it after; review round
+4). Whitespace in the field counts as text. Next to text every
+line break stays, since a break on either side of a `#` comment is what
+ends it. `pasted` counts only the field's own selection, not the vim
+engine's Visual span, so a vim bracketed paste over a Visual selection of
+the whole filter keeps its edge breaks (the bar is Insert only, so this
+does not come up today). The rule applies to one
+copy of a put or of a recorded Insert paste, so `2p` or a counted Insert
+would join the copies without the breaks it dropped; neither reaches the
+bar, which has no Normal. This replaces rounds 0 and 2's rule, which
+dropped edge breaks into any field and so could join a pasted line onto a
+comment.
 
 ### 3.11 Undo and redo
 

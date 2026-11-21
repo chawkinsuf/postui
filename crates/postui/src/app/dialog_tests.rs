@@ -533,6 +533,59 @@ fn the_jq_bar_types_through_the_engine_as_one_app_step() {
     assert_eq!(app.session.response.jq_text(), "", "one undo takes the whole edit back");
 }
 
+/// #307 (1: A): a paste into the jq bar keeps its line breaks in both
+/// profiles, CRLF and CR made `\n`, and into an empty bar none at the
+/// edges, so a `#` comment ends at its line and the filter runs as written.
+#[test]
+fn a_paste_into_the_jq_bar_keeps_its_line_breaks_in_both_profiles() {
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        json_response(&mut app, r#"{"a": {"b": 2}}"#);
+        app.update(Action::OpenJqBar);
+        draw(&mut app);
+        assert!(app.paste_text("\r\n.a # note\r| .b\r\n"), "{profile:?}");
+        assert_eq!(app.session.response.jq_text(), ".a # note\n| .b", "{profile:?}");
+        assert_eq!(
+            app.session.response.view().unwrap().view_text(),
+            "2",
+            "{profile:?}: the comment ends at its line"
+        );
+        app.paste_text(" # c\r\n| . \n");
+        assert_eq!(
+            app.session.response.jq_text(),
+            ".a # note\n| .b # c\n| . \n",
+            "{profile:?}: CRLF made a break, the edge's kept next to text"
+        );
+    }
+}
+
+/// #307 (review round 3's adjustment, A): a paste next to text in the jq
+/// bar keeps a line break at its edge, in both profiles, so a `# comment`
+/// before or after it still ends at its line.
+#[test]
+fn a_paste_next_to_text_in_the_jq_bar_keeps_its_edge_line_breaks() {
+    for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        json_response(&mut app, r#"{"a": {"b": 2}}"#);
+        app.update(Action::OpenJqBar);
+        draw(&mut app);
+        app.paste_text(".a # note");
+        assert!(app.paste_text("\n| .b"), "{profile:?}");
+        assert_eq!(app.session.response.jq_text(), ".a # note\n| .b", "{profile:?}");
+        assert_eq!(app.session.response.view().unwrap().view_text(), "2", "{profile:?}");
+
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        json_response(&mut app, r#"{"a": {"b": 2}}"#);
+        app.update(Action::OpenJqBar);
+        draw(&mut app);
+        app.paste_text("| .b");
+        feed_key(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert!(app.paste_text(".a # note\r\n"), "{profile:?}");
+        assert_eq!(app.session.response.jq_text(), ".a # note\n| .b", "{profile:?}");
+        assert_eq!(app.session.response.view().unwrap().view_text(), "2", "{profile:?}");
+    }
+}
+
 /// Reopening the bar over an applied filter puts the caret after its last
 /// character, as the first open does: typed text appends, and `ctrl+u`
 /// takes the typed text, then the line before it (Vim's Insert `ctrl+u`

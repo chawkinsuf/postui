@@ -10,7 +10,7 @@
 //! `ins_esc()` with `stop_insert()`. The golden file is the judge.
 
 use super::buf::{Pos, TextBuf};
-use super::history::{Ed, MarkMove, end_of};
+use super::history::{Ed, MarkMove};
 use super::keys::{Cmd, InsertHow, Key};
 use super::motion::{Want, col_for, vcol_of};
 use super::op::{RKind, Range, yank_of};
@@ -46,15 +46,16 @@ impl InsertKey {
     /// `.` (a replay acts as if its keys were typed in the target buffer,
     /// spec §4.2). A one-line field has no
     /// Enter or Tab (`None`: typed, they are declined; replayed, dropped)
-    /// and flattens a paste (`flatten_paste`); the body takes CRLF and CR
-    /// as line breaks.
-    fn for_buffer<B: TextBuf>(self) -> Option<Self> {
+    /// and takes a paste by its own rule (`TextBuf::pasted`: flattened,
+    /// unless it keeps line breaks); the body takes CRLF and CR as line
+    /// breaks.
+    fn for_buffer<B: TextBuf>(self, buf: &B) -> Option<Self> {
         match self {
             InsertKey::Enter | InsertKey::Tab if !B::MULTILINE => None,
             InsertKey::Paste(text) if B::MULTILINE => {
                 Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n")))
             }
-            InsertKey::Paste(text) => Some(InsertKey::Paste(flatten_paste(&text))),
+            InsertKey::Paste(text) => Some(InsertKey::Paste(buf.pasted(&text))),
             key => Some(key),
         }
     }
@@ -351,7 +352,7 @@ impl Engine {
             }
             _ => return decline,
         };
-        let Some(input) = input.for_buffer::<B>() else { return decline };
+        let Some(input) = input.for_buffer(&*buf) else { return decline };
         self.insert_input(input, buf, st);
         Outcome::consumed()
     }
@@ -407,8 +408,8 @@ impl Engine {
     /// it is, a run of them between those keys as one typed run (recorded
     /// as one, so `.` and a count put it in the same way), not a key per
     /// char, each of which would rebuild the line. A one-line field takes the text
-    /// flattened, as `p` puts it (key list §5): with no line break or Tab
-    /// left, it is one run.
+    /// as `p` puts it (key list §5), by its own rule (`TextBuf::pasted`), as
+    /// one run.
     fn insert_register_text<B: TextBuf>(
         &mut self,
         name: char,
@@ -422,9 +423,9 @@ impl Engine {
                 RegKind::Line => reg.text.strip_suffix('\n').unwrap_or(&reg.text),
                 RegKind::Char => &reg.text,
             };
-            let flat = flatten_paste(text);
-            if !flat.is_empty() {
-                self.insert_input(InsertKey::Paste(flat), buf, st);
+            let pasted = buf.pasted(text);
+            if !pasted.is_empty() {
+                self.insert_input(InsertKey::Paste(pasted), buf, st);
             }
             return;
         }
@@ -470,8 +471,10 @@ impl Engine {
         buf: &mut B,
         st: &mut BufState,
     ) {
-        for key in keys.into_iter().filter_map(InsertKey::for_buffer::<B>) {
-            self.insert_input(key, buf, st);
+        for key in keys {
+            if let Some(key) = key.for_buffer(&*buf) {
+                self.insert_input(key, buf, st);
+            }
         }
     }
 
@@ -577,9 +580,12 @@ impl Engine {
             // paste holds a line break (a register's go through `newline`
             // as Enter), and Vim pastes with `paste` set: the break adds no
             // indent and strips no blanks, so it pushes only `ins_eol()`'s
-            // marker and `open_line()`'s end-of-blanks one.
+            // marker and `open_line()`'s end-of-blanks one. In a one-line
+            // field a line break is a char, overwritten like the rest.
+            let segs: Vec<&str> =
+                if B::MULTILINE { text.split('\n').collect() } else { vec![text] };
             let mut first = true;
-            for seg in text.split('\n') {
+            for seg in segs {
                 if !first {
                     let caret = buf.cursor();
                     self.session()
@@ -602,7 +608,7 @@ impl Engine {
         }
         let caret = buf.cursor();
         Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, text);
-        buf.set_cursor(end_of(caret, text));
+        buf.set_cursor(B::end_of(caret, text));
         let s = self.session();
         s.typed.push(record);
         s.ai_row = None;
@@ -1212,7 +1218,8 @@ impl Engine {
     }
 
     /// Bracketed paste (spec §4.2). In Insert it is typed as part of the
-    /// session: a one-line field flattens it (`flatten_paste`), and the
+    /// session: a one-line field takes it by its own rule
+    /// (`TextBuf::pasted`), and the
     /// body takes CRLF and CR as line breaks and keeps tabs (Vim pastes
     /// with `paste` set: no autoindent, no expandtab). In Normal or Visual
     /// it is declined; piece 4 routes it through `external_edit`
@@ -1237,7 +1244,7 @@ impl Engine {
         self.reg_pending = None;
         self.clamp(buf);
         let before = buf.cursor();
-        if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer::<B>() {
+        if let Some(key) = InsertKey::Paste(text.to_string()).for_buffer(&*buf) {
             self.insert_input(key, buf, state);
         }
         let changed = self.finish_key(before, true, buf, state, &ViewCtx::default());
