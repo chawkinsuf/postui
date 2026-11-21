@@ -286,6 +286,8 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("focus_prev", Action::FocusPrev),
         ("open_palette", Action::OpenPalette),
         ("close", Action::Close),
+        // Positions on the request's tab row (`EditorTab::index`), so the
+        // tab each one opens follows the row's order.
         ("editor_tab_1", Action::EditorTabSelect(0)),
         ("editor_tab_2", Action::EditorTabSelect(1)),
         ("editor_tab_3", Action::EditorTabSelect(2)),
