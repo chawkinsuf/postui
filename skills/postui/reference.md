@@ -233,8 +233,10 @@ jq = [
   one term or a list of them, and a response passes on any: a code as a
   number (`404`), a range as a string with both ends included
   (`"200-299"`), or a comparison as a string (`"< 400"`, `"<= 399"`,
-  `"> 499"`, `">= 500"`), e.g. `status = ["200-299", 404]`. Every number is
-  a code from 100 to 599. Given, it replaces the rule that a status of 400
+  `"> 499"`, `">= 500"`), e.g. `status = ["200-299", 404]`. Any string
+  reads as the TUI's status field reads its text, so `"200"` is the code
+  200, and postui saves a code back as a number. Every number is a code
+  from 100 to 599. Given, it replaces the rule that a status of 400
   or more fails, so `status = 404` tests an error path. postui 0.5.0 can't
   read a file whose `status` holds a string.
   `jq` is a list of filters, separate from the views, that must each give

@@ -1321,8 +1321,7 @@ mod tests {
             assert_eq!(err, format!("{want}{bad}"));
         }
         // Status ranges spec S3, S11: a range the wrong way round, and a
-        // term no code from 100 to 599 matches, each with its own words;
-        // what was typed is quoted as typed, spaces cut to one.
+        // term no code from 100 to 599 matches, each with its own words.
         let wrong = "a check's status range must run low to high, not ";
         assert_eq!(Checks::parse_status("300-200"), Err(format!("{wrong}300-200")));
         assert_eq!(Checks::parse_status("200, 300  - 200"), Err(format!("{wrong}300 - 200")));
