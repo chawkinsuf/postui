@@ -527,9 +527,12 @@ impl<B: TextBuf> Ed<'_, B> {
     /// `ctrl+t` and `ctrl+d` use it (`ins_shift`), so `9999i<C-t><Esc>`
     /// does not keep a copy of the growing line per key.
     pub(crate) fn save_cursor_line_once(&mut self, caret: Pos) {
-        let saved = self.hist.open.as_ref().and_then(|s| s.edits.last()).is_some_and(|e| {
-            e.at.row == caret.row && !e.removed.contains('\n') && !e.inserted.contains('\n')
-        });
+        // A one-line field's line break is a char of its one row.
+        let one_row = |s: &str| !B::MULTILINE || !s.contains('\n');
+        let saved =
+            self.hist.open.as_ref().and_then(|s| s.edits.last()).is_some_and(|e| {
+                e.at.row == caret.row && one_row(&e.removed) && one_row(&e.inserted)
+            });
         if !saved {
             self.save_cursor_line(caret);
         }
@@ -565,10 +568,25 @@ impl<B: TextBuf> Ed<'_, B> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::buf::BodyBuf;
+    use super::super::buf::{BodyBuf, OneLineBuf};
     use super::super::op::delete_lines;
     use super::*;
+    use crate::components::line_input::LineInput;
     use edtui::{EditorState, Lines};
+
+    /// #307 review round 2: Insert `ctrl+t` in a one-line field whose row
+    /// holds a line break saves the line once, as on a row without one.
+    #[test]
+    fn a_one_line_row_with_a_line_break_is_saved_once() {
+        let mut input = LineInput::new(".a\n| .b");
+        let mut buf = OneLineBuf::new(&mut input);
+        let mut hist = History::default();
+        let caret = Pos::new(0, 0);
+        for _ in 0..3 {
+            Ed { buf: &mut buf, hist: &mut hist }.save_cursor_line_once(caret);
+        }
+        assert_eq!(hist.open.as_ref().map(|s| s.edits.len()), Some(1));
+    }
 
     /// Review probe P4: a delete of the last line made outside an operator
     /// (the step saved at a caret above it), undone and redone. Vim clamps

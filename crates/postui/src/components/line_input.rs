@@ -131,12 +131,20 @@ impl LineInput {
     /// What a paste or a put of `text` leaves in this field, in both
     /// profiles: flattened to one line ([`flatten_paste`]), or, where the
     /// field keeps line breaks, with each CRLF or CR made a line break and
-    /// none at the edges.
+    /// a blank line (empty or only whitespace) at either edge dropped.
     pub(crate) fn pasted(&self, text: &str) -> String {
         if !self.keeps_breaks {
             return flatten_paste(text);
         }
-        text.replace("\r\n", "\n").replace('\r', "\n").trim_matches('\n').to_string()
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        while lines.len() > 1 && lines[lines.len() - 1].trim().is_empty() {
+            lines.pop();
+        }
+        while lines.len() > 1 && lines[0].trim().is_empty() {
+            lines.remove(0);
+        }
+        lines.join("\n")
     }
 
     pub fn text(&self) -> &str {
@@ -2166,6 +2174,18 @@ mod tests {
         let mut input = LineInput::new("");
         input.paste(pasted);
         assert_eq!(input.text(), ".a # note | .b | .c");
+    }
+
+    /// #307 review round 2: a blank edge line of a paste into the jq bar
+    /// goes with its line break, as a selection copied from an indented
+    /// block ends; the first line's indent stays, and a paste with no
+    /// line break goes in as it is.
+    #[test]
+    fn a_paste_that_keeps_line_breaks_drops_blank_edge_lines() {
+        let input = LineInput::new("").keeping_breaks();
+        assert_eq!(input.pasted("  \t\n    .a\n    | .b\n    "), "    .a\n    | .b");
+        assert_eq!(input.pasted(" | .b "), " | .b ");
+        assert_eq!(input.pasted("\n \n"), "");
     }
 
     /// A grapheme that takes no cell (a zero-width space, a control char)

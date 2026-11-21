@@ -379,7 +379,9 @@ Rules for one-line fields (`mine`, key list §5):
 (approved)`: the user picked "1: A").** The jq bar's field is the exception
 to the first rule. A paste, a put and Insert `ctrl+r` there keep the text's
 line breaks: each CRLF and CR becomes `\n`, and line breaks at the text's
-edges are dropped. Tabs stay as they are (`mine`). Each break shows as `^J`.
+edges are dropped, with any blank line there (only whitespace, `mine`,
+#307 review round 2). Tabs stay as they are (`mine`). Each break shows as
+`^J`.
 A jq `#` comment runs to the end of its line, so joining a filter's lines
 could turn the rest of the filter into comment without an error. Every
 other one-line field still flattens, as browsers do. The field carries the
