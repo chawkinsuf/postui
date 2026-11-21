@@ -27731,6 +27731,28 @@ fn verbs_on_a_filter_ending_in_a_comment_land_after_it() {
     );
     app.update(Action::Close);
 
+    right_click_row(&mut app, "\"status\": \"active\"");
+    let only = menu_action(&app, "Only items where status == \"active\"");
+    let filter = ".data # d\n| .items | map(select(.status == \"active\"))";
+    assert_eq!(only, Some(Action::JqApply(filter.into())));
+    app.update(Action::Close);
+    app.update(only.unwrap());
+    assert_eq!(app.session.response.jq_text(), filter);
+    assert!(app.session.response.jq_bar().error.is_none());
+    assert!(!app.session.response.view().unwrap().view_text().contains("off"));
+
+    app.update(Action::JqApply(".data.items # the list".into()));
+    app.update(Action::JqWherePrompt { path: ".".into(), keys: vec!["status".into()] });
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
+    let pick = c.items[0].actions.clone();
+    app.update(Action::Close);
+    for a in pick {
+        app.update(a);
+    }
+    let teed = ".data.items # the list\n| map(select(.status == ";
+    assert_eq!(app.session.response.jq_text(), format!("{teed}))"));
+    assert_eq!(app.session.response.jq_bar().input.cursor(), teed.chars().count());
+
     app.update(Action::JqApply(".data.items[] # each".into()));
     app.update(Action::JqCollect);
     assert_eq!(app.session.response.jq_text(), "[ .data.items[] # each\n]");

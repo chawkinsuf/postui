@@ -268,7 +268,9 @@ holds a `#`, the appended part starts a new line (`<text>\n| <expression>`,
 and Collect's `[ <text>\n]`), so a `# comment` at the end of the text
 can't swallow it. Any `#` counts, one in a string too: telling them apart
 would take lexing jq, and the extra line break is harmless. Text with no
-`#` composes on one line as before.
+`#` composes on one line as before. Text that holds a `#` and ends in a
+backslash gets an empty line before the appended part, since jaq runs a
+comment line ending in an odd number of backslashes on into the next.
 
 The scalar literal in "only items where" is the value's JSON text, so
 numbers stay bare and strings stay quoted. The item is absent when no

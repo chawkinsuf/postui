@@ -67,9 +67,17 @@ pub(crate) fn push_bracket(out: &mut String, inner: &str) {
 /// comment, which runs to the end of its line and would swallow text
 /// written on that line (#334). Telling a comment from a `#` inside a
 /// string would take lexing jq, so any `#` gets the break, which costs a
-/// filter with a `#` in a string only an extra line.
+/// filter with a `#` in a string only an extra line. A comment line that
+/// ends in a backslash runs on into the next line, so text ending in one
+/// gets an empty line between.
 fn joint(current: &str) -> &'static str {
-    if current.contains('#') { "\n" } else { " " }
+    if !current.contains('#') {
+        " "
+    } else if current.ends_with('\\') {
+        "\n\n"
+    } else {
+        "\n"
+    }
 }
 
 /// Appends `path` and `expr` to `current` as one pipeline; see rules below.
@@ -86,6 +94,8 @@ pub fn compose(current: &str, path: &str, expr: Option<&str>) -> String {
         return current.to_string();
     }
     let tail = parts.join(" | ");
+    // A filter of only comments doesn't compile in jaq, so the `|` after
+    // one changes only the error.
     if current.trim().is_empty() { tail } else { format!("{current}{}| {tail}", joint(current)) }
 }
 
@@ -154,5 +164,28 @@ mod tests {
     fn collect_wraps_the_filter_in_brackets() {
         assert_eq!(collect_into_array(" .items[] "), "[ .items[] ]");
         assert_eq!(collect_into_array(".items[] # each\n"), "[ .items[] # each\n]");
+    }
+
+    /// `code`'s outputs on `{"items":[1,2]}`.
+    fn outputs(code: &str) -> Vec<String> {
+        let doc = crate::jq::JqDocument::parse(r#"{"items":[1,2]}"#).unwrap();
+        crate::jq::run(code, &doc, std::time::Duration::from_secs(5), None).unwrap().outputs
+    }
+
+    #[test]
+    fn a_comment_ending_in_a_backslash_gets_an_empty_line_before_the_added_part() {
+        // jaq runs such a comment on into the next line.
+        let counted = compose(r".items # list \", ".", Some("length"));
+        assert_eq!(counted, ".items # list \\\n\n| length");
+        assert_eq!(outputs(&counted), ["2"]);
+        let collected = collect_into_array(r".items[] # each \");
+        assert_eq!(collected, "[ .items[] # each \\\n\n]");
+        assert_eq!(outputs(&collected), ["[1,2]"]);
+    }
+
+    #[test]
+    fn a_filter_of_only_comments_fails_to_compile_with_or_without_a_verb() {
+        assert!(crate::jq::check("# todo").is_err());
+        assert!(crate::jq::check(&compose("# todo", ".items", Some("length"))).is_err());
     }
 }
