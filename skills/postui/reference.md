@@ -230,8 +230,15 @@ jq = [
   filter off. postui writes these when the user filters in the TUI; you
   may add them too, and `run --view` uses them.
 - `[checks]`: what `run` and `suite` require of the response. `status` is
-  one code or a list (`[200, 201]`); given, it replaces the rule that a
-  status of 400 or more fails, so `status = 404` tests an error path.
+  one term or a list of them, and a response passes on any: a code as a
+  number (`404`), a range as a string with both ends included
+  (`"200-299"`), or a comparison as a string (`"< 400"`, `"<= 399"`,
+  `"> 499"`, `">= 500"`), e.g. `status = ["200-299", 404]`. Any string
+  reads as the TUI's status field reads its text, so `"200"` is the code
+  200, and postui saves a code back as a number. Every number is a code
+  from 100 to 599. Given, it replaces the rule that a status of 400
+  or more fails, so `status = 404` tests an error path. postui 0.5.0 can't
+  read a file whose `status` holds a string.
   `jq` is a list of filters, separate from the views, that must each give
   `true` and nothing else: a filter giving `false`, no output, any other
   value (`.name` alone, so compare it), or an error fails, and so does a
@@ -240,8 +247,8 @@ jq = [
   by default, counted after the body is read) is stopped and fails with
   `<filter>: stopped at the 1000 ms limit`; the other checks still run.
   Write filters as `'...'` literal strings so their quotes need no
-  escaping. `check` reports a filter that doesn't compile. A code or a
-  filter listed twice counts once. The TUI edits them on the request's
+  escaping. `check` reports a filter that doesn't compile. A status term
+  or a filter listed twice counts once. The TUI edits them on the request's
   Checks tab and shows each response's results on the response's, whose
   one line reads `checking…` until its jq checks have run.
 - `max_ttfb_ms` and `max_elapsed_ms` in `[checks]` are time limits in whole

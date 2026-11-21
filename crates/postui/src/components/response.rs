@@ -7441,7 +7441,7 @@ mod tests {
         assert_eq!(r.view().unwrap().view_text(), "✗ status 500, expected below 400\n✓ .ok");
         // Only a status check and limits: judged as it arrives.
         let quick = postui_core::model::Checks {
-            status: vec![200],
+            status: vec![postui_core::model::StatusTerm::Code(200)],
             max_elapsed_ms: Some(60_000),
             ..Default::default()
         };

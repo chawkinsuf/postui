@@ -491,7 +491,8 @@ mod tests {
         assert_eq!(said[2..], [(true, ".ok"), (false, ".items | length == 4 gave false")]);
         assert!(!passed(&lines));
         // A status check that names the code, over the same reply.
-        let named = Checks { status: vec![500], jq: vec![".ok".into()], ..Checks::default() };
+        let status = Checks::parse_status("500").unwrap();
+        let named = Checks { status, jq: vec![".ok".into()], ..Checks::default() };
         let lines = judged(named).await;
         assert!(passed(&lines), "{lines:?}");
         // A jq run that panics gives one failed line.
@@ -511,7 +512,7 @@ mod tests {
             let run = ChecksRun::new(checks, |_| std::thread::current().id());
             async { run_checks(run).await.unwrap() }
         };
-        let status = Checks { status: vec![200], ..Checks::default() };
+        let status = Checks { status: Checks::parse_status("200").unwrap(), ..Checks::default() };
         assert_eq!(thread_of(status).await, here);
         let jq = Checks { jq: vec![".ok".into()], ..Checks::default() };
         assert_ne!(thread_of(jq).await, here);

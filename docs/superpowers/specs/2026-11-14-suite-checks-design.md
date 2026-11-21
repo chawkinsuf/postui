@@ -71,6 +71,10 @@ jq = [
   `< 400` rule for this request; not given, the rule stays. (mine)
   `status = []` names no code, so it reads as no `status`, and a save
   writes nothing for it (review round 1, 2026-11-14, mine).
+  **Amended 2026-11-21 (#324):** `status` also takes ranges and
+  comparisons as strings, mixed with codes (`status = ["200-299", 404]`,
+  `status = "< 400"`); see the status ranges spec
+  (`2026-11-19-status-ranges-design.md`, S6–S8, mine (approved)).
 - `jq`: filters that must each give `true`. They are their own filters, not
   the request's jq views. (Q1)
 - Both are optional; a request with no `[checks]` behaves exactly as today.
@@ -81,7 +85,9 @@ jq = [
 
 A request passes when it was sent and:
 
-1. its status is one of `status`, or below 400 when there is no `status`;
+1. its status is one of `status`, or below 400 when there is no `status`
+   (amended 2026-11-21, #324: matched by any of `status`'s terms, a code, a
+   range or a comparison; status ranges spec S1);
 2. every `jq` check passes. A check passes when the body reads as JSON (a
    stream too, as `run --jq` reads it), the filter gives at least one
    output, **every output is exactly `true`**, and no value's run errors.
@@ -95,6 +101,8 @@ A filter that doesn't compile is not a read error: the TUI still opens the
 request. `postui check` reports it as an error naming the file, and the
 suite fails that request with the compile error. A `status` that isn't a
 code from 100 to 599 is a read error, as a bad jq view name is. (mine)
+(Amended 2026-11-21, #324: nor a range or a comparison, status ranges spec
+S3, S7, S11.)
 
 ### 2.3 How a failed check reports (mine)
 

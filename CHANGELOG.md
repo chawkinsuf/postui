@@ -6,6 +6,17 @@ change the project file format.
 
 ## [Unreleased]
 
+### Added
+
+- A `[checks]` status check takes ranges and comparisons as well as codes:
+  `200-299` (both ends included), `< 400`, `<= 399`, `> 499` and `>= 500`,
+  mixed with codes, in the request's Checks tab (`200-299, 404`) and in the
+  file, where a code stays a number and the rest are strings
+  (`status = ["200-299", 404]`, `status = "< 400"`). A response passes on
+  any of them. `postui run --json` and `postui suite --json` give each in
+  `expected` as the file does. postui 0.5.0 can't read a request file whose
+  `status` holds a string; a file of codes only reads as before.
+
 ### Changed
 
 - The Body tab's label no longer says `vars` while the body's variables

@@ -7,6 +7,7 @@
 use super::mask::Mask;
 pub(super) use postui_core::checks::FIRST_FAILING_STATUS;
 use postui_core::checks::{Measure, Outcome};
+use postui_core::model::StatusTerm;
 use serde::Serialize;
 
 /// The status check's verdict; `None` when the request has none. Read
@@ -70,7 +71,8 @@ impl Serialize for ShownCheck {
 enum Kind {
     Status {
         check: &'static str,
-        expected: Vec<u16>,
+        /// Each term as the file writes it (status ranges spec S10).
+        expected: Vec<StatusTerm>,
         got: u16,
     },
     Time {
@@ -150,7 +152,7 @@ pub(super) fn over(
 #[cfg(test)]
 pub(super) fn checked(status: &[u16], jq: &[&str], got: u16, body: &str) -> Vec<ShownCheck> {
     let checks = postui_core::model::Checks {
-        status: status.to_vec(),
+        status: status.iter().map(|c| StatusTerm::Code(*c)).collect(),
         jq: jq.iter().map(|f| f.to_string()).collect(),
         ..Default::default()
     };
@@ -206,6 +208,27 @@ mod tests {
         );
     }
 
+    /// Status ranges spec S10: the status check's `expected` follows the
+    /// file, a code as a number and any other term as its string.
+    #[test]
+    fn the_json_expected_follows_the_file() {
+        let checks = Checks {
+            status: Checks::parse_status("200, 201-204, <400").unwrap(),
+            ..Checks::default()
+        };
+        let out = over(&checks, 500, Timing::default(), "", &Mask::none());
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!([
+                {"check": "status", "expected": [200, "201-204", "< 400"], "got": 500,
+                 "passed": false, "failure": "status 500, expected 200 or 201-204 or < 400"},
+            ])
+        );
+        assert_eq!(status_check(&out), Some(false));
+        let out = over(&checks, 203, Timing::default(), "", &Mask::none());
+        assert!(passed(203, &out));
+    }
+
     /// A value or an error in the JSON is clipped as the line clips it, so
     /// a check that forgot its comparison doesn't put the body there.
     #[test]
@@ -249,7 +272,7 @@ mod tests {
         let jq = vec![".ok".to_string(), ".items | length == 4".into(), ".ok ==".into()];
         let limits =
             Checks { max_ttfb_ms: Some(1), max_elapsed_ms: Some(50), jq, ..Checks::default() };
-        let named = Checks { status: vec![200, 201], ..limits.clone() };
+        let named = Checks { status: Checks::parse_status("200, 201").unwrap(), ..limits.clone() };
         for (checks, status) in [(&limits, 200), (&limits, 500), (&named, 201), (&named, 404)] {
             let timing = Timing { ttfb_ms: 3, elapsed_ms: 40 };
             let doc = || postui_core::jq::JqDocument::parse(body);
@@ -273,7 +296,7 @@ mod tests {
     #[test]
     fn a_time_check_has_its_own_json_and_fails_the_response() {
         let checks = Checks {
-            status: vec![200],
+            status: vec![StatusTerm::Code(200)],
             max_ttfb_ms: Some(500),
             max_elapsed_ms: Some(2000),
             jq: vec![".ok".into()],

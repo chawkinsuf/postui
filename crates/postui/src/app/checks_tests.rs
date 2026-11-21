@@ -7,6 +7,7 @@ use crate::components::editor::CHECK_FIELDS;
 use crate::components::table_editor::Stop;
 use crate::config::KeyProfile;
 use crate::keyroute::{FieldCaret, FieldId};
+use postui_core::model::StatusTerm::{Below, Code, Range};
 use postui_core::model::{Checks, HttpRequest};
 use ratatui::layout::Rect;
 
@@ -197,19 +198,20 @@ fn a_field_takes_a_value_or_refuses_it_and_undoes_in_one_step() {
         feed(&mut app, open(profile));
         assert_eq!(app.field_caret(), FieldCaret::Live(FieldId::CheckField(0)), "{profile:?}");
         retype(&mut app, "200, 201");
-        assert_eq!(checks(&app).status, [200, 201], "{profile:?}");
+        assert_eq!(checks(&app).status, [Code(200), Code(201)], "{profile:?}");
         assert!(app.editor.is_dirty(), "{profile:?}");
         feed(&mut app, open(profile));
         retype(&mut app, "99");
-        assert_eq!(checks(&app).status, [200, 201], "{profile:?}: refused, the old value stays");
+        let kept = [Code(200), Code(201)];
+        assert_eq!(checks(&app).status, kept, "{profile:?}: refused, the old value stays");
         let said = app.toasts.last_message().unwrap_or_default().to_string();
         assert!(said.contains("100 to 599") && said.contains("kept '200, 201'"), "{said}");
         feed(&mut app, undo);
-        assert_eq!(checks(&app).status, [200], "{profile:?}: one step back");
+        assert_eq!(checks(&app).status, [Code(200)], "{profile:?}: one step back");
         assert!(!app.editor.is_dirty(), "{profile:?}: an edit taken back is no change");
         assert_eq!(cursor(&app), Some(Stop::Head(0)), "{profile:?}: the cursor stays");
         app.update(Action::Redo);
-        assert_eq!(checks(&app).status, [200, 201], "{profile:?}: redo");
+        assert_eq!(checks(&app).status, [Code(200), Code(201)], "{profile:?}: redo");
         feed(&mut app, undo);
         // The limits: empty is no limit, 0 and text are refused.
         app.editor.table.set_selected(Some(Stop::Head(2)));
@@ -223,6 +225,38 @@ fn a_field_takes_a_value_or_refuses_it_and_undoes_in_one_step() {
         app.update(Action::DiscardChanges);
         assert_eq!(checks(&app).max_elapsed_ms, Some(2000), "{profile:?}: Discard");
         assert!(!app.editor.is_dirty(), "{profile:?}");
+    }
+}
+
+/// Status ranges spec S4–S7, S11: the status field takes ranges and
+/// comparisons, shows them back in one form and saves each that is not a
+/// code as a string; a bad term is refused with its words, the old text
+/// kept.
+#[test]
+fn the_status_field_takes_ranges_and_comparisons() {
+    let terms = "a check's status must be codes from 100 to 599, ranges like 200-299 or \
+                 comparisons like < 400, not 2xx";
+    for profile in PROFILES {
+        let mut app = checks_app(FOUR, profile);
+        feed(&mut app, open(profile));
+        retype(&mut app, "200 - 299, <400");
+        assert_eq!(checks(&app).status, [Range(200, 299), Below(400)], "{profile:?}");
+        assert_eq!(app.editor.check_field_text(0), "200-299, < 400", "{profile:?}");
+        app.update(Action::SaveRequest);
+        let file = app.proj().root().join("requests/main/probe.toml");
+        let saved = std::fs::read_to_string(file).unwrap();
+        assert!(saved.contains("[checks]\nstatus = [\"200-299\", \"< 400\"]\n"), "{saved}");
+        for (typed, said) in [
+            ("300-200", "a check's status range must run low to high, not 300-200"),
+            ("< 100", "a check's status must match a code from 100 to 599, not < 100"),
+            ("2xx", terms),
+        ] {
+            feed(&mut app, open(profile));
+            retype(&mut app, typed);
+            let toast = app.toasts.last_message().unwrap_or_default().to_string();
+            assert_eq!(toast, format!("{said} — kept '200-299, < 400'"), "{profile:?}");
+            assert_eq!(app.editor.check_field_text(0), "200-299, < 400", "{profile:?}");
+        }
     }
 }
 
@@ -336,8 +370,8 @@ fn every_message_on_the_tab_says_check() {
     app.editor.focus_content_from_app();
     feed(&mut app, "i");
     retype(&mut app, &"9".repeat(200));
-    assert!(last(&app).contains("100 to 599, not 999"), "{}", last(&app));
-    assert!(last(&app).chars().count() < 150, "{}", last(&app));
+    let cut = format!("comparisons like < 400, not {}… — kept '200'", "9".repeat(59));
+    assert!(last(&app).ends_with(&cut), "{}", last(&app));
 }
 
 /// A click opens a field or a check in place, committing what was open; a
@@ -359,7 +393,7 @@ fn clicks_open_commit_and_act_as_on_a_headers_row() {
     assert_eq!(checks(&app).jq, [".a", ".b == 2"]);
     app.editor.table.editing.as_mut().unwrap().input.set_text("abc");
     click(&mut app, Hit::TableCell { row: 0, col: 0 }, Left);
-    assert_eq!(checks(&app).status, [200], "refused");
+    assert_eq!(checks(&app).status, [Code(200)], "refused");
     assert!(app.toasts.last_message().unwrap_or_default().contains("100 to 599"));
     // A click whose own commit changes what is under the pointer: the open
     // check merges into the other, and its delete pill takes the one row
@@ -397,7 +431,7 @@ fn a_paste_into_a_field_or_a_check_is_one_line() {
         feed(&mut app, open(profile));
         assert!(app.handle_paste("201,\n204"), "{profile:?}");
         feed(&mut app, if profile == KeyProfile::Vim { "<Esc><CR>" } else { "<CR>" });
-        assert_eq!(checks(&app).status, [201, 204], "{profile:?}");
+        assert_eq!(checks(&app).status, [Code(201), Code(204)], "{profile:?}");
         feed(&mut app, "a");
         app.clipboard.set_read_for_test(".items\n  | length == 4\n");
         app.update(Action::Paste);
@@ -581,7 +615,7 @@ fn the_tab_says_what_goes_in_each_input() {
             feed(&mut app, open(profile));
             retype(&mut app, text);
         }
-        assert_eq!(checks(&app).status, [200], "{profile:?}");
+        assert_eq!(checks(&app).status, [Code(200)], "{profile:?}");
         app.editor.table.set_selected(Some(Stop::Head(0)));
         feed(&mut app, open(profile));
         app.editor.table.editing.as_mut().expect("open").input.set_text("");
