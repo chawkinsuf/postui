@@ -32483,6 +32483,88 @@ fn tooltip_pill_click_keeps_the_table_edit_and_selection() {
     assert_eq!(app.editor.table.selected(), Some(Stop::Add), "so does the selection");
 }
 
+/// Nor is a press on the tooltip a click away from a focused jq bar
+/// (#298): a pill or the tip's text leaves the bar with the caret, in
+/// both profiles. The edit pill's dialog opens over the focused bar, and
+/// once it closes the bar still takes the typing. The reveal pill and an
+/// undefined name's edit pill keep the caret too.
+#[test]
+fn tooltip_press_keeps_the_jq_bar_focused() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let (mut app, _dir, out) = tooltip_app("base_url");
+        app.use_profile(profile);
+        ready_response(&mut app, JQ_BODY);
+        app.update(Action::JqApply(".data.total".into()));
+        render_once(&mut app);
+        let bar = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
+        app.handle_mouse(left_down(bar.x + 4, bar.y));
+        app.handle_mouse(left_up(bar.x + 4, bar.y));
+        assert!(app.session.response.jq_focused(), "{profile:?}: the bar has the caret");
+
+        hover_token(&mut app, "base_url");
+        click_hit(&mut app, Hit::TipCopy("base_url".into()));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+        assert!(app.session.response.jq_focused(), "{profile:?}: a pill press keeps the caret");
+
+        let (x, y) = tip_cell(&app, "base_url", 0, 0);
+        app.handle_mouse(left_down(x, y));
+        app.handle_mouse(left_up(x, y));
+        assert!(app.session.response.jq_focused(), "{profile:?}: a press on the tip's text too");
+
+        hover_token(&mut app, "base_url");
+        render_once(&mut app);
+        let pill = app.hits.rect_of(&Hit::TipEdit("base_url".into())).expect("the edit pill");
+        app.handle_mouse(left_down(pill.x + 1, pill.y));
+        app.handle_mouse(left_up(pill.x + 1, pill.y));
+        assert!(
+            matches!(
+                app.modals.top(),
+                Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { .. }, .. })
+            ),
+            "{profile:?}: the edit pill opens the value popup"
+        );
+        assert!(app.session.response.jq_focused(), "{profile:?}: under the dialog");
+        // Esc walks out of the form (vim's Insert first) and then closes it.
+        let escs = if profile == KeyProfile::Vim { 4 } else { 3 };
+        for _ in 0..escs {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        assert!(app.modals.is_empty(), "{profile:?}: Esc closed the dialog");
+        assert!(app.session.response.jq_focused(), "{profile:?}: the bar still has the caret");
+        type_str(&mut app, "z");
+        assert_eq!(app.session.response.jq_text(), ".datza.total", "{profile:?}: at the caret");
+
+        app.editor.url = crate::components::line_input::LineInput::new("{{api_key}}/{{nowhere}}");
+        hover_token(&mut app, "api_key");
+        click_hit(&mut app, Hit::TipReveal("api_key".into()));
+        assert!(app.session.response.jq_focused(), "{profile:?}: the reveal pill keeps the caret");
+
+        // An undefined name's edit pill opens the insert picker over the
+        // bar. A pick from it has nowhere to insert: the bar takes no
+        // `{{token}}`.
+        hover_token(&mut app, "nowhere");
+        click_hit(&mut app, Hit::TipEdit("nowhere".into()));
+        assert!(
+            matches!(app.modals.top(), Some(Modal::VarPicker(_))),
+            "{profile:?}: the undefined name's edit pill opens the picker"
+        );
+        assert!(app.session.response.jq_focused(), "{profile:?}: under the picker");
+        for _ in 0.."nowhere".len() {
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        click_hit(&mut app, Hit::VarPickerRow(0));
+        assert!(app.modals.is_empty(), "{profile:?}: the pick closed the picker");
+        assert!(
+            app.toasts.messages().contains(&"nowhere to insert — focus a text field first"),
+            "{profile:?}: {:?}",
+            app.toasts.messages()
+        );
+        assert_eq!(app.session.response.jq_text(), ".datza.total", "{profile:?}: bar unchanged");
+        assert!(app.session.response.jq_focused(), "{profile:?}: the bar keeps the caret");
+    }
+}
+
 /// A right click on a row the tooltip floats over reaches the row: the
 /// tip is a left-click affordance only, like the token it belongs to.
 #[test]
